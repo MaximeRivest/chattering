@@ -11,7 +11,7 @@ const { viewerBrowser } = require('./helpers/viewer-browser');
 // elements the desktop column fills. Reading and typing hide the bar with the
 // top bar; a sheet keeps it. The Android back button asks the page first.
 test('phone shell: bottom bar, sheets, one-row head, back hook, desktop untouched', { timeout: 90000 }, async t => {
-  const { home, base, work, auth, evaluate: ev, until, size, screenshot, exceptions } = await viewerBrowser(t);
+  const { home, base, work, auth, evaluate: ev, until, size, screenshot, exceptions } = await viewerBrowser(t, { firstRun: true });
   // A fresh install first asks about background AI; its modal would hold focus.
   await until(`document.querySelector('dialog.bg-ask [data-none]')`, 'no first-run question');
   await ev(`document.querySelector('dialog.bg-ask [data-none]').click()`);
