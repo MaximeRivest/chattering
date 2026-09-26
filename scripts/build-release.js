@@ -108,4 +108,6 @@ const t = spawnSync(tarBin, tarArgs, { stdio: 'inherit' });
 if (t.status !== 0) throw new Error('tar failed');
 const sha = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
 fs.writeFileSync(archive + '.sha256', `${sha}  ${path.basename(archive)}\n`);
-console.log(JSON.stringify({ archive, sha256: sha, bytes: fs.statSync(archive).size, files: files.length, pi: piPkg.version, node: process.version }));
+const result = { archive, sha256: sha, bytes: fs.statSync(archive).size, files: files.length, pi: piPkg.version, node: process.version };
+fs.writeFileSync(path.join(DIST, 'build-result.json'), JSON.stringify(result, null, 2) + '\n'); // for CI
+console.log(JSON.stringify(result));

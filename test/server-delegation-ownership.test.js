@@ -48,6 +48,8 @@ function runSetup(t) {
     pisdk: { stopWarmSession() {}, piHeadlessRun(target) { b.targets.push(target); return { done: Promise.resolve() }; } }, targets: [],
     stopRunningAgent: async () => { b.stops++; }, waitFileQuiet: async () => {}, stops: 0,
     appSettings: { simplifyAnswers: false, simplifyPrompt: '' },
+    // Spending limits (design/72) are the server's; none here.
+    assertWithinBudget() {}, usersLib: { findUser: () => null }, roster: { users: [] },
   });
   b.piEng = () => b.pisdk;
   load(b, 'async function startAgentRun(', '// Idle extension callbacks');

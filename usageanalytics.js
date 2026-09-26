@@ -13,7 +13,7 @@ const responseSpeed = require('./responsespeed.js');
 let DatabaseSync = null;
 try { ({ DatabaseSync } = require('node:sqlite')); } catch {}
 
-const SCHEMA_VERSION = 2; // v2: reply speed samples
+const SCHEMA_VERSION = 3; // v2: reply speed samples; v3: the person each call is for
 // A per-model characters-per-token ratio is trusted from this many clean
 // replies; until then the default ratio applies and readouts say so.
 const MIN_CALIBRATION_SAMPLES = 10;
@@ -273,11 +273,23 @@ async function parseUsageFile(file, context = {}, catalog = new PricingCatalog()
   let currentProvider = null;
   let currentModel = null;
   let ordinal = 0;
+  // Who each call is for (design/72): a person's message is the one right
+  // after their chattering-author entry; everything below it on the tree is
+  // theirs until the next message. A message with no author entry (typed in
+  // a terminal, or before people existed) belongs to nobody known: null.
+  const personOf = new Map(), authorEntry = new Set();
   const stream = fs.createReadStream(file, { encoding: 'utf8' });
   const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
   for await (const line of lines) {
     if (!line) continue;
     let d; try { d = JSON.parse(line); } catch { continue; }
+    if (source === 'pi' && d.id) {
+      if (d.type === 'custom' && (d.customType === 'chattering-author' || d.customType === 'aiconvo-author') && d.data && d.data.user && typeof d.data.user.id === 'string') {
+        personOf.set(d.id, d.data.user.id); authorEntry.add(d.id);
+      } else if (d.type === 'message' && d.message && d.message.role === 'user') {
+        personOf.set(d.id, authorEntry.has(d.parentId) ? personOf.get(d.parentId) : null);
+      } else personOf.set(d.id, d.parentId != null ? (personOf.get(d.parentId) ?? null) : null);
+    }
     if (source === 'pi' && d.type === 'model_change') {
       currentProvider = d.provider || currentProvider;
       currentModel = d.modelId || currentModel;
@@ -356,6 +368,7 @@ async function parseUsageFile(file, context = {}, catalog = new PricingCatalog()
       costInput: cost ? cost.input : null, costOutput: cost ? cost.output : null,
       costCacheRead: cost ? cost.cacheRead : null, costCacheWrite: cost ? cost.cacheWrite : null,
       priceSource, priceConfidence,
+      person: source === 'pi' ? (personOf.get(d.id) ?? null) : null,
     });
   }
   return { facts, speed };
@@ -437,15 +450,20 @@ function aggregateFacts(facts, options = {}) {
   const authTypes = options.authTypes || {};
   const filters = options.filters || {};
   const summary = blankTotals();
-  const daily = new Map(), models = new Map(), projects = new Map(), providers = new Map(), billing = new Map(), categories = new Map();
-  const facets = { projects: new Set(), providers: new Set(), models: new Set(), billing: new Set() };
+  const daily = new Map(), models = new Map(), projects = new Map(), providers = new Map(), billing = new Map(), categories = new Map(), people = new Map();
+  const facets = { projects: new Set(), providers: new Set(), models: new Set(), billing: new Set(), people: new Set() };
+  // Calls no person asked for directly: background work (titles, memory)
+  // and messages with no author (typed in a terminal, older history).
+  const personKey = fact => fact.person || (fact.category === 'internal' ? 'background' : 'unattributed');
   const quality = { pricedCalls: 0, unpricedCalls: 0, exactPrices: 0, mappedPrices: 0, historicalPrices: 0, inferredBillingCalls: 0 };
   let minTs = null, maxTs = null;
   for (const fact of facts) {
     const mode = classifyBilling(fact, config, authTypes);
     const project = fact.project || 'Unknown project';
     facets.projects.add(project); facets.providers.add(fact.provider); facets.models.add(fact.model); facets.billing.add(mode.mode);
+    facets.people.add(personKey(fact));
     if (filters.project && project !== filters.project) continue;
+    if (filters.person && personKey(fact) !== filters.person) continue;
     if (filters.provider && fact.provider !== filters.provider) continue;
     if (filters.model && fact.model !== filters.model) continue;
     if (filters.billing && mode.mode !== filters.billing) continue;
@@ -464,6 +482,8 @@ function aggregateFacts(facts, options = {}) {
     addFact(providers.get(fact.provider), fact, mode);
     if (!billing.has(mode.mode)) billing.set(mode.mode, blankTotals());
     addFact(billing.get(mode.mode), fact, mode);
+    if (!people.has(personKey(fact))) people.set(personKey(fact), blankTotals());
+    addFact(people.get(personKey(fact)), fact, mode);
     if (!categories.has(fact.category)) categories.set(fact.category, blankTotals());
     addFact(categories.get(fact.category), fact, mode);
     if (fact.estimatedCost == null) quality.unpricedCalls++;
@@ -482,7 +502,7 @@ function aggregateFacts(facts, options = {}) {
     summary,
     daily: mapRows(daily, 'day').sort((a, b) => a.day.localeCompare(b.day)),
     models: mapRows(models, 'model'), projects: mapRows(projects, 'project'), providers: mapRows(providers, 'provider'),
-    billing: mapRows(billing, 'billing'), categories: mapRows(categories, 'category'), quality,
+    billing: mapRows(billing, 'billing'), categories: mapRows(categories, 'category'), people: mapRows(people, 'person'), quality,
     facets: Object.fromEntries(Object.entries(facets).map(([k, set]) => [k, [...set].sort()])),
   };
 }
@@ -588,7 +608,7 @@ class UsageIndex {
       );
       CREATE TABLE IF NOT EXISTS usage_events (
         event_key TEXT PRIMARY KEY, ts INTEGER NOT NULL, source TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
-        api TEXT, category TEXT NOT NULL, stop_reason TEXT,
+        api TEXT, category TEXT NOT NULL, stop_reason TEXT, person TEXT,
         input_tokens INTEGER, output_tokens INTEGER, cache_read INTEGER, cache_write INTEGER, cache_write_1h INTEGER,
         reasoning INTEGER, total_tokens INTEGER, estimated_cost REAL, cost_input REAL, cost_output REAL,
         cost_cache_read REAL, cost_cache_write REAL, price_source TEXT, price_confidence TEXT
@@ -647,20 +667,20 @@ class UsageIndex {
     try {
       this.db.prepare('DELETE FROM usage_owners WHERE session_key=?').run(key);
       const putEvent = this.db.prepare(`INSERT INTO usage_events
-        (event_key,ts,source,provider,model,api,category,stop_reason,input_tokens,output_tokens,cache_read,cache_write,cache_write_1h,reasoning,total_tokens,estimated_cost,cost_input,cost_output,cost_cache_read,cost_cache_write,price_source,price_confidence)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        (event_key,ts,source,provider,model,api,category,stop_reason,input_tokens,output_tokens,cache_read,cache_write,cache_write_1h,reasoning,total_tokens,estimated_cost,cost_input,cost_output,cost_cache_read,cost_cache_write,price_source,price_confidence,person)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(event_key) DO UPDATE SET ts=excluded.ts,source=excluded.source,provider=excluded.provider,model=excluded.model,
         api=excluded.api,category=excluded.category,stop_reason=excluded.stop_reason,input_tokens=excluded.input_tokens,
         output_tokens=excluded.output_tokens,cache_read=excluded.cache_read,cache_write=excluded.cache_write,
         cache_write_1h=excluded.cache_write_1h,reasoning=excluded.reasoning,total_tokens=excluded.total_tokens,
         estimated_cost=excluded.estimated_cost,cost_input=excluded.cost_input,cost_output=excluded.cost_output,
         cost_cache_read=excluded.cost_cache_read,cost_cache_write=excluded.cost_cache_write,
-        price_source=excluded.price_source,price_confidence=excluded.price_confidence`);
+        price_source=excluded.price_source,price_confidence=excluded.price_confidence,person=excluded.person`);
       const putOwner = this.db.prepare('INSERT OR IGNORE INTO usage_owners(event_key,session_key) VALUES (?,?)');
       for (const f of facts) {
         putEvent.run(f.eventKey, f.ts, f.source, f.provider, f.model, f.api, f.category, f.stopReason,
           f.input, f.output, f.cacheRead, f.cacheWrite, f.cacheWrite1h, f.reasoning, f.totalTokens,
-          f.estimatedCost, f.costInput, f.costOutput, f.costCacheRead, f.costCacheWrite, f.priceSource, f.priceConfidence);
+          f.estimatedCost, f.costInput, f.costOutput, f.costCacheRead, f.costCacheWrite, f.priceSource, f.priceConfidence, f.person || null);
         putOwner.run(f.eventKey, key);
       }
       const putSpeed = this.db.prepare(`INSERT OR REPLACE INTO usage_speed
@@ -732,7 +752,7 @@ class UsageIndex {
       SELECT e.ts,e.source,e.provider,e.model,e.api,e.category,e.stop_reason AS stopReason,
         e.input_tokens AS input,e.output_tokens AS output,e.cache_read AS cacheRead,e.cache_write AS cacheWrite,
         e.cache_write_1h AS cacheWrite1h,e.reasoning,e.total_tokens AS totalTokens,e.estimated_cost AS estimatedCost,
-        e.price_source AS priceSource,e.price_confidence AS priceConfidence,f.project
+        e.price_source AS priceSource,e.price_confidence AS priceConfidence,e.person,f.project
       FROM usage_events e JOIN chosen c ON c.event_key=e.event_key
       JOIN usage_files f ON f.session_key=c.session_key
       WHERE e.ts>=? AND e.ts<=? ORDER BY e.ts`).all(fromMs, toMs);

@@ -90,6 +90,15 @@ const DEFAULT_SETTINGS = {
   // Cost analytics keeps billing classification separate from Pi's retail
   // cost estimate. Rules are provider-scoped and never contain credentials.
   usageBilling: { providerModes: {}, monthlyFees: {} },
+  // Team settings (design/72). Spending limits per person per calendar
+  // month, in the dashboard's estimated dollars; null means none.
+  budgets: { monthlyPerPerson: null, people: {} },
+  // household: people share the account's powers (polite walls, design/46).
+  // per-person: every non-administrator is walled like a guest: their own
+  // agent folder, only the projects shared with them, nothing else.
+  isolation: 'household',
+  // Company sign-in through OpenID Connect; off while issuer is empty.
+  sso: { issuer: '', clientId: '', clientSecret: '', name: '', allowedDomains: [], autoProvision: false, groupsClaim: 'groups', adminGroups: [], sessionHours: 12 },
   // Other Chattering installs reachable from the header machine switcher.
   // Each entry: { name, url, token, publicKey? }. The token is that
   // machine's LAN token; publicKey its handoff signing key, when known.
@@ -309,6 +318,27 @@ function findModel(models, provider, model) {
     || null;
 }
 
+function normalizeBudgets(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const amount = v => { const n = Number(v); return v !== null && v !== '' && v !== undefined && Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : null; };
+  const people = {};
+  for (const [id, v] of Object.entries(src.people && typeof src.people === 'object' ? src.people : {})) {
+    const a = amount(v);
+    if (/^u_[A-Za-z0-9_-]+$/.test(id) && a != null) people[id] = a;
+  }
+  return { monthlyPerPerson: amount(src.monthlyPerPerson), people };
+}
+function normalizeSso(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const str = (v, max = 500) => String(v == null ? '' : v).trim().slice(0, max);
+  const list = v => (Array.isArray(v) ? v : String(v || '').split(/[\s,]+/)).map(x => String(x).trim().toLowerCase()).filter(Boolean).slice(0, 50);
+  let issuer = str(src.issuer);
+  if (issuer && !/^https:\/\/[^\s]+$/i.test(issuer) && !/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|$)/i.test(issuer)) issuer = '';
+  const hours = Number(src.sessionHours);
+  return { issuer: issuer.replace(/\/+$/, ''), clientId: str(src.clientId), clientSecret: str(src.clientSecret, 2000), name: str(src.name, 60),
+    allowedDomains: list(src.allowedDomains), autoProvision: src.autoProvision === true, groupsClaim: str(src.groupsClaim, 60) || 'groups',
+    adminGroups: list(src.adminGroups), sessionHours: Number.isFinite(hours) && hours >= 1 && hours <= 24 * 30 ? Math.round(hours) : 12 };
+}
 function normalizeUsageBilling(raw) {
   const src = raw && typeof raw === 'object' ? raw : {};
   const allowed = new Set(['api', 'subscription', 'free', 'local', 'unknown']);
@@ -352,6 +382,9 @@ function normalizeSettings(input) {
   const resumePrompt = typeof src.resumePrompt === 'string' && src.resumePrompt.trim() ? src.resumePrompt.trim().slice(0, 4000) : DEFAULT_RESUME_PROMPT;
   const piTheme = typeof src.piTheme === 'string' && src.piTheme.trim() ? src.piTheme.trim() : DEFAULT_SETTINGS.piTheme;
   const usageBilling = normalizeUsageBilling(src.usageBilling);
+  const budgets = normalizeBudgets(src.budgets);
+  const isolation = src.isolation === 'per-person' ? 'per-person' : 'household';
+  const sso = normalizeSso(src.sso);
   const snippetTrigger = normalizeSnippetTrigger(src.snippetTrigger);
   const doneSound = DONE_SOUND_MODES.includes(src.doneSound) ? src.doneSound : DEFAULT_SETTINGS.doneSound;
   const machines = normalizeMachines(src.machines);
@@ -386,6 +419,9 @@ function normalizeSettings(input) {
     resumePrompt,
     piTheme,
     usageBilling,
+    budgets,
+    isolation,
+    sso,
     snippetTrigger,
     doneSound,
     machines,

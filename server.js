@@ -179,12 +179,43 @@ function moveLegacySignInCookie(req, res) {
 const FAVICON_LINK = (() => {
   try { return `<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,${fs.readFileSync(path.join(__dirname, 'icons', 'favicon.svg')).toString('base64')}">`; } catch { return ''; }
 })();
+// ---- company sign-in (design/72) ----
+const oidc = require('./oidc.js').createOidc();
+const ssoConfigured = () => !!(appSettings && appSettings.sso && appSettings.sso.issuer && appSettings.sso.clientId);
+// Where the provider sends people back: the public address when there is
+// one (what the provider has registered), else the name this request used.
+function ssoRedirectUri(req) {
+  if (PUBLIC_URL) return PUBLIC_URL + '/auth/sso/callback';
+  const proto = req.socket.encrypted || String(req.headers['x-forwarded-proto'] || '').toLowerCase() === 'https' ? 'https' : 'http';
+  return proto + '://' + req.headers.host + '/auth/sso/callback';
+}
+// Only a path of this site, never another site (an open redirect).
+const safeNext = n => (typeof n === 'string' && /^\/(?!\/)[^\\]*$/.test(n) ? n : '/');
+// The roster person for a company identity: linked before, else created
+// when the settings allow it; their role follows the admin groups when
+// those are set (the owner is never demoted). Disabled stays disabled.
+function ssoPerson(claims) {
+  const cfg = appSettings.sso;
+  const who = require('./oidc.js').admission(cfg, claims);
+  if (!who.ok) throw new Error(who.reason);
+  let user = usersLib.findUserBySso(roster, cfg.issuer, claims.sub);
+  if (!user) {
+    if (!cfg.autoProvision) throw new Error((who.email || 'this account') + ' has no place here yet; ask an administrator to let company accounts in, or to invite you');
+    user = usersLib.addUser(roster, { name: who.name, role: who.role });
+    user.sso = { iss: cfg.issuer, sub: claims.sub, ...(who.email ? { email: who.email } : {}) };
+  }
+  if (user.disabled) throw new Error(user.name + ' is disabled here');
+  if (cfg.adminGroups.length && user.role !== 'owner') user.role = who.role;
+  if (who.email && user.sso) user.sso.email = who.email;
+  return user;
+}
 function lanLoginPage(error = '') {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Chattering</title>${FAVICON_LINK}
 <style>html,body{margin:0;background:#fff;color:#000;font:18px/1.4 monospace}main{max-width:28rem;margin:12vh auto;padding:1rem}h1{font-size:1.4rem;margin:0 0 .2rem}h1 small{font-weight:400;font-size:.8rem;color:#555}label,input,button{display:block;width:100%;box-sizing:border-box}input,button{font:inherit;padding:.6rem;margin:.4rem 0;border:2px solid #000;background:#fff;color:#000}button{font-weight:700}p{margin:0 0 1rem}.err{font-weight:700}</style></head>
 <body><main><h1>Chattering <small>by Rockfrog</small></h1><p>Enter your token for this Chattering (your invite link, or the install token from settings → machines). After this, the device stays signed in as you.</p>
 <p><small>On this machine itself: the install token is the file <code>lan-token</code> in Chattering's cache folder, and the Chattering launcher signs the browser in with it.</small></p>
 ${error ? `<p class="err">${error.replace(/</g, '&lt;')}</p>` : ''}
+${ssoConfigured() ? `<p><a href="/auth/sso" style="display:block;text-align:center;padding:.6rem;border:2px solid #000;color:#000;text-decoration:none;font-weight:700">Sign in with ${String(appSettings.sso.name || 'your company account').replace(/[<&"]/g, c => ({ '<': '&lt;', '&': '&amp;', '"': '&quot;' })[c])}</a></p><p><small>or with a token:</small></p>` : ''}
 <form method="post" action="/login"><label for="token">token</label><input id="token" name="token" autocomplete="off" autofocus><button type="submit">open Chattering</button></form></main></body></html>`;
 }
 // The page an invite link lands on: who invited you, to what, your name,
@@ -953,7 +984,7 @@ function broadcast(ev) {
 // beyond the identity itself.
 function receiverFor(identity) {
   const all = policy.isOwnerTier(identity);
-  const member = all || (!!identity && !!identity.user && identity.user.scope !== 'guest');
+  const member = all || (!!identity && !!identity.user && !usersLib.isWalled(identity.user));
   return {
     all, member,
     // A key not indexed yet (a run's first moments): the household sees it,
@@ -3073,6 +3104,7 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
   const { entry, sessionPath, cwd } = sessionPathsFor(key);
   principal = await principalInProject(principal || principalFor(null), projectNameOf(entry.cwd, key));
   assertPrincipalCanRun(principal, 'an agent');
+  if (!customMessage) assertWithinBudget(usersLib.findUser(roster, principal.user.id) || principal.user);
   // Who typed this. The SDK engine writes it into the session tree; the
   // rpc engine cannot, so the sidecar remembers it for the indexer.
   const author = customMessage ? null : { id: principal.user.id, name: principal.user.name, input, coauthors: coauthors || undefined };
@@ -4854,7 +4886,15 @@ const currentIdentity = () => (requestContext.getStore() || {}).identity || null
 const currentPrincipal = async project => { const id = currentIdentity(); return id ? principalInProject(principalFor(id), project) : principalFor(null); };
 function identifyRequest(req) {
   if (!LAN_TOKEN) return ownerIdentity();
-  return usersLib.identify({ roster, installToken: LAN_TOKEN, isLocal: isLocalRequest(req), cookie: signInCookie(req), authorization: req.headers.authorization });
+  const identity = usersLib.identify({ roster, installToken: LAN_TOKEN, isLocal: isLocalRequest(req), cookie: signInCookie(req), authorization: req.headers.authorization });
+  return wallsFor(identity);
+}
+// Per-person isolation (design/72): everyone below the administrators works
+// inside the projects shared with them, with the walls guests have. The
+// flag rides on this request's copy of the person, never on the roster.
+function wallsFor(identity) {
+  if (!identity || !identity.user || appSettings.isolation !== 'per-person' || accessLib.seesAll(identity) || identity.user.scope === 'guest') return identity;
+  return { ...identity, user: { ...identity.user, walled: true } };
 }
 const publicUsers = () => roster.users.map(usersLib.publicUser);
 const userById = id => usersLib.publicUser(usersLib.findUser(roster, id));
@@ -4866,7 +4906,7 @@ const userById = id => usersLib.publicUser(usersLib.findUser(roster, id));
 function principalFor(identity, { project = null } = {}) {
   const user = usersLib.publicUser((identity && identity.user) || usersLib.ownerOf(roster));
   const base = { user, spawnAs: null, env: { CHATTERING_USER: user.id, CHATTERING_USER_NAME: user.name }, guest: false, sandbox: null, project };
-  if (!identity || !usersLib.isGuest(identity.user)) return base;
+  if (!identity || !usersLib.isWalled(identity.user)) return base;
   // A guest runs behind walls (sandbox.js): only the project exists for
   // their processes. Which project is decided by the caller from the
   // conversation or the folder; without one, nothing may run.
@@ -4890,7 +4930,7 @@ function assertPrincipalCanRun(principal, what = 'this') {
   if (!principal.sandbox) { const e = new Error(`As a guest you can only run ${what} inside a project shared with you.`); e.status = 403; throw e; }
 }
 function assertNotGuest(identity, what = 'this') {
-  if (identity && usersLib.isGuest(identity.user)) { const e = new Error(`${what} touches this machine outside the shared project and is not available to guests.`); e.status = 403; throw e; }
+  if (identity && usersLib.isWalled(identity.user)) { const e = new Error(`${what} touches this machine outside the shared project and is not available to guests.`); e.status = 403; throw e; }
 }
 // ---- guests behind walls (design/53) ----
 // Every process a guest causes runs in a bubblewrap sandbox with the
@@ -4991,7 +5031,7 @@ function guestApiTokenFor(user) {
 async function guestSandboxFor(user, project) {
   const meta = projectMetaFor(project);
   if (!meta || !meta.cwd || !fs.existsSync(meta.cwd)) throw Object.assign(new Error('that project has no folder on this machine'), { status: 404 });
-  if (!BWRAP) throw Object.assign(new Error('bubblewrap is not installed on this machine, so guests cannot run anything here (settings → people says so)'), { status: 503 });
+  if (!BWRAP) throw Object.assign(new Error(platform.IS_LINUX ? 'bubblewrap is not installed on this machine, so people working inside their projects (guests, or everyone when each person is walled) cannot run anything here' : 'walls for guests and walled members need Linux with bubblewrap; on this system they can read and write, not run'), { status: 503 });
   const projectRoot = meta.cwd;
   const guestDir = sandboxLib.guestAgentDirFor(GUESTS_DIR, user.id);
   const insideAgentDir = path.join(os.homedir(), '.pi', 'agent');
@@ -5015,7 +5055,7 @@ async function guestSandboxFor(user, project) {
     extra: { PATH: agentPath(process.env.PATH), PI_CLAUDE_CODE_TRANSPORT: 'api', PI_CLAUDE_CODE_BASE_URL: proxyUrl + '/claude-code', CHATTERING_GUEST_PROJECT: project, ...(hostFacts.claudeVersion ? { CLAUDE_CODE_VERSION: hostFacts.claudeVersion } : {}) } });
   const cgroup = await guestCgroupFor(user);
   const sb = sandboxLib.createSandbox({ id: 'guest:' + user.id + ':' + projectRoot, bwrap: BWRAP, home: os.homedir(), projectRoot, guest: { id: user.id, name: user.name },
-    binds: [...prepared.binds, ...sessionBinds], env, piPackageDir: piPkg, chatteringDir: __dirname, nodePath: process.execPath, cgroup });
+    binds: [...prepared.binds, ...sessionBinds], env, piPackageDir: piPkg, chatteringDir: __dirname, nodePath: runtimeLib.nodePath(), cgroup });
   sb.sessionDir = mainSessionDir;
   return sb;
 }
@@ -5518,7 +5558,12 @@ function settingsResponse(identity = ownerIdentity()) {
   return {
     // Members see the settings without the secrets: another machine's
     // token is the owner's to hold.
-    settings: manages ? appSettings : { ...appSettings, tailscaleApiKey: '', machines: (appSettings.machines || []).map(m => ({ name: m.name, url: m.url, token: '', publicKey: m.publicKey || '', hasToken: !!m.token })) },
+    settings: manages ? appSettings : { ...appSettings, tailscaleApiKey: '', sso: { ...appSettings.sso, clientSecret: '' }, budgets: { monthlyPerPerson: appSettings.budgets.monthlyPerPerson, people: {} },
+      machines: (appSettings.machines || []).map(m => ({ name: m.name, url: m.url, token: '', publicKey: m.publicKey || '', hasToken: !!m.token })) },
+    // What this person has spent this month against their limit (design/72).
+    budget: identity && identity.user ? budgetStatus(identity.user) : null,
+    // The address company sign-in returns to, to register at the provider.
+    ssoRedirectUri: PUBLIC_URL ? PUBLIC_URL + '/auth/sso/callback' : null,
     me: usersLib.publicUser(identity.user),
     tier: identity.tier,
     users: publicUsers(),
@@ -5585,6 +5630,36 @@ function usageIndexEntries() {
   return entries;
 }
 
+// ---- spending limits (design/72) ----
+// Per person, per calendar month, in the dashboard's estimated dollars (the
+// calls' value at the providers' API prices). The owner has none; an
+// administrator can set any other person's, or one for everyone.
+function budgetLimitFor(user) {
+  if (!user || user.role === 'owner') return null;
+  const b = appSettings.budgets || {};
+  const own = b.people && b.people[user.id];
+  return own != null ? own : (b.monthlyPerPerson != null ? b.monthlyPerPerson : null);
+}
+function monthStartMs(now = new Date()) { return new Date(now.getFullYear(), now.getMonth(), 1).getTime(); }
+function personSpend(userId, fromMs = monthStartMs()) {
+  if (!usageIdx) return 0;
+  let total = 0;
+  for (const f of usageIdx.facts(fromMs, Date.now())) if (f.person === userId && f.estimatedCost) total += f.estimatedCost;
+  return Math.round(total * 100) / 100;
+}
+function budgetStatus(user) {
+  const limit = budgetLimitFor(user);
+  if (limit == null) return { limit: null };
+  const spent = personSpend(user.id);
+  return { limit, spent, left: Math.max(0, Math.round((limit - spent) * 100) / 100), over: spent >= limit };
+}
+function assertWithinBudget(user) {
+  const b = budgetStatus(user);
+  if (b.limit == null || !b.over) return;
+  const e = new Error(`${user.name} has used this month's AI budget ($${b.spent.toFixed(2)} of $${b.limit.toFixed(2)}). It renews on the 1st; the owner can raise it in settings → people.`);
+  e.status = 402;
+  throw e;
+}
 function usageDashboardResponse(searchParams) {
   if (!usageIdx) return { error: 'Token analytics needs node:sqlite, which is unavailable.' };
   const catalog = pricingCatalog();
@@ -5593,7 +5668,7 @@ function usageDashboardResponse(searchParams) {
   });
   const range = usageRange(searchParams);
   const filters = {};
-  for (const key of ['project', 'provider', 'model', 'billing']) {
+  for (const key of ['project', 'provider', 'model', 'billing', 'person']) {
     const value = searchParams.get(key);
     if (value) filters[key] = value;
   }
@@ -5608,8 +5683,14 @@ function usageDashboardResponse(searchParams) {
     && (!filters.provider || s.provider === filters.provider)
     && (!filters.model || s.model === filters.model)
     && (!filters.billing || usageLib.classifyBilling(s, appSettings.usageBilling, authTypes).mode === filters.billing));
+  // People by name, and each one's limit and spending this month (design/72).
+  const personNames = { background: 'background work', unattributed: 'not attributed (typed in a terminal, or older history)' };
+  for (const u of roster.users) personNames[u.id] = u.name;
+  const limits = {};
+  for (const u of roster.users) { const b = budgetStatus(u); if (b.limit != null) limits[u.id] = b; }
   return {
     ...data,
+    personNames, limits,
     speed: usageLib.speedStatistics(speedRows),
     range,
     filters,
@@ -11565,7 +11646,7 @@ async function aiCommandFile(p, identity) {
 // Guests: an AI command runs on the owner's account outside the guest's
 // sandbox and limits (runPi is not sandbox-aware yet), so not for them.
 function aiCommandsRefusal(identity) {
-  if (identity && usersLib.isGuest(identity.user)) return 'AI commands are not available to guests yet';
+  if (identity && usersLib.isWalled(identity.user)) return 'AI commands are not available to guests yet';
   return null;
 }
 // At most this many AI commands run at once per person (each is a pi process).
@@ -13311,6 +13392,7 @@ async function startProjectConversation(options) {
   let key = null;
   if (useRpc) {
     const principal = guestPrincipal || options.principal || principalFor(null);
+    if (text) assertWithinBudget(usersLib.findUser(roster, principal.user.id) || principal.user);
     const engine = principal.sandbox ? pisdk : piEng();
     const walls = principal.sandbox ? { sandbox: principal.sandbox, sessionDir: principal.sandbox.sessionDir } : {};
     const begun = await engine.piBeginWarm({ cwd, env: { ...agentEnv(principal), ...agentCallerEnv(principal) }, extraArgs: ['--name', label, ...piProviderExtraArgs(), ...piCtxArgs], ...walls });
@@ -14373,7 +14455,7 @@ function voiceLog(record) {
 // Voice runs on this machine's GPU and the owner's TypeSafe account: not
 // for guests (their walls do not reach either).
 function voiceRefusal(identity) {
-  if (identity && usersLib.isGuest(identity.user)) return 'Voice commands are not available to guests.';
+  if (identity && usersLib.isWalled(identity.user)) return 'Voice commands are not available to guests.';
   return null;
 }
 
@@ -15073,6 +15155,35 @@ async function handleRequest(req, res) {
           host: { name: HOST_NAME, url: PUBLIC_URL || '', publicKey: installKey.publicKey }, peer: peer ? peer.id : null });
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
       return;
+    }
+    // Company sign-in (OpenID Connect, design/72): before any credential,
+    // like the invite and token doors below, and behind the same limiter.
+    if (u.pathname === '/auth/sso' && req.method === 'GET') {
+      if (!ssoConfigured()) return json(res, 404, { error: 'company sign-in is not set up here' });
+      try {
+        const { url } = await oidc.start(appSettings.sso, { redirectUri: ssoRedirectUri(req), next: safeNext(u.searchParams.get('next')) });
+        res.writeHead(302, { Location: url, 'Cache-Control': 'no-store' });
+        return res.end();
+      } catch (e) {
+        res.writeHead(502, { 'Content-Type': 'text/html; charset=utf-8' });
+        return res.end(lanLoginPage('Company sign-in is not answering: ' + e.message));
+      }
+    }
+    if (u.pathname === '/auth/sso/callback' && req.method === 'GET') {
+      if (!ssoConfigured()) return json(res, 404, { error: 'company sign-in is not set up here' });
+      if (!(await gate())) return;
+      try {
+        const { claims, next } = await oidc.finish(appSettings.sso, Object.fromEntries(u.searchParams));
+        const user = ssoPerson(claims);
+        const { secret } = usersLib.issueCredential(roster, user.id, { kind: 'session', label: 'company sign-in', ttlMs: appSettings.sso.sessionHours * 3600e3 });
+        saveRoster();
+        broadcast({ type: 'users', users: publicUsers(), groups: roster.groups });
+        return setSignInCookie(secret, next, user);
+      } catch (e) {
+        noteSignIn('fail', { via: 'sso', reason: e.message.slice(0, 200) });
+        res.writeHead(403, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        return res.end(lanLoginPage('Company sign-in did not let you in: ' + e.message + '.'));
+      }
     }
     if (LAN_TOKEN) {
       const landing = u.pathname === '/' ? '/' : u.pathname;
@@ -16920,7 +17031,7 @@ async function handleRequest(req, res) {
       const cached = slashCommandsCache.get(cwd);
       if (cached && Date.now() - cached.at < 5 * 60 * 1000) return json(res, 200, { commands: cached.list, cwd, cached: true });
       try {
-        if (usersLib.isGuest(identity.user)) return json(res, 200, { commands: [] });
+        if (usersLib.isWalled(identity.user)) return json(res, 200, { commands: [] });
         const list = await piListCommands({ cwd, env: agentEnv(), extraArgs: piProviderExtraArgs() });
         slashCommandsCache.set(cwd, { at: Date.now(), list });
         json(res, 200, { commands: list, cwd });
@@ -17002,7 +17113,7 @@ async function handleRequest(req, res) {
       for await (const chunk of req) body += chunk;
       // The inbox is the household's, one for everyone: a guest's reads do
       // not clear the owner's marks. They are answered, not written.
-      if (usersLib.isGuest(identity.user)) return json(res, 200, policy.eventView({ type: 'agent-read', ...agentRead }, { ...receiverFor(identity), member: true }));
+      if (usersLib.isWalled(identity.user)) return json(res, 200, policy.eventView({ type: 'agent-read', ...agentRead }, { ...receiverFor(identity), member: true }));
       try {
         const p = JSON.parse(body || '{}');
         if (p.import && typeof p.import === 'object') agentReadApply(agentReadLib.importState(agentRead, p.import));
@@ -17644,6 +17755,17 @@ async function handleRequest(req, res) {
       try {
         json(res, 200, { notePath: e.notePath, text: await fsp.readFile(e.notePath, 'utf8') });
       } catch { json(res, 404, { error: 'note file missing' }); }
+    } else if (u.pathname === '/api/sso/check' && req.method === 'POST') {
+      // Before saving company sign-in: does that issuer answer as one?
+      let body = '';
+      for await (const chunk of req) { body += chunk; if (body.length > 4096) return json(res, 413, { error: 'too large' }); }
+      try {
+        const p = JSON.parse(body || '{}');
+        const cfg = settingsLib.normalizeSettings({ sso: p }).sso;
+        if (!cfg.issuer) throw new Error('the issuer must be an https address');
+        const doc = await require('./oidc.js').createOidc().discover(cfg.issuer);
+        json(res, 200, { ok: true, issuer: doc.issuer, authorize: doc.authorization_endpoint });
+      } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/app/status' && req.method === 'GET') {
       // For the launcher: which install and version answers on this port,
       // and whether work is running (an update or stop waits for it).

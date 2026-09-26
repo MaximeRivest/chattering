@@ -32,8 +32,8 @@ jobs:
       - name: Build
         id: build
         run: |
-          node scripts/build-release.js | tee build.json
-          echo "archive=$(node -p "require('./build.json').archive")" >> "$GITHUB_OUTPUT"
+          node scripts/build-release.js
+          echo "archive=$(node -p "require('./dist/build-result.json').archive.split(String.fromCharCode(92)).join('/')")" >> "$GITHUB_OUTPUT"
       - name: Unpack as a person would
         id: unpack
         run: |

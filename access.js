@@ -95,7 +95,9 @@ function can(rules, identity, right, target = {}) {
   const chain = chainFor(target);
   let rule = null, ruleObject = null;
   for (const object of chain) { if (rules.rules[object]) { rule = rules.rules[object]; ruleObject = object; break; } }
-  const guest = user.scope === 'guest';
+  // A guest, or a walled member (per-person isolation): nothing is theirs
+  // to see unless a rule lists them.
+  const guest = user.scope === 'guest' || user.walled === true;
   const ownsByRule = !!rule && rule.owners.includes(user.id);
   const ownsByCreation = !rule && !!target.creator && target.creator === user.id;
   if (ownsByRule || ownsByCreation) return true;

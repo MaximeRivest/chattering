@@ -88,6 +88,13 @@ function makeUser({ name, role = 'member', groups = [], id = null, scope = 'hous
   };
 }
 const isGuest = u => !!u && u.scope === 'guest';
+// The person linked to a company identity (issuer + subject), if any.
+const findUserBySso = (roster, iss, sub) => roster.users.find(u => u.sso && u.sso.iss === iss && u.sso.sub === sub) || null;
+// Walled: works inside the projects shared with them and nowhere else — a
+// guest, or anyone who is not an administrator when this machine walls each
+// person (settings.isolation 'per-person', design/72). The identity carries
+// it for the request; the roster never stores it.
+const isWalled = u => !!u && (u.scope === 'guest' || u.walled === true);
 
 // A fresh roster: one owner, the person whose account this install is.
 // The owner signs in with the install token (the LAN token file), so the
@@ -116,7 +123,9 @@ function normalizeRoster(raw, { ownerName } = {}) {
       createdAt: u.createdAt || new Date().toISOString(), disabled: !!u.disabled,
       ...(u.invitedBy && typeof u.invitedBy === 'string' ? { invitedBy: u.invitedBy } : {}),
       credentials: (Array.isArray(u.credentials) ? u.credentials : []).filter(c => c && typeof c === 'object' && (c.kind === 'install' || typeof c.hash === 'string'))
-        .map(c => ({ id: c.id || newId('c'), kind: ['install', 'invite', 'session'].includes(c.kind) ? c.kind : 'invite', hash: c.kind === 'install' ? undefined : c.hash, label: cleanName(c.label).slice(0, 40) || undefined, createdAt: c.createdAt || new Date().toISOString(), lastUsedAt: c.lastUsedAt || undefined })),
+        .map(c => ({ id: c.id || newId('c'), kind: ['install', 'invite', 'session'].includes(c.kind) ? c.kind : 'invite', hash: c.kind === 'install' ? undefined : c.hash, label: cleanName(c.label).slice(0, 40) || undefined, createdAt: c.createdAt || new Date().toISOString(), lastUsedAt: c.lastUsedAt || undefined, expiresAt: c.expiresAt || undefined })),
+      // The company identity a person signs in with (OpenID Connect, design/72).
+      ...(u.sso && typeof u.sso.iss === 'string' && typeof u.sso.sub === 'string' ? { sso: { iss: u.sso.iss, sub: u.sso.sub, ...(typeof u.sso.email === 'string' ? { email: u.sso.email } : {}) } } : {}),
     });
   }
   for (const g of Array.isArray(r.groups) ? r.groups : []) {
@@ -311,11 +320,12 @@ function resolveId(roster, id) {
 
 // An invite credential: the secret is returned once and stored hashed,
 // like an API token. Its link is what a person pastes on a new device.
-function issueCredential(roster, userId, { label = '', kind = 'invite' } = {}) {
+function issueCredential(roster, userId, { label = '', kind = 'invite', ttlMs = null } = {}) {
   const u = findUser(roster, userId);
   if (!u) throw new Error('no such user');
   const secret = newSecret();
-  const credential = { id: newId('c'), kind: kind === 'session' ? 'session' : 'invite', hash: sha256(secret), label: cleanName(label).slice(0, 40) || undefined, createdAt: new Date().toISOString() };
+  const credential = { id: newId('c'), kind: kind === 'session' ? 'session' : 'invite', hash: sha256(secret), label: cleanName(label).slice(0, 40) || undefined, createdAt: new Date().toISOString(),
+    ...(ttlMs ? { expiresAt: new Date(Date.now() + ttlMs).toISOString() } : {}) };
   u.credentials.push(credential);
   if (credential.kind === 'session') {
     const sessions = u.credentials.filter(c => c.kind === 'session');
@@ -343,6 +353,8 @@ function userForSecret(roster, secret, installToken) {
   const h = sha256(secret);
   for (const u of roster.users) {
     const c = u.credentials.find(x => x.kind !== 'install' && x.hash && safeEqual(x.hash, h));
+    // A credential with an end (company sign-in sessions) ends.
+    if (c && c.expiresAt && Date.parse(c.expiresAt) <= Date.now()) return null;
     if (c) { c.lastUsedAt = new Date().toISOString(); return u; }
   }
   return null;
@@ -434,7 +446,7 @@ module.exports = {
   ROLES, SCOPES, PALETTE, glyphFor, colorFor, publicUser, cleanAvatar, AVATAR_MAX_BYTES, isGuest,
   createRoster, normalizeRoster, loadRoster, saveRoster, ownerOf, findUser,
   addUser, updateUser, transferOwnership, removeUser, mergeUsers, resolveId,
-  issueCredential, revokeCredential, userForSecret, identify, canManageUsers, isOwnerTier,
+  issueCredential, revokeCredential, userForSecret, identify, canManageUsers, isOwnerTier, isWalled, findUserBySso,
   issueProjectInvite, findInvite, inviteState, claimInvite, revokeInvite, publicInvite, INVITE_TTL_MS,
   loadInstallKey, mintHandoff, verifyHandoff, upsertHandoffUser,
 };

@@ -103,6 +103,8 @@ test('a notebook runs on while you are elsewhere, and comes back as it was', { t
       if (u.includes('/api/doc/run-cell')) return Promise.resolve(new Response(new ReadableStream({ start(c) { streams.push({ c, body: JSON.parse(opts.body) }); } }), { headers: { 'Content-Type': 'application/x-ndjson' } }));
       if (u.includes('/api/doc/doctor')) return Promise.resolve(new Response(JSON.stringify({ ok: true, project: 'x', project_source: 'detected', checks: [], actions: [], steps: [], python: { kernel: 'fixture', venv: '/v', venv_exists: true, kernel_running: true } })));
       if (u.includes('/api/doc/follow') || u.includes('/api/doc/cancel-run')) return Promise.resolve(new Response(JSON.stringify({ ok: true, kernels: [] })));
+      // Environment setup too: whatever rat this machine has (or none) plays no part.
+      if (u.includes('/api/doc/ensure')) return Promise.resolve(new Response(JSON.stringify({ ok: true, changed: false, steps: [] })));
       return real(url, opts);
     };
     window.emit = (i, ev) => streams[i].c.enqueue(new TextEncoder().encode(JSON.stringify(ev) + '\\n'));

@@ -211,3 +211,26 @@ test('measurement UUIDs keep identical short Pi entry ids from unrelated session
   }
   assert.equal(idx.speedSamples(0, Date.now()).length, 2);
 });
+
+test('each call belongs to the person whose message it answers; a terminal message to nobody known', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'usage-people-'));
+  try {
+    const f = path.join(dir, 's.jsonl');
+    const usage = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { total: 0.01 } };
+    const rows = [
+      { type: 'session', id: 's', cwd: '/x' },
+      { type: 'custom', customType: 'chattering-author', id: 'a1', parentId: null, data: { v: 1, user: { id: 'u_lilly', name: 'Lilly' } } },
+      { type: 'message', id: 'm1', parentId: 'a1', timestamp: '2026-09-26T10:00:00Z', message: { role: 'user', content: 'hi' } },
+      { type: 'message', id: 'm2', parentId: 'm1', timestamp: '2026-09-26T10:00:01Z', message: { role: 'assistant', provider: 'p', model: 'm', usage } },
+      { type: 'message', id: 't1', parentId: 'm2', timestamp: '2026-09-26T10:00:02Z', message: { role: 'toolResult', content: [] } },
+      { type: 'message', id: 'm3', parentId: 't1', timestamp: '2026-09-26T10:00:03Z', message: { role: 'assistant', provider: 'p', model: 'm', usage } },
+      { type: 'message', id: 'm4', parentId: 'm3', timestamp: '2026-09-26T10:00:04Z', message: { role: 'user', content: 'typed in a terminal' } },
+      { type: 'message', id: 'm5', parentId: 'm4', timestamp: '2026-09-26T10:00:05Z', message: { role: 'assistant', provider: 'p', model: 'm', usage } },
+    ];
+    fs.writeFileSync(f, rows.map(r => JSON.stringify(r)).join('\n') + '\n');
+    const { facts } = await require('../usageanalytics.js').parseUsageFile(f, { source: 'pi' });
+    assert.deepEqual(facts.map(x => x.person), ['u_lilly', 'u_lilly', null], 'the tool round stays hers; the terminal message is not guessed');
+    const agg = require('../usageanalytics.js').aggregateFacts(facts.map(x => ({ ...x, project: 'x' })));
+    assert.deepEqual(agg.people.map(p => [p.person, p.calls]).sort(), [['u_lilly', 2], ['unattributed', 1]]);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

@@ -120,9 +120,11 @@ test('voice commands on the page: cursor, buttons, folds, scrolling, zen, tree, 
   // The + menu's "Conversation tree", then moving in the tree and its boxes numbered.
   await press('open the conversation tree', /Attachments and conversation options › Conversation tree/);
   await until(`viewKind === 'tree' && treeNav && treeNav.sel`, 'the tree did not open');
-  const sel = await ev(`treeNav.sel`);
+  // The tree draws again when its data arrives; move once it has settled.
+  let sel = await ev(`treeNav.sel`);
+  for (let i = 0; i < 40; i++) { await new Promise(r => setTimeout(r, 50)); const now = await ev(`treeNav.sel`); if (now === sel && i >= 4) break; sel = now; }
   await done('tree_move', { move: 'up' });
-  assert.notEqual(await ev(`treeNav.sel`), sel, 'up moves to the parent');
+  await until(`treeNav.sel !== ${JSON.stringify(sel)}`, 'up moves to the parent');
   await done('tree_move', { move: 'down' });
   assert.equal(await ev(`treeNav.sel`), sel);
   assert.ok(await ev(`voicePicks().items.filter(it => it.kind === 'box' && it.region === 'tree').length`) >= 3, 'the tree\u2019s boxes can be picked');

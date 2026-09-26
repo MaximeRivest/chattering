@@ -15427,7 +15427,13 @@ function renderUsageDashboard(data) {
     ['usageProvider', 'provider', facets.providers || [], filters.provider || ''],
     ['usageModel', 'model', facets.models || [], filters.model || ''],
     ['usageBilling', 'billing', facets.billing || [], filters.billing || ''],
+    ['usagePerson', 'person', facets.people || [], filters.person || ''],
   ];
+  // People by name (the index keeps their ids); limits beside their spending.
+  const personName = id => (data.personNames && data.personNames[id]) || id;
+  const peopleRows = (data.people || []).map(r => ({ ...r, person: personName(r.person) }));
+  const limits = data.limits || {};
+  const limitRows = Object.entries(limits).map(([id, b]) => `<tr><td>${esc(personName(id))}</td><td>${usageMoney(b.spent)}</td><td>${usageMoney(b.limit)}</td><td>${b.over ? '<b>reached</b>' : usageMoney(b.left) + ' left'}</td></tr>`).join('');
   const providerRules = (data.providers || []).map(row => {
     const mode = billingConfig.providerModes[row.provider] || 'auto';
     const fee = billingConfig.monthlyFees[row.provider] || '';
@@ -15443,7 +15449,7 @@ function renderUsageDashboard(data) {
     <div class="usage-head"><div><h1>usage and cost</h1><div class="pmeta">tokens, API-route estimates, and subscription API-equivalent value</div></div>
       <div class="usage-filters">
         <label>period<select id="usageDays">${[['7','7 days'],['30','30 days'],['90','90 days'],['365','1 year'],['all','all time']].map(([v,l]) => usageOption(v,l,period)).join('')}</select></label>
-        ${selectors.map(([id,label,values,selected]) => `<label>${label}<select id="${id}">${usageOption('', 'all', selected)}${values.map(v => usageOption(v,v,selected)).join('')}</select></label>`).join('')}
+        ${selectors.map(([id,label,values,selected]) => `<label>${label}<select id="${id}">${usageOption('', 'all', selected)}${values.map(v => usageOption(v, label === 'person' ? personName(v) : v, selected)).join('')}</select></label>`).join('')}
       </div>
     </div>${progress}
     <div class="usage-cards">
@@ -15458,6 +15464,9 @@ function renderUsageDashboard(data) {
       <section class="usage-panel"><h2>by model</h2>${usageBreakdownTable(data.models, 'model', 'provider / model')}</section>
       <section class="usage-panel"><h2>reply speed</h2>${usageSpeedTable(data.speed)}</section>
       <section class="usage-panel"><h2>by project</h2>${usageBreakdownTable(data.projects, 'project', 'project')}</section>
+      <section class="usage-panel"><h2>by person</h2>${usageBreakdownTable(peopleRows, 'person', 'person')}
+        ${limitRows ? `<h3>limits this month</h3><div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>person</th><th>spent</th><th>limit</th><th></th></tr></thead><tbody>${limitRows}</tbody></table></div>` : ''}
+        <div class="set-help">A call belongs to the person whose message it answers. Limits are in estimated dollars at API prices, per calendar month; set them in settings → team.</div></section>
     </div><aside>
       <section class="usage-panel"><h2>billing split</h2>${usageBreakdownTable(data.billing, 'billing', 'type')}</section>
       <section class="usage-panel"><h2>token classes</h2><div class="usage-table-wrap"><table class="usage-table"><tbody>
@@ -15493,7 +15502,7 @@ async function loadUsageDashboard() {
   if (viewKind !== 'usage') return;
   const params = new URLSearchParams();
   params.set('days', $('usageDays') ? $('usageDays').value : (usageDashboardState && usageDashboardState.range && usageDashboardState.range.days) || '30');
-  for (const [id, key] of [['usageProject','project'],['usageProvider','provider'],['usageModel','model'],['usageBilling','billing']]) {
+  for (const [id, key] of [['usageProject','project'],['usageProvider','provider'],['usageModel','model'],['usageBilling','billing'],['usagePerson','person']]) {
     if ($(id) && $(id).value) params.set(key, $(id).value);
   }
   try {
@@ -15533,6 +15542,7 @@ const SETTINGS_PANES = [
   ['snippets', 'snippets', 'Sentences you type often.'],
   ['machines', 'machines', 'Other Chattering installs to switch to.'],
   ['people', 'people', 'Who is admitted on this machine, and their links.'],
+  ['team', 'team', 'Company sign-in, walls per person, spending limits.'],
   ['appearance', 'appearance', 'Colors for the app and for pi views.'],
   ['jobs', 'background jobs', 'Routine indexing, notes, memory and other background work.'],
   ['advanced', 'advanced', 'Engine, settings file, overrides.'],
@@ -16074,6 +16084,7 @@ const SETTINGS_PANE_RENDER = {
   machines: [paneMachines, bindPaneMachines],
   people: [panePeople, bindPanePeople],
   appearance: [paneAppearance, bindPaneAppearance],
+  team: [paneTeam, bindPaneTeam],
   jobs: [paneJobs, renderBackgroundJobs],
   advanced: [paneAdvanced, bindPaneAdvanced],
 };
@@ -16194,6 +16205,61 @@ async function loadModels(refresh = false) {
   try { modelsState = await modelCatalog(refresh); }
   catch { modelsState = { models: [], error: 'could not load pi models' }; }
   if (settingsOpen) renderSettings();
+}
+
+// ---- team (design/72): company sign-in, walls per person, spending limits ----
+function paneTeam() {
+  const s = settingsOf(), sso = s.sso || {}, budgets = s.budgets || { monthlyPerPerson: null, people: {} };
+  const people = ((settingsState && settingsState.users) || []).filter(u => u.role !== 'owner');
+  const redirect = (settingsState && settingsState.ssoRedirectUri) || (location.origin + '/auth/sso/callback');
+  const money = v => v == null ? '' : String(v);
+  return `<h2>team</h2>
+    <p class="lead">For a company or a team sharing one Chattering: how people sign in, how far each one reaches, how much each one may spend.</p>
+    <h3>walls</h3>
+    ${setOptionsHtml('setIsolation', [
+      { value: 'household', name: 'household', desc: 'Everyone admitted shares this machine\u2019s powers; rules hide projects from lists (polite walls). For a family.' },
+      { value: 'per-person', name: 'per person', desc: 'Everyone below the administrators works inside the projects shared with them, in their own sandbox, with their own agent folder, and sees nothing else. Running code needs Linux with bubblewrap.' },
+    ], s.isolation || 'household')}
+    <h3>spending limits</h3>
+    <div class="set-field"><label for="teamBudget">each person, per month (estimated $ at API prices)</label>
+      <input id="teamBudget" type="number" min="0" step="1" placeholder="no limit" value="${esc(money(budgets.monthlyPerPerson))}">
+      <div class="set-help">A call counts for the person whose message it answers. At the limit, new runs are refused with the reason until the 1st. The owner has none.</div></div>
+    ${people.length ? `<div class="usage-table-wrap"><table class="usage-table"><thead><tr><th>person</th><th>their own limit</th></tr></thead><tbody>${people.map(u => `<tr><td>${esc(u.name)}</td><td><input class="team-person-budget" data-id="${esc(u.id)}" type="number" min="0" step="1" placeholder="as above" value="${esc(money(budgets.people && budgets.people[u.id]))}"></td></tr>`).join('')}</tbody></table></div>` : ''}
+    <h3>company sign-in</h3>
+    <div class="set-help">OpenID Connect: Google Workspace, Microsoft Entra ID, Okta, Auth0, Keycloak and others. Register this address at the provider as the redirect: <code>${esc(redirect)}</code></div>
+    <div class="set-field"><label for="ssoName">button label</label><input id="ssoName" placeholder="Acme" value="${esc(sso.name || '')}"></div>
+    <div class="set-field"><label for="ssoIssuer">issuer</label><input id="ssoIssuer" placeholder="https://accounts.google.com" value="${esc(sso.issuer || '')}"></div>
+    <div class="set-field"><label for="ssoClient">client ID</label><input id="ssoClient" value="${esc(sso.clientId || '')}"></div>
+    <div class="set-field"><label for="ssoSecret">client secret</label><input id="ssoSecret" type="password" autocomplete="off" placeholder="${sso.clientSecret ? 'saved; type to replace' : 'none (a public client)'}"></div>
+    <div class="set-field"><label for="ssoDomains">email domains let in</label><input id="ssoDomains" placeholder="acme.com (empty: anyone the provider signs in)" value="${esc((sso.allowedDomains || []).join(', '))}"></div>
+    <div class="set-field"><label class="set-check"><input id="ssoAuto" type="checkbox"${sso.autoProvision ? ' checked' : ''}> make a person here at their first sign-in (otherwise only people already linked)</label></div>
+    <div class="set-field"><label for="ssoAdmins">groups that make administrators</label><input id="ssoAdmins" placeholder="optional, e.g. chattering-admins" value="${esc((sso.adminGroups || []).join(', '))}">
+      <div class="set-help">Read from the <code>${esc(sso.groupsClaim || 'groups')}</code> claim, which the provider must be set to send. When set, each sign-in brings the person\u2019s role in line.</div></div>
+    <div class="set-field"><label for="ssoHours">stay signed in (hours)</label><input id="ssoHours" type="number" min="1" max="720" value="${esc(String(sso.sessionHours || 12))}"></div>
+    <div class="set-row"><button type="button" id="ssoCheck">test the issuer</button><button type="button" id="teamSave" class="primary">save</button><span id="teamStatus" class="hint"></span></div>`;
+}
+function bindPaneTeam(root) {
+  bindOptions(root, 'setIsolation', v => saveSettings({ isolation: v }, v === 'per-person' ? 'each person is walled now' : 'household walls'));
+  const list = v => String(v || '').split(/[\s,]+/).filter(Boolean);
+  const ssoForm = () => {
+    const cur = settingsOf().sso || {};
+    const secret = $('ssoSecret').value;
+    return { ...cur, name: $('ssoName').value, issuer: $('ssoIssuer').value, clientId: $('ssoClient').value, ...(secret ? { clientSecret: secret } : {}),
+      allowedDomains: list($('ssoDomains').value), autoProvision: $('ssoAuto').checked, adminGroups: list($('ssoAdmins').value), sessionHours: Number($('ssoHours').value) || 12 };
+  };
+  $('ssoCheck').onclick = async () => {
+    $('teamStatus').textContent = 'asking…';
+    try {
+      const r = await (await fetch('/api/sso/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ssoForm()) })).json();
+      $('teamStatus').textContent = r.ok ? '\u2713 ' + r.issuer + ' answers as an OpenID provider' : '\u2717 ' + r.error;
+    } catch (e) { $('teamStatus').textContent = '\u2717 ' + e.message; }
+  };
+  $('teamSave').onclick = () => {
+    const amount = v => v === '' ? null : Number(v);
+    const people = {};
+    root.querySelectorAll('.team-person-budget').forEach(i => { if (i.value !== '') people[i.dataset.id] = Number(i.value); });
+    saveSettings({ sso: ssoForm(), budgets: { monthlyPerPerson: amount($('teamBudget').value), people } }, 'team settings saved');
+  };
 }
 
 async function saveSettings(patch, message) {

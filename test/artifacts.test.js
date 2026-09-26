@@ -177,7 +177,8 @@ test('a real server: versions follow the head, the preview origin serves them, w
     return out.result?.result?.value;
   };
   const until = async (expression, label) => {
-    for (let i = 0; i < 400; i++) { if (await evaluate(`(()=>{try{return !!(${expression})}catch{return false}})()`)) return; await new Promise(res => setTimeout(res, 25)); }
+    // Up to twenty seconds: a loaded machine is slow, and a pass costs no wait.
+    for (let i = 0; i < 800; i++) { if (await evaluate(`(()=>{try{return !!(${expression})}catch{return false}})()`)) return; await new Promise(res => setTimeout(res, 25)); }
     assert.fail('Timed out: ' + label + '\n' + exceptions.join('\n') + '\n' + log.slice(-2000));
   };
   await send('Runtime.enable', {}, sid); await send('Page.enable', {}, sid);

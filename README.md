@@ -14,13 +14,39 @@ Installed as a system app:
 
 Browse, search, and export all Claude Code and pi conversations on this computer.
 
-## Start
+## Install (macOS, Linux, Windows)
+
+One download per system, with its own Node and Pi; nothing else to install,
+no administrator rights:
 
 ```bash
-node server.js
+# macOS and Linux
+curl -fsSL https://raw.githubusercontent.com/MaximeRivest/chattering/master/install/install.sh | sh
 ```
 
-Then open <http://localhost:7433>.
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/MaximeRivest/chattering/master/install/install.ps1 | iex
+```
+
+It starts Chattering and opens it. Afterwards `chattering-app` opens it
+again, `chattering-app stop` stops it, `chattering-app update` updates it
+(the previous version is kept: `chattering-app rollback`), and
+`chattering-app autostart on` starts it with your session. Your
+conversations with Claude Code and Pi are found where those tools keep them.
+Details: design/71. What works on which system: design/70. For a team or a
+company (company sign-in, walls per person, spending limits): settings →
+team, design/72.
+
+## Start from a checkout
+
+```bash
+npm run runtime   # optional: the pinned Pi, beside the code
+node server.js    # or: node launcher.js
+```
+
+Then open the address it prints (the install token signs the browser in:
+`node launcher.js url`). `npm test` runs the tests.
 
 ## Install on a new machine (Ubuntu or Windows + WSL2)
 

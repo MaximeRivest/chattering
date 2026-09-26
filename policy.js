@@ -279,6 +279,7 @@ const ROUTES = {
   // ---- the launcher ----
   '/api/app/status': 'owner',
   '/api/app/stop': 'owner',
+  '/api/sso/check': 'owner',
 
   // ---- sockets (the upgrade handler passes through the same gate) ----
   '/api/collab/*': 'guest', // see / act checked per document on join
@@ -317,7 +318,8 @@ function routeEntry(method, pathname) {
 }
 
 const isOwnerTier = identity => !!identity && OWNER_TIERS.includes(identity.tier);
-const isGuest = identity => !!identity && !!identity.user && identity.user.scope === 'guest';
+// A guest, or a walled member (per-person isolation, design/72): the same walls.
+const isGuest = identity => !!identity && !!identity.user && (identity.user.scope === 'guest' || identity.user.walled === true);
 
 // May this person reach a route at `level`?
 function levelAllows(identity, level) {
