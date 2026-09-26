@@ -63,7 +63,7 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   state = await api({ pin: { [keys.beta]: true, 'pi:fixture/missing.jsonl': true } });
   assert.deepEqual(Object.keys(state.pinned), [keys.beta], 'only indexed conversations can be pinned');
   state = await api({ dismiss: [keys.gamma] });
-  assert.ok(state.dismissed[keys.gamma] > 0 && state.read[keys.gamma] === state.dismissed[keys.gamma], 'dismiss reads and hides');
+  assert.ok(state.dismissed[keys.gamma] > 0 && !(keys.gamma in state.read), 'a close hides and changes nothing else, not the read time (design/59)');
   state = await api({ read: { [keys.alpha]: 1 } });
   assert.equal(keys.alpha in state.flagged, false, 'a read lifts the manual flag');
   state = await api({ unread: [keys.alpha] });
@@ -493,8 +493,9 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   await new Promise(r => setTimeout(r, 100));
   assert.equal(await evaluate(fits), true, 'phone fit does not overflow');
   assert.equal(await evaluate(`document.documentElement.scrollWidth<=innerWidth`), true, 'no horizontal page overflow');
+  await evaluate('window.beforeReloadMark = true'); // the old page matches until it is gone
   await send('Page.reload', {}, sid);
-  await until(`$('fileImage')?.naturalWidth===2400 && !$('fileImage').hidden`, 'image deep link survives page reload');
+  await until(`!window.beforeReloadMark && $('fileImage')?.naturalWidth===2400 && !$('fileImage').hidden`, 'image deep link survives page reload');
   await evaluate(`$('liveBack').click()`);
   await until(`activeRel===${JSON.stringify(keys.alpha)} && viewKind==='conversation'`, 'image Back returns to its conversation');
   await size(1440, 1000);
@@ -505,8 +506,9 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   await evaluate(`$('setAppFont').value='sans';$('setAppFont').dispatchEvent(new Event('change'))`);
   assert.equal(await evaluate(`localStorage.getItem('chattering.font')`), 'sans');
   assert.match(await evaluate(`getComputedStyle(document.body).fontFamily`), /system-ui/);
+  await evaluate('window.beforeReloadMark = true'); // the old page matches until it is gone
   await send('Page.reload', {}, sid);
-  await until(`typeof settingsOpen !== 'undefined' && settingsOpen && !!document.querySelector('#setAppFont')`);
+  await until(`!window.beforeReloadMark && typeof settingsOpen !== 'undefined' && settingsOpen && !!document.querySelector('#setAppFont')`);
   assert.equal(await evaluate(`$('setAppFont').value`), 'sans', 'font preference survives reload');
   await evaluate(`document.querySelector('.settings-pane').insertAdjacentHTML('beforeend','<div class="md" id="fontProbe"><code>const aligned = 1;</code></div>')`);
   assert.match(await evaluate(`getComputedStyle(document.querySelector('#fontProbe code')).fontFamily`), /monospace/);
@@ -515,8 +517,9 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   await evaluate(`const r=document.querySelector('input[name=setLayout][value=top]'); r.checked=true; r.onchange()`);
   assert.equal(await evaluate(`document.body.classList.contains('side-layout')`), false);
   assert.equal(await evaluate(`localStorage.getItem('chattering.layout')`), 'top', 'top bar is now an explicit saved preference');
+  await evaluate('window.beforeReloadMark = true'); // the old page matches until it is gone
   await send('Page.reload', {}, sid);
-  await until(`typeof settingsOpen !== 'undefined' && settingsOpen && !!document.querySelector('#setAppFont')`);
+  await until(`!window.beforeReloadMark && typeof settingsOpen !== 'undefined' && settingsOpen && !!document.querySelector('#setAppFont')`);
   assert.equal(await evaluate(`sideLayoutOn()`), false, 'explicit top preference survives reload');
   assert.equal(await evaluate(`document.querySelector('#agentsPop').hidden && document.querySelector('#agentsPop').parentElement.tagName === 'BODY'`), true);
   assert.equal(await evaluate(`document.querySelector('#chTitle').closest('header') !== null && document.querySelector('#projSort').closest('header') !== null && document.querySelector('#chMove').nextElementSibling.id === 'chNew'`), true, 'the bar gets its pieces back');

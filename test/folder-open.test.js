@@ -34,21 +34,25 @@ async function fixture(t) {
   return { ctx, home, real, nested };
 }
 
+// Objects made inside the vm context have that context's prototypes; Node
+// 24 counts that as a difference, so results are compared as plain data.
+const plain = o => JSON.parse(JSON.stringify(o));
+
 test('a folder inside a project names the project, its root and the path inside it', async t => {
   const { ctx, real } = await fixture(t);
-  assert.deepEqual(await ctx.folderBrowseLocation(path.join(real, 'docs', 'adr')), { project: 'repo', root: real, dir: 'docs/adr' });
-  assert.deepEqual(await ctx.folderBrowseLocation(real), { project: 'repo', root: real, dir: '' }, 'the root itself browses at its top');
+  assert.deepEqual(plain(await ctx.folderBrowseLocation(path.join(real, 'docs', 'adr'))), { project: 'repo', root: real, dir: 'docs/adr' });
+  assert.deepEqual(plain(await ctx.folderBrowseLocation(real)), { project: 'repo', root: real, dir: '' }, 'the root itself browses at its top');
 });
 
 test('a nested repository browses as itself: the deepest root wins', async t => {
   const { ctx, real, nested } = await fixture(t);
-  assert.deepEqual(await ctx.folderBrowseLocation(path.join(nested, 'src')), { project: 'repo', root: nested, dir: 'src' });
-  assert.deepEqual(await ctx.folderBrowseLocation(path.join(real, 'vendor')), { project: 'repo', root: real, dir: 'vendor' }, 'above the nested repository, the outer root');
+  assert.deepEqual(plain(await ctx.folderBrowseLocation(path.join(nested, 'src'))), { project: 'repo', root: nested, dir: 'src' });
+  assert.deepEqual(plain(await ctx.folderBrowseLocation(path.join(real, 'vendor'))), { project: 'repo', root: real, dir: 'vendor' }, 'above the nested repository, the outer root');
 });
 
 test('a symlinked folder is browsed at its real place', async t => {
   const { ctx, home, real } = await fixture(t);
-  assert.deepEqual(await ctx.folderBrowseLocation(path.join(home, 'docs-link', 'adr')), { project: 'repo', root: real, dir: 'docs/adr' });
+  assert.deepEqual(plain(await ctx.folderBrowseLocation(path.join(home, 'docs-link', 'adr'))), { project: 'repo', root: real, dir: 'docs/adr' });
 });
 
 test('a folder outside every project, or outside its project roots, has no in-app view', async t => {

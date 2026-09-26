@@ -35,7 +35,7 @@ test('floating bordered surfaces have an explicit shape contract', () => {
     ['.project-row-label', 'flush timeline labels'], ['.project-labels::after', 'timeline label background'], ['#selRect', 'selection rectangle'],
     ['.fg-mark', 'timeline marker'], ['.tnode', 'tree graph node'],
     ['#tabs', 'joined mobile tab strip'],
-    ['.ls-livechip', 'inherits the button shape'], ['.md-run', 'inherits the button shape'],
+    ['.ls-livechip', 'inherits the button shape'], ['.md-run', 'inherits the button shape'], ['.md-preview', 'inherits the button shape'],
     ['#gRecenter', 'inherits the button shape'], ['body.zen:not(.home) #zenExit', 'inherits the button shape'],
     ['.project-new-cell', 'flush timeline header cell'], ['.msg .unfold', 'inherits the button shape'],
     ['body.phone-shell #phoneBar', 'flush bottom bar (design/58)'], ['body.side-layout #rightFilePanel', 'edge-attached overlay panel'],

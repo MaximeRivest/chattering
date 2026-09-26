@@ -122,10 +122,10 @@ test('mark unread cancels a close; a close after a flag hides it', () => {
   assert.equal(R.unreadAt(s, 'a', 0), 3000);
   const delta = R.dismiss(s, 'a', { now: 4000 });
   assert.deepEqual(delta, { dismissed: { a: 4000 } }, 'the flag is left alone');
-  assert.equal(R.unreadAt(s, 'a', 0), 4000, 'still flagged unread underneath...');
+  assert.equal(R.unreadAt(s, 'a', 0), 3000, 'still flagged unread underneath, at the flag\'s own time...');
   assert.equal(R.isDismissed(s, 'a', 0), true, '...but closed, so not listed');
   R.restore(s, 'a');
-  assert.equal(R.unreadAt(s, 'a', 0), 4000, 'undo: the flag is intact');
+  assert.equal(R.unreadAt(s, 'a', 0), 3000, 'undo: the flag is intact');
 });
 
 // design/59: the side list holds what a person opened, until closed.

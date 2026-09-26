@@ -75,8 +75,9 @@ test('work-first rail, visible timeline tools, quiet jobs and a return from agen
   await until(`current?.key==='pi:fixture/second.jsonl'`);
   assert.equal(await ev(`workReturnId===workEntry`), true, 'checking another agent keeps the original file as the return target');
   // A refresh must not discard the return address.
+  await ev('window.beforeReloadMark = true'); // the old page matches until it is gone
   await command('Page.reload');
-  await until(`viewKind==='conversation' && current && $('returnToWork').checkVisibility()`);
+  await until(`!window.beforeReloadMark && viewKind==='conversation' && current && $('returnToWork').checkVisibility()`);
   await ev(`$('returnToWork').click()`);
   await until(`viewKind==='file' && fileWs?.path===${JSON.stringify(file)} && !!fileWs.editor`);
   assert.equal(await ev(`$('returnToWork').hidden`), true);

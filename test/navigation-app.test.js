@@ -96,7 +96,7 @@ test('back and forward through the screens', { timeout: 90000 }, async t => {
 
   // ---- the stack follows the screens ----
   let s = await stack();
-  assert.deepEqual(s, { n: 1, i: 0, back: false, fwd: false, titles: ['home'] });
+  assert.deepEqual(s, { n: 1, i: 0, back: false, fwd: false, titles: ['Gantt'] });
   let b = await buttons();
   assert.equal(b.back && b.fwd && b.sideBack && b.sideFwd, true, 'nothing to go to yet');
   assert.match(b.backTitle, /Nothing to go back to/);
@@ -107,7 +107,7 @@ test('back and forward through the screens', { timeout: 90000 }, async t => {
   await evaluate(`open(${JSON.stringify(keys.beta)})`);
   await until(`viewKind === 'conversation' && current && current.key === ${JSON.stringify(keys.beta)}`);
   s = await stack();
-  assert.deepEqual(s, { n: 4, i: 3, back: true, fwd: false, titles: ['home', 'Alpha question', 'work', 'Beta question'] });
+  assert.deepEqual(s, { n: 4, i: 3, back: true, fwd: false, titles: ['Gantt', 'Alpha question', 'work', 'Beta question'] });
   b = await buttons();
   assert.equal(b.back, false); assert.equal(b.fwd, true);
   assert.match(b.backTitle, /^Back to work \(alt\+←\)/, 'the tooltip names the screen behind');
@@ -131,7 +131,7 @@ test('back and forward through the screens', { timeout: 90000 }, async t => {
   await evaluate(`open(${JSON.stringify(keys.alpha)})`);
   await until(`viewKind === 'conversation' && nav.index() === 3`);
   s = await stack();
-  assert.deepEqual(s.titles, ['home', 'Alpha question', 'work', 'Alpha question']);
+  assert.deepEqual(s.titles, ['Gantt', 'Alpha question', 'work', 'Alpha question']);
   assert.equal(s.fwd, false, 'a new screen forgets the forward path, as a browser does');
 
   // ---- alt+arrows, and the browser's own back (the Android key) ----
@@ -168,7 +168,7 @@ test('back and forward through the screens', { timeout: 90000 }, async t => {
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('.nav-menu button')].map(b => b.textContent.replace(/^\\S+\\s/, ''))`), ['usage', 'Beta question'], 'nearest first');
   await evaluate(`$('navBack').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))`);
   await until(`document.querySelectorAll('.nav-menu').length === 1 && document.querySelector('.nav-menu .file-action-head').textContent === 'Back to'`, 'one list at a time');
-  assert.deepEqual(await evaluate(`[...document.querySelectorAll('.nav-menu button')].map(b => b.textContent.replace(/^\\S+\\s/, ''))`), ['Alpha question', 'home'], 'nearest first');
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('.nav-menu button')].map(b => b.textContent.replace(/^\\S+\\s/, ''))`), ['Alpha question', 'Gantt'], 'nearest first');
   await evaluate(`document.querySelectorAll('.nav-menu button')[1].click()`);
   await until(`viewKind === 'home' && nav.index() === 0 && !document.querySelector('.nav-menu')`, 'two steps back in one pick');
   assert.equal((await buttons()).back, true, 'home is the first entry: nothing behind');
@@ -177,8 +177,11 @@ test('back and forward through the screens', { timeout: 90000 }, async t => {
   // ---- a reload keeps the stack and the place in it ----
   await evaluate(`$('navFwd').click()`);
   await until(`viewKind === 'conversation' && nav.index() === 1`);
+  // The old page also satisfies the condition until it is gone: wait for a
+  // page that does not carry the mark set before reloading.
+  await evaluate('window.beforeNavReload = true');
   await send('Page.reload', {}, sid);
-  await until(`typeof nav === 'object' && sessions.length >= 2 && viewKind === 'conversation' && nav.length() === 5`, 'the stack survived the reload');
+  await until(`!window.beforeNavReload && typeof nav === 'object' && sessions.length >= 2 && viewKind === 'conversation' && nav.length() === 5`, 'the stack survived the reload');
   s = await stack();
   assert.equal(s.i, 1);
   assert.equal(s.back && s.fwd, true, 'both directions still exist after a reload');

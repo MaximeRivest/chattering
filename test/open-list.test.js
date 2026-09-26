@@ -34,7 +34,7 @@ test('the side list: opened conversations, previews, typing dots, unread dot, cl
 
   // The column is the list, and it starts empty.
   assert.equal(await ev(`document.body.classList.contains('side-layout') && !$('agentsPop').hidden`), true, 'the side column is open');
-  assert.equal(await ev(`!!document.querySelector('#agentsUnread [data-sec=open] .ag-empty')`), true, 'the list starts empty');
+  assert.equal(await ev(`!!document.querySelector('#agentsUnread .ag-tail .ag-empty')`), true, 'the list starts empty');
   assert.equal(await ev(`!document.querySelector('[data-sec=unread],[data-sec=read],[data-sec=traffic],.read-scope,#returnToWork')`), true, 'no Unread / Read / Working sections, no Return to work');
 
   // Opening lists, in first-message order, newest on top — not in opening order.
@@ -61,8 +61,11 @@ test('the side list: opened conversations, previews, typing dots, unread dot, cl
   assert.equal(await ev(`(()=>{const r=${rowOf(keys.alpha)};return r.classList.contains('unread')||!!r.querySelector('.ag-mark')||!!r.querySelector('.user-bubble.typing')})()`), false, 'no marker, and not the human typing bubble');
   assert.equal(await ev(`${rowOf(keys.alpha)}.querySelector('.ag-doing').textContent`), 'tool · bash', 'line two says what the assistant is doing');
   assert.equal(await ev(`${rowOf(keys.alpha)}.querySelector('.ag-elapsed').textContent`), '2m', '...and for how long');
-  await ev(`${rowOf(keys.alpha)}.querySelector('.ag-elapsed').dataset.since = String(Date.now() - 3600000)`);
-  await until(`${rowOf(keys.alpha)}.querySelector('.ag-elapsed').textContent === '1h'`, 'the elapsed time ticks without a re-render');
+  // The ticker updates the text in place, once a second. Any re-render in
+  // between restores the start time from the run, so the tick is checked
+  // directly: a running ticker, and one tick that rewrites the text alone.
+  assert.equal(await ev(`elapsedTicker !== null`), true, 'a ticker runs while a row carries a start time');
+  assert.equal(await ev(`(()=>{const el=${rowOf(keys.alpha)}.querySelector('.ag-elapsed');el.dataset.since=String(Date.now()-3600000);tickElapsed();return el.isConnected&&el.textContent})()`), '1h', 'the elapsed time ticks without a re-render');
   assert.deepEqual(await ev(rows), [keys.gamma, keys.beta, keys.alpha], 'work does not reorder the list');
 
   // Finished, unread: a dot and a bold title; the rail counts it. A reply
@@ -122,6 +125,10 @@ test('the side list: opened conversations, previews, typing dots, unread dot, cl
   assert.equal(await ev(`${rowOf(keys.beta)}.classList.contains('unread')`), false, 'the open conversation is read, and still asking');
 
   // A stopped run is a row state with Resume; its ✕ gives up recovery too.
+  // Gamma was listed again by its later reply: close it first, so the
+  // stopped run is seen to list a closed conversation.
+  await ev(`${rowOf(keys.gamma)}.querySelector('.ag-close').click()`);
+  await until(`!${rowOf(keys.gamma)}`, 'gamma closed again');
   await ev(`applyAgentRecovery({enabled:false,network:{},interrupted:[{id:'rec-1',key:${JSON.stringify(keys.gamma)},title:'gamma question',kind:'network',reason:'fetch failed: ECONNRESET',createdAt:Date.now()-90000,attempts:1,state:'pending',canResume:true,waiting:false,note:''}]});renderAgentsPop(false)`);
   await until(`${rowOf(keys.gamma)}?.classList.contains('stopped')`, 'the interrupted run is listed as stopped, even though it was closed');
   assert.equal(await ev(`getComputedStyle(${rowOf(keys.gamma)}.querySelector('.ag-mark'),'::before').content`), '"!"');
