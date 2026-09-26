@@ -95,6 +95,8 @@ async function supervise(root, id) {
     if (!child || exited || child.exitCode !== null || child.signalCode !== null || !S.sameProcess(childIdentity)) return false;
     const current = S.identity(child.pid);
     if (!current || current.pgrp !== child.pid || childIdentity.pgrp !== child.pid) return false;
+    // Windows has no signals or process groups: the worker's tree ends.
+    if (process.platform === 'win32') return require('./processes.js').stopTree(child.pid, signal);
     try { process.kill(-child.pid, signal); return true; }
     catch (e) { if (e.code === 'ESRCH') return false; throw e; }
   }

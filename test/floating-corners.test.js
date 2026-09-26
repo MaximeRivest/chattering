@@ -46,6 +46,10 @@ test('floating corners cover no button on any view; the voice button has a home'
       await ev(`${go}; 1`);
       await until(ready, name);
       await settle();
+      // The voice button moves on its timer; under load that takes longer
+      // than the settle above, so its place is waited for, not assumed.
+      if (!folded) await until(`$('voiceOnButton')?.parentElement?.id === 'sideFootSlot'`, `${name}: the voice button sits in the side column's foot`);
+      else await until(`$('voiceOnButton')?.classList.contains('corner')`, `${name}: folded, the voice button is a corner button`);
       assert.deepEqual(await ev(covered), [], `${name}${folded ? ', column folded' : ''}: a floating button covers the page's buttons`);
       if (!folded) assert.equal(await ev(`$('voiceOnButton')?.parentElement?.id`), 'sideFootSlot', `${name}: the voice button sits in the side column's foot`);
       else assert.equal(await ev(`$('voiceOnButton')?.classList.contains('corner') && $('voiceOnButton').getBoundingClientRect().left > $('sideUnfold').getBoundingClientRect().right`), true, `${name}: folded, the voice button sits beside ▸`);

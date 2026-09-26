@@ -39,19 +39,10 @@ function appendEvent(dir, type, data = {}) {
   try { fs.writeSync(fd, JSON.stringify({ version: 1, at: Date.now(), type, ...data }) + '\n'); fs.fsyncSync(fd); }
   finally { fs.closeSync(fd); }
 }
-// Linux boot ID and start ticks distinguish reused process IDs, including across reboot.
-// The boot ID cannot change under a running process: read it once.
-let bootId = null;
-function currentBootId() { return bootId || (bootId = fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim()); }
-function identity(pid) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
-  try {
-    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
-    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-    if (fields[0] === 'Z' || fields[0] === 'X') return null;
-    return { pid, start: fields[19], boot: currentBootId(), pgrp: Number(fields[2]) };
-  } catch (e) { if (['ENOENT', 'ESRCH'].includes(e.code)) return null; throw e; }
-}
+// A process's start time and the machine's boot distinguish a reused
+// process ID, including across a reboot (processes.js: Linux, macOS,
+// Windows each by their own means).
+function identity(pid) { return require('./processes.js').identity(pid); }
 function sameProcess(saved) {
   if (!saved) return false;
   const live = identity(saved.pid);

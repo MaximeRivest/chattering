@@ -111,6 +111,7 @@ let LAN_TOKEN = loadLanToken();
 const authGuard = require('./authguard.js');
 const platform = require('./platform.js');
 const runtimeLib = require('./runtime.js');
+const processesLib = require('./processes.js');
 const frontDoor = require('./frontdoor.js');
 const signInLimiter = authGuard.createLimiter();
 const signInLog = authGuard.createAuthLog(path.join(DATA_DIR, 'sign-ins.jsonl'));
@@ -237,7 +238,7 @@ function guestRulesPage({ walls }) {
 // forward from windows/lan-forward.ps1). Ask Windows for its addresses so
 // the links people copy are ones that work. One PowerShell call, cached;
 // refreshed when the reach switch flips.
-const ON_WSL = (() => { try { return /microsoft/i.test(fs.readFileSync('/proc/version', 'utf8')); } catch { return false; } })();
+const ON_WSL = require('./platform.js').IS_WSL;
 let windowsHostAddresses = [];
 function refreshWindowsHostAddresses() {
   if (!ON_WSL) return Promise.resolve([]);
@@ -2647,19 +2648,13 @@ function agentArgName(arg) {
 }
 function scanAgentProcs() {
   const procs = [];
-  let pids = [];
-  try { pids = fs.readdirSync('/proc').filter(d => /^\d+$/.test(d)); } catch { return procs; }
+  // Linux also tells each process's age; elsewhere it is left unknown.
   let uptime = 0;
-  try { uptime = Number(fs.readFileSync('/proc/uptime', 'utf8').split(' ')[0]) || 0; } catch {}
+  if (platform.IS_LINUX) { try { uptime = Number(fs.readFileSync('/proc/uptime', 'utf8').split(' ')[0]) || 0; } catch {} }
   const bridgeArgs = new Map(); // bridge pid → argv (holds the real pi command)
   const superPids = new Set();  // remote-pi supervisord pids
-  for (const pidStr of pids) {
-    const pid = Number(pidStr);
-    if (pid === process.pid) continue;
-    let raw;
-    try { raw = fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8'); } catch { continue; }
-    const argv = raw.split('\0').filter(Boolean).map(a => a.trim()).filter(Boolean);
-    if (!argv.length) continue;
+  for (const { pid, ppid, argv } of processesLib.list()) {
+    if (pid === process.pid || !argv.length) continue;
     const base0 = agentArgName(argv[0]);
     const base1 = argv[1] ? agentArgName(argv[1]) : '';
     if ((base0 === 'node' || base0 === 'bun') && argv[1] && argv[1].includes('remote-pi')) { superPids.add(pid); continue; }
@@ -2673,14 +2668,14 @@ function scanAgentProcs() {
     const si = argv.indexOf('--session');
     if (si >= 0 && argv[si + 1]) sessionPath = argv[si + 1];
     const rpc = argv.includes('rpc') && argv.includes('--mode');
-    let ageMs = null, ppid = null;
-    try {
-      const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
-      const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-      ppid = Number(fields[1]) || null;
-      const startTicks = Number(fields[19]);
-      if (uptime && Number.isFinite(startTicks)) ageMs = Math.max(0, Math.round((uptime - startTicks / 100) * 1000));
-    } catch {}
+    let ageMs = null;
+    if (uptime) {
+      try {
+        const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
+        const startTicks = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]);
+        if (Number.isFinite(startTicks)) ageMs = Math.max(0, Math.round((uptime - startTicks / 100) * 1000));
+      } catch {}
+    }
     procs.push({ pid, ppid, kind, rpc, sessionPath, ageMs });
   }
   // Second pass: a pi/claude under a PTY bridge inherits the bridge's
@@ -7964,9 +7959,8 @@ function flagValue(args, names) {
 }
 
 function parseCmdline(pid) {
-  try {
-    return fs.readFileSync('/proc/' + pid + '/cmdline').toString().split('\0').filter(Boolean);
-  } catch { return null; }
+  const found = processesLib.list().find(p => p.pid === Number(pid));
+  return found ? found.argv : null;
 }
 
 function isInteractiveAgent(args) {
@@ -8035,11 +8029,7 @@ function recordsApi() {
 function listRunningAgents() {
   const running = [];
   const seen = new Set();
-  let pids = [];
-  try { pids = fs.readdirSync('/proc'); } catch { return running; }
-  for (const pid of pids) {
-    if (!/^\d+$/.test(pid)) continue;
-    const args = parseCmdline(pid);
+  for (const { pid, argv: args } of processesLib.list()) {
     if (!isInteractiveAgent(args)) continue;
     const key = matchArgsToKey(args);
     const title = flagValue(args, ['--title', '-t']);
@@ -8049,9 +8039,8 @@ function listRunningAgents() {
     const id = key || title;
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    let cwd = null;
-    try { cwd = fs.readlinkSync('/proc/' + pid + '/cwd'); } catch {}
     const entry = key ? index[key] : null;
+    const cwd = entry && entry.cwd ? null : processesLib.cwd(pid);
     running.push({
       pid: Number(pid),
       key: key || null,
@@ -8953,14 +8942,26 @@ function saveProjectSizeCacheSoon() {
     writeFileAtomic(PROJECT_STATS_FILE, JSON.stringify(projectSizeCache)).catch(() => {});
   }, 1000);
 }
-function duBytes(p) {
-  return new Promise(resolve => {
-    const child = spawn('/run/current-system/sw/bin/du', ['-sb', p], { timeout: 60000 });
-    let out = '';
-    child.stdout.on('data', c => { out += c; });
-    child.on('error', () => resolve(0));
-    child.on('close', code => { const m = out.match(/^(\d+)/); resolve(code === 0 && m ? Number(m[1]) : 0); });
-  });
+// A folder's size in bytes, as `du -sb` counts it (the files' own sizes,
+// links not followed), measured here so it works on every system. null
+// when it could not be measured within a minute: unknown, never zero.
+async function duBytes(root, { deadlineMs = 60000 } = {}) {
+  const deadline = Date.now() + deadlineMs;
+  let total = 0;
+  const stack = [root];
+  while (stack.length) {
+    if (Date.now() > deadline) return null;
+    const dir = stack.pop();
+    let entries;
+    try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) { stack.push(full); continue; }
+      if (e.isSymbolicLink()) continue;
+      try { total += (await fsp.lstat(full)).size; } catch {}
+    }
+  }
+  return total;
 }
 async function projectStatsFor(paths, wantSize) {
   const stats = {};
@@ -8973,8 +8974,7 @@ async function projectStatsFor(paths, wantSize) {
     if (hit && now - (hit.at || 0) < PROJECT_SIZE_TTL_MS) size = hit.size;
     else if (wantSize) {
       size = await duBytes(p);
-      projectSizeCache[p] = { size, at: Date.now() };
-      saveProjectSizeCacheSoon();
+      if (size != null) { projectSizeCache[p] = { size, at: Date.now() }; saveProjectSizeCacheSoon(); }
     }
     stats[p] = { born: st.birthtimeMs, size };
   });
@@ -11368,10 +11368,7 @@ function spawnDesktop(command, args) {
   });
 }
 
-function runningOnWsl() {
-  try { return /microsoft/i.test(fs.readFileSync('/proc/version', 'utf8')); }
-  catch { return false; }
-}
+function runningOnWsl() { return platform.IS_WSL; }
 
 function windowsSystemPath(rel) {
   return '/mnt/c/Windows/' + String(rel).replace(/\\/g, '/');
@@ -11413,6 +11410,13 @@ async function revealNativePath(abs, stat) {
     await openOnWindows(abs, true, stat.isDirectory());
     return;
   }
+  // macOS (Finder, selected) and Windows (Explorer, selected): the system's
+  // own command. A folder opens itself.
+  if (platform.IS_MAC || platform.IS_WIN) {
+    const c = platform.openCommand(abs, { reveal: !stat.isDirectory() });
+    await spawnDesktop(c.file, c.args);
+    return;
+  }
   const uri = pathToFileURL(abs).href;
   try {
     await new Promise((resolve, reject) => {
@@ -11424,7 +11428,9 @@ async function revealNativePath(abs, stat) {
       child.on('close', code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error('file manager refused the request')); });
     });
   } catch {
-    await spawnDesktop('xdg-open', [stat.isDirectory() ? abs : path.dirname(abs)]);
+    const c = platform.openCommand(stat.isDirectory() ? abs : path.dirname(abs));
+    if (!c) throw new Error('this machine has no desktop to show files in (xdg-open is not installed)');
+    await spawnDesktop(c.file, c.args);
   }
 }
 
@@ -11440,7 +11446,11 @@ async function nativePathAction(key, pathValue, action) {
   if (stat.isFile() && path.extname(abs).toLowerCase() === '.desktop')
     throw new Error('desktop launcher files can only be shown in their folder');
   if (runningOnWsl()) await openOnWindows(abs, false, stat.isDirectory());
-  else await spawnDesktop('xdg-open', [abs]);
+  else {
+    const c = platform.openCommand(abs);
+    if (!c) throw new Error('this machine has no desktop to open files with (xdg-open is not installed)');
+    await spawnDesktop(c.file, c.args);
+  }
   return { ok: true, action, path: abs };
 }
 
