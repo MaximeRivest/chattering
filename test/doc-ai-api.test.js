@@ -56,7 +56,7 @@ async function boot(t) {
   const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r));
   const port = s.address().port; await new Promise(r => s.close(r));
   let log = '';
-  const env = { ...process.env, HOME: home, CHATTERING_PI_CLI: pi.cli, PORT: String(port), CHATTERING_TLS_PORT: '0',
+  const env = { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), CHATTERING_PI_CLI: pi.cli, PORT: String(port), CHATTERING_TLS_PORT: '0',
     CHATTERING_HOST: '127.0.0.1', CHATTERING_LAN: '', CHATTERING_TOKEN: '', CHATTERING_PUBLIC_URL: '', CHATTERING_NO_WATCH: '1', CHATTERING_NO_SYNC: '1',
     CHATTERING_CACHE_DIR: path.join(home, '.cache', 'chattering'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'),
     PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent };

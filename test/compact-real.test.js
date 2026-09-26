@@ -20,7 +20,7 @@ test('compact: both engines write a compaction entry and continue from it', {
   const agent = path.join(root, '.pi', 'agent'); await fs.mkdir(agent, { recursive: true });
   // keepRecentTokens 1: a three-message conversation has something to compact.
   await fs.writeFile(path.join(agent, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: 'one', defaultThinkingLevel: 'off', compaction: { keepRecentTokens: 1 } }));
-  const env = { HOME: root, PATH: process.env.PATH, PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, PI_OFFLINE: '1', JITI_FS_CACHE: 'false', NODE_NO_WARNINGS: '1' };
+  const env = { ...require('./helpers/home-env.js').systemEnv(), ...require('./helpers/home-env.js').homeEnv(root), PATH: process.env.PATH, PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, PI_OFFLINE: '1', JITI_FS_CACHE: 'false', NODE_NO_WARNINGS: '1' };
   const { stdout } = await promisify(execFile)(process.execPath, [path.join(__dirname, 'fixtures/compact-probe.cjs')], { env, timeout: 110000, maxBuffer: 2 * 1024 * 1024 });
   const result = JSON.parse(stdout.trim().split('\n').at(-1));
   assert.equal(result.error, undefined, result.error);

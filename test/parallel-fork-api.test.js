@@ -63,7 +63,7 @@ if (process.argv[1] === ${JSON.stringify(path.join(root, 'server.js'))}) {
   const port = socket.address().port; await new Promise(resolve => socket.close(resolve));
   let log = '';
   child = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env,
-    HOME: home, PORT: String(port), CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '1', CHATTERING_NO_LEDGER: '1',
+    ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '1', CHATTERING_NO_LEDGER: '1',
     CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'),
     PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, NODE_OPTIONS: '--require=' + preload,
   }, stdio: ['ignore', 'pipe', 'pipe'] });

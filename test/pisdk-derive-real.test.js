@@ -15,7 +15,7 @@ test('installed SDK: a derivation is one raw completion on a private snapshot wi
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const agent = path.join(root, '.pi', 'agent'); await fs.mkdir(agent, { recursive: true });
   await fs.writeFile(path.join(agent, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: 'one', defaultThinkingLevel: 'off' }));
-  const env = { HOME: root, PATH: process.env.PATH, PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
+  const env = { ...require('./helpers/home-env.js').systemEnv(), ...require('./helpers/home-env.js').homeEnv(root), PATH: process.env.PATH, PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
     PI_OFFLINE: '1', JITI_FS_CACHE: 'false', NODE_NO_WARNINGS: '1' };
   const { stdout } = await promisify(execFile)(process.execPath, [path.join(__dirname, 'fixtures/pisdk-derive-probe.cjs')], { env, timeout: 55000, maxBuffer: 2 * 1024 * 1024 });
   assert.deepEqual(JSON.parse(stdout.trim().split('\n').at(-1)), { verified: true, requests: 2 });

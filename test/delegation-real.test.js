@@ -22,7 +22,7 @@ test('real Pi runner persists a valid mode contract and blocks a changed snapsho
   const parent = path.join(home, 'parent.jsonl');
   await fs.writeFile(parent, JSON.stringify({ type: 'session', version: 3, id: randomUUID(), cwd: home }) + '\n' + JSON.stringify({ type: 'message', id: 'launch', parentId: null, message: { role: 'user', content: 'Fixture parent' } }) + '\n');
   const root = path.join(home, 'records'), marker = path.join(home, 'requests.txt');
-  const env = { HOME: home, PATH: process.env.PATH, PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
+  const env = { ...require('./helpers/home-env.js').systemEnv(), ...require('./helpers/home-env.js').homeEnv(home), PATH: process.env.PATH, PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
     PI_OFFLINE: '1', JITI_FS_CACHE: 'false', NODE_NO_WARNINGS: '1', FIXTURE_REQUEST_MARKER: marker };
   const options = { root, env, supervision: 'detached', // the runtime's Pi (runtime.js), extra arguments after it
     piArgs: ['--no-extensions', '-e', path.join(__dirname, 'fixtures/pisdk-probe.ts')],
@@ -71,7 +71,7 @@ test('real Pi worker stopped by a usage limit continues on the same session with
   const parent = path.join(home, 'parent.jsonl');
   await fs.writeFile(parent, JSON.stringify({ type: 'session', version: 3, id: randomUUID(), cwd: home }) + '\n' + JSON.stringify({ type: 'message', id: 'launch', parentId: null, message: { role: 'user', content: 'Fixture parent' } }) + '\n');
   const root = path.join(home, 'records');
-  const env = { HOME: home, PATH: process.env.PATH, PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
+  const env = { ...require('./helpers/home-env.js').systemEnv(), ...require('./helpers/home-env.js').homeEnv(home), PATH: process.env.PATH, PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
     PI_OFFLINE: '1', JITI_FS_CACHE: 'false', NODE_NO_WARNINGS: '1', FIXTURE_LIMIT_MODEL: 'one', FIXTURE_ECHO_HISTORY: '1' };
   const options = { root, env, supervision: 'detached', // the runtime's Pi (runtime.js), extra arguments after it
     piArgs: ['--no-extensions', '-e', path.join(__dirname, 'fixtures/pisdk-probe.ts')],

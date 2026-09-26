@@ -35,7 +35,7 @@ async function bootServer(t, extraEnv = {}, { sessionCwd = null } = {}) {
   let log = '';
   // rat keeps state under the XDG dirs when they are set: point every one
   // of them into the throwaway home so no real kernel is touched.
-  const isolated = { HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache'), XDG_DATA_HOME: path.join(home, '.local', 'share'), XDG_STATE_HOME: path.join(home, '.local', 'state') };
+  const isolated = { ...require('./helpers/home-env.js').homeEnv(home), XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache'), XDG_DATA_HOME: path.join(home, '.local', 'share'), XDG_STATE_HOME: path.join(home, '.local', 'state') };
   const server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...isolated, PORT: String(port), CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '0', CHATTERING_NO_LEDGER: '0', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
   server.stdout.on('data', b => log += b); server.stderr.on('data', b => log += b);
   const base = 'http://127.0.0.1:' + port;
@@ -358,7 +358,7 @@ test('a tab follows its notebook kernel: other clients\u2019 runs arrive, named,
   await new Promise(r => setTimeout(r, 1200));
 
   // An agent runs code in the same kernel from a terminal.
-  const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache'), XDG_DATA_HOME: path.join(home, '.local', 'share'), XDG_STATE_HOME: path.join(home, '.local', 'state'), RAT_CALLER: "Lilly's agent" };
+  const env = { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache'), XDG_DATA_HOME: path.join(home, '.local', 'share'), XDG_STATE_HOME: path.join(home, '.local', 'state'), RAT_CALLER: "Lilly's agent" };
   const agent = spawnSync(ratBin, ['run', '--doc', nb, 'py', 'import time\nprint("agent step", flush=True)\ntime.sleep(0.4)\nprint("agent done")'], { env, encoding: 'utf8' });
   assert.equal(agent.status, 0, agent.stderr);
   const kev = () => live.events.filter(e => e.type === 'kernel-event').map(e => e.event);

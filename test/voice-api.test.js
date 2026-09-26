@@ -67,7 +67,7 @@ async function boot(t, { key = 'test-key-0123456789abcdef', setup = null } = {})
   fs.writeFileSync(path.join(home, '.config', 'chattering', 'settings.json'), JSON.stringify({ speechUrl: stand.speechUrl }));
   if (setup) setup(home);
   const port = await freePort();
-  const env = { ...process.env, HOME: home, PORT: String(port), CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_LAN: '', CHATTERING_TOKEN: '', CHATTERING_NO_WATCH: '1', CHATTERING_NO_SYNC: '1',
+  const env = { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_LAN: '', CHATTERING_TOKEN: '', CHATTERING_NO_WATCH: '1', CHATTERING_NO_SYNC: '1',
     CHATTERING_CACHE_DIR: path.join(home, 'cache'), PI_CODING_AGENT_DIR: path.join(home, '.pi', 'agent'), TYPESAFE_URL: stand.jevUrl };
   delete env.TYPESAFE_API_KEY;
   if (key) fs.writeFileSync(path.join(home, '.config', 'chattering', 'typesafe-api-key'), key + '\n', { mode: 0o600 });
@@ -121,7 +121,7 @@ test('deciding: one request to Jev with the key; a decision and its outcome are 
   assert.equal((await post(s.base, '/api/voice/outcome', { id: r.id, outcome: 'maybe' })).status, 400);
   // Every sentence is kept, with what the screen offered and Jev's answers.
   await post(s.base, '/api/voice/decide', { said: 'pass the salt', screen: 'home', actions: ['settings'], asrMs: 210 });
-  const file = path.join(s.home, '.local', 'share', 'chattering', 'voice-commands.jsonl');
+  const file = path.join(require('./helpers/home-env.js').appDir(s.home, 'data'), 'voice-commands.jsonl');
   const log = fs.readFileSync(file, 'utf8').trim().split('\n').map(l => JSON.parse(l));
   assert.deepEqual(log.map(l => l.action || l.outcome), ['reasoning', 'done', 'none']);
   const salt = log.at(-1);
@@ -158,7 +158,7 @@ test('the key: saved by the owner only to a private file, never sent back; witho
   assert.match((await r.json()).error, /TypeSafe key/);
   assert.match((await (await post(s.base, '/api/voice/key', { key: 'short' })).json()).error, /does not look like/);
   assert.equal((await (await post(s.base, '/api/voice/key', { key: 'apikey_0123456789abcdef0123' })).json()).key, true);
-  const file = path.join(s.home, '.config', 'chattering', 'typesafe-api-key');
+  const file = path.join(require('./helpers/home-env.js').appDir(s.home, 'config'), 'typesafe-api-key');
   assert.equal(fs.statSync(file).mode & 0o777, 0o600);
   const status = await (await fetch(s.base + '/api/voice/status')).text();
   assert.doesNotMatch(status, /apikey_/, 'the key never goes back to a page');

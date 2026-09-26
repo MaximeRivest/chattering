@@ -31,7 +31,7 @@ async function boot(t) {
   const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r));
   const port = s.address().port; await new Promise(r => s.close(r));
   let log = '';
-  const env = { ...process.env, HOME: home, PORT: String(port), CHATTERING_TLS_PORT: '0',
+  const env = { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: '0',
     CHATTERING_HOST: '127.0.0.1', CHATTERING_LAN: '', CHATTERING_TOKEN: '', CHATTERING_PUBLIC_URL: '', CHATTERING_NO_WATCH: '1', CHATTERING_NO_SYNC: '1',
     CHATTERING_CACHE_DIR: path.join(home, '.cache', 'chattering'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'),
     PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent };
@@ -95,7 +95,7 @@ test('what became of AI proposals is kept: a command with its prompt version, an
   assert.equal((await post(s.base, '/api/ai-feedback', { kind: 'nope', path: s.doc, decision: 'applied' })).status, 400);
 
   const got = await (await fetch(s.base + '/api/ai-feedback?limit=10')).json();
-  assert.equal(got.file, path.join(s.home, '.local', 'share', 'chattering', 'ai-feedback.jsonl'));
+  assert.equal(got.file, path.join(require('./helpers/home-env.js').appDir(s.home, 'data'), 'ai-feedback.jsonl'));
   assert.equal(got.records.length, 2);
   const [command, asked] = got.records;
   assert.deepEqual([command.kind, command.decision, command.review.hunks[0].final, command.path, command.project], ['command', 'rejected', 'a\n', s.doc, 'analysis']);

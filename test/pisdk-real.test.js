@@ -17,7 +17,7 @@ test('real SDK in isolated processes: environment, tool execution, dialogs, idle
   const agent = path.join(root, '.pi', 'agent'); await fs.mkdir(agent, { recursive: true });
   await fs.writeFile(path.join(agent, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: 'one', defaultThinkingLevel: 'off' }));
   // No inherited credentials, user settings, extensions, or provider endpoints.
-  const env = { HOME: root, PATH: process.env.PATH, PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
+  const env = { ...require('./helpers/home-env.js').systemEnv(), ...require('./helpers/home-env.js').homeEnv(root), PATH: process.env.PATH, PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
     PI_OFFLINE: '1', JITI_FS_CACHE: 'false', NODE_NO_WARNINGS: '1', FIXTURE_CHECKPOINT_WRITE: '1', FIXTURE_SPEED_STREAM: '1' };
   const { stdout, stderr } = await promisify(execFile)(process.execPath, [path.join(__dirname, 'fixtures/pisdk-probe.cjs')], { env, timeout: 55000, maxBuffer: 2 * 1024 * 1024 });
   assert.ok(!stderr.includes('AssertionError'), stderr);

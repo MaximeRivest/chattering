@@ -31,7 +31,7 @@ async function boot(t, extraEnv) {
   fs.mkdirSync(path.join(agent, 'sessions'), { recursive: true });
   const port = await freePort(), tlsPort = await freePort();
   let log = '';
-  const child = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, HOME: home, PORT: String(port), CHATTERING_TLS_PORT: String(tlsPort), CHATTERING_NO_WATCH: '0', CHATTERING_NO_LEDGER: '0', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, CHATTERING_HOST: '', CHATTERING_LAN: '', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: '', ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: String(tlsPort), CHATTERING_NO_WATCH: '0', CHATTERING_NO_LEDGER: '0', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, CHATTERING_HOST: '', CHATTERING_LAN: '', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: '', ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b);
   t.after(() => require('./helpers/cleanup.js').stopAndRemove(child, home));
   const base = 'http://127.0.0.1:' + port;
@@ -111,7 +111,7 @@ test('the reach switch rebinds the listener both ways without a restart', async 
     assert.equal(fs.readFileSync(path.join(home, 'cache', 'lan-token'), 'utf8').trim(), token);
   }
   // The choice is written down, so it survives a restart.
-  assert.equal(JSON.parse(fs.readFileSync(path.join(home, '.config', 'chattering', 'settings.json'), 'utf8')).lan, true);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(require('./helpers/home-env.js').appDir(home, 'config'), 'settings.json'), 'utf8')).lan, true);
 
   s = await putLan(base, false, home);
   assert.equal(s.lan.on, false); assert.deepEqual(s.connectLinks, []);

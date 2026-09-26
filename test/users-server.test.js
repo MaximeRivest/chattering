@@ -42,7 +42,7 @@ async function boot(t) {
   const port = await freePort(), tlsPort = await freePort();
   registerConsole(port, 'install-tok');
   let log = '';
-  const child = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, HOME: home, PORT: String(port), CHATTERING_TLS_PORT: String(tlsPort), CHATTERING_NO_WATCH: '0', CHATTERING_NO_LEDGER: '1', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, CHATTERING_HOST: '', CHATTERING_LAN: '1', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: 'install-tok' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: String(tlsPort), CHATTERING_NO_WATCH: '0', CHATTERING_NO_LEDGER: '1', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, CHATTERING_HOST: '', CHATTERING_LAN: '1', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: 'install-tok' }, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b);
   t.after(() => require('./helpers/cleanup.js').stopAndRemove(child, home));
   const local = 'http://127.0.0.1:' + port;
@@ -66,7 +66,7 @@ test('people, sharing, presence and handoff on one install', { skip: !lanIp() &&
   const console_ = await (await fetch(local + '/api/users')).json();
   assert.equal(console_.tier, 'console');
   assert.equal(console_.me.role, 'owner');
-  assert.ok(fs.existsSync(path.join(home, '.config', 'chattering', 'users.json')), 'the roster is written on first run');
+  assert.ok(fs.existsSync(path.join(require('./helpers/home-env.js').appDir(home, 'config'), 'users.json')), 'the roster is written on first run');
 
   // From the network: nothing without a credential; the install token is the owner's.
   assert.equal((await fetch(remote + '/api/users')).status, 401);
@@ -173,7 +173,7 @@ test('people, sharing, presence and handoff on one install', { skip: !lanIp() &&
   // shown once and hashed on disk.
   const bad = await fetch(remote + '/?handoff=h1.abc.def', { redirect: 'manual' });
   assert.equal(bad.status, 401);
-  const rosterOnDisk = fs.readFileSync(path.join(home, '.config', 'chattering', 'users.json'), 'utf8');
+  const rosterOnDisk = fs.readFileSync(path.join(require('./helpers/home-env.js').appDir(home, 'config'), 'users.json'), 'utf8');
   assert.equal(rosterOnDisk.includes(lillySecret), false);
   assert.equal(rosterOnDisk.includes('install-tok'), false);
   // Sign out drops the cookie.

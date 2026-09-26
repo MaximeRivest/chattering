@@ -24,7 +24,7 @@ test('sign-in guard: lockout after ten distinct wrong tokens, a stale cookie cou
   const port = await freePort(), tlsPort = await freePort();
   registerConsole(port, 'install-tok');
   let log = '';
-  const child = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, HOME: home, PORT: String(port), CHATTERING_TLS_PORT: String(tlsPort), CHATTERING_NO_WATCH: '1', CHATTERING_NO_LEDGER: '1', CHATTERING_NO_SYNC: '1',
+  const child = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: String(tlsPort), CHATTERING_NO_WATCH: '1', CHATTERING_NO_LEDGER: '1', CHATTERING_NO_SYNC: '1',
     CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
     CHATTERING_HOST: '', CHATTERING_LAN: '1', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: 'install-tok', PATH: '/nonexistent' /* no tailscale: the doors say so */ }, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b);
@@ -72,7 +72,7 @@ test('sign-in guard: lockout after ten distinct wrong tokens, a stale cookie cou
   assert.equal(seen.recent[0].door, 'lan');
   assert.equal(seen.recent[0].ip, lanIp());
   assert.ok(seen.recent.some(r => r.via === 'cookie') && seen.recent.some(r => r.via === 'login'));
-  assert.ok(fs.existsSync(path.join(home, '.local', 'share', 'chattering', 'sign-ins.jsonl')), 'on disk, outside the cache');
+  assert.ok(fs.existsSync(path.join(require('./helpers/home-env.js').appDir(home, 'data'), 'sign-ins.jsonl')), 'on disk, outside the cache');
 
   // Doors: readable by the owner, not by a member; without tailscale they say so.
   const doors = await (await fetch(local + '/api/doors')).json();

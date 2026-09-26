@@ -191,7 +191,7 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
   await b.screenshot('voice-history.png');
 
   // The record has every decision; Alt+L stops the microphone.
-  const records = fs.readFileSync(path.join(b.home, '.local', 'share', 'chattering', 'voice-commands.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  const records = fs.readFileSync(path.join(require('./helpers/home-env.js').appDir(b.home, 'data'), 'voice-commands.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
   assert.ok(records.some(r => r.action === 'settings') && records.some(r => r.outcome === 'confirmed'), JSON.stringify(records.map(r => r.action || r.outcome)));
   await key('l', 'KeyL', 76, 1);
   await until(`voice.status === 'off' && !document.querySelector('#voiceListenPill') && !document.querySelector('#voiceOverlay') && !document.querySelector('#voiceHints')`, 'Alt+L did not stop');

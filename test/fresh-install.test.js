@@ -49,7 +49,7 @@ async function boot(t, { prepare } = {}) {
   if (prepare) prepare(home);
   const port = await freePort();
   let log = '';
-  const env = { ...process.env, HOME: home, CHATTERING_PI_CLI: pi.cli, PORT: String(port), CHATTERING_TLS_PORT: '0',
+  const env = { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), CHATTERING_PI_CLI: pi.cli, PORT: String(port), CHATTERING_TLS_PORT: '0',
     CHATTERING_HOST: '127.0.0.1', CHATTERING_LAN: '', CHATTERING_TOKEN: '', CHATTERING_PUBLIC_URL: '', CHATTERING_NO_WATCH: '1', CHATTERING_NO_SYNC: '1',
     CHATTERING_CACHE_DIR: path.join(home, '.cache', 'chattering'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'),
     PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent };
@@ -63,7 +63,7 @@ async function boot(t, { prepare } = {}) {
     await sleep(50);
   }
   for (let i = 0; i < 200 && !/scan done/.test(log); i++) await sleep(50);
-  const settingsFile = path.join(home, '.config', 'chattering', 'settings.json');
+  const settingsFile = path.join(require('./helpers/home-env.js').appDir(home, 'config'), 'settings.json');
   return { base, home, pi, log: () => log, savedSettings: () => JSON.parse(fs.readFileSync(settingsFile, 'utf8')) };
 }
 const getSettings = async base => (await fetch(base + '/api/settings')).json();
