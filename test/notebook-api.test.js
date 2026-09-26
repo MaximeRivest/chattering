@@ -1,4 +1,8 @@
 'use strict';
+// Local requests sign in like every client (design/69): the test server's
+// install token, sent by consoleFetch on 127.0.0.1 and set as the browser's cookie.
+const { registerConsole, consoleFetch: fetch } = require('./helpers/console-fetch.js');
+const TEST_TOKEN = 'test-install-token';
 // The notebook endpoints are thin passthroughs to rat (`doctor`, `ensure`,
 // `run --doc`, `cancel --doc`). These tests boot the real server with a
 // throwaway HOME (so rat's state and kernels are isolated too) and check
@@ -32,11 +36,12 @@ async function bootServer(t, extraEnv = {}, { sessionCwd = null } = {}) {
   const fixtureKey = sessionCwd ? writeFixtureSession(agent, sessionCwd) : null;
   const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
   const port = socket.address().port; await new Promise(r => socket.close(r));
+  registerConsole(port, TEST_TOKEN);
   let log = '';
   // rat keeps state under the XDG dirs when they are set: point every one
   // of them into the throwaway home so no real kernel is touched.
   const isolated = { ...require('./helpers/home-env.js').homeEnv(home), XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache'), XDG_DATA_HOME: path.join(home, '.local', 'share'), XDG_STATE_HOME: path.join(home, '.local', 'state') };
-  const server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...isolated, PORT: String(port), CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '0', CHATTERING_NO_LEDGER: '0', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...isolated, PORT: String(port), CHATTERING_TOKEN: TEST_TOKEN, CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '0', CHATTERING_NO_LEDGER: '0', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, ...extraEnv }, stdio: ['ignore', 'pipe', 'pipe'] });
   server.stdout.on('data', b => log += b); server.stderr.on('data', b => log += b);
   const base = 'http://127.0.0.1:' + port;
   let up = false;

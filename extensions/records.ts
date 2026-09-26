@@ -17,9 +17,17 @@ import { join } from "node:path";
 const port = () => Number(process.env.CHATTERING_PORT || process.env.PORT || 7433);
 // The token comes from the environment (a sandboxed guest agent carries
 // its own), else from the install token file only the account can read.
+// The install token: named by the server that started this agent, else the
+// file in Chattering's cache folder (the Linux-named one an install always
+// used, or macOS's and Windows' own for a new install; platform.js).
 const token = () => {
   if (process.env.CHATTERING_TOKEN) return process.env.CHATTERING_TOKEN;
-  try { return readFileSync(join(homedir(), ".cache", "chattering", "lan-token"), "utf8").trim(); } catch { return ""; }
+  const home = homedir();
+  const files = [process.env.CHATTERING_TOKEN_FILE, process.env.CHATTERING_CACHE_DIR && join(process.env.CHATTERING_CACHE_DIR, "lan-token"),
+    join(home, ".cache", "chattering", "lan-token"), join(home, "Library", "Caches", "Chattering", "lan-token"),
+    join(process.env.LOCALAPPDATA || join(home, "AppData", "Local"), "Chattering", "cache", "lan-token")];
+  for (const f of files) { if (!f) continue; try { const t = readFileSync(f, "utf8").trim(); if (t) return t; } catch {} }
+  return "";
 };
 const TRUTH = "Records are AI transcripts and AI-written notes: a map of what was said, not verified truth. [unverified] marks notes no person reviewed.";
 
@@ -32,7 +40,7 @@ async function call(op: string, params: Record<string, unknown>, signal?: AbortS
   try {
     res = await fetch(`http://127.0.0.1:${PORT}/api/records/${op}?${qs}`, { headers, signal });
   } catch (e: any) {
-    throw new Error(`chattering server is not answering on port ${PORT} (${e?.cause?.code || e?.message}). Start it: systemctl --user start chattering`);
+    throw new Error(`chattering server is not answering on port ${PORT} (${e?.cause?.code || e?.message}). Start Chattering (the chattering command, or systemctl --user start chattering where it runs as a service).`);
   }
   const data: any = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
   if (!res.ok) throw new Error(data.error || data.text || `HTTP ${res.status}`);

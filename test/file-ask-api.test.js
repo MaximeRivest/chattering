@@ -1,4 +1,8 @@
 'use strict';
+// Local requests sign in like every client (design/69): the test server's
+// install token, sent by consoleFetch on 127.0.0.1 and set as the browser's cookie.
+const { registerConsole, consoleFetch: fetch } = require('./helpers/console-fetch.js');
+const TEST_TOKEN = 'test-install-token';
 // The ask box's server side on a real server: where an ask goes, and what
 // goes along with it (the brief of file-ask.js, the recent edits as diffs,
 // the switches). Sending needs a real pi; file-ask.test.js covers the log.
@@ -30,9 +34,10 @@ async function boot(t) {
   }
   const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r));
   const port = s.address().port; await new Promise(r => s.close(r));
+  registerConsole(port, TEST_TOKEN);
   let log = '';
   const env = { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: '0',
-    CHATTERING_HOST: '127.0.0.1', CHATTERING_LAN: '', CHATTERING_TOKEN: '', CHATTERING_PUBLIC_URL: '', CHATTERING_NO_WATCH: '1', CHATTERING_NO_SYNC: '1',
+    CHATTERING_HOST: '127.0.0.1', CHATTERING_LAN: '', CHATTERING_TOKEN: TEST_TOKEN, CHATTERING_PUBLIC_URL: '', CHATTERING_NO_WATCH: '1', CHATTERING_NO_SYNC: '1',
     CHATTERING_CACHE_DIR: path.join(home, '.cache', 'chattering'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'),
     PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent };
   const child = spawn(process.execPath, ['server.js'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });

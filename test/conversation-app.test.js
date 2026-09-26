@@ -1,4 +1,8 @@
 'use strict';
+// Local requests sign in like every client (design/69): the test server's
+// install token, sent by consoleFetch on 127.0.0.1 and set as the browser's cookie.
+const { registerConsole, consoleFetch: fetch } = require('./helpers/console-fetch.js');
+const TEST_TOKEN = 'test-install-token';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -57,9 +61,10 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   auxiliary('artifacts', { type: 'toolCall', id: 'artifact-call', name: 'bash', arguments: { command: artifactCommand } });
   const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
   const port = socket.address().port; await new Promise(r => socket.close(r));
+  registerConsole(port, TEST_TOKEN);
   let serverLog = '';
   require('./helpers/first-run.js').answerFirstRun(home); // no first-run modal over the page
-  server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '0', CHATTERING_NO_LEDGER: '0', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent }, stdio: ['ignore', 'pipe', 'pipe'] });
+  server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TOKEN: TEST_TOKEN, CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '0', CHATTERING_NO_LEDGER: '0', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent }, stdio: ['ignore', 'pipe', 'pipe'] });
   server.stdout.on('data', b => serverLog += b); server.stderr.on('data', b => serverLog += b);
   const base = 'http://127.0.0.1:' + port, key = 'pi:fixture/chat.jsonl';
   let indexed = false;
@@ -93,6 +98,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   };
   await send('Runtime.enable', {}, sid);
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false }, sid);
+  await send('Network.setCookie', { name: 'chattering', value: TEST_TOKEN, url: base }, sid);
   await send('Page.navigate', { url: base + '/#' + encodeURIComponent(key) }, sid);
   for (let i = 0; i < 200; i++) {
     if (await evaluate('!!document.querySelector("[data-reader-answer]")')) break;

@@ -1,4 +1,8 @@
 'use strict';
+// Local requests sign in like every client (design/69): the test server's
+// install token, sent by consoleFetch on 127.0.0.1 and set as the browser's cookie.
+const { registerConsole, consoleFetch: fetch } = require('./helpers/console-fetch.js');
+const TEST_TOKEN = 'test-install-token';
 // Voice commands on a real server: the listening socket turns streamed
 // audio into heard text and utterances (through a stand-in speech service),
 // and /api/voice/decide asks a stand-in Jev and records the decision. The
@@ -67,7 +71,8 @@ async function boot(t, { key = 'test-key-0123456789abcdef', setup = null } = {})
   fs.writeFileSync(path.join(home, '.config', 'chattering', 'settings.json'), JSON.stringify({ speechUrl: stand.speechUrl }));
   if (setup) setup(home);
   const port = await freePort();
-  const env = { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_LAN: '', CHATTERING_TOKEN: '', CHATTERING_NO_WATCH: '1', CHATTERING_NO_SYNC: '1',
+  registerConsole(port, TEST_TOKEN);
+  const env = { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_LAN: '', CHATTERING_TOKEN: TEST_TOKEN, CHATTERING_NO_WATCH: '1', CHATTERING_NO_SYNC: '1',
     CHATTERING_CACHE_DIR: path.join(home, 'cache'), PI_CODING_AGENT_DIR: path.join(home, '.pi', 'agent'), TYPESAFE_URL: stand.jevUrl };
   delete env.TYPESAFE_API_KEY;
   if (key) fs.writeFileSync(path.join(home, '.config', 'chattering', 'typesafe-api-key'), key + '\n', { mode: 0o600 });
@@ -88,7 +93,7 @@ const post = (base, p, body) => fetch(base + p, { method: 'POST', headers: { 'co
 
 test('listening: streamed speech becomes heard text and utterances, with context', async t => {
   const s = await boot(t);
-  const ws = new WebSocket('ws://127.0.0.1:' + s.port + '/api/voice/listen?window=45');
+  const ws = new WebSocket('ws://127.0.0.1:' + s.port + '/api/voice/listen?window=45', { headers: { Authorization: 'Bearer ' + TEST_TOKEN } });
   const events = [];
   ws.onmessage = m => events.push(JSON.parse(m.data));
   await new Promise((r, j) => { ws.onopen = r; ws.onerror = () => j(new Error('no socket: ' + s.log().slice(-400))); });
@@ -196,7 +201,7 @@ test('open anywhere: every project by name, and the files of a project the sente
 
 test('a page on plain http is told the https address, where the browser gives the microphone', async t => {
   const s = await boot(t);
-  const get = host => new Promise((resolve, reject) => http.get({ host: '127.0.0.1', port: s.port, path: '/api/voice/status', headers: { host } }, res => { let b = ''; res.on('data', c => b += c); res.on('end', () => resolve(JSON.parse(b))); }).on('error', reject));
+  const get = host => new Promise((resolve, reject) => http.get({ host: '127.0.0.1', port: s.port, path: '/api/voice/status', headers: { host, Authorization: 'Bearer ' + TEST_TOKEN } }, res => { let b = ''; res.on('data', c => b += c); res.on('end', () => resolve(JSON.parse(b))); }).on('error', reject));
   assert.match((await get('100.86.49.54:7433')).secureUrl, /^https:\/\/100\.86\.49\.54:\d+\/\?token=/);
   assert.equal((await get('localhost:7433')).secureUrl, null, 'localhost is secure already');
 });

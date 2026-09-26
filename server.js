@@ -92,9 +92,12 @@ let HOST = ENV_HOST || (LAN_BY_ENV ? '0.0.0.0' : '127.0.0.1');
 const isLoopback = host => host === '127.0.0.1' || host === '::1' || host === 'localhost';
 const TLS_PORT = process.env.CHATTERING_TLS_PORT ? Number(process.env.CHATTERING_TLS_PORT) : 7443;
 const LAN_TOKEN_FILE = path.join(CACHE_DIR, 'lan-token');
+// The install token exists in every mode, this machine only included: being
+// on this machine is not a credential (design/53, design/69). Other programs
+// and other accounts here cannot read the file; the launcher signs the
+// browser in with it.
 function loadLanToken() {
   if (process.env.CHATTERING_TOKEN) return String(process.env.CHATTERING_TOKEN);
-  if (isLoopback(HOST)) return '';
   try {
     const existing = fs.readFileSync(LAN_TOKEN_FILE, 'utf8').trim();
     if (existing) return existing;
@@ -7927,6 +7930,8 @@ function agentEnv(principal = null) {
     HOME: os.homedir(),
     ...(platform.IS_LINUX && !platform.IS_WSL ? { DISPLAY: process.env.DISPLAY || ':0', ...(xauthority ? { XAUTHORITY: xauthority } : {}) } : {}),
     PI_DELEGATION_ROOT: DELEGATION_ROOT,
+    // Where this install's token is, for the owner's own tools (records, CLI).
+    CHATTERING_TOKEN_FILE: LAN_TOKEN_FILE,
     ...((principal || principalFor(null)).env),
   };
   return platform.withPath(env, agentPath(platform.pathEntries(process.env).join(path.delimiter)).split(path.delimiter));
@@ -14955,8 +14960,19 @@ function sendValidated(req, res, type, cacheControl, text) {
 }
 
 const server = http.createServer((req, res) => requestContext.run({ req }, () => handleRequest(req, res)));
+// The names this machine answers to (authguard.hostAllowed): anything else
+// in a Host header is a page that is not ours, even when the address is.
+function allowedHostOptions() {
+  const extra = String(process.env.CHATTERING_ALLOWED_HOSTS || '').split(/[\s,]+/).filter(Boolean);
+  for (const u of [PUBLIC_URL, appSettings && appSettings.previewBase]) { try { if (u) extra.push(new URL(u).hostname); } catch {} }
+  return { hostnames: [os.hostname(), HOST_NAME], extra };
+}
 async function handleRequest(req, res) {
   const u = new URL(req.url, 'http://x');
+  if (!authGuard.hostAllowed(req.headers.host, allowedHostOptions())) {
+    res.writeHead(421, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('This Chattering does not answer to that name. Add it to CHATTERING_ALLOWED_HOSTS if it is yours.');
+  }
   try {
     // "Is the server up?" for launchers, update scripts and machine
     // switching. Answered before sign-in on purpose: a readiness probe has
@@ -15022,7 +15038,7 @@ async function handleRequest(req, res) {
       let p = {};
       try { p = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
       try {
-        if (!LAN_TOKEN) throw new Error('this Chattering is not reachable from other machines (settings → machines)');
+        if (isLoopback(HOST)) throw new Error('this Chattering is not reachable from other machines (settings → machines)');
         if (!(await gate())) return;
         let user, projects;
         if (p.invite) {
@@ -17801,6 +17817,7 @@ collab.on('leave', ev => broadcast({ type: 'collab-people', name: ev.name, peopl
 // The same gate as HTTP routes (policy.js): a socket is a route too.
 function upgradeRequest(req, socket, head) {
   const u = new URL(req.url, 'http://x');
+  if (!authGuard.hostAllowed(req.headers.host, allowedHostOptions())) return refuseUpgrade(socket, 421, 'Misdirected Request');
   const identity = identifyRequest(req);
   if (!identity) return refuseUpgrade(socket, 401, 'Unauthorized');
   const gate = policy.checkRoute(identity, 'GET', u.pathname, u.searchParams, (key, right) => !index[key] || canDo(identity, right, targetOf(key)));

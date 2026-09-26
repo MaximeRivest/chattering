@@ -13,7 +13,7 @@ const PORT = Number(process.env.CHATTERING_PORT || process.env.PORT || 7433);
 // on it too): the token comes from the environment, else from the install
 // token file, which only the account can read.
 const TOKEN = process.env.CHATTERING_TOKEN || (() => {
-  try { return require('fs').readFileSync(require('path').join(require('os').homedir(), '.cache', 'chattering', 'lan-token'), 'utf8').trim(); } catch { return ''; }
+  try { return require('fs').readFileSync(process.env.CHATTERING_TOKEN_FILE || require('path').join(require('./platform.js').appDirs().cache, 'lan-token'), 'utf8').trim(); } catch { return ''; }
 })();
 
 // Long options that take a value. Anything else that starts with -- is a flag.

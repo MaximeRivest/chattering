@@ -186,7 +186,8 @@ test('two people share a machine: sign-in, presence, one compose box, one file, 
   await owner.until(`peopleOthersHere().some(p => p.route === 'conversation:' + ${JSON.stringify(key)})`);
   await owner.evaluate('togglePeoplePanel(true); true');
   await owner.until(`document.querySelector('#peoplePanel .pp-row b')?.textContent === 'Lilly'`);
-  assert.match(await owner.evaluate(`document.querySelector('#peoplePanel .pp-row .hint').textContent`), /reading · “/);
+  // The row names the conversation once its title is known here.
+  await owner.until(`/reading · “/.test(document.querySelector('#peoplePanel .pp-row .hint')?.textContent || '')`);
   await owner.evaluate(`document.querySelector('#peoplePanel [data-pp=go]').click(); true`);
   await owner.until('viewKind === "conversation" && activeRel === ' + JSON.stringify(key));
   assert.equal(await owner.evaluate('!!document.querySelector("#peoplePanel")'), false, 'go closes the panel');

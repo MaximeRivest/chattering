@@ -1,4 +1,8 @@
 'use strict';
+// Local requests sign in like every client (design/69): the test server's
+// install token, sent by consoleFetch on 127.0.0.1 and set as the browser's cookie.
+const { registerConsole, consoleFetch: fetch } = require('./helpers/console-fetch.js');
+const TEST_TOKEN = 'test-install-token';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
@@ -61,9 +65,10 @@ if (process.argv[1] === ${JSON.stringify(path.join(root, 'server.js'))}) {
   const socket = net.createServer();
   await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
   const port = socket.address().port; await new Promise(resolve => socket.close(resolve));
+  registerConsole(port, TEST_TOKEN);
   let log = '';
   child = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env,
-    ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '1', CHATTERING_NO_LEDGER: '1',
+    ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TOKEN: TEST_TOKEN, CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '1', CHATTERING_NO_LEDGER: '1',
     CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'),
     PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, NODE_OPTIONS: '--require=' + preload,
   }, stdio: ['ignore', 'pipe', 'pipe'] });

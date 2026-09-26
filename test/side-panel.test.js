@@ -1,4 +1,8 @@
 'use strict';
+// Local requests sign in like every client (design/69): the test server's
+// install token, sent by consoleFetch on 127.0.0.1 and set as the browser's cookie.
+const { registerConsole, consoleFetch: fetch } = require('./helpers/console-fetch.js');
+const TEST_TOKEN = 'test-install-token';
 // design/42: the side-panel layout, pinned / marked-unread / removed
 // conversations, and the shared recent-files list — against the real server
 // and a headless Chromium.
@@ -44,9 +48,10 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   const keys = { alpha: 'pi:fixture/alpha.jsonl', beta: 'pi:fixture/beta.jsonl', gamma: 'pi:fixture/gamma.jsonl' };
   const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
   const port = socket.address().port; await new Promise(r => socket.close(r));
+  registerConsole(port, TEST_TOKEN);
   let serverLog = '';
   require('./helpers/first-run.js').answerFirstRun(home); // no first-run modal over the page
-  server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '1', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent }, stdio: ['ignore', 'pipe', 'pipe'] });
+  server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TOKEN: TEST_TOKEN, CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '1', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent }, stdio: ['ignore', 'pipe', 'pipe'] });
   server.stdout.on('data', b => serverLog += b); server.stderr.on('data', b => serverLog += b);
   const base = 'http://127.0.0.1:' + port;
   let indexed = false;
@@ -100,6 +105,7 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   const size = (width, height) => send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, sid);
   await send('Runtime.enable', {}, sid);
   await size(1440, 1000);
+  await send('Network.setCookie', { name: 'chattering', value: TEST_TOKEN, url: base }, sid);
   await send('Page.navigate', { url: base + '/' }, sid);
   await until(`typeof applyLayout === 'function'`);
   assert.equal(await evaluate(`localStorage.getItem('chattering.layout')`), null, 'fresh browser has no layout override');

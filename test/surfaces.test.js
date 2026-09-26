@@ -1,4 +1,8 @@
 'use strict';
+// Local requests sign in like every client (design/69): the test server's
+// install token, sent by consoleFetch on 127.0.0.1 and set as the browser's cookie.
+const { registerConsole, consoleFetch: fetch } = require('./helpers/console-fetch.js');
+const TEST_TOKEN = 'test-install-token';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -127,10 +131,11 @@ test('real app surfaces follow the theme together, including nested painted edge
   t.after(async () => { ws?.close(); await stop(browser); await stop(server); fs.rmSync(home, { recursive: true, force: true }); });
   const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
   const port = socket.address().port; await new Promise(r => socket.close(r));
+  registerConsole(port, TEST_TOKEN);
   const base = 'http://127.0.0.1:' + port;
   let log = '';
   require('./helpers/first-run.js').answerFirstRun(home); // no first-run modal over the page
-  server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '1', CHATTERING_NO_LEDGER: '1', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent }, stdio: ['ignore', 'pipe', 'pipe'] });
+  server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TOKEN: TEST_TOKEN, CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '1', CHATTERING_NO_LEDGER: '1', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent }, stdio: ['ignore', 'pipe', 'pipe'] });
   server.stdout.on('data', b => log += b); server.stderr.on('data', b => log += b);
   let ready = false;
   for (let i = 0; i < 150; i++) {
@@ -167,6 +172,7 @@ test('real app surfaces follow the theme together, including nested painted edge
   const size = (width, height) => send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, sid);
   const shot = async name => { const p = await send('Page.captureScreenshot', { format: 'png' }, sid); fs.writeFileSync(path.join(os.tmpdir(), name + '.png'), Buffer.from(p.result.data, 'base64')); };
   await send('Runtime.enable', {}, sid); await size(1200, 900);
+  await send('Network.setCookie', { name: 'chattering', value: TEST_TOKEN, url: base }, sid);
   await send('Page.navigate', { url: base }, sid);
   await until(`typeof timelineGeom !== 'undefined' && timelineGeom?.marks?.length && document.querySelector('.tmark')`);
   // The actual conversation preview: the original missed surface.

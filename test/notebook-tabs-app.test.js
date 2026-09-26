@@ -1,4 +1,8 @@
 'use strict';
+// Local requests sign in like every client (design/69): the test server's
+// install token, sent by consoleFetch on 127.0.0.1 and set as the browser's cookie.
+const { registerConsole, consoleFetch: fetch } = require('./helpers/console-fetch.js');
+const TEST_TOKEN = 'test-install-token';
 // Notebooks kept open in the side list (notebook-tabs.js, design/68): a
 // notebook run here keeps running when the person goes elsewhere, its
 // results land in the document (and on disk), its row says what it is
@@ -42,9 +46,10 @@ test('a notebook runs on while you are elsewhere, and comes back as it was', { t
   fs.writeFileSync(path.join(sessionDir, 'chat.jsonl'), [{ type: 'session', version: 3, id: 'fixture', cwd: work }, msg('p', null, 'user', 'Hello'), msg('a', 'p', 'assistant', 'Hi.')].map(JSON.stringify).join('\n') + '\n');
   const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
   const port = socket.address().port; await new Promise(r => socket.close(r));
+  registerConsole(port, TEST_TOKEN);
   let serverLog = '';
   require('./helpers/first-run.js').answerFirstRun(home); // no first-run modal over the page
-  server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '0', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent }, stdio: ['ignore', 'pipe', 'pipe'] });
+  server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TOKEN: TEST_TOKEN, CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '0', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent }, stdio: ['ignore', 'pipe', 'pipe'] });
   server.stdout.on('data', b => serverLog += b); server.stderr.on('data', b => serverLog += b);
   const base = 'http://127.0.0.1:' + port, key = 'pi:fixture/chat.jsonl';
   let indexed = false;
@@ -84,6 +89,7 @@ test('a notebook runs on while you are elsewhere, and comes back as it was', { t
   };
   await send('Runtime.enable', {}, sid);
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false }, sid);
+  await send('Network.setCookie', { name: 'chattering', value: TEST_TOKEN, url: base }, sid);
   await send('Page.navigate', { url: base + '/#' + encodeURIComponent(key) }, sid);
   await until(`typeof NotebookTabs !== 'undefined' && viewKind === 'conversation' && document.querySelector('#conversationTranscript')?.textContent.includes('Hi.')`, 'the app did not load');
   assert.equal(await evaluate(`sideLayoutOn() && !$('agentsPop').hidden`), true, 'the side column is the default layout');

@@ -115,4 +115,31 @@ function cookieHeader(name, value, req, { maxAge = 2592000 } = {}) {
   return `${name}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${isHttps(req) ? '; Secure' : ''}`;
 }
 
-module.exports = { DEFAULTS, createLimiter, clientAddress, doorOf, isHttps, createAuthLog, securityHeaders, cookieHeader };
+// Is the host a request names one of this machine's? The defence against
+// DNS rebinding: a web page whose name was pointed at this machine sends
+// its own name as Host, so a request for an unknown name is refused before
+// anything else, sign-in included. Accepted: any IP address literal (a
+// rebinding attack needs a name), localhost and *.localhost, this
+// machine's own names (bare, .local, .lan, .home), Tailscale's *.ts.net,
+// and names the install declares (its public URL, CHATTERING_ALLOWED_HOSTS).
+function hostAllowed(hostHeader, { hostnames = [], extra = [] } = {}) {
+  let host = String(hostHeader || '').trim().toLowerCase();
+  if (!host) return true; // HTTP/1.0 clients and raw probes send none; they are not browsers
+  if (host.startsWith('[')) host = host.slice(1, host.indexOf(']'));
+  else host = host.replace(/:\d+$/, '');
+  host = host.replace(/\.$/, '');
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':')) return true;
+  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  if (host.endsWith('.ts.net')) return true;
+  const own = new Set();
+  for (const h of hostnames) {
+    const n = String(h || '').trim().toLowerCase().replace(/\.$/, '');
+    if (!n) continue;
+    const short = n.split('.')[0];
+    for (const v of [n, short, short + '.local', short + '.lan', short + '.home']) own.add(v);
+  }
+  for (const h of extra) { const n = String(h || '').trim().toLowerCase(); if (n) own.add(n); }
+  return own.has(host);
+}
+
+module.exports = { hostAllowed, DEFAULTS, createLimiter, clientAddress, doorOf, isHttps, createAuthLog, securityHeaders, cookieHeader };

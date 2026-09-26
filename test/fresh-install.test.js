@@ -1,4 +1,8 @@
 'use strict';
+// Local requests sign in like every client (design/69): the test server's
+// install token, sent by consoleFetch on 127.0.0.1 and set as the browser's cookie.
+const { registerConsole, consoleFetch: fetch } = require('./helpers/console-fetch.js');
+const TEST_TOKEN = 'test-install-token';
 // A new install is neutral and quiet (TODO item 2, settings version 2): no
 // personal server addresses, and no model call Chattering was not asked
 // for until the owner answers the background-AI question. An install that
@@ -18,6 +22,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function freePort() {
   const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r));
   const port = s.address().port; await new Promise(r => s.close(r));
+  registerConsole(port, TEST_TOKEN);
   return port;
 }
 
@@ -50,7 +55,7 @@ async function boot(t, { prepare } = {}) {
   const port = await freePort();
   let log = '';
   const env = { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), CHATTERING_PI_CLI: pi.cli, PORT: String(port), CHATTERING_TLS_PORT: '0',
-    CHATTERING_HOST: '127.0.0.1', CHATTERING_LAN: '', CHATTERING_TOKEN: '', CHATTERING_PUBLIC_URL: '', CHATTERING_NO_WATCH: '1', CHATTERING_NO_SYNC: '1',
+    CHATTERING_HOST: '127.0.0.1', CHATTERING_LAN: '', CHATTERING_TOKEN: TEST_TOKEN, CHATTERING_PUBLIC_URL: '', CHATTERING_NO_WATCH: '1', CHATTERING_NO_SYNC: '1',
     CHATTERING_CACHE_DIR: path.join(home, '.cache', 'chattering'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'),
     PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent };
   for (const k of ['SPEECH_URL', 'KOKORO_URL', 'KOKORO_VOICE', 'REWRITE_URL', 'REWRITE_MODEL']) delete env[k];

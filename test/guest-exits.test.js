@@ -89,6 +89,16 @@ test('a guest cannot reach past their project through any exit', { skip: !lanIp(
   const lilly = cookieOf(await fetch(remote + '/?token=' + encodeURIComponent(new URL(added.inviteLink).searchParams.get('token')), { redirect: 'manual' }));
   const get = (p, cookie) => fetch(remote + p, { headers: { Cookie: cookie } });
 
+  // DNS rebinding: a page whose name was pointed at this machine sends its
+  // own name as Host. Refused before anything else, even with the owner's
+  // credential, on plain requests and on sockets alike.
+  const http = require('node:http');
+  const raw = (host, headers = {}) => new Promise(resolve => http.get({ host: '127.0.0.1', port: Number(new URL(local).port), path: '/api/users', headers: { host, Authorization: 'Bearer install-tok', ...headers } }, r => { r.resume(); resolve(r.statusCode); }).on('error', () => resolve(0)));
+  assert.equal(await raw('evil.example:' + new URL(local).port), 421, 'a foreign name is refused');
+  assert.equal(await raw('127.0.0.1:' + new URL(local).port), 200, 'an address is ours');
+  assert.equal(await raw(os.hostname()), 200, 'this machine\'s own name is ours');
+  assert.equal(await raw('evil.example', { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==' }), 421, 'and on a socket');
+
   // The owner's token is not in anything a guest or a member reads.
   for (const who of [sam, lilly]) {
     const settings = await (await get('/api/settings', who)).text();
