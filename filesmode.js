@@ -91,15 +91,21 @@ function parseFileLinkTarget(target) {
   return { path: decode(t), fragment: decode(fragment) };
 }
 // `..` never climbs above the root; `~/` is left for the server to expand.
+// Windows paths ("C:\\x\\doc.md", "C:/x") resolve the same way, their drive
+// kept as the root; results use forward slashes, which the server accepts.
 function resolveDocRelative(docPath, target) {
   if (!target || target.startsWith('~/')) return target || '';
-  const out = target.startsWith('/') ? [] : String(docPath).split('/').slice(0, -1).filter(Boolean);
-  for (const seg of target.split('/')) {
+  const t = String(target).replace(/\\/g, '/'), doc = String(docPath).replace(/\\/g, '/');
+  const drive = /^[A-Za-z]:\//.test(t) ? t.slice(0, 2) : /^[A-Za-z]:\//.test(doc) && !t.startsWith('/') ? doc.slice(0, 2) : '';
+  const strip = p => drive && p.slice(0, 2).toUpperCase() === drive.toUpperCase() ? p.slice(2) : p;
+  const absolute = t.startsWith('/') || /^[A-Za-z]:\//.test(t);
+  const out = absolute ? [] : strip(doc).split('/').slice(0, -1).filter(Boolean);
+  for (const seg of strip(t).split('/')) {
     if (!seg || seg === '.') continue;
     if (seg === '..') { out.pop(); continue; }
     out.push(seg);
   }
-  return '/' + out.join('/');
+  return (drive || '') + '/' + out.join('/');
 }
 function headingSlug(value) {
   return value.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/<[^>]*>/g, '')

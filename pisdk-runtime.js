@@ -39,7 +39,7 @@ function loadSdk() {
         // overrides. No watcher: this is a server.
         let themeName = 'light';
         try {
-          const s = JSON.parse(fs.readFileSync(path.join(require('os').homedir(), '.config', 'chattering', 'settings.json'), 'utf8'));
+          const s = JSON.parse(fs.readFileSync(path.join(require('./platform.js').appDirs().config, 'settings.json'), 'utf8'));
           if (s && typeof s.piTheme === 'string' && s.piTheme) themeName = s.piTheme;
         } catch {}
         try { themeMod.initTheme(themeName, false); }

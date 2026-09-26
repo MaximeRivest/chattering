@@ -70,6 +70,9 @@ test('phone shell: bottom bar, sheets, one-row head, back hook, desktop untouche
   assert.equal(await ev(`(()=>{const t=$('chTitle').getBoundingClientRect();return t.width>innerWidth*0.5})()`), true, 'the title has the row');
   assert.equal(await ev(`$('phoneMore').checkVisibility() && ['newLoose','brand','activeBtn','chNew','chMove','barFold'].every(id=>!$(id).checkVisibility())`), true, 'one ⋯ instead of nine controls');
   assert.equal(await ev(`(()=>{const c=$('composerDock').getBoundingClientRect(),b=$('phoneBar').getBoundingClientRect();return Math.abs(c.bottom-b.top)<1})()`), true, 'the composer sits on the bar');
+  // The share control fills in from a request of its own: wait for it, as
+  // the menu lists only what is ready.
+  await until(`!$('shareBtn').hidden`, 'the share control is ready');
   await ev(`$('phoneMore').click()`);
   await until(`!!document.querySelector('.phone-more-menu')`);
   // The fixture's folder is not a project: no "new here", no project page, no file browser.

@@ -40,6 +40,11 @@ test('a relative target resolves against the open document, never above the root
   assert.equal(c.resolveDocRelative(doc, 'other.md'), '/home/u/repo/docs/project/other.md');
   assert.equal(c.resolveDocRelative(doc, './other.md'), '/home/u/repo/docs/project/other.md');
   assert.equal(c.resolveDocRelative(doc, '../adr/0011.md'), '/home/u/repo/docs/adr/0011.md');
+  // A document on Windows: its drive is the root; separators either way.
+  assert.equal(c.resolveDocRelative('C:\\Users\\u\\docs\\a.md', '..\\b.md'), 'C:/Users/u/b.md');
+  assert.equal(c.resolveDocRelative('C:\\Users\\u\\docs\\a.md', 'img/p.png'), 'C:/Users/u/docs/img/p.png');
+  assert.equal(c.resolveDocRelative('C:/u/a.md', '../../../..'), 'C:/', '.. never climbs above the drive');
+  assert.equal(c.resolveDocRelative(doc, 'D:/data/z.csv'), 'D:/data/z.csv');
   assert.equal(c.resolveDocRelative(doc, '../../README.md'), '/home/u/repo/README.md');
   assert.equal(c.resolveDocRelative(doc, '../../../../../../../etc/passwd'), '/etc/passwd', '.. stops at the root');
   assert.equal(c.resolveDocRelative(doc, '/abs/file.md'), '/abs/file.md');

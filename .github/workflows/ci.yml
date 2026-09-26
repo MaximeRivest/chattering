@@ -41,6 +41,15 @@ jobs:
         with:
           chrome-version: stable
 
+      # rat runs notebook cells. Built from a pinned published commit, so the
+      # notebook tests run here too (those needing a newer rat say so and skip).
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: false
+      - name: rat (notebooks)
+        run: go install github.com/MaximeRivest/rat/cmd/rat@a9a74ed1bf317cb0077c8a9ab6f3ce9648f91178 && echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
       - name: Linux walls (bubblewrap, user namespaces)
         if: runner.os == 'Linux'
         run: |

@@ -9,9 +9,12 @@
   const KINDS = new Set(['opened', 'saved', 'read', 'written', 'edited']);
   const PER_PROJECT = 100, PER_ACTOR = 3000;
   const id = f => f.actor + '\0' + f.path;
+  // An absolute local path on any system: /x, C:\x or C:/x, \\server\share.
+  // (Shared with the browser, so no path module.)
+  const isAbsolute = p => typeof p === 'string' && /^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(p);
   const newest = (a, b) => b.at - a.at || a.path.localeCompare(b.path) || a.actor.localeCompare(b.actor);
   function observation(raw) {
-    if (!raw || typeof raw.path !== 'string' || !raw.path.startsWith('/') || raw.path.includes('\0')) return null;
+    if (!raw || typeof raw.path !== 'string' || !isAbsolute(raw.path) || raw.path.includes('\0')) return null;
     const at = Number(raw.at);
     if (!Number.isFinite(at) || at <= 0) return null;
     if (raw.actor != null && !ACTORS.includes(raw.actor)) return null;
@@ -53,7 +56,7 @@
   }
   function forget(state, path, actor = 'human', now = Date.now()) {
     const actors = actor === 'both' ? ACTORS : ACTORS.includes(actor) ? [actor] : [];
-    if (!actors.length || typeof path !== 'string' || !path.startsWith('/')) return false;
+    if (!actors.length || typeof path !== 'string' || !isAbsolute(path)) return false;
     for (const who of actors) {
       const key = id({ path, actor: who });
       const record = state.files.find(f => id(f) === key);

@@ -51,7 +51,13 @@ const agentReadLib = require('./agentread.js');
 const { createModelHealth } = require('./modelhealth.js');
 const delegationLib = require('./delegation.js');
 const { createDelegationCoordinator, inspectDeliverySession, TERMINAL: DELEGATION_TERMINAL } = require('./server-delegations.js');
-const DELEGATION_ROOT = process.env.CHATTERING_DELEGATION_ROOT || path.join(os.homedir(), '.local', 'share', 'chattering', 'delegations');
+// Where Chattering keeps its own files (platform.appDirs: the folders this
+// install always used, or the system's own for a new install) and where Pi
+// keeps its (runtime.piAgentDir: Pi's own rule).
+const DIRS = require('./platform.js').appDirs();
+const PI_AGENT_DIR = require('./runtime.js').piAgentDir();
+const DATA_DIR = DIRS.data, CONFIG_DIR = DIRS.config;
+const DELEGATION_ROOT = process.env.CHATTERING_DELEGATION_ROOT || path.join(DATA_DIR, 'delegations');
 const { execFileWithActivityTimeout } = require('./modelprocess.js');
 
 // Conversation sources. Keys in the index look like "claude:<relPath>".
@@ -60,14 +66,14 @@ const { execFileWithActivityTimeout } = require('./modelprocess.js');
 // user data, not cache: a re-pull can rebuild it, but the peer may be gone.
 const SOURCES = {
   claude: path.join(os.homedir(), '.claude', 'projects'),
-  pi: path.join(os.homedir(), '.pi', 'agent', 'sessions'),
+  pi: path.join(PI_AGENT_DIR, 'sessions'),
   'pi-remote': path.join(os.homedir(), '.pi', 'remote', 'sessions'),
-  mirror: process.env.CHATTERING_MIRROR_DIR || path.join(os.homedir(), '.local', 'share', 'chattering', 'mirrors', 'sessions'),
+  mirror: process.env.CHATTERING_MIRROR_DIR || path.join(DATA_DIR, 'mirrors', 'sessions'),
 };
 // The name this machine goes by in memory documents and towards peers.
 const HOST_NAME = String(process.env.CHATTERING_HOSTNAME || '').trim() || os.hostname();
-const CACHE_DIR = process.env.CHATTERING_CACHE_DIR ? path.resolve(process.env.CHATTERING_CACHE_DIR) : path.join(os.homedir(), '.cache', 'chattering');
-const NOTES_DIR = path.join(os.homedir(), 'notes', 'chattering');
+const CACHE_DIR = path.resolve(DIRS.cache);
+const NOTES_DIR = DIRS.notes;
 const SESS_DIR = path.join(CACHE_DIR, 'sessions');
 const INDEX_FILE = path.join(CACHE_DIR, 'index.json');
 const USAGE_DB_FILE = path.join(CACHE_DIR, 'usage.db');
@@ -107,7 +113,7 @@ const platform = require('./platform.js');
 const runtimeLib = require('./runtime.js');
 const frontDoor = require('./frontdoor.js');
 const signInLimiter = authGuard.createLimiter();
-const signInLog = authGuard.createAuthLog(path.join(os.homedir(), '.local', 'share', 'chattering', 'sign-ins.jsonl'));
+const signInLog = authGuard.createAuthLog(path.join(DATA_DIR, 'sign-ins.jsonl'));
 function requestIp(req) {
   return String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
 }
@@ -173,7 +179,7 @@ function lanLoginPage(error = '') {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Chattering</title>${FAVICON_LINK}
 <style>html,body{margin:0;background:#fff;color:#000;font:18px/1.4 monospace}main{max-width:28rem;margin:12vh auto;padding:1rem}h1{font-size:1.4rem;margin:0 0 .2rem}h1 small{font-weight:400;font-size:.8rem;color:#555}label,input,button{display:block;width:100%;box-sizing:border-box}input,button{font:inherit;padding:.6rem;margin:.4rem 0;border:2px solid #000;background:#fff;color:#000}button{font-weight:700}p{margin:0 0 1rem}.err{font-weight:700}</style></head>
 <body><main><h1>Chattering <small>by Rockfrog</small></h1><p>Enter your token for this Chattering (your invite link, or the install token from settings → machines). After this, the device stays signed in as you.</p>
-<p><small>On this machine itself: the install token is in <code>~/.cache/chattering/lan-token</code>, and <code>open.sh</code> signs the browser in with it.</small></p>
+<p><small>On this machine itself: the install token is the file <code>lan-token</code> in Chattering's cache folder, and the Chattering launcher signs the browser in with it.</small></p>
 ${error ? `<p class="err">${error.replace(/</g, '&lt;')}</p>` : ''}
 <form method="post" action="/login"><label for="token">token</label><input id="token" name="token" autocomplete="off" autofocus><button type="submit">open Chattering</button></form></main></body></html>`;
 }
@@ -277,7 +283,7 @@ if (process.env.CHATTERING_NO_FILE_HISTORY !== '1') {
     const { FileArchive } = require('./file-archive.js');
     const budgetMB = Number(process.env.CHATTERING_FILE_HISTORY_MB || 512);
     if (!Number.isFinite(budgetMB) || budgetMB < 1) throw new Error('CHATTERING_FILE_HISTORY_MB must be at least 1');
-    fileArchive = new FileArchive(path.join(process.env.CHATTERING_FILE_HISTORY_DIR || path.join(os.homedir(), '.local/share/chattering/file-history'), 'versions.sqlite'), { budget: budgetMB * 1024 * 1024 });
+    fileArchive = new FileArchive(path.join(process.env.CHATTERING_FILE_HISTORY_DIR || path.join(DATA_DIR, 'file-history'), 'versions.sqlite'), { budget: budgetMB * 1024 * 1024 });
   } catch (e) { fileArchiveError = e.message; console.error('File history unavailable:', e.message); }
 }
 let checkpointStore = null, changeReviews = null;
@@ -422,7 +428,7 @@ function refreshUsageForKey(key) {
 function usageAuthTypes() {
   const out = {};
   try {
-    const auth = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.pi', 'agent', 'auth.json'), 'utf8'));
+    const auth = JSON.parse(fs.readFileSync(path.join(PI_AGENT_DIR, 'auth.json'), 'utf8'));
     for (const [provider, value] of Object.entries(auth || {})) {
       if (value && typeof value === 'object' && typeof value.type === 'string') out[provider] = value.type;
     }
@@ -964,7 +970,7 @@ function receiverFor(identity) {
 // phone, e-ink) and never across people. routes remember, per branch point,
 // the path last read below it; cols the answer version last shown per
 // answer column. Only ids are kept: reading state is small and private.
-const READING_FILE = path.join(os.homedir(), '.local', 'share', 'chattering', 'reading.json');
+const READING_FILE = path.join(DATA_DIR, 'reading.json');
 let readingState = {};
 try { readingState = JSON.parse(fs.readFileSync(READING_FILE, 'utf8')) || {}; } catch {}
 let readingSaveTimer = null;
@@ -1015,7 +1021,7 @@ function saveReading(key, identity, body) {
 // agent wrote (a version per tool call, from the checkpoints), or a widget's
 // HTML inside a tool call. The version on screen follows the reader's head.
 const previewLib = require('./preview.js');
-const previewCaps = new previewLib.Capabilities(path.join(os.homedir(), '.local', 'share', 'chattering', 'preview-secret'));
+const previewCaps = new previewLib.Capabilities(path.join(DATA_DIR, 'preview-secret'));
 const ARTIFACT_SKIP = new Set(['.git', 'node_modules', '.venv', '.direnv', 'target', '__pycache__']);
 const WIDGET_MAX = 512 * 1024;
 const artifactNetwork = () => (appSettings.artifactNetwork === 'libraries' ? 'libraries' : 'open');
@@ -1319,7 +1325,7 @@ function artifactsOfMessages(messages, cwd) {
 }
 
 async function indexFile(source, relPath, stat) {
-  const key = source + ':' + relPath;
+  const key = sessionKey(source, relPath);
   const absPath = path.join(SOURCES[source], relPath);
   const prev = index[key];
   try {
@@ -1475,7 +1481,7 @@ async function fullScan() {
   for (const [source, baseDir] of Object.entries(SOURCES)) {
     for await (const relPath of walk(baseDir, baseDir)) {
       if (!isMainTranscript(relPath)) continue;
-      const key = source + ':' + relPath;
+      const key = sessionKey(source, relPath);
       seen.add(key);
       let stat;
       try { stat = await fsp.stat(path.join(baseDir, relPath)); } catch { continue; }
@@ -1618,7 +1624,7 @@ const treeWatchers = new Map(); // source → watchTree handle
 function watch() {
   for (const [source, baseDir] of Object.entries(SOURCES)) {
     if (!fs.existsSync(baseDir)) continue;
-    treeWatchers.set(source, watchTree(baseDir, rel => scheduleIndex(source + ':' + rel)));
+    treeWatchers.set(source, watchTree(baseDir, rel => scheduleIndex(sessionKey(source, rel))));
     console.log('watching', baseDir);
   }
   setInterval(() => { sweepIndexDrift().catch(e => console.error('drift sweep failed:', e.message)); }, DRIFT_SWEEP_MS);
@@ -2075,10 +2081,15 @@ function parseTreeEntries(kind, raw) {
   return out;
 }
 
+// A conversation's key: its source and its path inside that source, with
+// forward slashes on every system (keys travel in URLs, records and sync;
+// on Linux this is the path as it always was). absPathForKey turns one
+// back into a native path.
+function sessionKey(source, rel) { return source + ':' + platform.toPortable(rel); }
 function keyForSessionPath(p) {
   for (const [source, base] of Object.entries(SOURCES)) {
     const rel = path.relative(base, p);
-    if (!rel.startsWith('..') && index[source + ':' + rel]) return source + ':' + rel;
+    if (platform.isInside(p, base) && index[sessionKey(source, rel)]) return sessionKey(source, rel);
   }
   return null;
 }
@@ -2403,7 +2414,7 @@ async function indexNewSessionFile(newAbs) {
     const rel = path.relative(base, newAbs);
     if (rel.startsWith('..') || path.isAbsolute(rel)) continue;
     await indexFile(source, rel, await fsp.stat(newAbs));
-    return source + ':' + rel;
+    return sessionKey(source, rel);
   }
   throw new Error('pi wrote the fork outside the known session folders: ' + newAbs);
 }
@@ -2424,7 +2435,7 @@ async function markForkTitle(newKey, srcEntry) {
 }
 
 // Pi names a session folder after the working directory.
-const piSessionDirFor = cwd => '--' + String(cwd || '').replace(/^[\/\\]+/, '').replace(/[\/\\]/g, '-') + '--';
+const piSessionDirFor = cwd => runtimeLib.piSessionDirName(cwd); // Pi's own naming
 
 // A mirrored conversation forks into a conversation OF THIS MACHINE: the
 // copy lands in the local session folder of the project's local checkout
@@ -3355,7 +3366,7 @@ async function delegationOwnerForFile(file) {
 function delegationSessionKey(file) {
   if (!file) return null;
   for (const [source, base] of Object.entries(SOURCES)) {
-    const rel = path.relative(base, file), key = source + ':' + rel;
+    const rel = path.relative(base, file), key = sessionKey(source, rel);
     if (rel && !rel.startsWith('..') && !path.isAbsolute(rel) && index[key]) return key;
   }
   return null;
@@ -4108,7 +4119,7 @@ function recentFilesChanged() {
 }
 function recentFilesTouch(p, { project = '', kind = 'opened', actor = 'human', key = '' } = {}) {
   const abs = String(p || '');
-  if (!abs.startsWith('/')) return;
+  if (!path.isAbsolute(abs)) return;
   const have = recentFileState.files.find(f => f.path === abs && f.actor === actor);
   const at = Math.max(Date.now(), (recentFileState.files.find(f => f.actor === actor)?.at || 0) + 1);
   // Update every visit: opening A, then B, then A must put A first even
@@ -4680,7 +4691,7 @@ const segHash = (seg, title) => crypto.createHash('sha256').update('v1\x00' + ti
 const TREES_DIR = path.join(CACHE_DIR, 'trees');
 fs.mkdirSync(TREES_DIR, { recursive: true });
 const treePathFor = key => path.join(TREES_DIR, key.replace(/[:\/\\]/g, '__') + '.json');
-const SETTINGS_FILE = path.join(os.homedir(), '.config', 'chattering', 'settings.json');
+const SETTINGS_FILE = path.join(CONFIG_DIR, 'settings.json');
 const THEMES_DIR = themesLib.defaultThemeDir(os.homedir());
 // ---- captured system prompts ----
 // The prompt-capture extension (extensions/prompt-capture.ts, loaded from
@@ -4688,7 +4699,7 @@ const THEMES_DIR = themesLib.defaultThemeDir(os.homedir());
 // of each turn twice: "pending" as assembled before the turn, "wire" as found
 // in the real provider payload. The server only reads those files; it never
 // rebuilds the prompt itself, so what the UI shows is what the model saw.
-const SYSPROMPT_CACHE_DIR = path.join(process.env.PI_AGENT_DIR || path.join(os.homedir(), '.pi', 'agent'), 'cache', 'sysprompt');
+const SYSPROMPT_CACHE_DIR = path.join(process.env.PI_AGENT_DIR || PI_AGENT_DIR, 'cache', 'sysprompt');
 async function capturedSystemPrompt(key, which) {
   const entry = index[key];
   if (!entry || !entry.sessionId) throw new Error('This conversation has no pi session id.');
@@ -4701,11 +4712,11 @@ async function capturedSystemPrompt(key, which) {
   return { which, captured: true, file, at: m ? m[2] : null, model: m && m[3] ? m[3] : null, text: m ? raw.slice(m[0].length) : raw };
 }
 
-const PI_SETTINGS_FILE = path.join(os.homedir(), '.pi', 'agent', 'settings.json');
-const PI_AUTH_FILE = path.join(os.homedir(), '.pi', 'agent', 'auth.json');
-const PI_MODELS_FILE = path.join(os.homedir(), '.pi', 'agent', 'models.json');
+const PI_SETTINGS_FILE = path.join(PI_AGENT_DIR, 'settings.json');
+const PI_AUTH_FILE = path.join(PI_AGENT_DIR, 'auth.json');
+const PI_MODELS_FILE = path.join(PI_AGENT_DIR, 'models.json');
 const CLAUDE_CODE_CRED_FILE = path.join(os.homedir(), '.claude', '.credentials.json');
-const CLAUDE_CODE_EXT = path.join(os.homedir(), '.pi', 'agent', 'extensions', 'claude-code-fable-5', 'index.ts');
+const CLAUDE_CODE_EXT = path.join(PI_AGENT_DIR, 'extensions', 'claude-code-fable-5', 'index.ts');
 // Settings version 2 (settings.js): a machine that ran Chattering before
 // keeps exactly what it had; a new one starts neutral and is asked before
 // any background model call. "Ran before" = any of its data exists. This
@@ -4721,7 +4732,7 @@ function loadAppSettings() {
     catch { return false; }
   };
   const priorInstall = exists || fs.existsSync(INDEX_FILE)
-    || fs.existsSync(path.join(os.homedir(), '.config', 'chattering', 'users.json')) || notesHaveData();
+    || fs.existsSync(path.join(CONFIG_DIR, 'users.json')) || notesHaveData();
   const { settings, migrated } = settingsLib.migrateSettings(raw, { priorInstall });
   const normalized = settingsLib.normalizeSettings(settings);
   if (!migrated) return normalized;
@@ -4815,8 +4826,8 @@ function saveAppSettings() {
 const usersLib = require('./users.js');
 const accessLib = require('./access.js');
 const { PresenceBook } = require('./presence.js');
-const USERS_FILE = path.join(os.homedir(), '.config', 'chattering', 'users.json');
-const INSTALL_KEY_FILE = path.join(os.homedir(), '.config', 'chattering', 'install-key.json');
+const USERS_FILE = path.join(CONFIG_DIR, 'users.json');
+const INSTALL_KEY_FILE = path.join(CONFIG_DIR, 'install-key.json');
 const ACCESS_FILE = path.join(NOTES_DIR, 'access.json');
 const AUTHORSHIP_FILE = path.join(NOTES_DIR, 'authorship.jsonl');
 function accountPersonName() {
@@ -4892,8 +4903,8 @@ function assertNotGuest(identity, what = 'this') {
 // when the proxy or the provider list changed.
 const sandboxLib = require('./sandbox.js');
 const { createKeyProxy } = require('./keyproxy.js');
-const GUESTS_DIR = path.join(os.homedir(), '.local', 'share', 'chattering', 'guests');
-const OWNER_AGENT_DIR = process.env.PI_CODING_AGENT_DIR || path.join(os.homedir(), '.pi', 'agent');
+const GUESTS_DIR = path.join(DATA_DIR, 'guests');
+const OWNER_AGENT_DIR = PI_AGENT_DIR;
 const BWRAP = sandboxLib.findBwrap();
 // Resource caps (design/55): one systemd slice per guest. Probed once, the
 // first time a guest needs walls: a user manager must answer, or the walls
@@ -5101,7 +5112,7 @@ function projectVisible(identity, name) { return canDo(identity, 'see', { projec
 // projects visible. The same link, claimed from another install with
 // `chattering join`, also pairs that install as a sync peer.
 const syncLib = require('./sync.js');
-const PEERS_FILE = path.join(os.homedir(), '.config', 'chattering', 'peers.json');
+const PEERS_FILE = path.join(CONFIG_DIR, 'peers.json');
 const MIRROR_NOTES_DIR = path.join(NOTES_DIR, 'mirrors');
 const MIRROR_MANIFEST_FILE = path.join(path.dirname(SOURCES.mirror), 'manifest.json');
 // key -> { peer, projectId, originKey, notePath, notedAt, host }: what each
@@ -5264,11 +5275,13 @@ async function joinRemoteProject({ link, name, folder }) {
 function projectOfPath(abs) {
   const p = String(abs || '');
   let best = '', bestName = null;
-  const consider = (cwd, name) => { if (cwd && (p === cwd || p.startsWith(cwd.replace(/\/$/, '') + '/')) && cwd.length > best.length) { best = cwd; bestName = name; } };
+  // The deepest project folder that contains the path (platform.isInside:
+  // separators and letter case as this system has them).
+  const consider = (cwd, name) => { if (cwd && platform.isInside(p, cwd) && cwd.length > best.length) { best = cwd; bestName = name; } };
   for (const [name, rec] of Object.entries(createdProjects)) consider(rec.cwd, canonicalProjectName(name));
   for (const [key, e] of Object.entries(index)) if (e.cwd) consider(e.cwd, projectNameOf(e.cwd, key));
   if (bestName) return bestName;
-  const m = p.match(/\/Projects\/([^/]+)/i);
+  const m = p.match(/[\\/]Projects[\\/]([^\\/]+)/i);
   return m ? canonicalProjectName(m[1]) : null;
 }
 function assertPathAccess(identity, abs, right) {
@@ -7134,7 +7147,7 @@ function absPathForKey(key) {
   if (key === 'chattering:internal') return INTERNAL_USAGE_FILE;
   const i = key.indexOf(':');
   const base = SOURCES[key.slice(0, i)];
-  return base ? path.join(base, key.slice(i + 1)) : null;
+  return base ? path.join(base, platform.fromPortable(key.slice(i + 1))) : null;
 }
 
 function renderEpicMarkdown(epic, story, sessions) {
@@ -8635,7 +8648,7 @@ function makeDiffEvent(key, entry, pathValue, kind, oldText, newText, ts, editIn
   if (String(pathValue).startsWith('~/')) pathValue = path.join(os.homedir(), String(pathValue).slice(2));
   else if (!path.isAbsolute(String(pathValue)) && entry.cwd) pathValue = path.resolve(entry.cwd, String(pathValue));
   const oldLines = lineCount(oldText), newLines = lineCount(newText);
-  const relativePath = entry.cwd && String(pathValue).startsWith(entry.cwd + '/')
+  const relativePath = entry.cwd && platform.isInside(String(pathValue), entry.cwd) && String(pathValue) !== entry.cwd
     ? String(pathValue).slice(entry.cwd.length + 1)
     : path.basename(String(pathValue));
   const id = diffEventHash([key, pathValue, kind, ts, editIndex, oldText, newText]);
@@ -10189,7 +10202,7 @@ async function filesCreateReadmeResponse(body) {
 // ---- what became of AI proposals in files ----
 // What became of AI proposals in files (ai-feedback.js): durable, next to
 // the saved file history, not in the rebuildable cache.
-const AI_FEEDBACK_FILE = path.join(os.homedir(), '.local', 'share', 'chattering', 'ai-feedback.jsonl');
+const AI_FEEDBACK_FILE = path.join(DATA_DIR, 'ai-feedback.jsonl');
 const AI_FEEDBACK_MAX_BYTES = 4 * 1024 * 1024;
 const aiFeedbackLog = new aiFeedback.FeedbackLog(AI_FEEDBACK_FILE);
 // Which prompts produced a command's answer: the command catalog as a whole
@@ -12629,7 +12642,7 @@ function includeFlag(include, name) {
 // replaces it, removeSections drops named sections, tools replaces the tool
 // set. Chattering only reads and writes the same JSON files with the same
 // validation, so the TUI and this UI stay one source of truth.
-const MODES_DIR = path.join(os.homedir(), '.pi', 'agent', 'modes');
+const MODES_DIR = path.join(PI_AGENT_DIR, 'modes');
 const SNIPPET_USES_FILE = path.join(CACHE_DIR, 'snippet-uses.json');
 const MODE_SECTIONS = ['available_tools', 'custom_tools_note', 'guidelines', 'pi_docs', 'append_prompt', 'project_context', 'skills', 'date', 'cwd'];
 const BUILTIN_MODES = [
@@ -14279,8 +14292,8 @@ const voiceActions = require('./voice-actions.js');
 const { VoiceWindow, clampWindowSeconds } = require('./voice-window.js');
 const TYPESAFE_URL = process.env.TYPESAFE_URL || 'https://api.typesafe.ai/v1/systemone';
 const VOICE_JEV_MODEL = process.env.CHATTERING_VOICE_JEV_MODEL || 'jev-latest';
-const TYPESAFE_KEY_FILE = path.join(os.homedir(), '.config', 'chattering', 'typesafe-api-key');
-const VOICE_LOG_FILE = path.join(os.homedir(), '.local', 'share', 'chattering', 'voice-commands.jsonl');
+const TYPESAFE_KEY_FILE = path.join(CONFIG_DIR, 'typesafe-api-key');
+const VOICE_LOG_FILE = path.join(DATA_DIR, 'voice-commands.jsonl');
 const VOICE_DECIDE_TIMEOUT_MS = 8000;
 const voiceDecisions = new Map(); // id → the logged decision, for its outcome (recent only)
 
@@ -15355,7 +15368,7 @@ async function handleRequest(req, res) {
       // "Where was I?" — the most recent session whose cwd is (or contains) dir.
       const dir = u.searchParams.get('dir') || '';
       const hits = Object.entries(index)
-        .filter(([, e]) => e.cwd && (e.cwd === dir || e.cwd.startsWith(dir + '/')))
+        .filter(([, e]) => e.cwd && platform.isInside(e.cwd, dir))
         .sort((a, b) => (b[1].lastTs || '').localeCompare(a[1].lastTs || ''));
       if (!hits.length) return json(res, 404, { error: 'no sessions for this directory' });
       const [key, entry] = hits[0];

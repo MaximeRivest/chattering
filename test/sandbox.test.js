@@ -86,9 +86,17 @@ test('for real: inside the walls, the home is empty but the project, git, node a
   assert.equal(run('cat hello.txt'), 'hi');
   assert.equal(run('echo more >> hello.txt; cat hello.txt'), 'hi\nmore', 'the project is writable');
   assert.equal(fs.readFileSync(path.join(project, 'hello.txt'), 'utf8').trim(), 'hi\nmore', 'writes land on the real disk, owned by the account');
-  assert.equal(run('ls -a ~ | tr "\\n" " "').trim(), '. .. .cache Projects', 'the home shows only the paths to the project and to the Chattering code');
-  assert.equal(run('ls ~/Projects | tr "\\n" " "').trim(), 'chattering', 'sibling projects do not exist');
-  assert.match(run('echo x > ~/Projects/chattering/should-fail 2>&1'), /Read-only file system/);
+  // What exists in the empty home: the first folder on the way to the
+  // project and to the Chattering code (when they live under the home),
+  // wherever this checkout happens to be.
+  const code = path.join(__dirname, '..');
+  const tops = [project, code].filter(p => p.startsWith(home + path.sep)).map(p => path.relative(home, p).split(path.sep)[0]);
+  assert.equal(run('ls -a ~ | LC_ALL=C sort | tr "\\n" " "').trim(), ['.', '..', ...new Set(tops)].sort().join(' '), 'the home shows only the paths to the project and to the Chattering code');
+  if (code.startsWith(home + path.sep)) {
+    const codeParent = path.dirname(code);
+    assert.equal(run(`ls ${JSON.stringify(codeParent)} | tr "\\n" " "`).trim(), path.basename(code), 'siblings of the code do not exist');
+    assert.match(run(`echo x > ${JSON.stringify(path.join(code, 'should-fail'))} 2>&1`), /Read-only file system/);
+  }
   assert.match(run('cat ~/.ssh/config; cat ~/.pi/agent/auth.json'), /No such file/);
   assert.doesNotMatch(run('cat ~/.ssh/config 2>&1'), /Host /);
   assert.match(run('node -e "console.log(1+1)"'), /^2$/);

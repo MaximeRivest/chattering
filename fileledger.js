@@ -359,7 +359,7 @@ class FileLedger {
 }
 
 function relOf(p, root) {
-  if (root && (p === root || p.startsWith(root + '/'))) return p.slice(root.length + 1) || path.basename(p);
+  if (root && require('./platform.js').isInside(p, root)) return require('./platform.js').toPortable(path.relative(root, p)) || path.basename(p);
   return p.replace(/^\/home\/[^/]+\//, '~/');
 }
 

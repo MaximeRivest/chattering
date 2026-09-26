@@ -78,7 +78,8 @@ test('a notebook runs on while you are elsewhere, and comes back as it was', { t
     return out.result?.result?.value;
   };
   const until = async (expr, what) => {
-    for (let i = 0; i < 160; i++) { if (await evaluate(expr)) return; await new Promise(r => setTimeout(r, 50)); }
+    // A page still loading may not define what the condition names yet.
+    for (let i = 0; i < 160; i++) { if (await evaluate(`(()=>{try{return !!(${expr})}catch{return false}})()`)) return; await new Promise(r => setTimeout(r, 50)); }
     assert.fail(what + '\n' + exceptions.join('\n'));
   };
   await send('Runtime.enable', {}, sid);

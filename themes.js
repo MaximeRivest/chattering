@@ -21,7 +21,7 @@ const REQUIRED_COLOR_TOKENS = [
 ];
 
 function defaultThemeDir(home) {
-  return path.join(home, '.config', 'chattering', 'themes');
+  return path.join(require('./platform.js').appDirs(process.env, home).config, 'themes');
 }
 
 function validThemeId(id) {

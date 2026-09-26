@@ -12,7 +12,7 @@ const RESUMABLE = new Set(['failed', 'lost']);
 const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 function rootPath(options = {}) {
-  return path.resolve(options.root || process.env.PI_DELEGATION_ROOT || path.join(os.homedir(), '.local/share/chattering/delegations'));
+  return path.resolve(options.root || process.env.PI_DELEGATION_ROOT || path.join(require('./platform.js').appDirs().data, 'delegations'));
 }
 function taskDir(root, id) {
   if (typeof id !== 'string' || !ID.test(id)) throw new Error('Invalid delegation ID');

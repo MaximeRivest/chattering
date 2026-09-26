@@ -459,7 +459,7 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
 
   // Settings offer the choice; picking the top bar restores everything at once.
   await evaluate(`showSettings('appearance')`);
-  await until(`!!document.querySelector('input[name=setLayout][value=top]')`);
+  await until(`!!document.querySelector('input[name=setLayout][value=top]') && !!document.querySelector('select#setAppFont')`);
   await evaluate(`$('setAppFont').value='sans';$('setAppFont').dispatchEvent(new Event('change'))`);
   assert.equal(await evaluate(`localStorage.getItem('chattering.font')`), 'sans');
   assert.match(await evaluate(`getComputedStyle(document.body).fontFamily`), /system-ui/);

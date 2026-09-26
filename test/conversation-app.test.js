@@ -436,7 +436,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   const toolbar = () => evaluate(`document.querySelector('.mrmd-cell-toolbar')?.textContent || ''`);
   assert.match(await toolbar(), /^✓ 1ms✦▶ Run$/, 'the one-shot run above left its verdict');
   await evaluate(`document.querySelector('.mrmd-cell-btn-run').click()`);
-  const until = async (expr, what) => { for (let i = 0; i < 100; i++) { if (await evaluate(expr)) return; await new Promise(r => setTimeout(r, 50)); } assert.fail(what); };
+  const until = async (expr, what) => { for (let i = 0; i < 100; i++) { if (await evaluate(`(()=>{try{return !!(${expr})}catch{return false}})()`)) return; await new Promise(r => setTimeout(r, 50)); } assert.fail(what); };
   await until(`!!window.runStream`, 'the run request was not made');
   assert.match(await toolbar(), /^running · \d+s■ Stop$/);
   await evaluate(`emit({ type: 'output', text: 'step 1 of 3\\n' })`);

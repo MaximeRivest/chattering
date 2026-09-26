@@ -130,4 +130,20 @@ function piCommand(args = [], { env = process.env } = {}) {
 // The same as one argv array (for terminals, which take a command line).
 function piArgv(args = [], opts) { const c = piCommand(args, opts); return [c.file, ...c.args]; }
 
-module.exports = { PI_TESTED_VERSION, PI_PACKAGE, BUNDLED_PI, isPiPackage, locatePi, piPackageDir, piVersion, piCliPath, nodePath, piCommand, piArgv };
+// The folder Pi keeps a working directory's sessions in, named exactly as
+// Pi names it (session-manager getDefaultSessionDirPath): one leading
+// separator dropped, then every / \\ and : a dash. "C:\\Users\\x" and
+// "/home/x" both give a valid folder name on every system.
+function piSessionDirName(cwd) {
+  return '--' + path.resolve(String(cwd || '.')).replace(/^[/\\]/, '').replace(/[/\\:]/g, '-') + '--';
+}
+
+// Pi's own folder (settings, auth, sessions, extensions, modes), by Pi's
+// rule (config.js getAgentDir): PI_CODING_AGENT_DIR, else ~/.pi/agent.
+function piAgentDir(env = process.env, home = os.homedir()) {
+  const named = env.PI_CODING_AGENT_DIR;
+  if (named) return named === '~' ? home : named.startsWith('~/') || named.startsWith('~\\') ? path.join(home, named.slice(2)) : path.resolve(named);
+  return path.join(home, '.pi', 'agent');
+}
+
+module.exports = { piAgentDir, piSessionDirName, PI_TESTED_VERSION, PI_PACKAGE, BUNDLED_PI, isPiPackage, locatePi, piPackageDir, piVersion, piCliPath, nodePath, piCommand, piArgv };

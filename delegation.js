@@ -67,9 +67,9 @@ async function launchDelegation(spec, options = {}) {
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   const dir = S.taskDir(root, id);
   fs.mkdirSync(dir, { mode: 0o700 });
-  const customRoot = options.root || root !== path.join(os.homedir(), '.local/share/chattering/delegations');
+  const customRoot = options.root || root !== path.join(require('./platform.js').appDirs().data, 'delegations');
   const sessionDir = options.sessionDir ? path.resolve(options.sessionDir) : customRoot
-    ? path.join(root, 'sessions') : path.join(os.homedir(), '.pi/agent/sessions/--delegated--');
+    ? path.join(root, 'sessions') : path.join(require('./runtime.js').piAgentDir(), 'sessions', '--delegated--');
   fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
   const sessionPath = path.join(sessionDir, `${new Date(now).toISOString().replace(/[:.]/g, '-')}_${id}.jsonl`);
   const outputDir = path.join(dir, 'output');

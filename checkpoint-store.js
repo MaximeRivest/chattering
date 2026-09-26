@@ -31,7 +31,7 @@ function git(args, { cwd, input, env, timeout = 15000, max = 32 * 1024 * 1024 } 
   });
 }
 class CheckpointStore {
-  constructor(dir = process.env.CHATTERING_CHECKPOINT_DIR || path.join(os.homedir(), '.local/share/chattering/checkpoints')) {
+  constructor(dir = process.env.CHATTERING_CHECKPOINT_DIR || path.join(require('./platform.js').appDirs().data, 'checkpoints')) {
     this.dir = path.resolve(dir); fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 }); this.dir = fs.realpathSync(this.dir); fs.chmodSync(this.dir, 0o700);
     this.db = new DatabaseSync(path.join(this.dir, 'metadata.sqlite'));
     fs.chmodSync(path.join(this.dir, 'metadata.sqlite'), 0o600);

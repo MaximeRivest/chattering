@@ -406,7 +406,7 @@ function createRecords(deps) {
     let rows = Object.entries(idx).filter(([, e]) => e);
     let scope = 'all projects';
     if (project) { rows = rows.filter(([k, e]) => projectNameOf(e.cwd, k) === project); scope = project; }
-    else if (dir && flag(params.underDir)) { rows = rows.filter(([, e]) => e.cwd && (e.cwd === dir || e.cwd.startsWith(dir + '/'))); scope = 'under ' + dir; }
+    else if (dir && flag(params.underDir)) { rows = rows.filter(([, e]) => e.cwd && require('./platform.js').isInside(e.cwd, dir)); scope = 'under ' + dir; }
     if (since) rows = rows.filter(([, e]) => String(e.lastTs || '') >= since);
     rows.sort((a, b) => String(b[1].lastTs || '').localeCompare(String(a[1].lastTs || '')));
     const page = rows.slice(0, limit);
@@ -563,7 +563,7 @@ function createRecords(deps) {
     if (!dir) throw new Error('here needs a folder');
     const idx = index();
     const hits = Object.entries(idx)
-      .filter(([, e]) => e && e.cwd && (e.cwd === dir || e.cwd.startsWith(dir + '/')))
+      .filter(([, e]) => e && e.cwd && require('./platform.js').isInside(e.cwd, dir))
       .sort((a, b) => String(b[1].lastTs || '').localeCompare(String(a[1].lastTs || '')));
     if (!hits.length) return { text: `No sessions found under ${dir}. Run: ${cli} projects`, count: 0 };
     const [key, e] = hits[0];

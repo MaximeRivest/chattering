@@ -44,7 +44,7 @@ function findBwrap({ env = process.env, exists = fs.existsSync } = {}) {
 }
 
 // Pi names a session folder after the working directory.
-const piSessionDirName = cwd => '--' + String(cwd || '').replace(/^[\/\\]+/, '').replace(/[\/\\]/g, '-') + '--';
+const { piSessionDirName } = require('./runtime.js'); // Pi's own naming
 
 // The session folders of one project: every folder under the sessions
 // root whose conversations ran inside the project (Pi's encoding cannot
