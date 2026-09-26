@@ -55,7 +55,7 @@ body.side-layout.artifact-open > #filesToggle { right: calc(var(--art-col) + 12p
 }
 /* Without the side layout: a sheet over the right of the screen. */
 body:not(.side-layout).artifact-open > #artifactPane { position: fixed; z-index: 45; top: 0; right: 0; bottom: 0; width: min(var(--art-w, min(56vw, 900px)), calc(100vw - 48px)); box-shadow: -8px 0 24px var(--shadow-color); }
-#artifactPane.art-max { position: fixed !important; z-index: 60; inset: 0 !important; width: auto !important; }
+#artifactPane.art-max { position: fixed !important; z-index: 60; inset: 0 !important; width: auto !important; height: auto !important; border-radius: 0; }
 #artifactPane.art-dragging .art-frame { pointer-events: none; }
 .art-resize { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 2; }
 .art-resize:focus-visible { outline: 2px solid var(--accent); }
@@ -90,6 +90,35 @@ body.artifact-open #artifactPane { container-type: inline-size; }
 .art-media img, .art-media video { max-width: 100%; max-height: 100%; }
 .art-read { position: absolute; inset: 0; overflow: auto; padding: 16px 20px 40px; }
 .art-read pre { white-space: pre-wrap; font: 13px/1.5 var(--font-mono); margin: 0; }
+
+/* ---- floating (picture in picture) ----
+   The same panel as a small window over the page: it takes no column, so
+   the conversation keeps its full width underneath. The head moves it, the
+   corner sizes it; the script keeps it whole on screen (--fx … --fh). Its
+   shape is a floating preview's (design/surfaces.css). Its
+   head keeps only the title and close, dock and full screen. */
+.art-float-grip { display: none; }
+body.artifact-float #artifactPane { display: flex; flex-direction: column; position: fixed; z-index: 52; left: var(--fx, auto); top: var(--fy, 60px); right: auto; bottom: auto; width: var(--fw, 420px); height: var(--fh, 320px); min-width: 0; background: var(--bg); border: 1px solid var(--border-strong); box-shadow: 0 10px 32px var(--shadow-color); overflow: hidden; container-type: inline-size; }
+body.artifact-float #artifactPane .art-resize,
+body.artifact-float #artifactPane .art-versions,
+body.artifact-float #artifactPane .art-sub,
+body.artifact-float #artifactPane .art-newtab,
+body.artifact-float #artifactPane [data-art-act="ask"],
+body.artifact-float #artifactPane [data-art-act="reload"] { display: none; }
+body.artifact-float #artifactPane .art-head { flex-wrap: nowrap; min-height: 0; padding: 2px 4px 2px 8px; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+body.artifact-float #artifactPane .art-titles { flex-basis: auto; }
+body.artifact-float #artifactPane .art-title { font-size: var(--fs-meta); }
+body.artifact-float #artifactPane .art-head button { min-height: 28px; padding: 0 6px; background: transparent; border-color: transparent; }
+body.artifact-float #artifactPane.art-dragging .art-head { cursor: grabbing; }
+body.artifact-float #artifactPane.art-dragging { user-select: none; }
+body.artifact-float .art-media { padding: 0; }
+body.artifact-float .art-float-grip { display: block; position: absolute; right: 0; bottom: 0; z-index: 3; width: 18px; height: 18px; cursor: nwse-resize; touch-action: none; background: linear-gradient(135deg, transparent 55%, var(--border-strong) 55% 62%, transparent 62% 74%, var(--border-strong) 74% 81%, transparent 81%); }
+body.artifact-float .art-float-grip:focus-visible { outline: 2px solid var(--accent); }
+@media (pointer: coarse) {
+  body.artifact-float .art-float-grip { width: 30px; height: 30px; }
+  body.artifact-float #artifactPane .art-head button { min-height: 38px; min-width: 38px; }
+}
+:root[data-theme-mode="binary"] body.artifact-float #artifactPane { border: 2px solid var(--text); box-shadow: none; }
 
 /* ---- phones and e-ink ---- */
 @media (max-width: 700px) {

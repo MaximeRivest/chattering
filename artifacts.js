@@ -235,14 +235,82 @@
   }
 
   // ---- the panel ------------------------------------------------------------
-  let pane = null, state = null, paneBridge = null, resolveSeq = 0;
+  // The panel is docked (the right column, or a sheet on phones) or floating:
+  // a small window over the page, picture in picture, that stays while the
+  // person reads on, scrolls, or goes to another conversation or page. It is
+  // the same element either way, so a page or a video keeps running when it
+  // moves between the two.
+  let pane = null, state = null, paneBridge = null, resolveSeq = 0, floating = false;
   const stateKey = key => 'chattering.artifact.v1:' + key;
+  const FLOAT_KEY = 'chattering.artifact.float', FLOAT_MIN_W = 220, FLOAT_MIN_H = 150;
+  // floatWant: where the person put it (saved per device); floatGeo: that,
+  // fitted to the window now. A window made smaller and big again gives the
+  // chosen place back.
+  let floatGeo = null, floatWant = null;
+  // The room a floating window may use: the window less the phone's bottom bar.
+  function floatBounds() {
+    const bar = document.getElementById('phoneBar');
+    const barTop = bar && !bar.hidden && bar.getClientRects().length ? bar.getBoundingClientRect().top : window.innerHeight;
+    return { w: window.innerWidth, h: Math.max(FLOAT_MIN_H, Math.min(window.innerHeight, barTop)) };
+  }
+  // Always whole on screen: a size saved on a bigger window shrinks to fit.
+  // chosen: the person moved or sized it, so this is the new wish.
+  function placeFloat(g, chosen = false) {
+    const b = floatBounds();
+    const w = Math.round(Math.max(Math.min(FLOAT_MIN_W, b.w), Math.min(b.w, g.w)));
+    const h = Math.round(Math.max(Math.min(FLOAT_MIN_H, b.h), Math.min(b.h, g.h)));
+    const x = Math.round(Math.max(0, Math.min(b.w - w, g.x)));
+    const y = Math.round(Math.max(0, Math.min(b.h - h, g.y)));
+    floatGeo = { x, y, w, h };
+    if (chosen || !floatWant) floatWant = { ...floatGeo };
+    if (pane) for (const [k, v] of [['--fx', x], ['--fy', y], ['--fw', w], ['--fh', h]]) pane.style.setProperty(k, v + 'px');
+  }
+  function saveFloat() { if (floatWant) localStorage.setItem(FLOAT_KEY, JSON.stringify(floatWant)); }
+  // First time on this device: the top right, under the Files button.
+  function defaultFloat() {
+    const b = floatBounds(), phone = window.matchMedia('(max-width: 700px)').matches;
+    const w = Math.max(FLOAT_MIN_W, Math.min(440, Math.round(b.w * (phone ? 0.64 : 0.32))));
+    const h = Math.round(w * 0.66) + 40;
+    return { x: b.w - w - 12, y: 60, w, h };
+  }
+  function applyMode() {
+    const shown = !!state;
+    document.body.classList.toggle('artifact-open', shown && !floating);
+    document.body.classList.toggle('artifact-float', shown && floating);
+    if (!pane) return;
+    const btn = pane.querySelector('[data-art-act="float"]');
+    btn.textContent = floating ? '⇥' : '⧉';
+    btn.title = floating ? 'Put back beside the conversation' : 'Float: a small window that stays while you read on';
+    btn.setAttribute('aria-label', floating ? 'Dock' : 'Float');
+    pane.setAttribute('aria-label', floating ? 'Artifact, floating' : 'Artifact');
+    if (floating) {
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem(FLOAT_KEY) || 'null'); } catch {}
+      if (!floatWant) floatWant = saved && ['x', 'y', 'w', 'h'].every(k => Number.isFinite(saved[k])) ? saved : null;
+      placeFloat(floatWant || defaultFloat());
+    }
+  }
+  function setFloating(on) {
+    on = !!on;
+    if (on === floating) return;
+    floating = on;
+    // Docking takes the right column, where only one panel fits.
+    if (!on) closeRightFiles();
+    applyMode();
+    window.dispatchEvent(new Event('resize'));
+  }
+  function closeRightFiles() {
+    if (typeof rightFilesOpen !== 'undefined' && rightFilesOpen && typeof setRightFiles === 'function') setRightFiles(rightFilesMode, false);
+    document.body.classList.remove('file-side-open');
+  }
+  window.addEventListener('resize', () => { if (floating && floatWant) placeFloat(floatWant); });
   function ensurePane() {
     if (pane) return pane;
     pane = document.createElement('aside');
     pane.id = 'artifactPane';
     pane.setAttribute('aria-label', 'Artifact');
     pane.innerHTML = `<div class="art-resize" role="separator" aria-orientation="vertical" aria-label="Resize the artifact panel" tabindex="0"></div>
+      <div class="art-float-grip" role="separator" aria-label="Resize the floating window" tabindex="0"></div>
       <div class="art-head">
         <button type="button" class="art-close" data-art-act="close" title="Close the artifact panel" aria-label="Close">✕</button>
         <div class="art-titles"><b class="art-title"></b><small class="art-sub"></small></div>
@@ -255,6 +323,7 @@
           <button type="button" data-art-act="ask" title="Ask about this artifact in the message box">Ask</button>
           <button type="button" data-art-act="reload" title="Reload" aria-label="Reload">↻</button>
           <a class="art-newtab" target="_blank" rel="noopener noreferrer" title="Open in its own browser tab" aria-label="Open in a new tab">↗</a>
+          <button type="button" data-art-act="float"></button>
           <button type="button" data-art-act="full" title="Full screen" aria-label="Full screen">⤢</button>
         </span>
       </div>
@@ -265,6 +334,7 @@
       const act = e.target.closest('[data-art-act]')?.dataset.artAct;
       if (act === 'close') closePanel();
       else if (act === 'reload') render(true);
+      else if (act === 'float') setFloating(!floating);
       else if (act === 'full') { const b = pane.querySelector('.art-body'); (b.requestFullscreen ? b.requestFullscreen() : Promise.reject()).catch(() => pane.classList.toggle('art-max')); }
       else if (act === 'older' || act === 'newer') stepVersion(act === 'older' ? -1 : 1);
       else if (act === 'ask') askAbout();
@@ -292,27 +362,48 @@
     });
     const saved = Number(localStorage.getItem('chattering.artifact.width'));
     if (saved) document.body.style.setProperty('--art-w', saved + 'px');
+    // Floating: the head moves the window, the corner sizes it. Pointer
+    // events, so a finger or a pen does the same as the mouse.
+    const drag = (handle, geoAt) => handle.addEventListener('pointerdown', e => {
+      if (!floating || e.button > 0 || (handle.classList.contains('art-head') && e.target.closest('button, a, select, input'))) return;
+      e.preventDefault();
+      const start = { ...floatGeo }, sx = e.clientX, sy = e.clientY, stop = new AbortController();
+      handle.setPointerCapture(e.pointerId); pane.classList.add('art-dragging');
+      handle.addEventListener('pointermove', ev => placeFloat(geoAt(start, ev.clientX - sx, ev.clientY - sy), true), { signal: stop.signal });
+      const up = () => { stop.abort(); pane.classList.remove('art-dragging'); saveFloat(); };
+      handle.addEventListener('pointerup', up, { signal: stop.signal });
+      handle.addEventListener('pointercancel', up, { signal: stop.signal });
+    });
+    drag(pane.querySelector('.art-head'), (g, dx, dy) => ({ ...g, x: g.x + dx, y: g.y + dy }));
+    const corner = pane.querySelector('.art-float-grip');
+    drag(corner, (g, dx, dy) => ({ ...g, w: g.w + dx, h: g.h + dy }));
+    corner.addEventListener('keydown', e => {
+      const step = { ArrowLeft: [-40, 0], ArrowRight: [40, 0], ArrowUp: [0, -40], ArrowDown: [0, 40] }[e.key];
+      if (!step || !floatGeo) return;
+      e.preventDefault();
+      placeFloat({ ...floatGeo, w: floatGeo.w + step[0], h: floatGeo.h + step[1] }, true); saveFloat();
+    });
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && pane.classList.contains('art-max')) pane.classList.remove('art-max'); });
     return pane;
   }
   function closePanel() {
-    if (paneBridge) { paneBridge.dispose(); paneBridge = null; }
     if (state && state.key) localStorage.removeItem(stateKey(state.key));
-    state = null;
-    document.body.classList.remove('artifact-open');
-    if (pane) { pane.querySelector('.art-body').replaceChildren(); pane.classList.remove('art-max'); }
+    hidePanel();
   }
-  // spec: { kind: 'files', key, path, title, type } or { kind: 'html', key, title, html, site }
-  async function openPanel(spec) {
+  // spec: { kind: 'files', key, path, title, type }, { kind: 'html', key,
+  // title, html, site } or { kind: 'media', key, title, src } (a picture).
+  // opts.float: open floating (else it keeps the mode it is in).
+  async function openPanel(spec, opts = {}) {
     ensurePane();
     await loadConfig().catch(() => {});
     state = { ...spec, version: null, resolved: null };
-    // One right-hand panel at a time: the artifact replaces the Files list
-    // (which opens again over it from its own button).
-    if (typeof rightFilesOpen !== 'undefined' && rightFilesOpen && typeof setRightFiles === 'function') setRightFiles(rightFilesMode, false);
+    if (opts.float != null) floating = !!opts.float;
+    // One right-hand panel at a time: docked, the artifact replaces the Files
+    // list (which opens again over it from its own button). Floating, it
+    // takes no column and both stay.
+    if (!floating) closeRightFiles();
     if (spec.kind === 'files' && spec.key) localStorage.setItem(stateKey(spec.key), JSON.stringify({ path: spec.path, title: spec.title, type: spec.type }));
-    document.body.classList.remove('file-side-open');
-    document.body.classList.add('artifact-open');
+    applyMode();
     await render(true);
   }
   function stepVersion(dir) {
@@ -337,6 +428,16 @@
     pane.querySelector('.art-title').textContent = state.title || 'Artifact';
     const vs = pane.querySelector('.art-versions'), newtab = pane.querySelector('.art-newtab');
     banner.hidden = true;
+    if (state.kind === 'media') {
+      vs.hidden = true;
+      newtab.hidden = /^data:/i.test(state.src || '');
+      if (!newtab.hidden) newtab.href = state.src;
+      pane.querySelector('.art-sub').textContent = 'picture';
+      if (!reload && body.firstChild) return;
+      if (paneBridge) { paneBridge.dispose(); paneBridge = null; }
+      body.innerHTML = `<div class="art-media"><img alt="${escHtml(state.title || '')}" src="${escHtml(state.src || '')}"></div>`;
+      return;
+    }
     if (state.kind === 'html') {
       vs.hidden = true; newtab.hidden = true;
       pane.querySelector('.art-sub').textContent = state.source === 'code' ? 'code in this answer' : 'widget';
@@ -422,7 +523,9 @@
     if (!box || !state) return;
     const r = state.resolved;
     const where = !r ? '' : (state.version || r.show) === 'live' ? ' (as it is on disk now)' : ` (version ${r.versions.findIndex(v => v.id === (state.version || r.show)) + 1} of ${r.versions.length})`;
-    const ref = state.kind === 'files' ? `About the artifact ${r ? r.relPath : state.path}${where}: ` : `About the ${state.source === 'code' ? 'code preview' : 'widget'} "${state.title}": `;
+    const ref = state.kind === 'files' ? `About the artifact ${r ? r.relPath : state.path}${where}: `
+      : state.kind === 'media' ? `About the image ${state.title}: `
+      : `About the ${state.source === 'code' ? 'code preview' : 'widget'} "${state.title}": `;
     box.value = box.value ? box.value.replace(/\s*$/, '') + '\n\n' + ref : ref;
     box.dispatchEvent(new Event('input', { bubbles: true }));
     box.focus();
@@ -448,6 +551,9 @@
     const calls = artifactCallsOf(d);
     const known = seenArtifacts.get(d.key);
     seenArtifacts.set(d.key, new Set(calls.map(m => m.id)));
+    // A floating window belongs to no conversation: it stays over this one
+    // and is not replaced by what this one had open last time.
+    if (floating && state && state.key !== d.key) return;
     // On a phone the panel covers the conversation: it opens only when asked
     // (the card), never by itself.
     const narrow = window.matchMedia('(max-width: 700px)').matches;
@@ -472,15 +578,17 @@
     if (state && state.kind === 'files' && typeof current !== 'undefined' && current && current.key === state.key) { state.version = null; render(false); }
   }
   // Leaving the conversation hides the panel but keeps it for the return.
+  // Closing a floating window ends it; the next artifact opens docked.
   function hidePanel() {
     if (paneBridge) { paneBridge.dispose(); paneBridge = null; }
-    state = null;
-    document.body.classList.remove('artifact-open');
+    state = null; floating = false;
+    document.body.classList.remove('artifact-open', 'artifact-float');
     if (pane) { pane.querySelector('.art-body').replaceChildren(); pane.classList.remove('art-max'); }
   }
-  function onLeaveConversation() { if (state) { const keep = state.key; hidePanel(); if (keep) seenArtifacts.delete(keep); } }
+  // A floating window stays over the next page too.
+  function onLeaveConversation() { if (state && !floating) { const keep = state.key; hidePanel(); if (keep) seenArtifacts.delete(keep); } }
 
-  window.Artifacts = { wire, openPanel, closePanel, onConversation, onHeadChange, onLeaveConversation, previewOrigin, hostContext, codePage, state: () => state };
+  window.Artifacts = { wire, openPanel, closePanel, onConversation, onHeadChange, onLeaveConversation, previewOrigin, hostContext, codePage, setFloating, state: () => state, floating: () => floating };
 })();
 
 /* ---- the artifact library (design/67) --------------------------------------

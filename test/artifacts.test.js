@@ -236,6 +236,55 @@ test('a real server: versions follow the head, the preview origin serves them, w
   await evaluate(`goHome(); 1`);
   await until(`!document.body.classList.contains('artifact-open')`, 'the panel closes with its conversation');
 
+  // A picture floats: picture in picture, over whatever page, taking no
+  // column, moved by its head, always whole on screen, and it stays when
+  // the person goes to a conversation. Away from a conversation there is
+  // nothing to be beside, so only "float" is offered.
+  const dot = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><rect width="40" height="30" fill="red"/></svg>');
+  await evaluate(`openMediaLightbox(${JSON.stringify(dot)}, 'dot.svg'); 1`);
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('.media-lightbox [data-media-act]')].map(b => b.dataset.mediaAct)`), ['float', 'close']);
+  await evaluate(`document.querySelector('.media-lightbox [data-media-act="float"]').click(); 1`);
+  await until(`document.body.classList.contains('artifact-float') && !document.body.classList.contains('artifact-open') && document.querySelector('#artifactPane .art-media img') && !document.querySelector('.media-lightbox')`, 'the picture floating');
+  const rect = () => evaluate(`JSON.stringify(document.getElementById('artifactPane').getBoundingClientRect())`).then(JSON.parse);
+  const before = await rect();
+  assert.ok(before.width >= 220 && before.right <= 1500 && before.left >= 0, JSON.stringify(before));
+  const mouse = (type, x, y) => send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 }, sid);
+  await evaluate(`document.querySelector('dialog.bg-ask [data-none]')?.click(); 1`);
+  await until(`!document.querySelector('dialog.bg-ask')`, 'the first-run question answered');
+  const title = JSON.parse(await evaluate(`JSON.stringify(document.querySelector('#artifactPane .art-titles').getBoundingClientRect())`));
+  const hx = title.left + 20, hy = title.top + title.height / 2;
+  await mouse('mousePressed', hx, hy); await mouse('mouseMoved', hx - 300, hy + 200); await mouse('mouseReleased', hx - 300, hy + 200);
+  const moved = await rect();
+  assert.ok(Math.abs(moved.left - (before.left - 300)) <= 2 && Math.abs(moved.top - (before.top + 200)) <= 2, 'moved by its head: ' + JSON.stringify(moved));
+  await mouse('mousePressed', hx - 300, hy + 200); await mouse('mouseMoved', 5000, 5000); await mouse('mouseReleased', 5000, 5000);
+  const edge = await rect();
+  assert.ok(Math.abs(edge.right - 1500) <= 1 && Math.abs(edge.bottom - 1000) <= 1, 'kept whole on screen: ' + JSON.stringify(edge));
+  await evaluate(`open(${JSON.stringify(key)}, 'bottom')`);
+  await until(`current && current.key === ${JSON.stringify(key)} && document.querySelector('.art-card')`, 'the conversation under the picture');
+  assert.equal(await evaluate(`document.body.classList.contains('artifact-float') && Artifacts.state().kind`), 'media', 'the float stays and is not replaced by what the conversation had open');
+  await shot('float-desktop.png');
+  // A phone-sized window: it fits inside, above the phone's bar. Back to the
+  // big window, it is where the person put it, not shrunk.
+  await send('Emulation.setDeviceMetricsOverride', { width: 400, height: 850, deviceScaleFactor: 2, mobile: true }, sid);
+  await until(`innerWidth === 400 && (() => { const r = document.getElementById('artifactPane').getBoundingClientRect(), bar = document.getElementById('phoneBar'), top = bar && !bar.hidden && bar.getClientRects().length ? bar.getBoundingClientRect().top : innerHeight; return r.left >= 0 && r.right <= 401 && r.top >= 0 && r.bottom <= top + 1; })()`, 'the float fits a phone');
+  await shot('float-phone.png');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false }, sid);
+  await until('innerWidth === 1500');
+  assert.deepEqual(await rect(), edge, 'the chosen place comes back');
+  // Docked, it goes beside the conversation; floating again, same place.
+  await evaluate(`document.querySelector('#artifactPane [data-art-act="float"]').click(); 1`);
+  await until(`document.body.classList.contains('artifact-open') && !document.body.classList.contains('artifact-float')`, 'docked');
+  const docked = JSON.parse(await evaluate(`JSON.stringify([document.getElementById('artifactPane').getBoundingClientRect().left, document.getElementById('view').getBoundingClientRect().right])`));
+  assert.ok(docked[0] >= docked[1] - 2, 'beside the conversation: ' + docked);
+  await evaluate(`document.querySelector('#artifactPane [data-art-act="float"]').click(); 1`);
+  assert.deepEqual(await rect(), edge);
+  await evaluate(`document.querySelector('#artifactPane [data-art-act="close"]').click(); 1`);
+  await until(`!document.body.classList.contains('artifact-float') && !Artifacts.state()`, 'closed');
+  // From a conversation, a picture can also go beside it.
+  await evaluate(`openMediaLightbox(${JSON.stringify(dot)}, 'dot.svg'); document.querySelector('.media-lightbox [data-media-act="side"]').click(); 1`);
+  await until(`document.body.classList.contains('artifact-open') && document.querySelector('#artifactPane .art-media img')`, 'the picture beside the conversation');
+  await evaluate(`Artifacts.closePanel(); 1`);
+
   // The library: the conversation list carries each conversation's artifacts
   // (indexed with it, no scan); the right panel lists them and opens one
   // where it was made.

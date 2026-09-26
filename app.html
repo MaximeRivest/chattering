@@ -1566,7 +1566,8 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
 .md a.md-file-missing { color: var(--text-dim); border-bottom: 1px dotted var(--border); }
 .media-lightbox { position: fixed; inset: 0; z-index: 10020; display: grid; grid-template-rows: auto minmax(0, 1fr); background: color-mix(in srgb, var(--bg) 94%, transparent); }
 .media-lightbox-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--text-dim); }
-.media-lightbox-head button { margin-left: auto; }
+.media-lightbox-head > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-lightbox-acts { margin-left: auto; display: inline-flex; gap: 6px; flex: none; }
 .media-lightbox-body { min-height: 0; display: grid; place-items: center; padding: 12px; overflow: auto; }
 .media-lightbox-body img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; background: var(--surface-1); }
 /* One file grammar on every transcript surface: click previews or reviews,
@@ -9234,14 +9235,27 @@ function toolTextHtml(text, paths, hl) {
   }
   return out + hl(source.slice(at));
 }
+// A picture over everything, for a look. To keep reading with it in view it
+// moves to the artifact panel: beside the conversation (only from one), or
+// floating over the page, picture in picture.
 function openMediaLightbox(src, title = 'image') {
   document.querySelectorAll('.media-lightbox').forEach(el => el.remove());
+  const key = viewKind === 'conversation' ? activeRel || '' : '';
   const box = document.createElement('div');
   box.className = 'media-lightbox';
-  box.innerHTML = `<div class="media-lightbox-head"><span>${esc(title)}</span><button type="button">close</button></div><div class="media-lightbox-body"><img src="${esc(src)}" alt="${esc(title)}"></div>`;
+  const moves = window.Artifacts
+    ? (key ? '<button type="button" data-media-act="side" title="Keep it beside the conversation while you read">beside</button>' : '') +
+      '<button type="button" data-media-act="float" title="A small window that stays while you read on">float</button>'
+    : '';
+  box.innerHTML = `<div class="media-lightbox-head"><span>${esc(title)}</span><span class="media-lightbox-acts">${moves}<button type="button" data-media-act="close">close</button></span></div><div class="media-lightbox-body"><img src="${esc(src)}" alt="${esc(title)}"></div>`;
   const close = () => { box.remove(); document.removeEventListener('keydown', onKey); };
   const onKey = e => { if (e.key === 'Escape') close(); };
-  box.querySelector('button').onclick = close;
+  box.querySelector('.media-lightbox-acts').onclick = e => {
+    const act = e.target.closest('[data-media-act]')?.dataset.mediaAct;
+    if (!act) return;
+    close();
+    if (act !== 'close') Artifacts.openPanel({ kind: 'media', key, title, src }, { float: act === 'float' });
+  };
   box.querySelector('img').onerror = () => { close(); errToast('could not load this image'); };
   box.onclick = e => { if (e.target === box || e.target.classList.contains('media-lightbox-body')) close(); };
   document.addEventListener('keydown', onKey);
