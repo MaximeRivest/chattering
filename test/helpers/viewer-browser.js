@@ -18,18 +18,9 @@ async function viewerBrowser(t, opts = {}) {
     { type: 'message', id: 'u1', timestamp: '2026-09-01T12:00:00Z', message: { role: 'user', content: [{ type: 'text', text: 'File viewer fixture' }] } },
   ].map(JSON.stringify).join('\n') + '\n');
   if (opts.setup) await opts.setup(home);
-  // A person who already answered the first-run question (background AI
-  // off: tests make no model calls). Its modal dialog would make the rest
-  // of the page inert, so focus and typing would silently do nothing.
-  // opts.firstRun keeps the fresh-install state for tests about that.
-  if (!opts.firstRun) {
-    const { SETTINGS_VERSION } = require('../../settings.js');
-    const file = path.join(home, '.config', 'chattering', 'settings.json');
-    let current = {};
-    try { current = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ settingsVersion: SETTINGS_VERSION, ...current, backgroundAi: current.backgroundAi || { decidedAt: '2026-09-26T00:00:00Z', names: false, memory: false } }));
-  }
+  // A person who already answered the first-run question (helpers/first-run.js);
+  // opts.firstRun keeps the fresh-install state for tests about it.
+  if (!opts.firstRun) require('./first-run.js').answerFirstRun(home);
   let server, browser, ws;
   const stop = async child => {
     if (!child || child.exitCode !== null || child.signalCode !== null) return;

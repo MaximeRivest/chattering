@@ -58,6 +58,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
   const port = socket.address().port; await new Promise(r => socket.close(r));
   let serverLog = '';
+  require('./helpers/first-run.js').answerFirstRun(home); // no first-run modal over the page
   server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, HOME: home, PORT: String(port), CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '0', CHATTERING_NO_LEDGER: '0', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent }, stdio: ['ignore', 'pipe', 'pipe'] });
   server.stdout.on('data', b => serverLog += b); server.stderr.on('data', b => serverLog += b);
   const base = 'http://127.0.0.1:' + port, key = 'pi:fixture/chat.jsonl';
@@ -98,21 +99,38 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
     await new Promise(r => setTimeout(r, 50));
   }
   assert.equal(await evaluate('document.querySelector("#conversationTranscript")?.textContent.includes("FOLLOWUP B")'), true, exceptions.join('\n'));
-  await evaluate(`document.querySelector('#agentText').value='Unsent draft'; browseConversationPath(${JSON.stringify(key)},'a','p')`);
+  await evaluate(`document.querySelector('#agentText').value='Unsent draft'; moveReading(${JSON.stringify(key)},'a',{anchor:'p'})`);
   assert.equal(await evaluate(`document.querySelector('#agentText').value`), 'Unsent draft', 'path reading lost the draft');
-  assert.deepEqual(await evaluate(`({reading:computeTrace(current).leaf,sending:computeSendTrace(current).leaf,full:document.querySelector('#conversationTranscript').textContent.includes('END OF ANSWER A'),matching:document.querySelector('#conversationTranscript').textContent.includes('FOLLOWUP A')})`), { reading: 'aa', sending: 'bb', full: true, matching: true });
+  assert.deepEqual(await evaluate(`({reading:computeTrace(current).leaf,sending:computeSendTrace(current).leaf,full:document.querySelector('#conversationTranscript').textContent.includes('END OF ANSWER A'),matching:document.querySelector('#conversationTranscript').textContent.includes('FOLLOWUP A')})`), { reading: 'aa', sending: 'aa', full: true, matching: true }, 'one head: the next message continues from what is read (design/66)');
+  // Reading exactly at a message that already has answers: the next
+  // message starts a new path there, and the composer says so.
+  await evaluate(`moveReading(${JSON.stringify(key)},'a',{exact:true})`);
+  for (let i = 0; i < 100 && !(await evaluate(`!!document.querySelector('#readerDestination')`)); i++) await new Promise(r => setTimeout(r, 50));
   assert.equal(await evaluate(`!!document.querySelector('#composerDock #readerDestination')`), true, 'continuation notice must stay with the composer');
+  await evaluate(`moveReading(${JSON.stringify(key)},'a',{anchor:'p'})`);
   await evaluate(`openConversationMerge(${JSON.stringify(key)},'p')`);
   assert.equal(await evaluate(`!!document.querySelector('dialog[open] [data-merge-start]')`), true);
   await evaluate(`document.querySelector('[data-merge-model]').click()`);
   assert.equal(await evaluate(`!!document.querySelector('dialog[open] .mpick')`), true, 'model picker escaped the dialog top layer');
-  await evaluate(`document.querySelector('[data-merge-cancel]').click(); readerGroup(current.key,'p').compare=true; renderConv('top')`);
+  await evaluate(`document.querySelector('[data-merge-cancel]').click()`);
+  // A phone reads the answers one at a time: one card, arrows between them
+  // (design/66); moving to the next answer chooses it.
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false }, sid);
+  await evaluate(`renderConv('top')`);
+  const answersP = `document.querySelector('.rd-answers[data-question="p"]')`;
+  for (let i = 0; i < 100 && (await evaluate(`${answersP}?.dataset.layout`)) !== 'one'; i++) await new Promise(r => setTimeout(r, 50));
+  assert.equal(await evaluate(`${answersP}.dataset.layout`), 'one', 'phone comparison reads one answer at a time');
   assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
-  assert.equal(await evaluate(`[...document.querySelectorAll('[data-compare-side]')].filter(e=>getComputedStyle(e).display!=='none').length`), 1, 'phone comparison must show one full-width answer');
-  await evaluate(`document.querySelector('[data-reader-side][data-side="1"]').click()`);
-  assert.equal(await evaluate(`getComputedStyle(document.querySelector('[data-compare-side="1"]')).display!=='none'`), true);
-  await evaluate(`resetConversationReading(current.key); readerGroup(current.key,'p').compare=false; renderConv('top')`);
+  const selectedCard = `${answersP}.querySelector('.rd-card[aria-current="true"]').dataset.answer`;
+  const firstChoice = await evaluate(selectedCard);
+  assert.equal(await evaluate(`${answersP}.querySelectorAll('.rd-card').length`), 1, 'one card on a phone');
+  // The fixture's two answers come from one model: versions of one answer,
+  // stepped in the card's head.
+  await evaluate(`${answersP}.querySelector('[data-rd-ver="1"]').click()`);
+  for (let i = 0; i < 100 && (await evaluate(selectedCard)) === firstChoice; i++) await new Promise(r => setTimeout(r, 50));
+  assert.notEqual(await evaluate(selectedCard), firstChoice, 'the arrow moves to, and chooses, the other version');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false }, sid);
+  await evaluate(`resetConversationReading(current.key); renderConv('top')`);
   await evaluate(`
     window.testLiveRun={jobId:'stream-fixture',key:current.key,startedAt:Date.now(),status:'running',statusText:'working',tail:[
       {id:1,kind:'text',text:'Checking the details.',done:true},
@@ -298,7 +316,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
     assert.equal((await checkpoints.capture(work, { ...boundary, phase: 'after' })).error, '');
   } finally { checkpoints.close(); }
   await evaluate(`open(${JSON.stringify(key)},'restore')`);
-  await evaluate(`browseConversationPath(${JSON.stringify(key)},'a','p')`);
+  await evaluate(`moveReading(${JSON.stringify(key)},'a',{anchor:'p'})`);
   assert.equal(await evaluate(`!!document.querySelector('[data-step-review]')`), true);
   assert.deepEqual(await evaluate(`(()=>{const s=getComputedStyle(document.querySelector('[data-step-review]'));return {border:s.borderTopWidth,background:s.backgroundColor,font:s.fontSize,minHeight:s.minHeight}})()`), { border: '0px', background: 'rgba(0, 0, 0, 0)', font: '12px', minHeight: '34px' }, 'Review action should look like compact metadata, not a boxed button');
   await evaluate(`openStepReview(JSON.parse(document.querySelector('[data-step-review]').dataset.stepReview))`);
@@ -414,8 +432,9 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
     window.emit = ev => runStream.enqueue(new TextEncoder().encode(JSON.stringify(ev) + '\\n'));
   })()`);
   // The cell's own Run button starts it (0.15 cell controls).
+  // Status, the cell's AI commands (✦), then Run or Stop.
   const toolbar = () => evaluate(`document.querySelector('.mrmd-cell-toolbar')?.textContent || ''`);
-  assert.match(await toolbar(), /^✓ 1ms▶ Run$/, 'the one-shot run above left its verdict');
+  assert.match(await toolbar(), /^✓ 1ms✦▶ Run$/, 'the one-shot run above left its verdict');
   await evaluate(`document.querySelector('.mrmd-cell-btn-run').click()`);
   const until = async (expr, what) => { for (let i = 0; i < 100; i++) { if (await evaluate(expr)) return; await new Promise(r => setTimeout(r, 50)); } assert.fail(what); };
   await until(`!!window.runStream`, 'the run request was not made');
@@ -437,7 +456,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   await evaluate(`(() => { emit({ type: 'input_done' }); emit({ type: 'done', code: 0, out: 'Open https://accounts.example/device\\nsigned in\\n\\n\u2713 1.0s | 3 vars', runtime: 'fixture', ms: 1000 }); runStream.close(); })()`);
   await until(`!docState.running`, 'the run did not end');
   assert.equal(await evaluate(`document.querySelectorAll('.mrmd-cell-run').length`), 0, 'the live panel stayed after the run');
-  assert.equal(await toolbar(), '✓ 1.0s▶ Run', 'the verdict stays on the cell');
+  assert.equal(await toolbar(), '✓ 1.0s✦▶ Run', 'the verdict stays on the cell');
   fs.writeFileSync(path.join(os.tmpdir(), 'notebook-cell-done.png'), Buffer.from((await send('Page.captureScreenshot', { format: 'png' }, sid)).result.data, 'base64'));
   const afterStream = await evaluate(`docState.editor.getContent()`);
   assert.match(afterStream, /\x60\x60\x60output\nOpen https:\/\/accounts.example\/device\nsigned in\n\x60\x60\x60/);
@@ -481,7 +500,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   assert.deepEqual(await evaluate(`kernelCalls[0]`), { doc: await evaluate(`docState.path`), lang: 'python', op: 'cancel' });
   const beforeAgentEnd = await evaluate(`docState.editor.getContent()`);
   await evaluate(`kev({ event: 'run_ended', run_id: 'agent-7', ok: false, duration_ms: 2100, output: '', error: 'thinking\\nKeyboardInterrupt' })`);
-  await until(`/^\u2717 Lilly's agent · 2\\.1s▶ Run$/.test(document.querySelector('.mrmd-cell-toolbar').textContent)`, 'the agent\u2019s verdict is not on its cell');
+  await until(`/^\u2717 Lilly's agent · 2\\.1s✦▶ Run$/.test(document.querySelector('.mrmd-cell-toolbar').textContent)`, 'the agent\u2019s verdict is not on its cell');
   assert.match(await evaluate(`document.querySelector('.mrmd-cell-run-footer').textContent`), /Lilly's agent’s run — shown here, not saved/);
   assert.equal(await evaluate(`docState.editor.getContent()`), beforeAgentEnd, 'another client\u2019s run was written into the document');
   fs.writeFileSync(path.join(os.tmpdir(), 'notebook-other-run.png'), Buffer.from((await send('Page.captureScreenshot', { format: 'png' }, sid)).result.data, 'base64'));

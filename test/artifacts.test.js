@@ -97,6 +97,7 @@ test('a real server: versions follow the head, the preview origin serves them, w
   const port = await freePort(), previewPort = await freePort();
   const base = 'http://127.0.0.1:' + port, token = 'artifact-test-token', auth = { Authorization: 'Bearer ' + token };
   let log = '';
+  require('./helpers/first-run.js').answerFirstRun(home); // no first-run modal over the page
   server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, HOME: home, PORT: String(port), CHATTERING_PREVIEW_PORT: String(previewPort),
     CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_TOKEN: token, CHATTERING_NO_SYNC: '1', CHATTERING_CACHE_DIR: path.join(home, 'cache'),
     CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent }, stdio: ['ignore', 'pipe', 'pipe'] });

@@ -120,7 +120,9 @@ function setPinned(state, key, on, now = Date.now()) {
   if (on) {
     if (state.pinned[key]) return null;
     state.pinned[key] = num(now) || Date.now();
-    return { pinned: { [key]: state.pinned[key] } };
+    // Pinned means "keep it on top of my list": it is listed, like a
+    // conversation marked unread, even if nobody opened it here.
+    return { pinned: { [key]: state.pinned[key] }, ...(open(state, key, now) || {}) };
   }
   if (!(key in state.pinned)) return null;
   delete state.pinned[key];

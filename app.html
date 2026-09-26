@@ -3925,7 +3925,11 @@ function paintRightFilesFrame() {
   const phone = typeof phoneShellOn === 'function' && phoneShellOn();
   const visible = (sideLayoutOn() || phone) && rightFilesOpen;
   document.body.classList.toggle('file-side-open', sideLayoutOn() && rightFilesOpen);
-  if (phone) $('rightFiles').hidden = !visible;
+  // The frame follows the layout it is in now, not the way it got here: a
+  // phone shows it only while open; the column layout always keeps it (CSS
+  // shows it with file-side-open); the top bar has none. Deriving it here
+  // keeps a phone-width detour from leaving it hidden on a wide screen.
+  $('rightFiles').hidden = phone ? !visible : !sideLayoutOn();
   $('rightFilePanel').hidden = !visible;
   $('filesToggle').setAttribute('aria-expanded', String(visible));
   if (phone) paintPhoneBar();

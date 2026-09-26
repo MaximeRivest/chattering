@@ -16,17 +16,19 @@ test('browser: estimated speed in picker, accessible reply details and dashboard
   assert.equal(await evaluate(`document.querySelector('.mp-speed').textContent`), '≈50 tok/s', 'calibration does not imply exact tokenization');
   assert.match(await evaluate(`document.querySelector('.mp-row').title`), /12 replies.*≈25–≈75.*1.5 s/);
   await evaluate(`document.querySelector('.mpick').remove(); document.body.classList.remove('home'); learnSpeedCalibration({'fixture/fast': speedFixture.calibration});
-    document.querySelector('#view').innerHTML = msgBlock({role:'assistant',provider:'fixture',model:'fast',text:'Answer.',speed:{chars:1200,timedChars:1000,ms:4000,waitMs:1500}}, esc);`);
-  assert.equal(await evaluate(`document.querySelector('.msg-speed summary').textContent`), '4.0 s · ≈50 tok/s');
-  await evaluate(`document.querySelector('.msg').focus()`);
-  await until(`getComputedStyle(document.querySelector('.msg-actions')).visibility === 'visible'`);
-  assert.match(await evaluate(`document.querySelector('.msg-speed').title`), /1.5 s until.*1,000 timed/);
+    // Its own host: the app may still repaint #view as it finishes loading.
+    const host = document.createElement('div'); host.id = 'speedHost'; host.className = 'conv'; document.body.appendChild(host);
+    host.innerHTML = msgBlock({role:'assistant',provider:'fixture',model:'fast',text:'Answer.',speed:{chars:1200,timedChars:1000,ms:4000,waitMs:1500}}, esc);`);
+  assert.equal(await evaluate(`document.querySelector('#speedHost .msg-speed summary').textContent`), '4.0 s · ≈50 tok/s');
+  await evaluate(`document.querySelector('#speedHost .msg').focus()`);
+  await until(`getComputedStyle(document.querySelector('#speedHost .msg-actions')).visibility === 'visible'`);
+  assert.match(await evaluate(`document.querySelector('#speedHost .msg-speed').title`), /1.5 s until.*1,000 timed/);
   assert.equal(await evaluate(`speedLabelHtml({speed:{chars:10,timedChars:9,ms:50}})`), '');
   await size(390, 844, true);
-  await evaluate(`document.querySelector('.msg').classList.add('actions-open'); document.querySelector('.msg-speed summary').click()`);
-  assert.equal(await evaluate(`getComputedStyle(document.querySelector('.msg-actions')).visibility`), 'visible');
-  assert.equal(await evaluate(`document.querySelector('.msg-speed').open`), true, 'timing details can be opened on touch screens');
-  assert.equal(await evaluate(`(()=>{const r=document.querySelector('.msg-speed-detail').getBoundingClientRect();return r.width>0 && r.right <= innerWidth})()`), true, 'details fit the phone screen');
+  await evaluate(`document.querySelector('#speedHost .msg').classList.add('actions-open'); document.querySelector('#speedHost .msg-speed summary').click()`);
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('#speedHost .msg-actions')).visibility`), 'visible');
+  assert.equal(await evaluate(`document.querySelector('#speedHost .msg-speed').open`), true, 'timing details can be opened on touch screens');
+  assert.equal(await evaluate(`(()=>{const r=document.querySelector('#speedHost .msg-speed-detail').getBoundingClientRect();return r.width>0 && r.right <= innerWidth})()`), true, 'details fit the phone screen');
   await evaluate(`viewKind = 'usage'; renderUsageDashboard({ summary:{}, speed:{models:[{id:'fixture/fast',...speedFixture}],defaultCharsPerToken:4,minCalibrationSamples:10} });`);
   await until(`document.querySelector('.usage-view')`);
   const text = await evaluate(`document.querySelector('.usage-view').textContent`);

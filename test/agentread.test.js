@@ -157,7 +157,8 @@ test('mark unread lists a conversation nobody opened', () => {
 
 test('pins keep pin order and report no change when idle', () => {
   const s = R.createState(1000);
-  assert.deepEqual(R.setPinned(s, 'a', true, 2000), { pinned: { a: 2000 } });
+  assert.deepEqual(R.setPinned(s, 'a', true, 2000), { pinned: { a: 2000 }, opened: { a: 2000 } }, 'a pin lists it');
+  assert.equal(R.isListed(s, 'a', 0), true);
   assert.equal(R.setPinned(s, 'a', true, 2500), null, 'already pinned');
   R.setPinned(s, 'b', true, 3000);
   assert.deepEqual(R.pinnedKeys(s), ['b', 'a'], 'newest pin first');

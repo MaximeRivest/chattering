@@ -52,6 +52,7 @@ if (process.argv[1] === ${JSON.stringify(path.join(root, 'server.js'))}) {
   const port = socket.address().port; await new Promise(r => socket.close(r));
   let log = '';
   const start = () => {
+    require('./helpers/first-run.js').answerFirstRun(home); // no first-run modal over the page
     server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env,
       HOME: home, PORT: String(port), CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '1', CHATTERING_NO_LEDGER: '1',
       CHATTERING_NO_FILE_HISTORY: '1', CHATTERING_NO_CHECKPOINTS: '1', CHATTERING_DISABLE_NETWORK_RECOVERY: '1',

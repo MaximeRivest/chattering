@@ -45,6 +45,7 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
   const port = socket.address().port; await new Promise(r => socket.close(r));
   let serverLog = '';
+  require('./helpers/first-run.js').answerFirstRun(home); // no first-run modal over the page
   server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, HOME: home, PORT: String(port), CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '1', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent }, stdio: ['ignore', 'pipe', 'pipe'] });
   server.stdout.on('data', b => serverLog += b); server.stderr.on('data', b => serverLog += b);
   const base = 'http://127.0.0.1:' + port;
@@ -110,23 +111,26 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   await until(`document.querySelector('#projSort').closest('#ganttBar') && getComputedStyle(document.querySelector('#projSort')).display === 'flex'`, 'home keeps its project ordering buttons, in the timeline toolbar');
   assert.equal(await evaluate(`document.querySelector('#agentsPop').parentElement.id`), 'sideAgents', 'the tray lives in the column');
   assert.equal(await evaluate(`document.querySelector('#agentsPop').hidden`), false);
-  assert.equal(await evaluate(`document.querySelector('#settingsBtn').closest('#sideRail') !== null`), true, 'settings moved to the rail');
-  assert.equal(await evaluate(`getComputedStyle(document.querySelector('#side')).width`), '344px');
-  // Global work first; the project browser is secondary.
-  assert.deepEqual(await evaluate(`[...document.querySelectorAll('#sideRail [data-rail]')].map(b=>b.dataset.rail+':'+b.getAttribute('aria-pressed'))`), ['inbox:true', 'traffic:false', 'recent-files:false', 'projects:false', 'conversations:false', 'files:false']);
+  // design/51: the person's own bubble opens Settings from the footer; the
+  // panel is 288px; Agents is the only left panel, and every old panel
+  // choice lands there; the machine anchors the top row. Files live in the
+  // right-hand panel, not in the column.
+  assert.equal(await evaluate(`document.querySelector('#settingsBtn').closest('#side .side-foot') !== null`), true, 'settings is the first footer control');
+  assert.equal(await evaluate(`getComputedStyle(document.querySelector('#side')).width`), '288px');
+  assert.equal(await evaluate(`!document.querySelector('#sideRail,[data-rail]')`), true, 'no icon rail');
   assert.equal(await evaluate(`$('agentsPop').dataset.panel`), 'inbox');
   await evaluate(`setSidePanel('conversations')`);
-  assert.equal(await evaluate(`$('railMachine').querySelector('.rail-initials').textContent.length>0 && $('railMachine').closest('#sideRail')!==null`), true, 'the machine anchors the rail like a workspace');
-  assert.equal(await evaluate(`$('agentsPop').dataset.panel`), 'conversations');
-  assert.equal(await evaluate(`!!document.querySelector('.ag-files-block')`), false, 'files are not mixed into the chats panel');
+  assert.equal(await evaluate(`$('agentsPop').dataset.panel`), 'inbox', 'an old panel choice opens Agents');
+  assert.equal(await evaluate(`$('railMachine').querySelector('.rail-initials').textContent.length>0 && $('railMachine').closest('.side-project-row')!==null`), true, 'the machine anchors the top row');
+  assert.equal(await evaluate(`!!document.querySelector('#side .ag-files-block')`), false, 'files are not mixed into the agents panel');
 
-  // Marks made on the server before the page loaded show up as sections.
-  await until(`!!document.querySelector('.ag-pinned .ag-row[data-key=${JSON.stringify(keys.beta)}]')`, 'pinned section');
-  assert.equal(await evaluate(`!!document.querySelector('[data-sec=unread],[data-sec=read]')`), false, 'Chats does not mix in the global inbox');
-  await evaluate(`setSidePanel('inbox');setInboxTab('unread')`);
-  await until(`!!document.querySelector('.ag-unread-tray .ag-row.unread[data-key=${JSON.stringify(keys.alpha)}]')`, 'marked unread shows in Inbox');
-  assert.match(await evaluate(`document.querySelector('.ag-unread-tray .ag-row.unread .ag-age').textContent`), /^marked · \d+[smhd]$/);
-  assert.equal(await evaluate(`!!document.querySelector('.ag-unread-tray .ag-row[data-key=${JSON.stringify(keys.gamma)}], [data-sec=read] .ag-row[data-key=${JSON.stringify(keys.gamma)}]')`), false, 'a removed conversation is out of the inbox');
+  // Marks made on the server before the page loaded show on the rows: the
+  // pinned conversation, the one marked unread (design/59: one list, each
+  // row carries its state; a closed one is not listed).
+  await until(`!!document.querySelector('#agentsUnread .ag-row.pinned[data-key=${JSON.stringify(keys.beta)}]')`, 'pinned row');
+  await until(`!!document.querySelector('#agentsUnread .ag-row.unread[data-key=${JSON.stringify(keys.alpha)}]')`, 'marked unread shows as unread');
+  assert.equal(await evaluate(`!!document.querySelector('#agentsUnread .ag-item:not([inert]) .ag-row[data-key=${JSON.stringify(keys.gamma)}]')`), false, 'a closed conversation is not listed');
+  assert.equal(await evaluate(`!!document.querySelector('[data-sec=unread],[data-sec=read]')`), false, 'no Unread / Read sections');
   assert.equal(await evaluate(`document.querySelector('#agentUnreadCount').textContent`), '1');
 
   // Opening a conversation reads it; the page strip stays, the global bar controls do not.
@@ -264,30 +268,16 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   await evaluate(`document.querySelector('#sideNewMore').click()`);
   assert.equal(await evaluate(`[...document.querySelectorAll('.ag-menu [data-ag-action]')].map(b=>b.textContent).join('|')`), 'New here · work|New, no project');
   await evaluate(`document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
-  await evaluate(`setSidePanel('conversations');setWorkspaceScope('');renderAgentsPop(false)`);
-  // Chats lists project conversations independently of their read state.
-  await until(`document.querySelectorAll('[data-sec=recent] .ag-row[data-key]').length >= 1`, 'recent conversations');
-  assert.equal(await evaluate(`[...document.querySelectorAll('[data-sec=recent] .ag-row[data-key]')].map(r=>r.dataset.key).includes(${JSON.stringify(keys.gamma)})`), true, 'a conversation removed from the inbox still counts as one you wrote in');
-  // Inbox rows name the project on a second line; a project-scoped recent list is one line per row.
-  assert.equal(await evaluate(`document.querySelector('.ag-pinned .ag-row .ag-dir').textContent`), 'work');
-  await evaluate(`setWorkspaceScope('work');renderAgentsPop(false)`);
-  assert.equal(await evaluate(`!!document.querySelector('[data-sec=recent] .ag-row[data-key] .ag-sub') + '|' + !!document.querySelector('[data-sec=recent] .ag-row[data-key] .ag-title .ag-age')`), 'false|true', 'project scope: no folder line, time on the title line');
-  await evaluate(`setWorkspaceScope('');renderAgentsPop(false)`);
-  const convShot = await send('Page.captureScreenshot', { format: 'png' }, sid);
-  fs.writeFileSync(path.join(os.tmpdir(), 'side-panel-conversation.png'), Buffer.from(convShot.result.data, 'base64'));
-  await evaluate(`setSidePanel('inbox');setInboxTab('read')`);
-  await until(`!document.querySelector('.ag-unread-tray .ag-row.unread[data-key=${JSON.stringify(keys.alpha)}]')`, 'opening reads it');
+  // Opening reads it; the open conversation is marked in the column; the
+  // read reaches the server. (The list itself: open-list.test.js.)
+  await until(`!document.querySelector('#agentsUnread .ag-row.unread[data-key=${JSON.stringify(keys.alpha)}]')`, 'opening reads it');
   await until(`!!document.querySelector('#agentsPop .ag-row.current[data-key=${JSON.stringify(keys.alpha)}]')`, 'the open conversation is marked in the column');
   for (let i = 0; i < 100; i++) { if (!(keys.alpha in (await (await fetch(base + '/api/agent-read')).json()).flagged)) break; await new Promise(r => setTimeout(r, 30)); }
   assert.equal(keys.alpha in (await (await fetch(base + '/api/agent-read')).json()).flagged, false, 'the read reached the server');
-
-  // Row menu: mark unread, pin, remove. Each reaches the server.
-  const menuClick = async (key, label) => {
-    await evaluate(`document.querySelector('#agentsPop .ag-row[data-key=${JSON.stringify(key)}] .ag-more').click()`);
-    await until(`!!document.querySelector('.ag-menu')`, 'row menu');
-    const found = await evaluate(`(()=>{const b=[...document.querySelectorAll('.ag-menu [data-ag-action]')].find(b=>b.textContent===${JSON.stringify(label)});if(!b)return false;b.click();return true})()`);
-    assert.equal(found, true, 'menu item ' + label);
-  };
+  // Rows carry the project on the second line; no icon columns.
+  assert.equal(await evaluate(`document.querySelector('#agentsUnread .ag-row.pinned[data-key=${JSON.stringify(keys.beta)}] .ag-project').textContent`), 'work', 'the project, linked, on the second line');
+  assert.equal(await evaluate(`!!document.querySelector('#agentsPop .ag-row .src, #agentsPop .ag-unread-dot, #agentsPop .ag-read-dot')`), false, 'the icon columns are gone');
+  // The row menu opens, and Escape closes it without navigating.
   await evaluate(`document.querySelector('#agentsPop .ag-row[data-key=${JSON.stringify(keys.alpha)}] .ag-more').click()`);
   await until(`!!document.querySelector('.ag-menu')`, 'row menu');
   const menuShot = await send('Page.captureScreenshot', { format: 'png' }, sid);
@@ -295,34 +285,6 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   await evaluate(`document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
   assert.equal(await evaluate(`!!document.querySelector('.ag-menu')`), false, 'Escape closes the row menu');
   assert.equal(await evaluate(`viewKind`), 'conversation', 'Escape on the menu did not navigate');
-  await menuClick(keys.alpha, 'Mark as unread');
-  await evaluate(`setInboxTab('unread')`);
-  await until(`!!document.querySelector('.ag-unread-tray .ag-row.unread[data-key=${JSON.stringify(keys.alpha)}]')`, 'marked unread from the menu');
-  // Rows: the title across the row, folder and a short time under it, no icon columns.
-  assert.equal(await evaluate(`!!document.querySelector('#agentsPop .ag-row .src, #agentsPop .ag-unread-dot, #agentsPop .ag-read-dot')`), false, 'the icon columns are gone');
-  assert.match(await evaluate(`document.querySelector('.ag-unread-tray .ag-row.unread .ag-age').textContent`), /^marked · \d+[smhd]$/);
-  assert.equal(await evaluate(`(()=>{const r=document.querySelector('.ag-unread-tray .ag-row.unread');const t=r.querySelector('.ag-title').getBoundingClientRect(),s=r.querySelector('.ag-sub').getBoundingClientRect();return s.top>=t.bottom-1 && t.width>200})()`), true, 'title on its own full-width line');
-  for (let i = 0; i < 100 && !(keys.alpha in (await (await fetch(base + '/api/agent-read')).json()).flagged); i++) await new Promise(r => setTimeout(r, 30));
-  assert.ok(keys.alpha in (await (await fetch(base + '/api/agent-read')).json()).flagged, 'the flag reached the server');
-  await menuClick(keys.alpha, 'Pin to the top');
-  assert.equal(await evaluate(`!!document.querySelector('.ag-unread-tray .ag-row[data-key=${JSON.stringify(keys.alpha)}]')`), true, 'pinning does not hide an unread reply from Inbox');
-  await evaluate(`setSidePanel('conversations')`);
-  await until(`!!document.querySelector('.ag-pinned .ag-row.unread[data-key=${JSON.stringify(keys.alpha)}]') && !document.querySelector('.ag-unread-tray')`, 'pinned chats stay in the project browser');
-  assert.equal(await evaluate(`document.querySelector('#agentUnreadCount').textContent`), '1', 'pinned unread still counts');
-  assert.equal(await evaluate(`[...document.querySelectorAll('.ag-pinned .ag-row')].map(r=>r.dataset.key).join(',')`), keys.alpha + ',' + keys.beta, 'newest pin first');
-  await menuClick(keys.beta, 'Remove from the inbox');
-  await until(`!document.querySelector('.ag-unread-tray .ag-row[data-key=${JSON.stringify(keys.beta)}], [data-sec=read] .ag-row[data-key=${JSON.stringify(keys.beta)}]')`);
-  assert.equal(await evaluate(`!!document.querySelector('.ag-pinned .ag-row[data-key=${JSON.stringify(keys.beta)}]')`), true, 'removing from the inbox does not unpin');
-  await menuClick(keys.beta, 'Unpin');
-  await until(`!document.querySelector('.ag-pinned .ag-row[data-key=${JSON.stringify(keys.beta)}]')`, 'unpinned and dismissed: out of the inbox');
-  for (let i = 0; i < 100 && keys.beta in (await (await fetch(base + '/api/agent-read')).json()).pinned; i++) await new Promise(r => setTimeout(r, 30));
-  assert.equal(keys.beta in (await (await fetch(base + '/api/agent-read')).json()).pinned, false);
-
-  // A later reply on a removed conversation brings it back as unread.
-  await evaluate(`setSidePanel('inbox');setInboxTab('unread')`);
-  fs.appendFileSync(path.join(sessionDir, 'gamma.jsonl'), JSON.stringify(msg('q2', 'a', 'user', 'again')) + '\n' + JSON.stringify(msg('a2', 'q2', 'assistant', 'New reply.')) + '\n');
-  await fetch(base + '/api/rescan', { method: 'POST' });
-  await until(`!!document.querySelector('.ag-unread-tray .ag-row.unread[data-key=${JSON.stringify(keys.gamma)}]')`, 'a removed conversation returns with a newer reply');
 
   // Keyboard: `a` moves the cursor into the column; Escape leaves; `u` toggles unread.
   await evaluate(`document.activeElement.blur(); document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'a',bubbles:true}))`);
@@ -337,32 +299,27 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   await until(`viewKind === 'file'`);
   assert.equal(await evaluate(`getComputedStyle(document.querySelector('body > header')).display`), 'none', 'no bar at all over a file');
   await until(`recentFilesList.some(f=>f.path===${JSON.stringify(path.join(work, 'README.md'))})`, 'recent file recorded');
-  assert.equal(await evaluate(`document.querySelector('#sideNew span').textContent + '|' + document.querySelector('#sideNewMore').hidden`), 'new|true', 'outside a conversation + new is the plain one');
-  // A folded section docks at the bottom and remembers.
-  await evaluate(`setSidePanel('conversations');document.querySelector('[data-sec-head=recent]').click()`);
-  assert.equal(await evaluate(`document.querySelector('[data-sec=recent] .ag-sec-body').hidden && JSON.parse(localStorage.getItem('chattering.agentSections.v1'))['fold:recent'] && document.querySelector('[data-sec=recent]').parentElement.id === 'agentsLegacy'`), true, 'folded, remembered, docked at the bottom');
-  await evaluate(`document.querySelector('[data-sec-head=recent]').click()`);
-  assert.equal(await evaluate(`!document.querySelector('[data-sec=recent] .ag-sec-body').hidden && document.querySelector('[data-sec=recent]').parentElement.id === 'agentsUnread'`), true, 'open again: back in the flow');
-  // Files live in their own rail section; the project scope is shared with chats.
-  await evaluate(`document.querySelector('#sideRail [data-rail=files]').click()`);
-  assert.equal(await evaluate(`$('agentsPop').dataset.panel + '|' + document.querySelector('#sideRail [data-rail=files]').getAttribute('aria-pressed') + '|' + JSON.parse(localStorage.getItem('chattering.agentSections.v1')).panel`), 'files|true|files');
-  await until(`document.querySelector('.ag-files-block .ag-row .ag-title span')?.textContent === 'README.md'`, 'recent file listed');
-  assert.equal(await evaluate(`!!document.querySelector('.ag-unread-tray') || !!document.querySelector('[data-sec=recent] .ag-row[data-key]')`), false, 'no conversation lists in the files panel');
-  await evaluate(`setWorkspaceScope('work');renderAgentsPop(false)`);
-  assert.equal(await evaluate(`document.querySelectorAll('.ag-files-block .ag-row').length + '|' + JSON.parse(localStorage.getItem('chattering.agentSections.v1')).projectScope`), '1|work');
-  await evaluate(`recentFilesList.push({path:'/tmp/elsewhere/notes.md',project:'other',at:Date.now(),kind:'opened'});renderAgentsPop(false)`);
-  assert.equal(await evaluate(`document.querySelectorAll('.ag-files-block .ag-row').length`), 1, 'project scope hides other projects');
-  await evaluate(`setWorkspaceScope('');renderAgentsPop(false)`);
-  assert.equal(await evaluate(`document.querySelectorAll('.ag-files-block .ag-row').length`), 2);
-  // Traffic and notifications are rail sections, not part of the chats panel.
-  await evaluate(`document.querySelector('#sideRail [data-rail=traffic]').click()`);
-  assert.equal(await evaluate(`!!document.querySelector('[data-sec=traffic]') && !document.querySelector('.ag-unread-tray')`), true, 'traffic panel shows processes only');
+  assert.equal(await evaluate(`document.querySelector('#sideNew span').textContent + '|' + document.querySelector('#sideNewMore').hidden`), 'new here|false', 'the chosen project stays the target of New here, on any screen (design/51)');
+  // Files live in the right-hand panel (design/51): All across projects,
+  // Project for the chosen one; the choice is saved per browser. The
+  // composer checks above went to phone width and back: the panel must
+  // still open (it stayed hidden until a reload, 2026-09-26).
+  await evaluate(`setRightFiles('recent-files', true)`);
+  assert.equal(await evaluate(`$('rightFilePanel').checkVisibility() + '|' + JSON.parse(localStorage.getItem('chattering.agentSections.v1')).filePanel`), 'true|recent-files');
+  await until(`document.querySelector('#rightFileList .ag-files-block .ag-row .ag-title span')?.textContent === 'README.md'`, 'recent file listed');
+  assert.equal(await evaluate(`!!document.querySelector('#rightFileList .ag-row[data-key]')`), false, 'no conversation lists in the files panel');
+  await evaluate(`setWorkspaceScope('work');setRightFiles('files', true)`);
+  assert.equal(await evaluate(`document.querySelectorAll('#rightFileList .ag-files-block .ag-row').length + '|' + JSON.parse(localStorage.getItem('chattering.agentSections.v1')).projectScope`), '1|work');
+  await evaluate(`recentFilesList.push({path:'/tmp/elsewhere/notes.md',project:'other',at:Date.now(),kind:'opened',actor:'human'});renderRightFiles()`);
+  assert.equal(await evaluate(`document.querySelectorAll('#rightFileList .ag-files-block .ag-row').length`), 1, 'project scope hides other projects');
+  await evaluate(`setRightFiles('recent-files', true)`);
+  assert.equal(await evaluate(`document.querySelectorAll('#rightFileList .ag-files-block .ag-row').length`), 2);
+  await evaluate(`setWorkspaceScope('')`);
+  // Background jobs live in Settings (j), not in the column.
   await evaluate(`toggleJobs(true)`);
   assert.equal(await evaluate(`settingsOpen && settingsPane === 'jobs' && !!$('backgroundJobs')`), true, 'j opens Background jobs in Settings');
   await evaluate(`closeSettings()`);
   await until(`!settingsOpen`);
-  await evaluate(`document.querySelector('#sideRail [data-rail=conversations]').click()`);
-  assert.equal(await evaluate(`!document.querySelector('.ag-unread-tray') && !!document.querySelector('[data-sec=recent]') && !document.querySelector('[data-sec=traffic]') && !document.querySelector('.ag-notification-list')`), true, 'chats panel holds only conversations');
   assert.equal((await (await fetch(base + '/api/recent-files')).json()).files[0].kind, 'opened');
   const shot = await send('Page.captureScreenshot', { format: 'png' }, sid);
   fs.writeFileSync(path.join(os.tmpdir(), 'side-panel-desktop.png'), Buffer.from(shot.result.data, 'base64'));
@@ -381,13 +338,12 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   await new Promise(r => setTimeout(r, 300));
   const homeShot = await send('Page.captureScreenshot', { format: 'png' }, sid);
   fs.writeFileSync(path.join(os.tmpdir(), 'side-panel-home.png'), Buffer.from(homeShot.result.data, 'base64'));
-  // The fold keeps the rail: sections and badges stay reachable; a section click reopens the panel.
+  // Folding hides the column; one reopen button stays, with the attention
+  // dot while a reply is unread (design/51), and brings the column back.
   await evaluate(`setSideFold(true)`);
-  assert.equal(await evaluate(`getComputedStyle(document.querySelector('#side')).width`), '56px');
-  assert.equal(await evaluate(`document.querySelector('#sideRail [data-rail=conversations] .rail-badge').hidden`), true);
-  assert.equal(await evaluate(`document.querySelector('#sideRail [data-rail=inbox] .rail-badge').hidden`), false);
   assert.equal(await evaluate(`$('sidePanel').checkVisibility()`), false);
-  await evaluate(`document.querySelector('#sideRail [data-rail=conversations]').click()`);
+  assert.equal(await evaluate(`$('sideUnfold').checkVisibility()`), true);
+  await evaluate(`$('sideUnfold').click()`);
   assert.equal(await evaluate(`document.body.classList.contains('side-fold')`), false);
 
   // Drop the synthetic file used for the scope-layout check above.
@@ -422,7 +378,7 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   assert.equal(recorded.find(f => f.path === agentFile).kind, 'written');
   await evaluate(`openLiveFile(${JSON.stringify(sharedFile)},{project:'work'})`);
   await until(`fileWs?.editor && fileWs.path===${JSON.stringify(sharedFile)}`);
-  await evaluate(`document.querySelector('#sideRail [data-rail=files]').click();setWorkspaceScope('');renderAgentsPop(false)`);
+  await evaluate(`setWorkspaceScope('');setRightFiles('recent-files', true)`);
   assert.equal(await evaluate(`recentFileActor()`), 'human', 'human-only remains the default');
   await until(`document.querySelectorAll('.ag-files-block .ag-file').length===1`, 'agent activity does not enter human-only view');
   const chooseActor = async actor => {
@@ -432,7 +388,7 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   const filePaths = () => evaluate(`[...document.querySelectorAll('.ag-files-block .ag-file')].map(r=>r.dataset.path)`);
   await chooseActor('agent');
   assert.deepEqual(await filePaths(), [otherFile, agentFile, sharedFile], 'newest successful operation first');
-  await evaluate(`setWorkspaceScope('work');renderAgentsPop(false)`);
+  await evaluate(`setWorkspaceScope('work');setRightFiles('files', true)`);
   assert.deepEqual(await filePaths(), [agentFile, sharedFile], 'project filter is independent of source');
   await chooseActor('both');
   assert.equal((await filePaths()).filter(p => p === sharedFile).length, 1, 'both shows each path once');
@@ -441,12 +397,12 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   await chooseActor('agent');
   await evaluate(`[...document.querySelectorAll('.ag-files-block .ag-file')].find(r=>r.dataset.path===${JSON.stringify(agentFile)}).click()`);
   await until(`fileWs?.path===${JSON.stringify(agentFile)} && !!fileWs.editor`, 'agent-touched file opens in the live editor');
-  assert.equal(await evaluate(`$('agentsPop').dataset.panel`), 'files', 'opening a file keeps the files section');
+  assert.equal(await evaluate(`rightFilesOpen && $('rightFilePanel').checkVisibility()`), true, 'opening a file keeps the files panel');
   assert.equal(await evaluate(`fileWs.back`), 'pi:fixture/files-agent.jsonl', 'file retains its source conversation');
   await until(`recentFilesList.some(f=>f.actor==='human'&&f.path===${JSON.stringify(agentFile)})`, 'opening the file records a separate human visit');
   await chooseActor('human'); assert.deepEqual(await filePaths(), [agentFile, sharedFile]);
   await chooseActor('both');
-  await evaluate(`setWorkspaceScope('');renderAgentsPop(false)`);
+  await evaluate(`setWorkspaceScope('');setRightFiles('recent-files', true)`);
   assert.equal((await filePaths()).length, 3, 'three unique paths in both/all');
   const activityShot = await send('Page.captureScreenshot', { format: 'png' }, sid);
   fs.writeFileSync(path.join(os.tmpdir(), 'recent-files-both.png'), Buffer.from(activityShot.result.data, 'base64'));
