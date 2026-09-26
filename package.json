@@ -1,0 +1,12 @@
+{
+  "name": "chattering",
+  "private": true,
+  "description": "Chattering, by Rockfrog: a workspace for conversations with AI agents.",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test --test-concurrency=4 \"test/*.test.js\"",
+    "runtime": "npm ci --prefix runtime --no-audit --no-fund"
+  }
+}

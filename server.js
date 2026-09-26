@@ -103,6 +103,8 @@ let LAN_TOKEN = loadLanToken();
 // (design/56): a limiter on failed proofs, a log of every outcome, and the
 // headers every answer carries.
 const authGuard = require('./authguard.js');
+const platform = require('./platform.js');
+const runtimeLib = require('./runtime.js');
 const frontDoor = require('./frontdoor.js');
 const signInLimiter = authGuard.createLimiter();
 const signInLog = authGuard.createAuthLog(path.join(os.homedir(), '.local', 'share', 'chattering', 'sign-ins.jsonl'));
@@ -2624,6 +2626,14 @@ const slashCommandsCache = new Map(); // cwd → { at, list } for the composer p
 // Caution: pi and claude rewrite their argv to a bare "pi"/"claude", which
 // hides --session and --mode. The PTY bridge parent still shows the full
 // launch command, so terminal sessions are recovered from there.
+// The program an argument names, as the process scan knows it: Pi started
+// by Chattering is `node …/pi-coding-agent/…/cli.js` (runtime.js), which
+// is "pi"; anything else by its file name.
+function agentArgName(arg) {
+  const a = String(arg || '');
+  if (/[\\/]pi-coding-agent[\\/].*cli\.js$/i.test(a)) return 'pi';
+  return path.basename(a).toLowerCase().replace(/\.(exe|cmd)$/, '');
+}
 function scanAgentProcs() {
   const procs = [];
   let pids = [];
@@ -2639,8 +2649,8 @@ function scanAgentProcs() {
     try { raw = fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8'); } catch { continue; }
     const argv = raw.split('\0').filter(Boolean).map(a => a.trim()).filter(Boolean);
     if (!argv.length) continue;
-    const base0 = path.basename(argv[0]);
-    const base1 = argv[1] ? path.basename(argv[1]) : '';
+    const base0 = agentArgName(argv[0]);
+    const base1 = argv[1] ? agentArgName(argv[1]) : '';
     if ((base0 === 'node' || base0 === 'bun') && argv[1] && argv[1].includes('remote-pi')) { superPids.add(pid); continue; }
     let kind = null;
     if (base0 === 'pi' || ((base0 === 'node' || base0 === 'bun') && base1 === 'pi')) kind = 'pi';
@@ -5340,7 +5350,16 @@ function listPiModels(force = false) {
   }
   if (modelsPending) return modelsPending;
   modelsPending = new Promise(resolve => {
-    execFile('pi', ['--list-models'], { timeout: 60000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+    let pi;
+    // No Pi here: the same answer as a failed listing, with the reason, and
+    // the next request asks again (the person may install it meanwhile).
+    try { pi = runtimeLib.piCommand(['--list-models']); }
+    catch (e) {
+      modelsCache = { at: Date.now(), models: modelsCache.models || [], text: modelsCache.text || '', error: e.message };
+      queueMicrotask(() => { modelsPending = null; });
+      return resolve(modelsCache);
+    }
+    execFile(pi.file, pi.args, { timeout: 60000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
       const parsed = err ? [] : settingsLib.parseListModels(stdout);
       if (err) {
         modelsCache = {
@@ -5649,10 +5668,11 @@ async function runPi(fileContent, prompt, onChunk, options = {}) {
   try {
     memoryModelHealth.setIdentity(currentModelLabel());
     permit = memoryModelHealth.begin({ automatic });
+    const pi = runtimeLib.piCommand([...piArgs(options.thinking ? { thinking: options.thinking } : null), '--mode', 'json', '@' + tmp, prompt]);
     const result = await execFileWithActivityTimeout(
       execFile,
-      'pi',
-      [...piArgs(options.thinking ? { thinking: options.thinking } : null), '--mode', 'json', '@' + tmp, prompt],
+      pi.file,
+      pi.args,
       { maxBuffer: 64 * 1024 * 1024, timeout: options.timeoutMs || 1800000, ...(options.signal ? { signal: options.signal } : {}) },
       {
         activityTimeoutMs: MODEL_ACTIVITY_TIMEOUT_MS,
@@ -7867,14 +7887,9 @@ function keyForLaunchedTitle(title) {
   return loadLaunchedTitles().get(title) || null;
 }
 
-function piBin() {
-  return process.env.CHATTERING_PI
-    || firstExisting([
-      path.join(os.homedir(), '.nvm/versions/node/v22.23.1/bin/pi'),
-      '/usr/local/bin/pi',
-    ])
-    || 'pi';
-}
+// Pi as the leading words of a command line (terminals, sandboxes):
+// `<node> <cli.js>`, from the one runtime answer (runtime.js).
+function piArgv(args = []) { return runtimeLib.piArgv(args); }
 
 function claudeBin() {
   return process.env.CHATTERING_CLAUDE
@@ -7947,7 +7962,7 @@ function isInteractiveAgent(args) {
     if (args[i] === '--mode' && args[i + 1] === 'rpc') return false;
     if (args[i] === '--mode=rpc') return false;
   }
-  const names = args.map(a => path.basename(a).toLowerCase());
+  const names = args.map(agentArgName);
   return names.includes('pi') || names.includes('claude') || names.includes('alacritty');
 }
 
@@ -8014,7 +8029,7 @@ function listRunningAgents() {
     if (!isInteractiveAgent(args)) continue;
     const key = matchArgsToKey(args);
     const title = flagValue(args, ['--title', '-t']);
-    const names = args.map(a => path.basename(a).toLowerCase());
+    const names = args.map(agentArgName);
     const kind = names.includes('claude') ? 'claude' : names.includes('pi') ? 'pi' : null;
     if (!key && !(title && title.startsWith('chattering-'))) continue;
     const id = key || title;
@@ -8311,7 +8326,7 @@ async function openConversationInTerminal(key, opts) {
     const { sessionPath, cwd } = sessionPathsFor(key);
     const argv = kind === 'claude'
       ? [claudeBin(), '--resume', entry.sessionId]
-      : [piBin(), '--session', sessionPath];
+      : piArgv(['--session', sessionPath]);
     if (!argv[2]) throw new Error('This conversation has no session identifier.');
     await assertDelegationLaunch(file);
     await spawnAlacritty(cwd, title, argv);
@@ -8533,7 +8548,7 @@ async function sendFileFeedback(body) {
   const prompt = `Read ${mdPath} and the PNG at ${pngPath}. The red ink is requested file feedback for ${rel} lines ${body.fromLine}–${body.toLine} (page ${body.page}/${body.pages}). Apply those edits.`;
   const argv = kind === 'claude'
     ? [claudeBin(), '--resume', entry.sessionId, prompt]
-    : [piBin(), '--session', sessionPath, '@' + pngPath, prompt];
+    : piArgv(['--session', sessionPath, '@' + pngPath, prompt]);
   await assertDelegationOwnership(sessionPath);
   await releaseHeadless(sessionPath, 'terminal feedback opened');
   return withSessionOp(sessionPath, async () => {
@@ -9525,7 +9540,7 @@ async function sendGitFileFeedback(body) {
   const name = 'chattering-git-' + crypto.createHash('sha256').update(root + stamp).digest('hex').slice(0, 12);
   const argv = kind === 'claude'
     ? [claudeBin(), prompt]
-    : [piBin(), '--name', String(repo.name + ' git ink').slice(0, 80), '@' + pngPath, prompt];
+    : piArgv(['--name', String(repo.name + ' git ink').slice(0, 80), '@' + pngPath, prompt]);
   const startedAt = Date.now();
   const existing = new Set(Object.keys(index));
   await spawnAlacritty(cwd, name, argv);
@@ -13253,9 +13268,9 @@ async function startProjectConversation(options) {
   ];
   const argv = kind === 'claude'
     ? (text ? [claudeBin(), text] : [claudeBin()])
-    : [piBin(), '--name', label, ...piProviderExtraArgs(), ...piCtxArgs,
+    : piArgv(['--name', label, ...piProviderExtraArgs(), ...piCtxArgs,
        ...(leadModel ? ['--provider', leadModel.provider, '--model', leadModel.modelId] : []),
-       ...(text ? [text] : [])];
+       ...(text ? [text] : [])]);
   const useRpc = kind === 'pi' && options.surface !== 'alacritty';
   let key = null;
   if (useRpc) {

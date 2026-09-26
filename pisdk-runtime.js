@@ -14,56 +14,14 @@ const { forkPiSnapshot } = require('./session-snapshot.js');
 const { captureRewriteRequest } = require('./pisdk-rewrite.js');
 const { createSpeedMeter } = require('./responsespeed.js');
 
-const PI_TESTED_VERSION = '0.87.1';
+const { PI_TESTED_VERSION } = require('./runtime.js'); // runtime/package.json
 const WARM_IDLE_MS = 5 * 60 * 1000;
 const DIALOG_MAX_MS = 30 * 60 * 1000;
 
 // ---- SDK loading ---------------------------------------------------------
 
-// pi's bin link target has moved between releases (dist/cli.js, later
-// dist/bundle/cli.js). Walk up from the resolved path until the package
-// root — the directory whose dist/index.js exists — appears.
-function packageRootFrom(start) {
-  let dir = path.dirname(fs.realpathSync(start));
-  for (let i = 0; i < 5; i++) {
-    if (fs.existsSync(path.join(dir, 'dist', 'index.js'))) return dir;
-    const up = path.dirname(dir);
-    if (up === dir) break;
-    dir = up;
-  }
-  return null;
-}
-
-function piPackageDir() {
-  const home = require('os').homedir();
-  const candidates = [];
-  // Inside a sandbox the home is empty; the server says where the package is.
-  if (process.env.CHATTERING_PI_PACKAGE_DIR) candidates.push(path.join(process.env.CHATTERING_PI_PACKAGE_DIR, 'dist', 'index.js'));
-  try { candidates.push(execFileSync('which', ['pi'], { encoding: 'utf8' }).trim()); } catch {}
-  // Every nvm node, newest first: the service node and the interactive node
-  // may differ, and a node upgrade moves the global install directory.
-  try {
-    const base = path.join(home, '.nvm', 'versions', 'node');
-    const vnum = v => v.replace(/^v/, '').split('.').map(n => Number(n) || 0);
-    for (const v of fs.readdirSync(base).sort((a, b) => {
-      const x = vnum(a), y = vnum(b);
-      return (y[0] - x[0]) || (y[1] - x[1]) || (y[2] - x[2]);
-    })) {
-      candidates.push(path.join(base, v, 'bin', 'pi'));
-      candidates.push(path.join(base, v, 'lib', 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'index.js'));
-    }
-  } catch {}
-  candidates.push('/usr/local/bin/pi', '/usr/bin/pi');
-  for (const c of candidates) {
-    // A Windows npm shim through WSL interop is never the Linux package.
-    if (!c || c.startsWith('/mnt/')) continue;
-    try {
-      const root = packageRootFrom(c);
-      if (root) return root;
-    } catch {}
-  }
-  throw new Error('cannot locate the pi package (is pi installed?)');
-}
+// Which Pi: one answer for the whole app (runtime.js).
+function piPackageDir() { return require('./runtime.js').piPackageDir(); }
 
 let sdkPromise = null;
 function loadSdk() {

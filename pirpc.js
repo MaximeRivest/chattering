@@ -19,7 +19,7 @@ const PI_BRIDGE_PATH = path.join(__dirname, 'chattering-bridge.ts');
 // make the settle waiter hang forever and every run would die on timeout
 // with no explanation. The gate fails fast and names the version instead.
 const PI_MIN_VERSION = '0.75.0';    // first protocol with agent_settled
-const PI_TESTED_VERSION = '0.84.1'; // last version Chattering was verified on
+const { PI_TESTED_VERSION } = require('./runtime.js'); // runtime/package.json
 let piProtocolPromise = null;
 let piProtocol = { version: null, tested: PI_TESTED_VERSION, ok: false, newer: false };
 
@@ -33,7 +33,8 @@ function semverLt(a, b) {
 function ensurePiProtocol(env) {
   if (!piProtocolPromise) {
     piProtocolPromise = new Promise((resolve, reject) => {
-      execFile('pi', ['--version'], { env: env || process.env, timeout: 15000 }, (err, stdout) => {
+      const pi = require('./runtime.js').piCommand(['--version'], { env: env || process.env });
+      execFile(pi.file, pi.args, { env: env || process.env, timeout: 15000 }, (err, stdout) => {
         if (err) return reject(new Error('Cannot run `pi --version`: ' + err.message.split('\n')[0]));
         const version = String(stdout).trim().split('\n')[0].trim();
         if (!/^\d+\.\d+\.\d+/.test(version)) return reject(new Error('Unexpected `pi --version` output: ' + version.slice(0, 80)));
@@ -67,7 +68,8 @@ function spawnPiRpc(target) {
   const args = target.discoverExtensions
     ? ['--mode', 'rpc', ...sessionArgs, ...(target.extraArgs || [])]
     : ['--mode', 'rpc', '--no-extensions', '-e', PI_BRIDGE_PATH, ...sessionArgs, ...(target.extraArgs || [])];
-  const child = spawn('pi', args, { cwd: target.cwd, env: target.env || process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+  const pi = require('./runtime.js').piCommand(args, { env: target.env || process.env });
+  const child = spawn(pi.file, pi.args, { cwd: target.cwd, env: target.env || process.env, stdio: ['pipe', 'pipe', 'pipe'] });
   let stderr = '', buffer = '', onEvent = target.onEvent || null;
   const waiters = [];
   const tail = () => stderr ? ' pi said: ' + stderr.trim().slice(-400) : '';

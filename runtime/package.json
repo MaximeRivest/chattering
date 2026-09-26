@@ -1,0 +1,8 @@
+{
+  "name": "chattering-runtime",
+  "private": true,
+  "description": "The Pi runtime Chattering is tested with and ships in its downloads. npm ci here installs exactly the locked versions.",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.87.1"
+  }
+}
