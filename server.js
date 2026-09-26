@@ -921,11 +921,39 @@ async function transcriptImage(key, entry, blockPath) {
   throw new Error('image entry not found');
 }
 
-// Live update push: browsers subscribe on /api/events.
-const sseClients = new Set();
+// Live update push: browsers subscribe on /api/events. Each browser gets
+// only what the person behind it may see (policy.eventView): an event about
+// a hidden conversation, project or file never leaves the server for them.
+const policy = require('./policy.js');
+const sseByConn = new Map(); // conn id → { res, identity, conn, receiver }
 function broadcast(ev) {
   const line = 'data: ' + JSON.stringify(ev) + '\n\n';
-  for (const res of sseClients) res.write(line);
+  for (const client of sseByConn.values()) {
+    let view;
+    try { view = policy.eventView(ev, client.receiver || (client.receiver = receiverFor(client.identity))); }
+    catch (e) { console.error('[events] ' + (ev && ev.type) + ': ' + e.message); view = null; }
+    if (!view) continue;
+    try { client.res.write(view === ev ? line : 'data: ' + JSON.stringify(view) + '\n\n'); } catch {}
+  }
+}
+// What one person may receive, asked once per event per browser. Access
+// rules can change while a stream is open, so nothing here is cached
+// beyond the identity itself.
+function receiverFor(identity) {
+  const all = policy.isOwnerTier(identity);
+  const member = all || (!!identity && !!identity.user && identity.user.scope !== 'guest');
+  return {
+    all, member,
+    // A key not indexed yet (a run's first moments): the household sees it,
+    // a guest waits until it is known to be theirs.
+    key: k => all || (!!k && index[k] ? keyVisible(identity, k) : member),
+    project: name => all || projectVisible(identity, name || null),
+    path: abs => {
+      if (all) return true;
+      if (typeof abs !== 'string' || !abs) return member;
+      try { assertPathAccess(identity, path.resolve(expandHomePath(abs)), 'see'); return true; } catch { return false; }
+    },
+  };
 }
 
 // ---- reading: one head per person per conversation (design/66) ----------
@@ -5251,7 +5279,6 @@ function inviteLinkFor(secret) {
 }
 // Presence goes to each live browser filtered by what that person may see:
 // a private conversation's key never reaches someone it is hidden from.
-const sseByConn = new Map(); // conn id → { res, identity, conn }
 function presenceFor(identity, exceptConn = null) {
   const see = visibleKeysFor(identity);
   return presence.snapshot().filter(r => r.conn !== exceptConn).filter(r => {
@@ -5483,7 +5510,9 @@ function settingsResponse(identity = ownerIdentity()) {
     // Which install the page is talking to; the header machine switcher shows it.
     hostname: os.hostname(),
     port: PORT,
-    connectLinks: connectLinks(),
+    // A connect link carries the install token, which is the owner's
+    // credential: only the owner tier is shown it.
+    connectLinks: manages ? connectLinks() : [],
     // The reach switch as it stands right now (after any runtime flip), and
     // whether the operator pinned the address so the switch cannot move it.
     lan: { on: lanWanted(), fixed: Boolean(ENV_HOST), addresses: lanAddresses() },
@@ -15045,6 +15074,14 @@ async function handleRequest(req, res) {
         && (u.pathname.startsWith('/api/') || !['GET', 'HEAD'].includes(req.method))) {
       return json(res, 403, { error: 'Requests from other pages are refused.' });
     }
+    // Every API route says who may call it (policy.js). One nobody
+    // classified answers the owner tier only; a conversation the route
+    // names in its query is checked here, before the handler runs.
+    if (u.pathname.startsWith('/api/')) {
+      const gate = policy.checkRoute(identity, req.method, u.pathname, u.searchParams,
+        (key, right) => !index[key] || canDo(identity, right, targetOf(key)));
+      if (!gate.ok) return json(res, gate.status, { error: gate.error });
+    }
     if (u.pathname === '/logout' && req.method === 'POST') {
       res.writeHead(302, { Location: '/', 'Set-Cookie': authGuard.cookieHeader('chattering', '', req, { maxAge: 0 }) });
       return res.end();
@@ -15988,8 +16025,9 @@ async function handleRequest(req, res) {
       for await (const chunk of req) body += chunk;
       try {
         const p = JSON.parse(body || '{}');
+        assertCan(identity, 'act', targetOf(p.id), 'this conversation');
         json(res, 200, await setConversationTitle(p.id, p.title));
-      } catch (e) { json(res, 400, { error: e.message }); }
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/conversation/retitle' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
@@ -16076,8 +16114,9 @@ async function handleRequest(req, res) {
       for await (const chunk of req) body += chunk;
       try {
         const p = JSON.parse(body || '{}');
+        assertCan(identity, 'act', targetOf(p.id), 'this conversation');
         json(res, 200, { ok: true, context: saveConversationContext(p.id, p.context) });
-      } catch (e) { json(res, 400, { error: e.message }); }
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/node/send' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
@@ -16175,11 +16214,12 @@ async function handleRequest(req, res) {
       try {
         const p = JSON.parse(body || '{}');
         const record = [...headlessRuns.values()].find(r => r.jobId === p.jobId);
+        if (record && record.key) assertCan(identity, 'act', targetOf(record.key), 'this conversation');
         if (!record) return json(res, 404, { error: 'run not found or already finished' });
         record.yielded = 'aborted by you';
         if (record.handle && record.handle.abort) await record.handle.abort();
         json(res, 200, { ok: true });
-      } catch (e) { json(res, 400, { error: e.message }); }
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/run/ui-input' && req.method === 'POST') {
       // Keyboard input for a hosted TUI view (ctx.ui.custom). data is raw
       // terminal key data ('\r', '\x1b[B', …); data:null closes the view.
@@ -16188,12 +16228,13 @@ async function handleRequest(req, res) {
       try {
         const p = JSON.parse(body || '{}');
         const record = [...headlessRuns.values()].find(r => r.jobId === p.jobId);
+        if (record && record.key) assertCan(identity, 'act', targetOf(record.key), 'this conversation');
         if (!record || !record.handle || !record.handle.uiInput) return json(res, 404, { error: 'run not found or already finished' });
         if (!record.handle.uiInput(String(p.id || ''), p.data === null ? null : String(p.data || ''))) {
           return json(res, 404, { error: 'that view is no longer open' });
         }
         json(res, 200, { ok: true });
-      } catch (e) { json(res, 400, { error: e.message }); }
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/run/ui-response' && req.method === 'POST') {
       // Answer an extension dialog (confirm/select/input/editor) shown on a
       // run card. The response reaches the pi process through its stdin.
@@ -16202,6 +16243,7 @@ async function handleRequest(req, res) {
       try {
         const p = JSON.parse(body || '{}');
         const record = [...headlessRuns.values()].find(r => r.jobId === p.jobId);
+        if (record && record.key) assertCan(identity, 'act', targetOf(record.key), 'this conversation');
         if (!record || !record.handle || !record.handle.respondUi) return json(res, 404, { error: 'run not found or already finished' });
         const resp = {};
         if (p.cancelled) resp.cancelled = true;
@@ -16217,7 +16259,7 @@ async function handleRequest(req, res) {
           if (t && t.push) t.push(true);
         }
         json(res, 200, { ok: true });
-      } catch (e) { json(res, 400, { error: e.message }); }
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/branch' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
@@ -16274,7 +16316,10 @@ async function handleRequest(req, res) {
       if (!evidence) return json(res, 404, { error: 'no evidence yet' });
       json(res, 200, { key, title: data.title, cwd: data.cwd, firstTs: data.firstTs, lastTs: data.lastTs, ...evidence });
     } else if (u.pathname === '/api/jobs') {
-      json(res, 200, allJobs());
+      // The same rule as the live stream: a job about a hidden conversation
+      // or project is not listed.
+      const receiver = receiverFor(identity);
+      json(res, 200, receiver.all ? allJobs() : allJobs().filter(job => policy.eventView({ type: 'job', job }, receiver)));
     } else if (u.pathname === '/api/usage' && req.method === 'GET') {
       const data = usageDashboardResponse(u.searchParams);
       json(res, data.error ? 503 : 200, data);
@@ -16842,7 +16887,8 @@ async function handleRequest(req, res) {
       try { assertCan(identity, 'act', targetOf(parsed.id), 'this conversation'); json(res, 200, await actOnConversation(parsed.id, parsed)); }
       catch (e) { json(res, e.status || 500, { error: e.message }); }
     } else if (u.pathname === '/api/recent-files' && req.method === 'GET') {
-      json(res, 200, { files: recentFileState.files });
+      const receiver = receiverFor(identity);
+      json(res, 200, { files: receiver.all ? recentFileState.files : recentFileState.files.filter(f => (f.key ? receiver.key(f.key) : true) && receiver.path(f.path)) });
     } else if (u.pathname === '/api/recent-files' && req.method === 'POST') {
       // { path, project } records an open; { remove: path } forgets one.
       let body = '';
@@ -16855,12 +16901,16 @@ async function handleRequest(req, res) {
         json(res, 200, { files: recentFileState.files });
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/agent-read' && req.method === 'GET') {
-      json(res, 200, agentRead);
+      const receiver = receiverFor(identity);
+      json(res, 200, receiver.all ? agentRead : policy.eventView({ type: 'agent-read', ...agentRead }, { ...receiver, member: true }));
     } else if (u.pathname === '/api/agent-read' && req.method === 'POST') {
       // { read: { key: at } } marks reads (server clock wins);
       // { import: { since, read, finished } } merges a browser's old local state once.
       let body = '';
       for await (const chunk of req) body += chunk;
+      // The inbox is the household's, one for everyone: a guest's reads do
+      // not clear the owner's marks. They are answered, not written.
+      if (usersLib.isGuest(identity.user)) return json(res, 200, policy.eventView({ type: 'agent-read', ...agentRead }, { ...receiverFor(identity), member: true }));
       try {
         const p = JSON.parse(body || '{}');
         if (p.import && typeof p.import === 'object') agentReadApply(agentReadLib.importState(agentRead, p.import));
@@ -17437,7 +17487,6 @@ async function handleRequest(req, res) {
         Connection: 'keep-alive',
       });
       res.write(': connected\n\n');
-      sseClients.add(res);
       // This stream names the browser for presence: the page reports where
       // it is under this id, and the row goes when the stream closes.
       const conn = crypto.randomBytes(8).toString('hex');
@@ -17457,7 +17506,7 @@ async function handleRequest(req, res) {
       // and the page uses this beat to notice a stream that died quietly
       // (a phone that slept, a network that changed) and reconnect.
       const beat = setInterval(() => { try { res.write('event: ping\ndata: {}\n\n'); } catch {} }, 25000);
-      req.on('close', () => { clearInterval(beat); sseClients.delete(res); sseByConn.delete(conn); docFollowDetach(conn); if (presence.remove(conn)) broadcastPresence(); });
+      req.on('close', () => { clearInterval(beat); sseByConn.delete(conn); docFollowDetach(conn); if (presence.remove(conn)) broadcastPresence(); });
     } else if (u.pathname.startsWith('/api/records/') && req.method === 'GET') {
       // The agent-facing read API: same text the CLI and the Pi tools print.
       // Failures are plain text too, so a shell or a tool call reads them as is.
@@ -17676,8 +17725,13 @@ collab.on('awareness', ev => broadcast({ type: 'collab-people', name: ev.name, p
 collab.on('join', ev => broadcast({ type: 'collab-people', name: ev.name, people: ev.people }));
 collab.on('leave', ev => broadcast({ type: 'collab-people', name: ev.name, people: ev.people }));
 // One dispatcher for WebSocket upgrades, on the plain and the TLS listener.
+// The same gate as HTTP routes (policy.js): a socket is a route too.
 function upgradeRequest(req, socket, head) {
   const u = new URL(req.url, 'http://x');
+  const identity = identifyRequest(req);
+  if (!identity) return refuseUpgrade(socket, 401, 'Unauthorized');
+  const gate = policy.checkRoute(identity, 'GET', u.pathname, u.searchParams, (key, right) => !index[key] || canDo(identity, right, targetOf(key)));
+  if (!gate.ok) return refuseUpgrade(socket, 403, 'Forbidden');
   if (u.pathname.startsWith('/api/collab/')) return collabUpgrade(req, socket, head).catch(() => { try { socket.destroy(); } catch {} });
   if (u.pathname === '/api/voice/listen') return voiceListenUpgrade(req, socket, head);
   return speechStreamUpgrade(req, socket, head);
