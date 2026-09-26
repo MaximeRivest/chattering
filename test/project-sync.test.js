@@ -60,7 +60,7 @@ async function boot(t, { label, sessions, publicUrlFor }) {
     CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
     CHATTERING_HOST: '', CHATTERING_LAN: '1', CHATTERING_PUBLIC_URL: publicUrl, CHATTERING_TOKEN: 'tok-' + label, CHATTERING_HOSTNAME: label }, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b);
-  t.after(() => { child.kill('SIGKILL'); fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(() => require('./helpers/cleanup.js').stopAndRemove(child, home));
   const local = 'http://127.0.0.1:' + port;
   for (let i = 0; i < 400; i++) {
     try { const r = await fetch(local + '/api/sessions'); if (r.ok) break; } catch {}

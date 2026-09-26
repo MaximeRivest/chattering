@@ -28,7 +28,7 @@ test('sign-in guard: lockout after ten distinct wrong tokens, a stale cookie cou
     CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
     CHATTERING_HOST: '', CHATTERING_LAN: '1', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: 'install-tok', PATH: '/nonexistent' /* no tailscale: the doors say so */ }, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b);
-  t.after(() => { child.kill('SIGKILL'); fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(() => require('./helpers/cleanup.js').stopAndRemove(child, home));
   const local = 'http://127.0.0.1:' + port, remote = 'http://' + lanIp() + ':' + port;
   await until(async () => { try { return (await fetch(local + '/health')).ok; } catch { return false; } });
   const raw = globalThis.fetch;

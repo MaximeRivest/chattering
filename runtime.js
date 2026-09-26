@@ -120,8 +120,11 @@ function nodePath(env = process.env) {
 
 // How to start Pi with these arguments: { file, args } for spawn/execFile.
 // CHATTERING_PI still names a whole command (an existing override).
+// CHATTERING_PI_CLI names a JavaScript file to run in Pi's place, started
+// like Pi (node + file): the portable seam tests use for a fake Pi.
 function piCommand(args = [], { env = process.env } = {}) {
   if (env.CHATTERING_PI) return { file: env.CHATTERING_PI, args: [...args] };
+  if (env.CHATTERING_PI_CLI) return { file: nodePath(env), args: [env.CHATTERING_PI_CLI, ...args] };
   return { file: nodePath(env), args: [piCliPath({ env }), ...args] };
 }
 // The same as one argv array (for terminals, which take a command line).

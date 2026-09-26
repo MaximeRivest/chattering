@@ -7,6 +7,14 @@ const { supervisionPlan, spawnSupervised } = require('./process-supervision');
 const { randomUUID } = require('node:crypto');
 const S = require('./delegation-store');
 
+// How a worker starts Pi: an explicit executable (tests, old records), else
+// the one runtime answer (runtime.js): node + Pi's cli.js, never a shim.
+function workerPi(options = {}) {
+  if (options.piExecutable) return { file: options.piExecutable, args: [...(options.piArgs || [])] };
+  const pi = require('./runtime.js').piCommand([]);
+  return { file: pi.file, args: [...pi.args, ...(options.piArgs || [])] };
+}
+
 function childEnvironment(source, root, id) {
   const env = { ...source };
   for (const key of Object.keys(env)) {
@@ -81,7 +89,7 @@ async function launchDelegation(spec, options = {}) {
   S.atomic(promptPath, input.prompt + `\n\nDelegation ID: ${id}\nRole: ${input.role}\nOutput directory: ${outputDir}\nCompletion requests parent review. Do not accept your own work.\nScopes in this prompt are advisory, not a sandbox.\n`);
   S.atomic(modePath, input.mode);
   S.atomic(sessionPath, JSON.stringify({ type: 'session', version: 3, id, timestamp: new Date(now).toISOString(), cwd: input.cwd }) + '\n');
-  S.atomic(path.join(dir, 'launch.json'), { command: options.piExecutable || 'pi', args: [...(options.piArgs || []), ...argv] });
+  S.atomic(path.join(dir, 'launch.json'), { command: workerPi(options).file, args: [...workerPi(options).args, ...argv] });
   S.atomic(path.join(dir, 'request.json'), record);
   S.appendEvent(dir, 'requested');
   S.syncDir(root);
@@ -171,7 +179,7 @@ async function resumeDelegation(id, spec = {}, options = {}) {
     if (fs.existsSync(file)) fs.renameSync(file, path.join(dir, `${name.replace('.json', '')}-${n}.json`));
   }
   S.atomic(promptPath, prompt);
-  S.atomic(launchPath, { command: options.piExecutable || 'pi', args: [...(options.piArgs || []),
+  S.atomic(launchPath, { command: workerPi(options).file, args: [...workerPi(options).args,
     ...workerArgv({ sessionPath: task.sessionPath, model, thinking, title: task.title, modePath: task.modePath, tools: task.tools, promptPath }, options)] });
   S.atomic(path.join(dir, `resume-${n}.json`), record);
   S.atomic(path.join(dir, 'state.json'), { status: 'starting', attempt: n + 1, updatedAt: now });

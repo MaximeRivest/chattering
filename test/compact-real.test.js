@@ -10,7 +10,7 @@ const path = require('node:path');
 const { execFile, execFileSync } = require('node:child_process');
 const { promisify } = require('node:util');
 let available = false;
-try { available = !!execFileSync('which', ['pi'], { encoding: 'utf8' }).trim(); } catch {}
+available = !!require('./helpers/pi-package.js').piPackageForTests();
 
 test('compact: both engines write a compaction entry and continue from it', {
   skip: !available && 'Pi executable is unavailable', timeout: 120000,

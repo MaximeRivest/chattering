@@ -26,7 +26,7 @@ function setup(t) {
     stopAnyWarmSession() {}, sleep: async () => {}, index: { child: {} },
     conversationKind: () => 'pi', windowTitleFor: () => 'test', absPathForKey: () => file,
     sessionPathsFor: () => ({ entry: {}, sessionPath: file, cwd: root }),
-    findRunningConversation: () => null, focusWindow: () => false, piBin: () => 'fake',
+    findRunningConversation: () => null, focusWindow: () => false, piArgv: args => ['fake', ...args],
     releaseHeadless: async () => {}, spawnAlacritty: async () => { box.spawns++; }, spawns: 0,
     // People (users.js): the account itself drives these runs; nothing recorded.
     principalFor: () => ({ user: { id: 'owner', name: 'Owner' }, spawnAs: null, env: {} }), recordAuthorship() {},

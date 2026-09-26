@@ -18,14 +18,15 @@ async function setup(t) {
   const root = path.join(dir, 'store'), file = path.join(dir, 'parent.jsonl');
   fs.writeFileSync(file, JSON.stringify({ type: 'session', version: 3, id: randomUUID(), cwd: dir }) + '\n');
   const saved = {};
-  for (const key of ['PI_DELEGATION_ROOT', 'PI_DELEGATION_ID', 'PI_DELEGATION_SUPERVISION', 'JITI_FS_CACHE', 'PATH', 'FIXTURE_STORE']) saved[key] = process.env[key];
+  for (const key of ['PI_DELEGATION_ROOT', 'PI_DELEGATION_ID', 'PI_DELEGATION_SUPERVISION', 'JITI_FS_CACHE', 'CHATTERING_PI_CLI', 'FIXTURE_STORE']) saved[key] = process.env[key];
   process.env.PI_DELEGATION_ROOT = root;
   process.env.PI_DELEGATION_SUPERVISION = 'detached';
   delete process.env.PI_DELEGATION_ID;
   process.env.JITI_FS_CACHE = 'false';
   process.env.FIXTURE_STORE = require.resolve('../delegation-store');
-  process.env.PATH = dir + path.delimiter + process.env.PATH;
-  const script = `#!${process.execPath}\n` + String.raw`
+  // A Pi started as Pi is (node + file, runtime.js), on every system.
+  process.env.CHATTERING_PI_CLI = path.join(dir, 'fake-pi.js');
+  const script = String.raw`
 const fs=require('node:fs'); const args=process.argv.slice(2); const arg=k=>args[args.indexOf(k)+1];
 const S=require(process.env.FIXTURE_STORE), mode=JSON.parse(fs.readFileSync(arg('--prompt-mode-file'),'utf8'));
 const append=o=>fs.appendFileSync(arg('--session'),JSON.stringify(o)+'\n');
@@ -36,7 +37,7 @@ const limited=prompt.includes('Fixture limit') && !prompt.startsWith('Your previ
 const message=limited?{role:'assistant',provider,model:modelId,stopReason:'error',errorMessage:'Fixture request failed (429): rate_limit_error',content:[]}:{role:'assistant',provider,model:modelId,stopReason:'stop',content:[{type:'text',text:'Extension fixture done'}]};
 append({type:'message',message}); console.log(JSON.stringify({type:'message_end',message}));
 `;
-  fs.writeFileSync(path.join(dir, 'pi'), script, { mode: 0o700 });
+  fs.writeFileSync(process.env.CHATTERING_PI_CLI, script);
   const { loadExtensions } = await import(pathToFileURL(loaderPath).href);
   const loaded = await loadExtensions([path.resolve(__dirname, '../extensions/delegation.ts')], dir);
   assert.deepEqual(loaded.errors, []);

@@ -158,13 +158,19 @@ function fileMtime(file) {
   try { return fs.statSync(file).mtimeMs; } catch { return null; }
 }
 
+// Pi's provider price tables, from the Pi the app runs (runtime.js). The
+// pi-ai package sits inside Pi's own node_modules, or beside it when npm
+// hoisted it (the locked runtime): look in each node_modules up the tree.
 function findPiDataDir() {
-  try {
-    const bin = fs.realpathSync(execFileSync('which', ['pi'], { encoding: 'utf8' }).trim());
-    const packageDir = path.dirname(path.dirname(bin));
-    const direct = path.join(packageDir, 'node_modules', '@earendil-works', 'pi-ai', 'dist', 'providers', 'data');
-    if (fs.existsSync(direct)) return direct;
-  } catch {}
+  let dir;
+  try { dir = require('./runtime.js').piPackageDir(); } catch { return null; }
+  for (let i = 0; i < 6 && dir; i++) {
+    const candidate = path.join(dir, 'node_modules', '@earendil-works', 'pi-ai', 'dist', 'providers', 'data');
+    if (fs.existsSync(candidate)) return candidate;
+    const up = path.dirname(dir);
+    if (up === dir) break;
+    dir = up;
+  }
   return null;
 }
 

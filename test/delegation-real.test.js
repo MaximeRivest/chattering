@@ -8,7 +8,8 @@ const { execFileSync } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const D = require('../delegation');
 let pi;
-try { pi = execFileSync('which', ['pi'], { encoding: 'utf8' }).trim(); } catch {}
+// Workers start the Pi the app would run (runtime.js).
+pi = require('./helpers/pi-package.js').piPackageForTests();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 test('real Pi runner persists a valid mode contract and blocks a changed snapshot before provider work', {
@@ -23,7 +24,7 @@ test('real Pi runner persists a valid mode contract and blocks a changed snapsho
   const root = path.join(home, 'records'), marker = path.join(home, 'requests.txt');
   const env = { HOME: home, PATH: process.env.PATH, PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
     PI_OFFLINE: '1', JITI_FS_CACHE: 'false', NODE_NO_WARNINGS: '1', FIXTURE_REQUEST_MARKER: marker };
-  const options = { root, env, supervision: 'detached', piExecutable: pi,
+  const options = { root, env, supervision: 'detached', // the runtime's Pi (runtime.js), extra arguments after it
     piArgs: ['--no-extensions', '-e', path.join(__dirname, 'fixtures/pisdk-probe.ts')],
     modeExtensionPath: path.resolve(__dirname, '../extensions/modes.ts') };
   const mode = { key: 'fixture-task', label: 'Fixture task', opener: 'Perform the fixture.', tools: ['bash'] };
@@ -72,7 +73,7 @@ test('real Pi worker stopped by a usage limit continues on the same session with
   const root = path.join(home, 'records');
   const env = { HOME: home, PATH: process.env.PATH, PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
     PI_OFFLINE: '1', JITI_FS_CACHE: 'false', NODE_NO_WARNINGS: '1', FIXTURE_LIMIT_MODEL: 'one', FIXTURE_ECHO_HISTORY: '1' };
-  const options = { root, env, supervision: 'detached', piExecutable: pi,
+  const options = { root, env, supervision: 'detached', // the runtime's Pi (runtime.js), extra arguments after it
     piArgs: ['--no-extensions', '-e', path.join(__dirname, 'fixtures/pisdk-probe.ts')],
     modeExtensionPath: path.resolve(__dirname, '../extensions/modes.ts') };
   const mode = { key: 'fixture-task', label: 'Fixture task', opener: 'Perform the fixture.', tools: ['bash'] };

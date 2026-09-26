@@ -71,7 +71,7 @@ test('a guest cannot reach past their project through any exit', { skip: !lanIp(
     CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
     CHATTERING_HOST: '', CHATTERING_LAN: '1', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: 'install-tok' }, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b);
-  t.after(() => { child.kill('SIGKILL'); fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(() => require('./helpers/cleanup.js').stopAndRemove(child, home));
   const local = 'http://127.0.0.1:' + port, remote = 'http://' + lanIp() + ':' + port;
   const list = await until(async () => { try { const l = await (await fetch(local + '/api/sessions')).json(); return l.length === 2 && l; } catch { return false; } }, 20000);
   const secretKey = (list.find(e => e.project === 'secret') || assert.fail(JSON.stringify(list.map(e => [e.project, e.cwd])))).key;

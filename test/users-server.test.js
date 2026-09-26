@@ -44,7 +44,7 @@ async function boot(t) {
   let log = '';
   const child = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, HOME: home, PORT: String(port), CHATTERING_TLS_PORT: String(tlsPort), CHATTERING_NO_WATCH: '0', CHATTERING_NO_LEDGER: '1', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, CHATTERING_HOST: '', CHATTERING_LAN: '1', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: 'install-tok' }, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b);
-  t.after(() => { child.kill('SIGKILL'); fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(() => require('./helpers/cleanup.js').stopAndRemove(child, home));
   const local = 'http://127.0.0.1:' + port;
   const remote = 'http://' + lanIp() + ':' + port;
   for (let i = 0; i < 300; i++) {

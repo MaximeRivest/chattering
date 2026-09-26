@@ -7,7 +7,7 @@ const path = require('node:path');
 const { execFile, execFileSync } = require('node:child_process');
 const { promisify } = require('node:util');
 let available = false;
-try { available = !!execFileSync('which', ['pi'], { encoding: 'utf8' }).trim(); } catch {}
+available = !!require('./helpers/pi-package.js').piPackageForTests();
 test('installed SDK: a derivation is one raw completion on a private snapshot with the conversation\u0027s exact context', {
   skip: !available && 'Pi is unavailable', timeout: 60000,
 }, async t => {

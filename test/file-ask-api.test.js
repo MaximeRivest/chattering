@@ -37,7 +37,7 @@ async function boot(t) {
     PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent };
   const child = spawn(process.execPath, ['server.js'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b);
-  t.after(() => { child.kill('SIGKILL'); fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(() => require('./helpers/cleanup.js').stopAndRemove(child, home));
   const base = 'http://127.0.0.1:' + port;
   for (let i = 0; i < 300; i++) { try { if ((await fetch(base + '/api/settings')).ok) break; } catch {} await sleep(50); }
   // Saves go to files of known repositories: wait for the first scan.

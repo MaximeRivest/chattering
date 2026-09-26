@@ -12,7 +12,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const root = path.join(__dirname, '..');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// A `pi` that records its arguments and attached file, then streams the
+// A Pi (started as Pi is: node + file, CHATTERING_PI_CLI) that records its arguments and attached file, then streams the
 // text of $FAKE_PI_ANSWER (or sleeps, for "slow") as pi's JSON events.
 function fakePi(home) {
   const bin = path.join(home, 'bin');
@@ -29,9 +29,9 @@ for (const delta of answer.match(/.{1,6}/gs) || []) out({ type: 'message_update'
 out({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text: answer }], provider: 'fake', model: 'fake-1', timestamp: Date.now(),
   usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { total: 0 } } } });
 `;
-  fs.writeFileSync(path.join(bin, 'pi'), script, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'fake-pi.js'), script);
   return {
-    bin,
+    bin, cli: path.join(bin, 'fake-pi.js'),
     answer: text => fs.writeFileSync(path.join(home, 'answer.txt'), text),
     calls: () => { try { return fs.readFileSync(path.join(home, 'pi-calls.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)); } catch { return []; } },
   };
@@ -56,13 +56,13 @@ async function boot(t) {
   const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r));
   const port = s.address().port; await new Promise(r => s.close(r));
   let log = '';
-  const env = { ...process.env, HOME: home, PATH: pi.bin + path.delimiter + process.env.PATH, PORT: String(port), CHATTERING_TLS_PORT: '0',
+  const env = { ...process.env, HOME: home, CHATTERING_PI_CLI: pi.cli, PORT: String(port), CHATTERING_TLS_PORT: '0',
     CHATTERING_HOST: '127.0.0.1', CHATTERING_LAN: '', CHATTERING_TOKEN: '', CHATTERING_PUBLIC_URL: '', CHATTERING_NO_WATCH: '1', CHATTERING_NO_SYNC: '1',
     CHATTERING_CACHE_DIR: path.join(home, '.cache', 'chattering'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'),
     PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent };
   const child = spawn(process.execPath, ['server.js'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b);
-  t.after(() => { child.kill('SIGKILL'); fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(() => require('./helpers/cleanup.js').stopAndRemove(child, home));
   const base = 'http://127.0.0.1:' + port;
   for (let i = 0; i < 300; i++) { try { if ((await fetch(base + '/api/settings')).ok) break; } catch {} await sleep(50); }
   return { base, home, pi, doc, log: () => log };

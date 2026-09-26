@@ -21,13 +21,14 @@ async function freePort() {
   return port;
 }
 
-// A `pi` that answers nothing and writes one line per call.
+// A Pi (node + file, CHATTERING_PI_CLI) that answers nothing and writes one line per call.
 function fakePi(home) {
   const bin = path.join(home, 'bin');
   const log = path.join(home, 'pi-calls.log');
   fs.mkdirSync(bin, { recursive: true });
-  fs.writeFileSync(path.join(bin, 'pi'), `#!/bin/sh\necho "$*" >> '${log}'\nexit 0\n`, { mode: 0o755 });
-  return { bin, calls: () => { try { return fs.readFileSync(log, 'utf8').split('\n').filter(Boolean); } catch { return []; } } };
+  const cli = path.join(bin, 'fake-pi.js');
+  fs.writeFileSync(cli, `require('fs').appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');\n`);
+  return { bin, cli, calls: () => { try { return fs.readFileSync(log, 'utf8').split('\n').filter(Boolean); } catch { return []; } } };
 }
 
 // Two recent Claude Code user messages: enough for the timeline labeller
@@ -48,14 +49,14 @@ async function boot(t, { prepare } = {}) {
   if (prepare) prepare(home);
   const port = await freePort();
   let log = '';
-  const env = { ...process.env, HOME: home, PATH: pi.bin + path.delimiter + process.env.PATH, PORT: String(port), CHATTERING_TLS_PORT: '0',
+  const env = { ...process.env, HOME: home, CHATTERING_PI_CLI: pi.cli, PORT: String(port), CHATTERING_TLS_PORT: '0',
     CHATTERING_HOST: '127.0.0.1', CHATTERING_LAN: '', CHATTERING_TOKEN: '', CHATTERING_PUBLIC_URL: '', CHATTERING_NO_WATCH: '1', CHATTERING_NO_SYNC: '1',
     CHATTERING_CACHE_DIR: path.join(home, '.cache', 'chattering'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'),
     PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent };
   for (const k of ['SPEECH_URL', 'KOKORO_URL', 'KOKORO_VOICE', 'REWRITE_URL', 'REWRITE_MODEL']) delete env[k];
   const child = spawn(process.execPath, ['server.js'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b);
-  t.after(() => { child.kill('SIGKILL'); fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(() => require('./helpers/cleanup.js').stopAndRemove(child, home));
   const base = 'http://127.0.0.1:' + port;
   for (let i = 0; i < 300; i++) {
     try { if ((await fetch(base + '/api/settings')).ok) break; } catch {}
