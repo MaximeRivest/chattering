@@ -7932,6 +7932,7 @@ function agentEnv(principal = null) {
     PI_DELEGATION_ROOT: DELEGATION_ROOT,
     // Where this install's token is, for the owner's own tools (records, CLI).
     CHATTERING_TOKEN_FILE: LAN_TOKEN_FILE,
+    CHATTERING_PORT: String(PORT),
     ...((principal || principalFor(null)).env),
   };
   return platform.withPath(env, agentPath(platform.pathEntries(process.env).join(path.delimiter)).split(path.delimiter));
@@ -8076,6 +8077,8 @@ function runningAgentKeys() {
 // boot id knows the server (and possibly the interface) was replaced — it
 // offers a reload instead of running yesterday's code against today's API.
 const BOOT_ID = crypto.randomUUID();
+const BOOT_AT = Date.now();
+const APP_VERSION = (() => { try { return require('./package.json').version || null; } catch { return null; } })();
 let runningAgentsSig = null;
 setInterval(() => {
   const keys = runningAgentKeys();
@@ -17641,6 +17644,22 @@ async function handleRequest(req, res) {
       try {
         json(res, 200, { notePath: e.notePath, text: await fsp.readFile(e.notePath, 'utf8') });
       } catch { json(res, 404, { error: 'note file missing' }); }
+    } else if (u.pathname === '/api/app/status' && req.method === 'GET') {
+      // For the launcher: which install and version answers on this port,
+      // and whether work is running (an update or stop waits for it).
+      json(res, 200, { app: 'chattering', version: APP_VERSION, pid: process.pid, appDir: __dirname,
+        node: process.version, nodePath: process.execPath, pi: runtimeLib.piVersion(), piSource: (runtimeLib.locatePi() || {}).source || null,
+        activeRuns: headlessRuns.size, startedAt: BOOT_AT });
+    } else if (u.pathname === '/api/app/stop' && req.method === 'POST') {
+      // A clean stop asked over HTTP: Windows has no SIGTERM to ask with.
+      // Running work is stopped only when asked to (force).
+      let body = '';
+      for await (const chunk of req) { body += chunk; if (body.length > 1024) return json(res, 413, { error: 'too large' }); }
+      let p = {};
+      try { p = JSON.parse(body || '{}'); } catch {}
+      if (headlessRuns.size && !p.force) return json(res, 409, { error: headlessRuns.size + ' run(s) are working; stop them first, or stop with force', activeRuns: headlessRuns.size });
+      json(res, 200, { ok: true, stopping: true });
+      setImmediate(() => shutdownGracefully());
     } else if (u.pathname === '/api/rescan' && req.method === 'POST') {
       await fullScan();
       sweepOrphanFanouts();

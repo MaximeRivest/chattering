@@ -8,7 +8,11 @@
 const http = require('http');
 const path = require('path');
 
-const PORT = Number(process.env.CHATTERING_PORT || process.env.PORT || 7433);
+// The server's port: named, else where the launcher of a download started it
+// (server.json in Chattering's data folder), else the default.
+const PORT = Number(process.env.CHATTERING_PORT || process.env.PORT || (() => {
+  try { return JSON.parse(require('fs').readFileSync(require('path').join(require('./platform.js').appDirs().data, 'server.json'), 'utf8')).port; } catch { return 0; }
+})() || 7433);
 // Being on this machine is not a credential (a guest's sandboxed agent is
 // on it too): the token comes from the environment, else from the install
 // token file, which only the account can read.

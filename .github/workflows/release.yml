@@ -1,0 +1,44 @@
+# A release: a tag v<version> (matching package.json) builds the download on
+# every system and processor Chattering ships for, runs the stranger test on
+# each, and publishes them with SHA256SUMS and the install scripts. Nothing
+# is published unless every one passed.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: The tag names package.json's version
+        run: test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
+
+  package:
+    needs: check
+    uses: ./.github/workflows/package.yml
+    with:
+      runners: '["ubuntu-latest","ubuntu-24.04-arm","macos-latest","macos-15-intel","windows-latest","windows-11-arm"]'
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: out
+          merge-multiple: true
+      - name: Checksums
+        run: cd out && cat *.sha256 > SHA256SUMS && cat SHA256SUMS
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "Chattering ${GITHUB_REF_NAME#v}" --generate-notes \
+            out/*.tar.gz out/*.zip out/SHA256SUMS install/install.sh install/install.ps1

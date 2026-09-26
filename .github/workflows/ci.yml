@@ -87,3 +87,9 @@ jobs:
           name: test-results-${{ matrix.os }}-${{ matrix.node }}
           path: test-results.xml
           if-no-files-found: ignore
+
+  # The downloads, built and given to a stranger on every push.
+  package:
+    uses: ./.github/workflows/package.yml
+    with:
+      runners: '["ubuntu-latest","macos-latest","windows-latest"]'

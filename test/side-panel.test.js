@@ -190,7 +190,8 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   assert.equal(await evaluate(`$('ctxMeter').parentElement.classList.contains('agent-compose-row')`), true);
   assert.equal(await evaluate(`$('agentCompose').offsetHeight<=beforeUsageHeight+1`), true, 'usage adds no extra row at desktop width');
   assert.equal(await evaluate(`$('ctxMeter').tagName`), 'BUTTON', 'caption remains keyboard-accessible');
-  assert.match(await evaluate(`$('ctxMeter').textContent`), /123.*1M.*used.*est\. \$1\.23/);
+  // Painted and read in one turn: a live repaint may replace the fixture in between.
+  assert.match(await evaluate(`paintCtxMeter($('ctxMeter'),meterFixture);$('ctxMeter').textContent`), /123.*1M.*used.*est\. \$1\.23/);
   await evaluate(`document.body.classList.add('zen')`);
   assert.equal(await evaluate(`$('ctxMeter').checkVisibility()`), true, 'usage stays visible even in zen mode');
   await evaluate(`document.body.classList.remove('zen')`);

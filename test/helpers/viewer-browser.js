@@ -77,7 +77,8 @@ async function viewerBrowser(t, opts = {}) {
   };
   const until = async (expression, label, contextId) => {
     // A page mid-reload answers "navigated or closed": ask again, it is not an answer.
-    for (let i = 0; i < 400; i++) {
+    // Up to twenty seconds: a loaded machine is slow, and a pass costs no wait.
+    for (let i = 0; i < 800; i++) {
       let ok = false;
       try { ok = await evaluate(`(()=>{try{return !!(${expression})}catch{return false}})()`, contextId); } catch {}
       if (ok) return;

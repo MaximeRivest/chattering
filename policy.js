@@ -276,6 +276,10 @@ const ROUTES = {
   '/api/sync/policy': 'owner',
   '/api/sync/join-remote': 'owner',
 
+  // ---- the launcher ----
+  '/api/app/status': 'owner',
+  '/api/app/stop': 'owner',
+
   // ---- sockets (the upgrade handler passes through the same gate) ----
   '/api/collab/*': 'guest', // see / act checked per document on join
   '/api/voice/listen': 'member',

@@ -12,3 +12,6 @@ android/build/
 android/app/build/
 android/local.properties
 __pycache__/
+
+# Downloads built by scripts/build-release.js
+dist/

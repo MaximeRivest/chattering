@@ -1,0 +1,53 @@
+# Build the Chattering download on each given system, unpack the archive
+# (not the build folder: what people get is what is tested), and run the
+# stranger test on it: a fresh home, no Node or Pi installed, start, find a
+# conversation, search, the page, the records command, stop (design/71).
+name: package
+
+on:
+  workflow_call:
+    inputs:
+      runners:
+        description: JSON list of runner labels
+        type: string
+        required: true
+
+jobs:
+  build:
+    name: download · ${{ matrix.runner }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(inputs.runners) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+      - name: Build
+        id: build
+        run: |
+          node scripts/build-release.js | tee build.json
+          echo "archive=$(node -p "require('./build.json').archive")" >> "$GITHUB_OUTPUT"
+      - name: Unpack as a person would
+        id: unpack
+        run: |
+          mkdir -p unpacked
+          a="${{ steps.build.outputs.archive }}"
+          case "$a" in *.zip) unzip -q "$a" -d unpacked ;; *) tar -xzf "$a" -C unpacked ;; esac
+          echo "dir=$(ls -d unpacked/chattering-*)" >> "$GITHUB_OUTPUT"
+      - name: The stranger test
+        run: node scripts/smoke-release.js "${{ steps.unpack.outputs.dir }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: download-${{ matrix.runner }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error

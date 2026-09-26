@@ -24,7 +24,7 @@ test('folder preview preserves parent and matches new-name normalization', () =>
   assert.equal(box.projectFolderPreview('', 'new'), '~/Projects/new');
 });
 
-test('project setup works in a real browser without starting agents', t => {
+test('project setup works in a real browser without starting agents', async t => {
   const binary = chromiumBinary();
   const probe = spawnSync(binary, ['--version'], {encoding: 'utf8'});
   if (probe.error) { t.skip('chromium is not installed (or set CHATTERING_TEST_CHROMIUM)'); return; }
@@ -91,7 +91,27 @@ async function fetch() { return {json: async () => ({version:setupVersion,path:'
   const styles = fs.readFileSync(path.join(__dirname, '../design/tokens.css'), 'utf8') + [...source.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map(m => m[1]).join('\n');
   const html = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>' + styles + '</style></head><body><main id="background"><button id="trigger">Project</button></main><script>' + setup + '\n' + checks + '</script></body></html>';
   const file = path.join(dir, 'test.html'); fs.writeFileSync(file, html);
-  const result = spawnSync(binary, ['--headless','--window-size=390,844','--no-sandbox','--disable-gpu','--disable-dev-shm-usage','--no-first-run','--user-data-dir=' + path.join(dir,'profile'),'--virtual-time-budget=5000','--dump-dom','file://' + file], {encoding:'utf8',timeout:30000,maxBuffer:5e6});
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /data-result="passed"/, result.stdout.match(/data-result="[^"]*"/)?.[0] || result.stderr);
+  // Driven over the DevTools protocol, as the other browser tests are: the
+  // one-shot --dump-dom mode can wait out its time budget on current Chrome.
+  const browser = require('node:child_process').spawn(binary, ['--headless', '--window-size=390,844', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--no-first-run',
+    '--user-data-dir=' + path.join(dir, 'profile'), '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  t.after(() => { try { browser.kill(); } catch {} });
+  const endpoint = await new Promise((resolve, reject) => {
+    let err = ''; const timer = setTimeout(() => reject(new Error(err)), 15000);
+    browser.stderr.on('data', d => { err += d; const m = err.match(/DevTools listening on (ws:\/\/\S+)/); if (m) { clearTimeout(timer); resolve(m[1]); } });
+  });
+  const ws = new WebSocket(endpoint); await new Promise(r => ws.onopen = r);
+  t.after(() => ws.close());
+  let id = 0; const pending = new Map();
+  ws.onmessage = e => { const m = JSON.parse(e.data); if (pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } };
+  const send = (method, params = {}, sessionId) => new Promise(r => { pending.set(++id, r); ws.send(JSON.stringify({ id, method, params, sessionId })); });
+  const target = await send('Target.createTarget', { url: require('node:url').pathToFileURL(file).href });
+  const sid = (await send('Target.attachToTarget', { targetId: target.result.targetId, flatten: true })).result.sessionId;
+  let outcome = '';
+  for (let i = 0; i < 200 && !outcome; i++) {
+    const r = await send('Runtime.evaluate', { expression: 'document.body && document.body.dataset.result || ""', returnByValue: true }, sid);
+    outcome = (r.result && r.result.result && r.result.result.value) || '';
+    if (!outcome) await new Promise(res => setTimeout(res, 50));
+  }
+  assert.equal(outcome, 'passed', outcome || 'the page never reported');
 });
