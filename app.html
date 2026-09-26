@@ -5711,7 +5711,7 @@ async function openNoteFile(file) {
   const session = sessions.find(s => s.notePath && s.notePath.endsWith('/' + file));
   if (session) {
     activeRel = session.key;
-    setRoute('note', 'note=' + encodeURIComponent(file), { project: projectOf(session), selectScope: sideLayoutOn() && sidePanel() === 'inbox' });
+    setRoute('note', 'note=' + encodeURIComponent(file), { project: projectOf(session) });
     const related = await relatedFor(session.key);
     noteViewer(n.text, '~/notes/chattering/' + n.file, { kind: 'note', key: session.key, related });
   } else {
@@ -13742,7 +13742,7 @@ function flashCopied(btn) {
 let progressStream = null;
 let conversationLoadSeq = 0;
 
-async function open(rel, scroll, routeHash = null) {
+async function open(rel, scroll, routeHash = null, { fromList = false } = {}) {
   if (scroll == null && viewKind === 'file' && current?.key === rel) scroll = 'restore';
   const seq = ++conversationLoadSeq;
   const navigating = viewKind !== 'conversation' || activeRel !== rel || !current || current.key !== rel;
@@ -13768,7 +13768,7 @@ async function open(rel, scroll, routeHash = null) {
     window._agentContext = [];
     const hash = routeHash || (typeof scroll === 'string' && scroll.startsWith('entry:')
       ? 'read=' + encodeURIComponent(JSON.stringify({ key: rel, entryId: scroll.slice(6) })) : encodeURIComponent(rel));
-    setRoute('conversation', hash, { project: navSession ? projectOf(navSession) : undefined, selectScope: sideLayoutOn() && sidePanel() === 'inbox' });
+    setRoute('conversation', hash, { project: navSession ? projectOf(navSession) : undefined, selectScope: fromList });
     render();
   } else if (routeHash) {
     setRoute('conversation', routeHash);
@@ -13800,7 +13800,7 @@ async function open(rel, scroll, routeHash = null) {
   current = next;
   learnSpeedCalibration(next.speedCalibration);
   if (navigating && !sessions.some(s => s.key === rel) && restoringScopeEntry !== nav.current()?.id) {
-    adoptWorkspaceProject(projectOf(next), { select: sideLayoutOn() && sidePanel() === 'inbox', stamp: true });
+    adoptWorkspaceProject(projectOf(next), { select: fromList, stamp: true });
   }
   if (!(window._ctxTouched && current && current.key === rel)) {
     window._agentContext = Array.isArray(next.attachedContext) ? next.attachedContext.slice() : [];
@@ -13885,7 +13885,7 @@ async function showNotePane(rel, text, savedPath) {
     // A saved note is a place: the same address the notes tab opens it by.
     const rel_ = savedPath.split('/notes/chattering/')[1];
     const session = sessions.find(s => s.key === rel);
-    if (rel_) setRoute('note', 'note=' + encodeURIComponent(rel_), { project: session ? projectOf(session) : undefined, selectScope: sideLayoutOn() && sidePanel() === 'inbox' }); else setRouteKind('note');
+    if (rel_) setRoute('note', 'note=' + encodeURIComponent(rel_), { project: session ? projectOf(session) : undefined }); else setRouteKind('note');
     const related = await relatedFor(rel, true);
     noteViewer(text, savedPath, { kind: 'note', key: rel, related });
     return;
@@ -16361,9 +16361,13 @@ $('railMachine').onclick = e => {
 $('sideHome').onclick = () => $('brand').click();
 // A row in the side list, or an agent alert, opens its conversation; Back
 // is the way home (the "return to work" button is gone, design/59).
+// Opened from the side list or from an alert about a run: the conversation's
+// project becomes the chosen one, even from All (design/50). Anywhere else
+// (Gantt, search, a link) leaves All as All. The panel is always the list
+// since design/51, so the origin is passed, not inferred from the panel.
 function openPanelConversation(key, scroll) {
   if (!key) return;
-  return open(key, scroll);
+  return open(key, scroll, null, { fromList: true });
 }
 // ‹ › in the bar and in the column: one stack, every pair in step.
 const navButtons = Navigation.mount(nav, {

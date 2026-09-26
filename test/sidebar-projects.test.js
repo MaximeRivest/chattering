@@ -42,8 +42,8 @@ test('sort modes are stable and unknown measurements are never treated as zero',
   assert.deepEqual(names({ sort: 'born', stats: { a: { born: 0 }, b: { born: 20 }, c: { born: 10 } } }), ['b', 'c', 'a']);
 });
 
-test('projects, quiet badges, expanded chart bounds and scroll-loaded lists in the real app', { timeout: 60000 }, async t => {
-  const { home, base, evaluate: ev, until, size, command, screenshot, exceptions } = await viewerBrowser(t);
+test('project timeline bounds, quiet badges and scroll-loaded lists in the real app', { timeout: 60000 }, async t => {
+  const { home, base, evaluate: ev, until, size, command, screenshot, exceptions, auth } = await viewerBrowser(t);
   // Temporary cwd paths are intentionally classified as loose conversations.
   // Give this fixture a real project-shaped cwd outside /tmp.
   const projectHome = fs.mkdtempSync(path.join(os.homedir(), '.sidebar-projects-test-'));
@@ -52,89 +52,65 @@ test('projects, quiet badges, expanded chart bounds and scroll-loaded lists in t
   const sessionFile = path.join(home, '.pi/agent/sessions/fixture/media.jsonl');
   const entries = fs.readFileSync(sessionFile, 'utf8').trim().split('\n').map(JSON.parse);
   entries[0].cwd = cwd; fs.writeFileSync(sessionFile, entries.map(JSON.stringify).join('\n') + '\n');
-  await fetch(base + '/api/rescan', { method: 'POST' });
+  assert.equal((await fetch(base + '/api/rescan', { method: 'POST', headers: auth })).status, 200);
   await ev(`load()`);
   await until(`sessions.some(s=>projectOf(s)==='work') && sideLayoutOn()`);
-  assert.deepEqual(await ev(`[...document.querySelectorAll('#sideRail [data-rail]')].map(b=>b.dataset.rail)`), ['inbox','traffic','recent-files','projects','conversations','files']);
-  await ev(`document.querySelector('[data-rail=projects]').click()`);
-  await until(`!!document.querySelector('[data-open-project=work]') && !sidebarProjectCatalogRequest`);
-  assert.equal(await ev(`sidebarProjectSort()`), 'recent');
-  assert.equal(await ev(`viewKind`), 'home', 'choosing a rail panel does not replace the open page');
-  await ev(`$('sidebarProjectQuery').focus();$('sidebarProjectQuery').value='not-a-project';$('sidebarProjectQuery').dispatchEvent(new Event('input',{bubbles:true}))`);
-  assert.equal(await ev(`document.querySelectorAll('[data-open-project]').length`), 0);
-  assert.equal(await ev(`document.activeElement.id`), 'sidebarProjectQuery', 'search keeps keyboard focus across repaint');
-  await ev(`$('sidebarProjectQuery').value='work';$('sidebarProjectQuery').dispatchEvent(new Event('input',{bubbles:true}));document.querySelector('[data-open-project=work]').click()`);
+  // A project's page: its timeline, opened, never covers the column.
+  await ev(`showProjectOverview('work')`);
   await until(`viewKind==='project' && !!document.querySelector('.mgantt')`);
-  // Opening the timeline must never cover the rail or panel.
   await ev(`document.querySelector('.mgantt').click()`);
   await until(`!!document.querySelector('.mgantt[data-mg-open]')`);
   const bounds = () => ev(`(()=>{const g=document.querySelector('.mgantt[data-mg-open]').getBoundingClientRect(),s=$('side').getBoundingClientRect();return {left:g.left,right:g.right,top:g.top,edge:s.right}})()`);
   let b = await bounds(); assert.ok(Math.abs(b.left-b.edge)<2 && b.right<=1440 && b.top===0, JSON.stringify(b));
   assert.equal(await ev(`document.elementFromPoint(100,100)?.closest('#side') !== null`), true, 'chart never paints over sidebar controls');
   await screenshot('projects-gantt-layout.png');
+  // Folded, the chart uses the freed space (design/51).
   await ev(`setSideFold(true)`);
-  b = await bounds(); assert.ok(Math.abs(b.left-56)<2, 'folded chart starts after the rail');
+  b = await bounds(); assert.ok(Math.abs(b.left)<2, 'folded chart starts at the edge: ' + JSON.stringify(b));
   await ev(`setSideFold(false)`);
   await size(390, 844); await until(`!sideLayoutOn()`);
   b = await bounds(); assert.equal(b.left, 0); assert.ok(b.right<=390);
   await size(1440, 1000); await until(`sideLayoutOn()`);
   await ev(`mgCollapseOpen()`);
 
-  // Snapshot synthetic badge values in the same turn: a real process poll
-  // may otherwise replace them between separate browser requests.
-  const badgeExpression = `['traffic','inbox'].map(id=>{const b=document.querySelector('[data-rail="'+id+'"] .rail-badge');return {text:b.textContent,dot:b.classList.contains('dot')}})`;
-  assert.deepEqual(await ev(`paintRailBadges({traffic:12,working:true,unread:3});${badgeExpression}`), [{text:'',dot:true},{text:'',dot:true}]);
-  assert.equal(await ev(`document.querySelector('[data-rail=conversations] .rail-badge').hidden`), true);
+  // The folded column's reopen button: a quiet dot by default, the unread
+  // count when the person asks for numbers; the choice survives a reload.
+  // Painted and read in one turn: a real poll may repaint in between.
+  const badge = `(()=>{const b=document.querySelector('#sideUnfold .rail-badge');return {hidden:b.hidden,text:b.textContent,dot:b.classList.contains('dot')}})()`;
+  assert.deepEqual(await ev(`paintRailBadges({working:true,unread:3});${badge}`), { hidden: false, text: '', dot: true });
+  assert.equal(await ev(`$('sideUnfold').classList.contains('work')`), true, 'the reopen symbol shows work in progress');
   await ev(`showSettings('appearance')`);
   await until(`!!$('setRailCounts')`);
   assert.equal(await ev(`$('setRailCounts').checked`), false);
-  assert.deepEqual(await ev(`$('setRailCounts').checked=true;$('setRailCounts').dispatchEvent(new Event('change'));paintRailBadges({traffic:12,unread:3});${badgeExpression}`), [{text:'12',dot:false},{text:'3',dot:false}]);
+  assert.deepEqual(await ev(`$('setRailCounts').checked=true;$('setRailCounts').dispatchEvent(new Event('change'));paintRailBadges({unread:3});${badge}`), { hidden: false, text: '3', dot: false });
   assert.equal(await ev(`JSON.parse(localStorage.getItem(AGENT_SEC_KEY)).railCounts`), true);
   await ev(`window.beforeBadgeReload=true`); await command('Page.reload');
   await until(`!window.beforeBadgeReload && !!document.querySelector('#setRailCounts')`);
   assert.equal(await ev(`$('setRailCounts').checked`), true, 'badge preference survives reload');
-  await ev(`$('setRailCounts').checked=false;$('setRailCounts').dispatchEvent(new Event('change'));goHome();loadSidebarProjectCatalog()`);
-  await until(`!sidebarProjectCatalogRequest`);
+  await ev(`$('setRailCounts').checked=false;$('setRailCounts').dispatchEvent(new Event('change'));goHome()`);
 
-  // UI fixtures: thousands of real records are unnecessary to test paging.
-  // All production selection, rendering and scroll handlers remain in use.
-  await ev(`window.panelFixtureKeep={sessions,projectFolds,recentFilesList,agentReadState,agentSecState:{...agentSecState},catalog:sidebarProjectCatalog};
+  // Long lists page by a hundred, load more on scroll, and reach the last
+  // record: the side list and the Files panel. Synthetic records: the
+  // production selection, rendering and scroll handlers are the ones used.
+  await ev(`window.panelFixtureKeep={sessions,recentFilesList,agentReadState,agentSecState:{...agentSecState}};
     const old=Date.now()-7*86400000;
-    sessions=Array.from({length:205},(_,i)=>({key:'pi:page/'+i,source:'pi',project:'page-project-'+String(i).padStart(3,'0'),cwd:'/fixture/page-'+i,title:'Older conversation '+i,lastUserTs:new Date(old-i*1000).toISOString(),mtimeMs:old-i*1000}));
-    projectFolds={map:{},created:[{name:'empty-project',cwd:'/fixture/empty',createdAt:old}],suggestions:[]};sidebarProjectCatalog=[];
-    agentSecState.projectScope='';agentSecState.projectSort='recent';agentSecState.panel='projects';sidebarProjectQuery='';panelListLimits.clear();paintSideRail();renderAgentsPop(false);`);
-  assert.equal(await ev(`document.querySelectorAll('[data-open-project]').length`), 100, 'first page, not eight projects');
-  await ev(`$('agentsPop').scrollTop=$('agentsPop').scrollHeight;$('agentsPop').dispatchEvent(new Event('scroll'))`);
-  await until(`document.querySelectorAll('[data-open-project]').length===200`);
-  await ev(`document.querySelector('[data-panel-more=projects]').click()`);
-  assert.equal(await ev(`document.querySelectorAll('[data-open-project]').length`), 206, 'all projects including registered empty projects are reachable');
-  await ev(`$('sidebarProjectQuery').value='empty-project';$('sidebarProjectQuery').dispatchEvent(new Event('input',{bubbles:true}))`);
-  assert.equal(await ev(`document.querySelectorAll('[data-open-project]').length`), 1);
-  assert.match(await ev(`document.querySelector('[data-open-project]').textContent`), /0 conversations/);
-  await ev(`$('sidebarProjectQuery').value='';$('sidebarProjectQuery').dispatchEvent(new Event('input',{bubbles:true}));window.statsFetch=fetch;window.projectStatCalls=[];window.fetch=(url,opts)=>String(url)==='/api/projects/stats'?(projectStatCalls.push(JSON.parse(opts.body)),Promise.resolve(new Response(JSON.stringify({stats:Object.fromEntries(JSON.parse(opts.body).paths.map((p,i)=>[p,{size:i*100,born:i+1}]))})))):statsFetch(url,opts)`);
-  assert.equal(await ev(`projectStatCalls.length`), 0, 'no disk measurements for recent sort');
-  await ev(`$('sidebarProjectSort').value='size';$('sidebarProjectSort').dispatchEvent(new Event('change'))`);
-  await until(`!sidebarProjectStatsRequest.busy && projectStatCalls.length===1`);
-  assert.equal(await ev(`projectStatCalls[0].size`), true);
-  await ev(`renderSidebarProjects()`);
-  assert.equal(await ev(`projectStatCalls.length`), 1, 'repaints reuse folder measurements');
-  assert.equal(await ev(`JSON.parse(localStorage.getItem(AGENT_SEC_KEY)).projectSort`), 'size');
-  await screenshot('projects-directory.png');
-  await ev(`window.fetch=statsFetch;setSidePanel('conversations');panelListLimits.clear();renderAgentsPop(false)`);
-  assert.equal(await ev(`document.querySelectorAll('[data-sec=recent] .ag-row[data-key]').length`), 100, 'recent chats are no longer capped at eight');
-  await ev(`document.querySelector('[data-panel-more=recent]').click();document.querySelector('[data-panel-more=recent]').click()`);
-  assert.equal(await ev(`document.querySelectorAll('[data-sec=recent] .ag-row[data-key]').length`), 205);
-  await ev(`agentReadState={...agentReadState,read:{...agentReadState.read}};for(const s of sessions)agentReadState.read[s.key]=Date.now();panelListLimits.clear();setSidePanel('inbox');setInboxTab('read');renderAgentsPop(false)`);
-  assert.equal(await ev(`document.querySelectorAll('[data-sec=read] .ag-row[data-key]').length`), 100, 'read replies are no longer capped at fifteen');
-  await ev(`document.querySelector('[data-panel-more=read]').click();document.querySelector('[data-panel-more=read]').click()`);
-  assert.equal(await ev(`document.querySelectorAll('[data-sec=read] .ag-row[data-key]').length`), 205);
-  await ev(`recentFilesList=Array.from({length:205},(_,i)=>({path:'/fixture/file-'+i+'.md',project:'fixture',actor:'human',kind:'opened',at:Date.now()-i}));agentSecState['files:actor']='human';panelListLimits.clear();setSidePanel('files')`);
-  assert.equal(await ev(`document.querySelectorAll('.ag-file').length`), 100, 'files are no longer capped at eight');
-  await ev(`$('agentsPop').scrollTop=$('agentsPop').scrollHeight;$('agentsPop').dispatchEvent(new Event('scroll'))`);
-  await until(`document.querySelectorAll('.ag-file').length===200`);
-  await ev(`document.querySelector('[data-panel-more=files]').click()`);
-  assert.equal(await ev(`document.querySelectorAll('.ag-file').length`), 205);
-  assert.equal(await ev(`!!document.querySelector('[data-panel-more=files]')`), false, 'no dead end before the last record');
-  await ev(`({sessions,projectFolds,recentFilesList,agentReadState,agentSecState}=panelFixtureKeep);sidebarProjectCatalog=panelFixtureKeep.catalog;panelListLimits.clear();saveAgentSecState();setSidePanel('projects')`);
+    sessions=Array.from({length:205},(_,i)=>({key:'pi:page/'+i,source:'pi',project:'page-project-'+String(i).padStart(3,'0'),cwd:'/fixture/page-'+i,title:'Older conversation '+i,firstTs:new Date(old-i*1000).toISOString(),lastUserTs:new Date(old-i*1000).toISOString(),mtimeMs:old-i*1000}));
+    agentReadState={...agentReadState,opened:Object.fromEntries(sessions.map(s=>[s.key,old])),read:Object.fromEntries(sessions.map(s=>[s.key,Date.now()])),dismissed:{},pinned:{},flagged:{}};
+    panelListLimits.clear();renderAgentsPop(false);`);
+  const rows = `document.querySelectorAll('#agentsUnread .ag-row[data-key^="pi:page/"]').length`;
+  assert.equal(await ev(rows), 100, 'first page of the side list');
+  await ev(`$('agentsUnread').scrollTop=$('agentsUnread').scrollHeight;$('agentsUnread').dispatchEvent(new Event('scroll'));$('agentsPop').scrollTop=$('agentsPop').scrollHeight;$('agentsPop').dispatchEvent(new Event('scroll'))`);
+  await until(`${rows}===200`, 'scrolling loads the next page');
+  await ev(`document.querySelector('#agentsUnread [data-panel-more=open]').click()`);
+  await until(`${rows}===205`, 'the last page is reachable');
+  assert.equal(await ev(`!!document.querySelector('#agentsUnread [data-panel-more=open]')`), false, 'no dead end before the last record');
+  await ev(`recentFilesList=Array.from({length:205},(_,i)=>({path:'/fixture/file-'+i+'.md',project:'fixture',actor:'human',kind:'opened',at:Date.now()-i}));agentSecState['files:actor']='human';panelListLimits.clear();setRightFiles('recent-files',true)`);
+  assert.equal(await ev(`document.querySelectorAll('#rightFileList .ag-file').length`), 100, 'files page by a hundred');
+  await ev(`$('rightFileList').scrollTop=$('rightFileList').scrollHeight;$('rightFileList').dispatchEvent(new Event('scroll'))`);
+  await until(`document.querySelectorAll('#rightFileList .ag-file').length===200`);
+  await ev(`document.querySelector('#rightFileList [data-panel-more=files]').click()`);
+  assert.equal(await ev(`document.querySelectorAll('#rightFileList .ag-file').length`), 205);
+  assert.equal(await ev(`!!document.querySelector('#rightFileList [data-panel-more=files]')`), false, 'no dead end before the last record');
+  await ev(`({sessions,recentFilesList,agentReadState,agentSecState}=panelFixtureKeep);panelListLimits.clear();saveAgentSecState();setRightFiles('recent-files',false);renderAgentsPop(false)`);
   assert.deepEqual(exceptions, []);
 });

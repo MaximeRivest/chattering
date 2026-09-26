@@ -7,7 +7,7 @@ const path = require('node:path');
 const { viewerBrowser } = require('./helpers/viewer-browser');
 
 test('one explicit project scope for browsing; a machine-wide Inbox; scope-aware history', { timeout: 60000 }, async t => {
-  const { home, base, evaluate: ev, until, command, screenshot, requests, exceptions } = await viewerBrowser(t);
+  const { home, base, evaluate: ev, until, command, screenshot, requests, exceptions, auth } = await viewerBrowser(t);
   const root = fs.mkdtempSync(path.join(os.homedir(), '.scope-projects-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const keys = {}, paths = {}, raw = {};
@@ -22,26 +22,28 @@ test('one explicit project scope for browsing; a machine-wide Inbox; scope-aware
     ].map(JSON.stringify).join('\n')+'\n';
     fs.writeFileSync(path.join(home,'.pi/agent/sessions/fixture',name+'.jsonl'),raw[name]);
   }
-  await fetch(base+'/api/rescan',{method:'POST'}); await ev(`load();loadSidebarProjectCatalog()`);
+  assert.equal((await fetch(base+'/api/rescan',{method:'POST',headers:auth})).status, 200); await ev(`load();loadSidebarProjectCatalog()`);
   await until(`sessions.some(s=>s.key===${JSON.stringify(keys.beta)}) && !sidebarProjectCatalogRequest`);
-  const post = (url, body) => fetch(base+url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
+  const post = (url, body) => fetch(base+url,{method:'POST',headers:{...auth,'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>{assert.equal(r.status,200,url);return r.json()});
   for (const name of ['alpha','beta']) await post('/api/recent-files',{path:paths[name],project:name});
   await ev(`loadRecentFiles()`);
   const pick = async project => {
-    await ev(`$('sideProject').click()`);
+    // All selected: the project button opens the picker; a project chosen:
+    // the small arrow beside it does (design/51).
+    await ev(`(workspaceScope() ? $('sideProjectMore') : $('sideProject')).click()`);
     await until(`!!document.querySelector('.project-scope-picker')`);
     await ev(`[...document.querySelectorAll('[data-workspace-project]')].find(b=>b.dataset.workspaceProject===${JSON.stringify(project)}).click()`);
     await until(`workspaceScope()===${JSON.stringify(project)}`);
   };
-  await ev(`setSidePanel('projects')`);
-  await until(`!!document.querySelector('[data-open-project=alpha]')`);
-  await ev(`document.querySelector('[data-open-project=alpha]').click()`);
+  // design/51: with All selected the project button opens the picker; with
+  // a project chosen it opens that project's overview.
+  await pick('alpha');
+  await ev(`$('sideProject').click()`);
   await until(`viewKind==='project' && projectOverviewName==='alpha' && workspaceScope()==='alpha' && !!document.querySelector('.project-overview')`);
   assert.equal(await ev(`$('sideProject').textContent.includes('alpha')`), true);
-  await ev(`setSidePanel('conversations');renderAgentsPop(false)`);
-  assert.deepEqual(await ev(`[...document.querySelectorAll('#agentsPop .ag-row[data-key]')].map(r=>r.dataset.key)`), [keys.alpha]);
-  assert.equal(await ev(`!!document.querySelector('#agentsPop [data-sec=unread],#agentsPop [data-sec=read],[data-scope-of]')`), false, 'Chats has neither global inbox sections nor a second scope toggle');
+  assert.equal(await ev(`!!document.querySelector('#agentsPop [data-sec=unread],#agentsPop [data-sec=read],[data-scope-of]')`), false, 'no global inbox sections and no second scope toggle');
   await ev(`setSidePanel('files')`);
+  console.log('RP', await ev(`JSON.stringify({open:rightFilesOpen, mode:rightFilesMode, list:recentFilesList.length, html:$('rightFileList').innerHTML.slice(0,400), side:sideLayoutOn(), cls:document.body.className})`));
   assert.deepEqual(await ev(`[...document.querySelectorAll('.ag-file')].map(r=>r.dataset.path)`), [paths.alpha]);
   await pick('beta'); await ev(`setSidePanel('files');renderAgentsPop(false)`);
   assert.deepEqual(await ev(`[...document.querySelectorAll('.ag-file')].map(r=>r.dataset.path)`), [paths.beta]);
@@ -50,8 +52,13 @@ test('one explicit project scope for browsing; a machine-wide Inbox; scope-aware
   assert.equal(await ev(`document.querySelector('.ag-files-block').checkVisibility()`), true);
   assert.equal(await ev(`workspaceScope()`), 'beta', 'global recents does not change the selected project');
   assert.equal(await ev(`$('sideNew').querySelector('span').textContent`), 'new here', 'new here follows the chosen project, not a stale chat');
-  await pick(''); await ev(`setSidePanel('files');renderAgentsPop(false)`);
-  assert.equal(await ev(`document.querySelectorAll('.ag-file').length`), 2);
+  // With All chosen, the Files panel's Project side is unavailable and says
+  // why; All lists both (design/51).
+  await pick(''); await ev(`setSidePanel('files')`);
+  assert.equal(await ev(`document.querySelectorAll('#rightFileList .ag-file').length + '|' + document.querySelector('[data-file-scope=files]').disabled`), '0|true');
+  assert.match(await ev(`$('rightFileList').textContent`), /Choose a project on the left, or switch to All/);
+  await ev(`setSidePanel('recent-files')`);
+  assert.equal(await ev(`document.querySelectorAll('#rightFileList .ag-file').length`), 2);
   await ev(`open(${JSON.stringify(keys.alpha)})`);
   assert.equal(await ev(`workspaceScope()`), '', 'All stays broad while browsing ordinary chats');
 
@@ -63,40 +70,33 @@ test('one explicit project scope for browsing; a machine-wide Inbox; scope-aware
   await ev(`history.forward()`);
   await until(`viewKind==='project' && projectOverviewName==='beta' && workspaceScope()==='beta'`);
 
-  // Inbox is global, includes pinned unread chats, and names their projects.
+  // The list is global whatever project is chosen, names each row's
+  // project, and a folded column's reopen button carries the unread dot.
   await ev(`pushAgentReads()`); await until(`agentReadPending.size===0 && !agentReadPushing`);
   await post('/api/agent-read',{unread:[keys.alpha,keys.beta],pin:{[keys.beta]:true}});
   await ev(`fetchAgentReadState()`);
-  await ev(`setSidePanel('inbox');setInboxTab('unread')`);
-  await until(`document.querySelectorAll('.ag-unread-tray .ag-row[data-key]').length>=2`);
-  assert.match(await ev(`$('agentsPop').textContent`), /All projects on this machine/);
-  assert.deepEqual(await ev(`[...document.querySelectorAll('.ag-unread-tray .ag-row .ag-dir')].map(n=>n.textContent).sort()`), ['alpha','beta']);
-  assert.equal(await ev(`document.querySelector('[data-rail=conversations] .rail-badge').hidden`), true, 'global unread indicator belongs to Inbox, not Chats');
-  assert.equal(await ev(`document.querySelector('[data-rail=inbox] .rail-badge').hidden`), false);
-  await ev(`[...document.querySelectorAll('.ag-unread-tray .ag-row')].find(r=>r.dataset.key===${JSON.stringify(keys.alpha)}).click()`);
+  await ev(`setSidePanel('inbox')`);
+  await until(`document.querySelectorAll('#agentsUnread .ag-row.unread[data-key]').length>=2`);
+  assert.deepEqual(await ev(`[...document.querySelectorAll('#agentsUnread .ag-row.unread .ag-project')].map(n=>n.textContent).sort()`), ['alpha','beta']);
+  await ev(`setSideFold(true)`);
+  assert.equal(await ev(`document.querySelector('#sideUnfold .rail-badge').hidden`), false, 'unread replies ask for attention');
+  await ev(`setSideFold(false)`);
+  await ev(`[...document.querySelectorAll('#agentsUnread .ag-row')].find(r=>r.dataset.key===${JSON.stringify(keys.alpha)}).querySelector('.ag-main').click()`);
   await until(`viewKind==='conversation' && current?.key===${JSON.stringify(keys.alpha)} && workspaceScope()==='alpha'`);
-  assert.equal(await ev(`sidePanel()`), 'inbox', 'opening a reply does not hide the global Inbox');
-  await until(`!!document.querySelector('.ag-unread-tray .ag-row[data-key=${JSON.stringify(keys.beta)}]')`);
-  await ev(`document.querySelector('[data-inbox-tab=read]').click()`);
-  await until(`!!document.querySelector('[data-sec=read] .ag-row[data-key=${JSON.stringify(keys.alpha)}]')`);
-  assert.equal(await ev(`!!document.querySelector('[data-sec=unread]')`), false);
-  await ev(`setSidePanel('conversations')`);
-  assert.equal(await ev(`!!document.querySelector('[data-sec=unread],[data-sec=read]')`), false);
-  assert.deepEqual(await ev(`[...document.querySelectorAll('#agentsPop .ag-row[data-key]')].map(r=>r.dataset.key)`), [keys.alpha], 'read history no longer steals a chat from its project list');
+  assert.equal(await ev(`sidePanel()`), 'inbox', 'opening a reply keeps the list');
+  assert.equal(await ev(`!!document.querySelector('#agentsUnread .ag-row[data-key=${JSON.stringify(keys.beta)}]')`), true, 'another project\'s row stays listed');
+  assert.equal(await ev(`!!document.querySelector('[data-sec=unread],[data-sec=read],[data-inbox-tab]')`), false, 'no Unread / Read sections or tabs');
 
-  // Agents and their badges stay global even when browsing one project.
-  await ev(`window.savedScopeProcs=agentsProcs;agentsProcs=[{pid:99101,key:${JSON.stringify(keys.alpha)},kind:'pi',owner:'fixture',busy:false,title:'alpha worker'},{pid:99102,key:${JSON.stringify(keys.beta)},kind:'pi',owner:'fixture',busy:false,title:'beta worker'},{pid:99103,kind:'pi',owner:'fixture',busy:false,title:'unknown worker'}];setSidePanel('traffic');updateActiveBtn()`);
-  assert.equal(await ev(`$('agentsPop').textContent.includes('beta worker') && $('agentsPop').textContent.includes('unknown worker')`), true);
-  assert.equal(await ev(`railBadgeState.traffic`), 3);
-  await pick(''); await ev(`setSidePanel('traffic');renderAgentsPop(false);updateActiveBtn()`);
+  // Processes stay global even when browsing one project.
+  await ev(`window.savedScopeProcs=agentsProcs;agentsProcs=[{pid:99101,key:${JSON.stringify(keys.alpha)},kind:'pi',owner:'fixture',busy:false,title:'alpha worker'},{pid:99102,key:${JSON.stringify(keys.beta)},kind:'pi',owner:'fixture',busy:false,title:'beta worker'},{pid:99103,kind:'pi',owner:'fixture',busy:false,title:'unknown worker'}];renderAgentsPop(false);updateActiveBtn()`);
   assert.equal(await ev(`$('agentsPop').textContent.includes('unknown worker')`), true);
-  assert.equal(await ev(`railBadgeState.traffic`), 3);
-  await ev(`agentsProcs=savedScopeProcs`);
+  await pick(''); await ev(`renderAgentsPop(false)`);
+  assert.equal(await ev(`$('agentsPop').textContent.includes('unknown worker')`), true);
+  await ev(`agentsProcs=savedScopeProcs;renderAgentsPop(false)`);
 
   // No project is an explicit collection, not another spelling of All.
-  await pick('Loose conversations'); await ev(`setSidePanel('conversations');renderAgentsPop(false)`);
+  await pick('Loose conversations');
   assert.equal(await ev(`$('sideProject').querySelector('span').textContent`), 'No project');
-  assert.deepEqual(await ev(`[...document.querySelectorAll('#agentsPop .ag-row[data-key]')].map(r=>r.dataset.key)`), ['pi:fixture/media.jsonl']);
   await pick('alpha'); await ev(`setSidePanel('files')`);
   // A direct file link outside the selected scope adopts its own project.
   // A deliberately delayed project response must not overwrite that file.
@@ -110,7 +110,7 @@ test('one explicit project scope for browsing; a machine-wide Inbox; scope-aware
   await ev(`window.scopeBeforeReload=true`); await command('Page.reload');
   await until(`!window.scopeBeforeReload && typeof workspaceScope==='function' && workspaceScope()==='beta' && fileWs?.path===${JSON.stringify(paths.beta)}`);
   assert.equal(await ev(`$('sideProject').querySelector('span').textContent`), 'beta');
-  await ev(`setSidePanel('inbox');setInboxTab('unread')`);
+  await ev(`setSidePanel('inbox')`);
   await screenshot('workspace-inbox.png');
   await ev(`setSidePanel('files')`); await screenshot('workspace-files.png');
   await ev(`$('sideProject').click()`); await screenshot('workspace-project-picker.png');

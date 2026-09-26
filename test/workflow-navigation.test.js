@@ -6,10 +6,10 @@ const path = require('node:path');
 const { viewerBrowser } = require('./helpers/viewer-browser');
 
 test('work-first panel, visible timeline tools, quiet jobs and Back to the work after agent check-ins', { timeout: 60000 }, async t => {
-  const { home, base, work, evaluate: ev, until, command, size, screenshot, exceptions } = await viewerBrowser(t);
+  const { home, base, work, evaluate: ev, until, command, size, screenshot, exceptions, auth } = await viewerBrowser(t);
   const fixture = path.join(home, '.pi/agent/sessions/fixture');
   fs.writeFileSync(path.join(fixture, 'second.jsonl'), fs.readFileSync(path.join(fixture, 'media.jsonl'), 'utf8').replace('"id":"media"', '"id":"second"'));
-  await fetch(base + '/api/rescan', { method: 'POST' }); await ev(`load()`);
+  assert.equal((await fetch(base + '/api/rescan', { method: 'POST', headers: auth })).status, 200); await ev(`load()`);
   await until(`sessions.length >= 2 && nav.current() && $('projSort').children.length`);
   // One top row: machine, Gantt, then the project control; Agents is the
   // only left panel (design/51, 59). No icon rail.
