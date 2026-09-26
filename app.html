@@ -13144,9 +13144,27 @@ async function renderConv(scroll) {
 
 // Exact links first project the containing path, then open the entry's work
 // disclosures. This changes reading only, never the continuation.
+// The element that shows message i of the current conversation. A message
+// drawn inside another has no element of its own: a tool result lives in its
+// call, a reasoning block with the rest of its entry. Land on the holder.
+function transcriptMessageElement(view, i) {
+  const at = n => view.querySelector(`#conversationTranscript [data-msg-key="${CSS.escape(current.key)}"][data-i="${CSS.escape(String(n))}"]`);
+  const own = at(i);
+  if (own) return own;
+  const msgs = current.messages || [], m = msgs[Number(i)];
+  if (!m) return null;
+  if (m.tid) {
+    const call = msgs.findIndex(x => x.role === 'tool' && x.id === m.tid);
+    if (call >= 0 && at(call)) return at(call);
+  }
+  if (m.eid) {
+    for (let j = 0; j < msgs.length; j++) if (msgs[j].eid === m.eid && at(j)) return at(j);
+  }
+  return null;
+}
 function revealTranscriptHit(view, scroll) {
   const hit = typeof scroll === 'string' && scroll.startsWith('hit:')
-    ? view.querySelector(`#conversationTranscript [data-msg-key="${CSS.escape(current.key)}"][data-i="${CSS.escape(scroll.slice(4))}"]`)
+    ? transcriptMessageElement(view, scroll.slice(4))
     : typeof scroll === 'string' && scroll.startsWith('card:')
     ? view.querySelector(`#conversationTranscript .dg-card[data-dg-eid="${CSS.escape(scroll.slice(5))}"]`) : null;
   if (!hit) return null;

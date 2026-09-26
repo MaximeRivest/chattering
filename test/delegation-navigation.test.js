@@ -1,163 +1,69 @@
 'use strict';
+// Links to entries of a conversation land on them in the real app: an entry
+// on an abandoned branch (a delegation that was stopped), a tool result
+// inside a folded tool group, and back through browser history. Reading
+// moves the reading head (design/66) and never touches the transcript.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
-const { spawn, spawnSync } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
 const { chromiumBinary } = require('./helpers/chromium.js');
-const html = fs.readFileSync(path.join(__dirname, '../app.html'), 'utf8');
-function extract(start, end) {
-  const a = html.indexOf(start), b = html.indexOf(end, a);
-  assert.ok(a >= 0 && b > a, start);
-  return html.slice(a, b);
-}
+const { viewerBrowser } = require('./helpers/viewer-browser');
 
-test('real browser routes reveal raw off-branch entries, grouped tools, and history without session writes', { timeout: 30000 }, async t => {
-  const probe = spawnSync(chromiumBinary(), ['--version'], { encoding: 'utf8' });
-  if (probe.error?.code === 'ENOENT') return t.skip('chromium is not installed');
-  assert.equal(probe.status, 0, probe.stderr);
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'delegation-navigation-'));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const code = [
-    fs.readFileSync(path.join(__dirname, '../conversation-flow.js'), 'utf8'),
-    fs.readFileSync(path.join(__dirname, '../conversation-reader.js'), 'utf8'),
-    fs.readFileSync(path.join(__dirname, '../navigation.js'), 'utf8'),
-    extract('function setRoute(kind, hash', '\nfunction goHome()'),
-    extract('function dispatchHash(h, { restore = false } = {}) {', '\nconst $ = id => document.getElementById'),
-    extract('async function open(rel, scroll,', '// ---- distillation ----'),
-    extract('async function renderConv(scroll) {', '// ---- trace machinery ----'),
-    extract('function computeTrace(d) {', '\nconst compareCache'),
-    extract('// ---- reply speed ----', '// Put text on the clipboard'),
-    extract('function msgBlock(m, hl, keepOpen', '// Every bash fence'),
-  ].join('\n');
-  const fixture = `<!doctype html><meta charset="utf-8"><div id="view"></div><pre id="result">PENDING</pre><script>
-  const $ = id => document.getElementById(id);
-  let current = null, activeRel = null, viewKind = 'home', conversationLoadSeq = 0;
-  let progressStream = null, currentHash = '', lastNavProject = null, matchIdx = -1;
-  const TRANSIENT_KINDS = new Set(); let nav = null, navShownId = null, navTraversalSeq = 0, navHold = null;
-  // No side column here: the sidebar's project scope is exercised by test/workspace-scope-app.test.js.
-  let restoringScopeEntry = null; const sideLayoutOn = () => false, sidePanel = () => 'conversations', workspaceScope = () => '', adoptWorkspaceProject = () => {}, setWorkspaceScope = () => {};
-  const lastNavConversation = new Map(), modelTouchAt = new Map(), traceLeaves = new Map(), fanoutFocus = new Map(), toolGroupOpen = new Map(), compareCache = new Map(), runLedgers = new Map();
-  const sessions = [], calls = [], errors = [];
-  let transcriptQuery = '';
-  const parent = {key:'parent', source:'pi', entryParents:[['root',null],['launch','root'],['result','launch'],['abort','result'],['other','root'],['new-result','other'],['last','new-result']], messages:[
-    {eid:'root',role:'user',text:'start'},
-    {eid:'launch',role:'thinking',text:'launch reasoning',off:true},
-    {eid:'launch',role:'tool',id:'call',name:'delegate',text:'launch child',off:true},
-    {eid:'result',role:'toolresult',tid:'call',text:'child created',off:true},
-    {eid:'abort',role:'abort',text:'stopped',off:true},
-    {eid:'other',role:'tool',id:'new-call',name:'read',text:'new path'},
-    {eid:'new-result',role:'toolresult',tid:'new-call',text:'new result'},
-    {eid:'last',role:'assistant',text:'latest'}]};
-  const saved = JSON.stringify(parent);
-  async function fetch(url, opts) {
-    calls.push([url, opts]);
-    if (opts?.method && opts.method !== 'GET') throw Error('Mutation: '+url);
-    if (url.startsWith('/api/compare?id=')) return {ok:true,json:async()=>({groups:[],branches:[]})};
-    if (!url.startsWith('/api/session?id=')) throw Error('Unexpected API: '+url);
-    const key = decodeURIComponent(url.split('=')[1]);
-    return {ok:true,json:async()=> key === 'parent' ? JSON.parse(saved) : {key,source:'pi',messages:[{eid:'child',role:'user',text:key}]}};
-  }
-  function setRouteKind(kind) { viewKind = kind; }
-  const noop = () => {};
-  const fileInk = null;
-  const markSettingsClosed=noop, markAgentRead=noop, render=noop, projectOf=()=>null;
-  const relatedFor=async()=>[], convHead=()=>'', agentComposerHtml=()=>'';
-  const fanModels=()=>[];
-  const mountDelegationView=noop, wireCompareRow=noop, renderRunCards=noop, foldLongMessages=noop;
-  const delegationUI = { attachCards: noop, index: () => ({ tasks: [] }) };
-  const DelegationUI = { taskIdInResult: () => null, eventSummary: type => '↩ ' + type };
-  const delegateCallOf = m => ({ eid: m.eid || '', call: m.id || '', title: '', taskId: null });
-  const wireRunButtons=noop, hintReadKey=noop, wireHead=noop, wireAgentComposer=noop, wireTranscriptPathCandidates=noop, wireToolGroups=noop, updateMatchHud=noop;
-  const errToast=m=>errors.push(m), isFileWriteTool=()=>false;
-  const esc=s=>String(s??'').replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));
-  const mdRender=esc, toolTextHtml=esc, messageMediaHtml=()=>'';
-  ${code}
-  nav = Navigation.createStack({ history, location, describe: () => null }); nav.load('');
-  function check(ok, why) { if (!ok) throw Error(why); }
-  function landed(index) {
-    const node = document.querySelector('#conversationTranscript [data-i="'+index+'"]');
-    check(node?.classList.contains('hit-flash'), 'missing landing '+index);
-    for(let n=node;n;n=n.parentElement) if(n.tagName==='DETAILS') check(n.open,'closed ancestor');
-    return node;
-  }
-  async function run() {
-    check(!computeTrace(parent).onPath.has('launch'), 'fixture must use abandoned branch');
-    await open('different-child');
-    await dispatchHash('read='+JSON.stringify({key:'parent',entryId:'launch'}));
-    check(document.querySelector('.dg-card[data-dg-eid="launch"]')?.classList.contains('hit-flash'), 'launch did not land on its readable card');
-    check(document.querySelector('[data-i="2"]')?.textContent.includes('launch child'), 'shared raw-entry tool was hidden');
-    check(computeTrace(parent).onPath.has('launch'), 'read did not project the containing path');
-    await open('parent','entry:launch');
-    check(document.querySelector('.dg-card[data-dg-eid="launch"]')?.classList.contains('hit-flash'), 'same-parent card link failed');
-    await open('parent','entry:result');
-    check(landed(3).textContent.includes('child created'), 'merged result not revealed');
-    await open('parent','entry:abort'); landed(4);
-    await open('parent','entry:other'); landed(5);
-    check(document.querySelector('.toolgroup').open, 'tool package stays closed');
-    await open('parent','entry:new-result'); landed(6);
-    // Browser history drives the real hashchange dispatcher. Wait for rendering.
-    await new Promise(resolve=>setTimeout(resolve,50));
-    history.back();
-    for(let i=0;i<100;i++) {
-      if(location.hash.includes('other') && document.querySelector('[data-i="5"].hit-flash')) break;
-      await new Promise(resolve=>setTimeout(resolve,20));
-    }
-    landed(5);
-    check(location.hash.includes('other'), 'history did not restore entry route');
-    check(computeSendTrace(parent).leaf==='last', 'read changed continuation');
-    check(JSON.stringify(parent)===saved, 'read changed fixture continuation');
-    check(errors.length===0, errors.join('; '));
-    check(calls.length>=8 && calls.every(([url,opts])=>['/api/session?id=','/api/compare?id=','/api/doc/notebooks?key='].some(prefix=>url.startsWith(prefix))&&!opts), 'read made a write or branch call');
-    $('result').textContent='PASS: cross-child, same-parent, abandoned branch, merged result, abort, tool package, browser back, GET-only';
-  }
-  setTimeout(() => run().catch(e=>{$('result').textContent='FAIL: '+e.stack+'; hash='+location.hash+'; calls='+calls.length;}), 100);
-  </script>`;
-  const file = path.join(dir, 'fixture.html'); fs.writeFileSync(file, fixture);
-  const browser = spawn(chromiumBinary(), ['--headless', '--no-sandbox', '--disable-gpu', '--disable-background-networking',
-    '--disable-sync', '--disable-extensions', '--host-resolver-rules=MAP * ~NOTFOUND',
-    '--no-first-run', '--no-default-browser-check', '--user-data-dir=' + path.join(dir, 'profile'),
-    '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
-  t.after(() => browser.kill());
-  const endpoint = await new Promise((resolve, reject) => {
-    let stderr = '';
-    const timer = setTimeout(() => reject(Error('Browser startup timeout: ' + stderr)), 10000);
-    browser.stderr.on('data', chunk => {
-      stderr += chunk;
-      const match = stderr.match(/DevTools listening on (ws:\/\/[^\s]+)/);
-      if (match) { clearTimeout(timer); resolve(match[1]); }
-    });
-    browser.on('error', reject);
-  });
-  const ws = new WebSocket(endpoint);
-  await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
-  t.after(() => ws.close());
-  let id = 0;
-  const pending = new Map();
-  ws.onmessage = event => {
-    const msg = JSON.parse(event.data);
-    if (pending.has(msg.id)) { pending.get(msg.id)(msg); pending.delete(msg.id); }
-  };
-  const send = (method, params = {}, sessionId) => new Promise(resolve => {
-    pending.set(++id, resolve); ws.send(JSON.stringify({ id, method, params, sessionId }));
-  });
-  const target = await send('Target.createTarget', { url: 'about:blank' });
-  const attached = await send('Target.attachToTarget', { targetId: target.result.targetId, flatten: true });
-  const sessionId = attached.result.sessionId;
-  const tree = await send('Page.getFrameTree', {}, sessionId);
-  await send('Page.setDocumentContent', { frameId: tree.result.frameTree.frame.id, html: fixture }, sessionId);
-  let result = '';
-  for (let i = 0; i < 150; i++) {
-    const reply = await send('Runtime.evaluate', { expression: 'document.getElementById("result")?.textContent', returnByValue: true }, sessionId);
-    result = reply.result?.result?.value || '';
-    if (/^(PASS|FAIL):/.test(result)) break;
-    await new Promise(resolve => setTimeout(resolve, 50));
-  }
-  const page = await send('Runtime.evaluate', { expression: 'document.documentElement.outerHTML', returnByValue: true }, sessionId);
-  if (!result) result = JSON.stringify(page);
-  await send('Browser.close');
-  await new Promise(resolve => browser.exitCode != null ? resolve() : browser.once('exit', resolve));
-  assert.match(result, /^PASS:/, result);
+test('entry links land on abandoned branches, open folded tools, follow Back, and never write the transcript', { timeout: 60000 }, async t => {
+  if (spawnSync(chromiumBinary(), ['--version']).error) return t.skip('chromium is not installed');
+  const { home, base, auth, evaluate: ev, until, exceptions } = await viewerBrowser(t);
+  const file = path.join(home, '.pi/agent/sessions/fixture/parent.jsonl');
+  const at = i => `2026-09-01T12:00:${String(i).padStart(2, '0')}Z`;
+  const msg = (id, parentId, i, message) => ({ type: 'message', id, parentId, timestamp: at(i), message });
+  // root ─┬─ launch (delegate call) ─ result ─ abort      ← abandoned branch
+  //       └─ other (read call) ─ new-result ─ last        ← current branch
+  const entries = [
+    { type: 'session', version: 3, id: 'parent', timestamp: at(0), cwd: path.join(home, 'work') },
+    msg('root', null, 1, { role: 'user', content: [{ type: 'text', text: 'start' }] }),
+    msg('launch', 'root', 2, { role: 'assistant', model: 'fixture', content: [{ type: 'toolCall', id: 'call', name: 'delegate', arguments: { task: 'launch child' } }] }),
+    msg('result', 'launch', 3, { role: 'toolResult', toolCallId: 'call', toolName: 'delegate', content: [{ type: 'text', text: 'child created' }] }),
+    msg('abort', 'result', 4, { role: 'assistant', model: 'fixture', stopReason: 'aborted', content: [{ type: 'text', text: 'stopped here' }] }),
+    msg('other', 'root', 5, { role: 'assistant', model: 'fixture', content: [{ type: 'toolCall', id: 'new-call', name: 'read', arguments: { path: 'README.md' } }] }),
+    msg('new-result', 'other', 6, { role: 'toolResult', toolCallId: 'new-call', toolName: 'read', content: [{ type: 'text', text: 'new result' }] }),
+    msg('last', 'new-result', 7, { role: 'assistant', model: 'fixture', content: [{ type: 'text', text: 'latest answer' }] }),
+  ];
+  const saved = entries.map(JSON.stringify).join('\n') + '\n';
+  fs.writeFileSync(file, saved);
+  assert.equal((await fetch(base + '/api/rescan', { method: 'POST', headers: auth })).status, 200);
+  const key = 'pi:fixture/parent.jsonl';
+  await ev(`load()`);
+  await until(`sessions.some(s=>s.key===${JSON.stringify(key)})`);
 
+  // Opening the conversation reads the current branch: the latest answer.
+  await ev(`open(${JSON.stringify(key)})`);
+  await until(`current?.key===${JSON.stringify(key)} && document.querySelector('#conversationTranscript')?.textContent.includes('latest answer')`);
+  assert.equal(await ev(`document.querySelector('#conversationTranscript').textContent.includes('stopped here')`), false, 'the abandoned branch is not on the page');
+
+  // A link to the delegation on the abandoned branch lands on it: the head
+  // moves there, the entry flashes, the stop that ended the branch shows.
+  // The marked element is the readable one: a delegation's card, else the
+  // message itself; none of its ancestors may stay folded.
+  const landed = id => `(()=>{const el=[...document.querySelectorAll('#conversationTranscript [data-eid="${id}"], #conversationTranscript .dg-card[data-dg-eid="${id}"]')].find(e=>e.classList.contains('hit-flash'));if(!el)return false;for(let n=el;n;n=n.parentElement)if(n.tagName==='DETAILS'&&!n.open)return false;return true})()`;
+  await ev(`dispatchHash('read='+${JSON.stringify(JSON.stringify({ key, entryId: 'launch' }))})`);
+  await until(landed('launch'), 'the delegation on the abandoned branch is shown and marked');
+  await until(`document.querySelector('#conversationTranscript').textContent.includes('stopped here')`, 'reading it shows the rest of its branch');
+  assert.equal(await ev(`headOf(current)`), 'abort', 'the head follows the branch down (design/66)');
+
+  // A tool result is drawn inside its call, inside a folded tool group: the
+  // link lands on the call and opens the group (a link to it once landed
+  // nowhere, 2026-09-26).
+  await ev(`open(${JSON.stringify(key)},'entry:new-result')`);
+  await until(landed('other'), 'the tool result is revealed in its call, its group open');
+  assert.equal(await ev(`document.querySelector('#conversationTranscript [data-eid="other"]').open`), true, 'the call itself is open');
+  assert.match(await ev(`location.hash`), /new-result/);
+
+  // Back returns to the previous entry route and lands there again.
+  await ev(`history.back()`);
+  await until(`/launch/.test(decodeURIComponent(location.hash)) && document.querySelector('#conversationTranscript').textContent.includes('stopped here')`, 'Back restores the delegation route');
+
+  // Reading moved a head on the server; the transcript file is untouched.
+  assert.equal(fs.readFileSync(file, 'utf8'), saved, 'reading never writes the session file');
+  assert.deepEqual(exceptions, []);
 });
