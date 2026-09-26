@@ -6,6 +6,11 @@
 // to run. Every dir appears once, so the result is idempotent: feeding the
 // output back in as process.env.PATH yields the same string. pisdk.mergeEnv
 // depends on that to stop rewriting process.env after the first call.
+//
+// Every system (design/70): the separator is the system's (";" on
+// Windows), NixOS and snap folders are added only where they exist, and the
+// folder of the node running Chattering comes along, so an agent's `node`
+// is the one Pi runs on. On Windows, entries compare without case.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -15,26 +20,32 @@ const SW_BIN = '/run/current-system/sw/bin';
 
 const defaultExists = d => { try { return fs.existsSync(d); } catch { return false; } };
 
-// `opts.exists` and `opts.home` are injection points for tests; production
-// callers pass nothing.
+// `opts.exists`, `opts.home`, `opts.platform` and `opts.nodeDir` are
+// injection points for tests; production callers pass nothing.
 function agentPath(current, opts = {}) {
   const exists = opts.exists || defaultExists;
   const home = opts.home || os.homedir();
+  const win = (opts.platform || process.platform) === 'win32';
+  const p = win ? path.win32 : path.posix;
+  const delimiter = win ? ';' : ':';
+  const nodeDir = opts.nodeDir === undefined ? path.dirname(process.execPath) : opts.nodeDir;
   const userDirs = [
-    path.join(home, '.local/bin'),
-    path.join(home, '.nvm/versions/node/v22.23.1/bin'),
-  ].filter(exists);
-  const systemDirs = [
+    ...(win ? [] : [p.join(home, '.local', 'bin')]),
+    nodeDir,
+  ].filter(d => d && exists(d));
+  const systemDirs = win ? [] : [
     WRAPPERS, // NixOS setuid wrappers; must precede sw/bin
     SW_BIN,   // NixOS: xdg-open, git… live here
     '/snap/bin',
   ].filter(exists);
-  const base = (current || '/usr/bin:/bin').split(':').filter(Boolean);
+  const fallback = win ? 'C:\\Windows\\system32;C:\\Windows' : '/usr/bin:/bin';
+  const base = (current || fallback).split(delimiter).filter(Boolean);
   const seen = new Set();
   const out = [];
   for (const d of [...userDirs, ...base, ...systemDirs]) {
-    if (seen.has(d)) continue;
-    seen.add(d);
+    const id = win ? d.toLowerCase().replace(/\\+$/, '') : d;
+    if (seen.has(id)) continue;
+    seen.add(id);
     out.push(d);
   }
   // Enforce the NixOS invariant even when the inherited PATH had it wrong.
@@ -44,7 +55,7 @@ function agentPath(current, opts = {}) {
     out.splice(w, 1);
     out.splice(s, 0, WRAPPERS);
   }
-  return out.join(':');
+  return out.join(delimiter);
 }
 
 module.exports = { agentPath, WRAPPERS, SW_BIN };

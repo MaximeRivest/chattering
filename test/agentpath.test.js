@@ -14,7 +14,9 @@ const HOME = '/home/tester';
 const LOCAL = `${HOME}/.local/bin`;
 const NVM = `${HOME}/.nvm/versions/node/v22.23.1/bin`;
 const nixos = new Set([LOCAL, NVM, WRAPPERS, SW_BIN]);
-const opts = { home: HOME, exists: d => nixos.has(d) };
+// A NixOS machine whatever runs the tests: its separator and folders. The
+// node folder stands in for the one running Chattering (NVM here).
+const opts = { home: HOME, platform: 'linux', nodeDir: NVM, exists: d => nixos.has(d) };
 const ap = p => agentPath(p, opts);
 const idx = (p, d) => p.split(':').indexOf(d);
 const has = (p, d) => idx(p, d) >= 0;
@@ -47,13 +49,13 @@ test('already-correct order is preserved', () => {
 
 test('user dirs come first, and only if they exist', () => {
   assert.ok(ap('/usr/bin').startsWith(`${LOCAL}:${NVM}:`));
-  const noNvm = agentPath('/usr/bin', { home: HOME, exists: d => d !== NVM && nixos.has(d) });
+  const noNvm = agentPath('/usr/bin', { ...opts, exists: d => d !== NVM && nixos.has(d) });
   assert.ok(!has(noNvm, NVM));
   assert.ok(noNvm.startsWith(`${LOCAL}:`));
 });
 
 test('system dirs that do not exist are not added', () => {
-  const plain = agentPath('/usr/bin:/bin', { home: HOME, exists: () => false });
+  const plain = agentPath('/usr/bin:/bin', { ...opts, exists: () => false });
   assert.strictEqual(plain, '/usr/bin:/bin');
 });
 
@@ -91,4 +93,11 @@ test('sudo resolves to the setuid wrapper on NixOS', { skip: !fs.existsSync(`${W
   const env = { PATH: agentPath(`${SW_BIN}:/usr/bin`) };
   const which = execFileSync('bash', ['-c', 'command -v sudo'], { env }).toString().trim();
   assert.strictEqual(which, `${WRAPPERS}/sudo`);
+});
+
+test('Windows: its separator, no NixOS folders, case-insensitive duplicates, the node folder first', () => {
+  const node = 'C:\\Program Files\\nodejs';
+  const p = agentPath('C:\\Windows\\system32;c:\\windows\\SYSTEM32\\;C:\\Tools', { platform: 'win32', home: 'C:\\Users\\t', nodeDir: node, exists: () => true });
+  assert.deepStrictEqual(p.split(';'), [node, 'C:\\Windows\\system32', 'C:\\Tools']);
+  assert.strictEqual(agentPath(p, { platform: 'win32', home: 'C:\\Users\\t', nodeDir: node, exists: () => true }), p, 'idempotent');
 });

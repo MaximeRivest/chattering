@@ -7925,15 +7925,16 @@ function agentEnv(principal = null) {
       path.join(os.homedir(), '.Xauthority'),
       '/run/user/' + uid + '/gdm/Xauthority',
     ]);
-  return {
+  // X11 settings only where there is X11 (a Linux desktop); PATH under the
+  // name this system uses for it (Windows: Path), never beside it.
+  const env = {
     ...process.env,
     HOME: os.homedir(),
-    DISPLAY: process.env.DISPLAY || ':0',
-    ...(xauthority ? { XAUTHORITY: xauthority } : {}),
-    PATH: agentPath(process.env.PATH),
+    ...(platform.IS_LINUX && !platform.IS_WSL ? { DISPLAY: process.env.DISPLAY || ':0', ...(xauthority ? { XAUTHORITY: xauthority } : {}) } : {}),
     PI_DELEGATION_ROOT: DELEGATION_ROOT,
     ...((principal || principalFor(null)).env),
   };
+  return platform.withPath(env, agentPath(platform.pathEntries(process.env).join(path.delimiter)).split(path.delimiter));
 }
 
 // The one place a command is wrapped for whoever is driving: the owner's

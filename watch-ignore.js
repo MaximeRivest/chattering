@@ -35,8 +35,10 @@ function createIgnoreOracle(root, { git = 'git', spawnImpl = spawn, batchMs = BA
   };
   const schedule = () => {
     if (timer || running || !queue.size) return;
+    // Not unref'd: it gates answers already promised to callers, and lasts
+    // a few milliseconds. An unref'd timer let a process with nothing else
+    // to do exit with the question unasked (seen on Node 22).
     timer = setTimeout(flush, batchMs);
-    if (timer.unref) timer.unref();
   };
   const settle = (batch, ignoredSet, gen) => {
     for (const [rel, waiters] of batch) {
