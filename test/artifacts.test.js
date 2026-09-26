@@ -18,7 +18,8 @@ test('capabilities are signed, expire, and survive a restart through their secre
   try {
     const file = path.join(dir, 'secret');
     const a = new preview.Capabilities(file);
-    assert.equal((fs.statSync(file).mode & 0o777), 0o600);
+    // Unix permission bits; Windows keeps it private by the per-user folder's access list.
+    if (process.platform !== 'win32') assert.equal((fs.statSync(file).mode & 0o777), 0o600);
     const token = a.sign({ u: 'me', k: 'k', r: '/tmp/x', e: '' });
     assert.equal(new preview.Capabilities(file).verify(token).r, '/tmp/x', 'the same secret after a restart');
     const [body, mac] = token.split('.');
@@ -56,7 +57,8 @@ test('a real server: versions follow the head, the preview origin serves them, w
     const exited = new Promise(r => child.once('exit', r)); child.kill('SIGTERM');
     const timer = setTimeout(() => child.kill('SIGKILL'), 3000); await exited; clearTimeout(timer);
   };
-  t.after(async () => { ws?.close(); await stop(browser); await stop(server); fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+  // Pi workers finish within seconds of the server's exit: the removal retries (helpers/cleanup.js).
+  t.after(async () => { ws?.close(); await stop(browser); await stop(server); await require('./helpers/cleanup.js').stopAndRemove(null, home); });
 
   // Two versions of the page, captured after two tool calls, as the
   // checkpoint extension does during a run.

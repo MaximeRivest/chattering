@@ -78,7 +78,7 @@ async function boot(t, { key = 'test-key-0123456789abcdef', setup = null } = {})
     const exited = child.exitCode !== null || new Promise(r => child.once('exit', r));
     child.kill('SIGKILL');
     await exited;
-    fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   const base = 'http://127.0.0.1:' + port;
   for (let i = 0; i < 300; i++) { try { if ((await fetch(base + '/api/settings')).ok) break; } catch {} await sleep(50); }

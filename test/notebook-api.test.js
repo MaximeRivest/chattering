@@ -72,9 +72,14 @@ function makeProject() {
   return { repo, nb };
 }
 
-const haveRat = !spawnSync('rat', ['version']).error;
+// rat, new enough for what Chattering asks of it (notebook-addressed runs,
+// JSON doctor). An older rat is reported, not failed on.
+const ratInstalled = !spawnSync('rat', ['version']).error;
+const ratHelp = args => String(spawnSync('rat', [...args, '--help'], { encoding: 'utf8' }).stdout || '');
+const haveRat = ratInstalled && /--doc\b/.test(ratHelp(['run'])) && /--json\b/.test(ratHelp(['doctor']));
+const ratSkip = !ratInstalled ? 'rat is not installed' : 'the installed rat is older than Chattering needs (run --doc, doctor --json)';
 
-test('doctor and run-cell resolve the notebook, not its folder', { skip: !haveRat && 'rat is not installed' }, async t => {
+test('doctor and run-cell resolve the notebook, not its folder', { skip: !haveRat && ratSkip }, async t => {
   const { post, base } = await bootServer(t);
   const { repo, nb } = makeProject();
   t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
@@ -105,7 +110,7 @@ test('doctor and run-cell resolve the notebook, not its folder', { skip: !haveRa
   assert.match(ensure.error, /doc/);
 });
 
-test('cancel-run interrupts the kernel through the same notebook resolution', { skip: !haveRat && 'rat is not installed' }, async t => {
+test('cancel-run interrupts the kernel through the same notebook resolution', { skip: !haveRat && ratSkip }, async t => {
   const { post } = await bootServer(t);
   const { repo, nb } = makeProject();
   t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
@@ -138,7 +143,7 @@ test('a missing rat is reported once, plainly, not as a per-cell mystery', async
   assert.equal(ensure.ratMissing, true);
 });
 
-test('notebooks list reads provenance from disk; prerequisites run through rat play', { skip: !haveRat && 'rat is not installed' }, async t => {
+test('notebooks list reads provenance from disk; prerequisites run through rat play', { skip: !haveRat && ratSkip }, async t => {
   const { repo } = makeProject();
   t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
   // rat's own ipython/jedi additions would need the network; the chain
@@ -261,7 +266,7 @@ test('an answer is refused when nothing waits, and a page that leaves cancels it
 
 // Kernel controls and variables: state and variables are read without
 // ever starting a kernel; reset/restart/stop act on the notebook's kernel.
-test('the notebook kernel: state, variables, clear, restart, shut down', { skip: !haveRat && 'rat is not installed' }, async t => {
+test('the notebook kernel: state, variables, clear, restart, shut down', { skip: !haveRat && ratSkip }, async t => {
   const { post, base } = await bootServer(t, { RAT_NOTEBOOK_REQUIREMENTS: '' });
   const { repo, nb } = makeProject();
   t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
@@ -379,7 +384,7 @@ test('a tab follows its notebook kernel: other clients\u2019 runs arrive, named,
   assert.equal((await post('/api/doc/follow', { doc: null, conn: live.conn })).ok, true);
 });
 
-test('plots: shown from rat\u2019s plot folder only, kept in the project by content', { skip: !haveRat && 'rat is not installed' }, async t => {
+test('plots: shown from rat\u2019s plot folder only, kept in the project by content', { skip: !haveRat && ratSkip }, async t => {
   const { post, base, home } = await bootServer(t, { RAT_NOTEBOOK_REQUIREMENTS: '' });
   // Inside home: the page shows document images from home only, so plots
   // are kept only for projects there.
@@ -413,7 +418,7 @@ test('plots: shown from rat\u2019s plot folder only, kept in the project by cont
   assert.match((await post('/api/doc/plots', { doc: nb, paths: ['/etc/hostname'] })).error, /not a plot/);
 });
 
-test('completion comes from the running kernel, never starts one, never waits behind a cell', { skip: !haveRat && 'rat is not installed' }, async t => {
+test('completion comes from the running kernel, never starts one, never waits behind a cell', { skip: !haveRat && ratSkip }, async t => {
   const { post, base } = await bootServer(t, { RAT_NOTEBOOK_REQUIREMENTS: '' });
   const { repo, nb } = makeProject();
   t.after(() => fs.rmSync(repo, { recursive: true, force: true }));

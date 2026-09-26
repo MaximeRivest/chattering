@@ -161,7 +161,29 @@ function openCommand(abs, { reveal = false, env = process.env } = {}) {
   return path.basename(opener) === 'gio' ? { file: opener, args: ['open', target] } : { file: opener, args: [target] };
 }
 
+// ---- sound on this machine ----------------------------------------------------
+
+// How to play a WAV file on this machine's speakers: { file, args } or null.
+// Linux: PipeWire, else PulseAudio, else ALSA; macOS: afplay; Windows: the
+// .NET sound player through PowerShell (plays WAV, waits until done).
+function audioPlayCommand(wav, env = process.env) {
+  if (IS_MAC) return { file: 'afplay', args: [wav] };
+  if (IS_WIN) return { file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', `(New-Object Media.SoundPlayer '${String(wav).replace(/'/g, "''")}').PlaySync()`] };
+  for (const [name, args] of [['pw-play', [wav]], ['paplay', [wav]], ['aplay', ['-q', wav]]]) {
+    const found = findOnPath(name, env);
+    if (found) return { file: found, args };
+  }
+  return null;
+}
+// Recording the microphone on this machine (16 kHz mono s16 to stdout):
+// PipeWire only, for now; elsewhere the browser's microphone is used.
+function audioRecordCommand(env = process.env) {
+  const found = IS_LINUX && findOnPath('pw-record', env);
+  return found ? { file: found, args: ['--raw', '--format', 's16', '--rate', '16000', '--channels', '1', '-'] } : null;
+}
+
 module.exports = {
+  audioPlayCommand, audioRecordCommand,
   PLATFORM, IS_WIN, IS_MAC, IS_LINUX, IS_WSL, hostKind,
   pathKey, pathEntries, withPath, findOnPath, isExecutable,
   CASE_INSENSITIVE, isInside, samePath, toPortable, fromPortable, isAbsolutePath,

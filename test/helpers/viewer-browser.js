@@ -33,7 +33,7 @@ async function viewerBrowser(t, opts = {}) {
   t.after(async () => {
     ws?.close(); await stop(browser); await stop(server);
     for (let i = 0; i < 20; i++) {
-      try { fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); return; }
+      try { fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); return; }
       catch (e) { if (e.code !== 'ENOTEMPTY' && e.code !== 'EBUSY') throw e; await new Promise(r => setTimeout(r, 250)); }
     }
   });
@@ -76,7 +76,13 @@ async function viewerBrowser(t, opts = {}) {
     return out.result?.result?.value;
   };
   const until = async (expression, label, contextId) => {
-    for (let i = 0; i < 400; i++) { if (await evaluate(`(()=>{try{return !!(${expression})}catch{return false}})()`, contextId)) return; await new Promise(r => setTimeout(r, 25)); }
+    // A page mid-reload answers "navigated or closed": ask again, it is not an answer.
+    for (let i = 0; i < 400; i++) {
+      let ok = false;
+      try { ok = await evaluate(`(()=>{try{return !!(${expression})}catch{return false}})()`, contextId); } catch {}
+      if (ok) return;
+      await new Promise(r => setTimeout(r, 25));
+    }
     const state = await evaluate(`JSON.stringify({hash:location.hash,view:typeof viewKind==='undefined'?null:viewKind,file:typeof fileWs==='undefined'?null:fileWs?.path,text:document.querySelector('#view')?.textContent.slice(0,1000)})`).catch(() => 'state unavailable');
     assert.fail('Timed out: ' + (label || expression) + '\n' + state + '\n' + exceptions.join('\n'));
   };

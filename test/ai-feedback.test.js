@@ -40,7 +40,8 @@ test('the log appends one line per record and reads the newest back', () => {
     const log = new FeedbackLog(path.join(dir, 'sub', 'ai-feedback.jsonl'));
     for (let i = 0; i < 5; i++) log.append({ i });
     assert.deepEqual(log.recent(2), [{ i: 3 }, { i: 4 }]);
-    assert.equal(fs.statSync(log.file).mode & 0o777, 0o600);
+    // Unix permission bits; Windows keeps it private by the per-user folder's access list.
+    if (process.platform !== 'win32') assert.equal(fs.statSync(log.file).mode & 0o777, 0o600);
     assert.deepEqual(new FeedbackLog(path.join(dir, 'none.jsonl')).recent(), []);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

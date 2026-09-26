@@ -17,6 +17,8 @@ async function stopAndRemove(child, dir, { graceMs = 3000 } = {}) {
     try { child.kill('SIGKILL'); } catch {}
     await exited(child, graceMs);
   }
+  // Linear backoff: about five seconds in all, the time a Pi worker takes
+  // to notice its server is gone and finish writing.
   if (dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
 module.exports = { stopAndRemove, exited };

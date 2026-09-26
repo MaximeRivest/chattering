@@ -24,7 +24,7 @@ test('one head: side-by-side answers, instant moves, versions, shared head, phon
     const exited = new Promise(r => child.once('exit', r)); child.kill('SIGTERM');
     const timer = setTimeout(() => child.kill('SIGKILL'), 3000); await exited; clearTimeout(timer);
   };
-  t.after(async () => { ws?.close(); await stop(browser); await stop(server); fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+  t.after(async () => { ws?.close(); await stop(browser); await stop(server); fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
 
   let clock = 0;
   const ts = () => new Date(Date.UTC(2026, 8, 1, 12, 0, clock++)).toISOString();

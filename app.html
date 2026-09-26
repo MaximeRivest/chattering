@@ -2524,6 +2524,11 @@ function unlockLandscape() {
 }
 
 function setRouteKind(kind) {
+  // Another screen: a conversation still loading must not paint over it
+  // (open() and renderConv drop a load whose number is no longer current).
+  // (Guarded: a route set while the page script is still starting comes
+  // before the counter exists.)
+  if (kind !== 'conversation') { try { conversationLoadSeq++; } catch {} }
   // The artifact panel belongs to its conversation (design/67).
   if (kind !== 'conversation' && window.Artifacts) Artifacts.onLeaveConversation();
   // Capture before the route resets scroll or replaces the conversation DOM.
@@ -11078,7 +11083,9 @@ function agentComposerHtml(d) {
       ${d.source !== 'claude' ? '<button id="agentThink" class="model-pick think-pick" type="button" hidden></button>' : ''}
       ${d.source !== 'claude' ? '<div class="model-strip" id="modelStrip"></div>' : ''}
       ${d.source !== 'claude' ? `<button class="primary" id="agentRun" type="button" title="Send from the web (ctrl+enter): a headless pi run on this session. The terminal stays your escape hatch.">${agentRunLabel()}</button>` : ''}
-      ${d.source === 'claude' ? '<button class="primary" id="agentSend" type="button" title="Open the terminal and send (ctrl+enter)">open &amp; send</button>' : ''}
+      ${d.source === 'claude' ? (capabilityOn('terminal') || !settingsState
+        ? '<button class="primary" id="agentSend" type="button" title="Open the terminal and send (ctrl+enter)">open &amp; send</button>'
+        : `<button class="primary" id="agentSend" type="button" disabled title="${esc('Claude Code conversations continue in a terminal window. ' + capabilityReason('terminal') + '. Fork it to continue with Pi here.')}">open &amp; send</button>`) : ''}
       </div>
     </div>
   </div>
@@ -16112,6 +16119,7 @@ async function loadSettings() {
 // capabilities). A control whose service is not set up is not shown; the
 // settings page says what it needs instead.
 const capabilityOn = name => !!(settingsState && settingsState.capabilities && settingsState.capabilities[name] && settingsState.capabilities[name].configured);
+const capabilityReason = name => String((settingsState && settingsState.capabilities && settingsState.capabilities[name] && settingsState.capabilities[name].reason) || 'not available on this machine').replace(/^./, c => c.toUpperCase());
 function applyCapabilities() {
   document.body.classList.toggle('can-read-aloud', capabilityOn('tts'));
   const ta = $('agentText');

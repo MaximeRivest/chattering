@@ -5545,7 +5545,7 @@ function settingsResponse(identity = ownerIdentity()) {
     lan: { on: lanWanted(), fixed: Boolean(ENV_HOST), addresses: lanAddresses() },
     // What the optional services can do here, so no control is shown that
     // would fail without saying why (design/32 section 2).
-    capabilities: { ...voiceCapabilities(), doneSound: doneSoundMode() },
+    capabilities: { ...voiceCapabilities(), ...hostCapabilities(), doneSound: doneSoundMode() },
     // For the first-run question about background AI: how much history
     // there is, so the person knows what "re-read" would cover.
     conversations: Object.keys(index).length,
@@ -8160,6 +8160,10 @@ function sendKeys(wid, combo) {
 
 function spawnAlacritty(cwd, title, argv) {
   assertNotGuest(currentIdentity(), 'A terminal window');
+  // Every terminal window starts here: where there is none, the person is
+  // told why, and the conversation still continues in the page.
+  const terminal = hostCapabilities().terminal;
+  if (!terminal.configured && !process.env.CHATTERING_TERMINAL) { const e = new Error('No terminal window here: ' + terminal.reason + '.'); e.status = 409; throw e; }
   const term = alacrittyBin();
   const sock = socketPathForTitle(title);
   fs.mkdirSync(path.dirname(sock), { recursive: true });
@@ -13829,6 +13833,32 @@ function voiceServiceError(what) {
   return e;
 }
 // For /api/settings: what is set up, and where the value comes from.
+// What this machine itself can do, each with the reason when it cannot
+// (design/32 §2, design/70): a control whose capability is off is hidden or
+// says why, never a dead button. Checked when asked; cheap lookups.
+function hostCapabilities() {
+  const on = (configured, reason) => ({ configured: !!configured, reason: configured ? '' : reason });
+  const terminal = platform.IS_LINUX && !!platform.findOnPath(path.basename(alacrittyBin())) && !!platform.findOnPath('python3');
+  return {
+    terminal: on(terminal, platform.IS_LINUX ? 'terminal windows need Alacritty and Python 3 installed' : 'terminal windows are available on Linux; continue conversations here'),
+    hostAudio: on(platform.audioPlayCommand(''), 'no sound player on this machine (PipeWire, PulseAudio or ALSA)'),
+    hostMic: on(platform.audioRecordCommand(), 'listening through this machine\'s microphone needs Linux with PipeWire; the browser\'s microphone still works'),
+    notebooks: on(notebookRuntimeReady(), 'code cells need rat (https://runanything.dev), new enough to run notebooks'),
+  };
+}
+// rat present and new enough for notebook-addressed runs; asked once, then
+// again when a check failed a minute ago (the person may install it).
+let notebookRuntimeCheck = { at: 0, ok: false };
+function notebookRuntimeReady() {
+  if (notebookRuntimeCheck.ok || Date.now() - notebookRuntimeCheck.at < 60000) return notebookRuntimeCheck.ok;
+  let ok = false;
+  try {
+    const rat = ratBinary();
+    if (rat) ok = /--doc\b/.test(String(require('child_process').spawnSync(rat, ['run', '--help'], { encoding: 'utf8', timeout: 5000 }).stdout || ''));
+  } catch {}
+  notebookRuntimeCheck = { at: Date.now(), ok };
+  return ok;
+}
 function voiceCapabilities() {
   const one = (keys, reason) => {
     const configured = keys.every(k => !!voiceSetting(k));
@@ -14149,7 +14179,9 @@ const playTone = name => playWav(tonePath(name));
 // mutable "now playing" clip and notify browsers; short tones do not.
 function playWav(p, speech = false) {
   return new Promise(resolve => {
-    const child = spawn('pw-play', [p], { stdio: 'ignore' });
+    const player = platform.audioPlayCommand(p);
+    if (!player) return resolve(); // no speakers to play on here (capabilities says so)
+    const child = spawn(player.file, player.args, { stdio: 'ignore', windowsHide: true });
     if (speech) {
       voice.current = child;
       voice.paused = false;
@@ -14223,9 +14255,10 @@ async function voicePump() {
 function recordUtterance({ waitMs = 10000, tailMs = 2200, maxMs = 120000 } = {}) {
   return new Promise(resolve => {
     let child;
+    const recorder = platform.audioRecordCommand();
+    if (!recorder) return resolve(null); // no room microphone here (capabilities says so)
     try {
-      child = spawn('pw-record', ['--raw', '--format', 's16', '--rate', '16000', '--channels', '1', '-'],
-        { stdio: ['ignore', 'pipe', 'ignore'] });
+      child = spawn(recorder.file, recorder.args, { stdio: ['ignore', 'pipe', 'ignore'] });
     } catch { return resolve(null); }
     const chunks = [];
     let leftover = Buffer.alloc(0);
