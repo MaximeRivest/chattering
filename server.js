@@ -6999,7 +6999,11 @@ async function regenerateEpicDocs(epicId, emit = () => {}) {
 async function regenerateDocsCore({ label, entries, paths, existingEpics, discoverCandidates, inputsPath }, emit = () => {}) {
   const project = label;
   emit('Reading memory leaves…', 0, 5);
-  const rows = (await mapLimit(entries, 16, async ({ key, entry }) => ({ key, entry, leaf: await readLeaf(key) })))
+  // A conversation hidden more narrowly than its project (a rule of its
+  // own) stays out of shared memory: everyone who reads the memory can
+  // see the project, not necessarily that conversation (design/72).
+  const narrower = key => { const rule = accessRules.rules[accessLib.conversationObject(key)]; return !!rule && rule.mode === 'listed'; };
+  const rows = (await mapLimit(entries.filter(({ key }) => !narrower(key)), 16, async ({ key, entry }) => ({ key, entry, leaf: await readLeaf(key) })))
     .filter(r => r.leaf)
     .sort((a, b) => String(a.leaf.span?.firstTs || '').localeCompare(String(b.leaf.span?.firstTs || '')));
   if (!rows.length) throw new Error('no memory leaves yet — run the leaf backfill first');
@@ -17184,9 +17188,11 @@ async function handleRequest(req, res) {
       let principal;
       try { principal = await principalInProject(principalFor(identity), cwd ? projectOfPath(cwd) : null); assertPrincipalCanRun(principal, 'a command'); }
       catch (e) { return json(res, e.status || 403, { error: e.message }); }
+      const bash = principal.sandbox ? 'bash' : platform.bashPath();
+      if (!bash) return json(res, 409, { error: 'Commands from replies run in bash. On Windows that is Git Bash, which Pi uses too: install Git for Windows (https://git-scm.com), then run it again.' });
       const result = await new Promise(resolve => {
         const dir = cwd && typeof cwd === 'string' && fs.existsSync(cwd) ? cwd : os.homedir();
-        const launched = agentLaunch(principal, 'bash', ['-lc', cmd], { cwd: dir });
+        const launched = agentLaunch(principal, bash, ['-lc', cmd], { cwd: dir });
         const child = spawn(launched.file, launched.args, { cwd: principal.sandbox ? undefined : dir, env: launched.env });
         if (principal.guest) { child.guestId = principal.user.id; guestChildren.add(child); child.on('close', () => guestChildren.delete(child)); }
         let buf = '';

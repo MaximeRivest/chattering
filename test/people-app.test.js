@@ -31,7 +31,7 @@ test('two people share a machine: sign-in, presence, one compose box, one file, 
     const timeout = setTimeout(() => child.kill('SIGKILL'), 3000);
     try { await exited; } finally { clearTimeout(timeout); }
   };
-  t.after(async () => { ws?.close(); await stop(browser); await stop(server); fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
+  t.after(async () => { ws?.close(); await stop(browser); await stop(server); fs.rmSync(home, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); });
   const agent = path.join(home, '.pi/agent');
   const work = path.join(home, 'Projects', 'shared'), secretWork = path.join(home, 'Projects', 'secret');
   fs.mkdirSync(path.join(work, 'notes'), { recursive: true }); fs.mkdirSync(secretWork, { recursive: true });

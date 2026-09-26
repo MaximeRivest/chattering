@@ -29,7 +29,7 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   t.after(async () => {
     ws?.close();
     await stop(browser); await stop(server);
-    fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    fs.rmSync(home, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   });
   const agent = path.join(home, '.pi/agent'), sessionDir = path.join(agent, 'sessions/fixture');
   fs.mkdirSync(sessionDir, { recursive: true });

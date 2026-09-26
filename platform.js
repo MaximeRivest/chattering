@@ -161,6 +161,20 @@ function openCommand(abs, { reveal = false, env = process.env } = {}) {
   return path.basename(opener) === 'gio' ? { file: opener, args: ['open', target] } : { file: opener, args: [target] };
 }
 
+// ---- the shell commands run in ----------------------------------------------
+
+// bash, where commands from replies run. Unix: bash on PATH. Windows: Git
+// Bash, found as Pi finds it (Git's install folders first, then PATH), or
+// null: commands cannot run, and the person is told what to install.
+function bashPath(env = process.env) {
+  if (!IS_WIN) return findOnPath('bash', env) || null;
+  const roots = [env.ProgramFiles, env['ProgramFiles(x86)'], env.LOCALAPPDATA && path.join(env.LOCALAPPDATA, 'Programs')].filter(Boolean);
+  for (const r of roots) { const b = path.join(r, 'Git', 'bin', 'bash.exe'); if (isExecutable(b)) return b; }
+  const onPath = findOnPath('bash.exe', env);
+  // System32\bash.exe starts WSL, a different machine's shell: not that one.
+  return onPath && !/[\\/]system32[\\/]bash\.exe$/i.test(onPath) ? onPath : null;
+}
+
 // ---- sound on this machine ----------------------------------------------------
 
 // How to play a WAV file on this machine's speakers: { file, args } or null.
@@ -183,7 +197,7 @@ function audioRecordCommand(env = process.env) {
 }
 
 module.exports = {
-  audioPlayCommand, audioRecordCommand,
+  bashPath, audioPlayCommand, audioRecordCommand,
   PLATFORM, IS_WIN, IS_MAC, IS_LINUX, IS_WSL, hostKind,
   pathKey, pathEntries, withPath, findOnPath, isExecutable,
   CASE_INSENSITIVE, isInside, samePath, toPortable, fromPortable, isAbsolutePath,

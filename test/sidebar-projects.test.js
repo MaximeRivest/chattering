@@ -77,8 +77,7 @@ test('project timeline bounds, quiet badges and scroll-loaded lists in the real 
   // count when the person asks for numbers; the choice survives a reload.
   // Painted and read in one turn: a real poll may repaint in between.
   const badge = `(()=>{const b=document.querySelector('#sideUnfold .rail-badge');return {hidden:b.hidden,text:b.textContent,dot:b.classList.contains('dot')}})()`;
-  assert.deepEqual(await ev(`paintRailBadges({working:true,unread:3});${badge}`), { hidden: false, text: '', dot: true });
-  assert.equal(await ev(`$('sideUnfold').classList.contains('work')`), true, 'the reopen symbol shows work in progress');
+  assert.deepEqual(await ev(`paintRailBadges({working:true,unread:3});({...${badge},work:$('sideUnfold').classList.contains('work')})`), { hidden: false, text: '', dot: true, work: true }, 'a quiet dot, and the reopen symbol shows work in progress');
   await ev(`showSettings('appearance')`);
   await until(`!!$('setRailCounts')`);
   assert.equal(await ev(`$('setRailCounts').checked`), false);

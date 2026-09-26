@@ -33,7 +33,7 @@ async function viewerBrowser(t, opts = {}) {
   t.after(async () => {
     ws?.close(); await stop(browser); await stop(server);
     for (let i = 0; i < 20; i++) {
-      try { fs.rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); return; }
+      try { fs.rmSync(home, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); return; }
       catch (e) { if (e.code !== 'ENOTEMPTY' && e.code !== 'EBUSY') throw e; await new Promise(r => setTimeout(r, 250)); }
     }
   });
