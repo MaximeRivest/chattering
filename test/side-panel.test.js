@@ -133,8 +133,9 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   assert.equal(await evaluate(`!!document.querySelector('[data-sec=unread],[data-sec=read]')`), false, 'no Unread / Read sections');
   assert.equal(await evaluate(`document.querySelector('#agentUnreadCount').textContent`), '1');
 
-  // Opening a conversation reads it; the page strip stays, the global bar controls do not.
-  await evaluate(`open(${JSON.stringify(keys.alpha)})`);
+  // Opening a conversation from the list reads it and selects its project
+  // (design/50); the page strip stays, the global bar controls do not.
+  await evaluate(`openPanelConversation(${JSON.stringify(keys.alpha)})`);
   await until(`viewKind === 'conversation' && document.body.classList.contains('conv')`);
   assert.equal(await evaluate(`getComputedStyle(document.querySelector('body > header')).display`), 'none', 'no bar in a conversation either');
   assert.equal(await evaluate(`document.querySelector('#chTitle').closest('#floatHead') !== null && getComputedStyle(document.querySelector('#floatHead')).position`), 'relative', 'the title has its own quiet line');

@@ -108,10 +108,11 @@ if (process.argv[1] === ${JSON.stringify(path.join(root, 'server.js'))}) {
     await waitFor(async () => evaluate('!!document.querySelector("#activeBtn") && !document.querySelector("#activeBtn").hidden'));
     await evaluate('document.querySelector("#activeBtn").click()');
     await waitFor(async () => evaluate('!!document.querySelector("[data-recovery-action=resume]")'));
-    assert.equal(await evaluate('document.querySelector("#agentsPop").textContent.includes("Likely connection problem")'), true);
+    // design/59: the interrupted run is a stopped row saying why.
+    assert.equal(await evaluate('document.querySelector("#agentsPop .ag-row.stopped .ag-doing")?.textContent'), 'connection lost');
     assert.equal(await evaluate('document.querySelector("#agentAutoResume").checked'), false);
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'panel overflows phone');
-    assert.equal(await evaluate('document.querySelector(".ag-interrupted").scrollWidth <= document.querySelector(".ag-interrupted").clientWidth'), true, 'row overflows phone');
+    assert.equal(await evaluate('(r => r.scrollWidth <= r.clientWidth)(document.querySelector("#agentsPop .ag-row.stopped"))'), true, 'row overflows phone');
     await evaluate('document.querySelector("[data-recovery-action=resume]").click()');
     await waitFor(async () => (await get('/api/agents/recovery')).interrupted.length === 0);
     assert.deepEqual(exceptions, []);

@@ -11,10 +11,8 @@ const { viewerBrowser } = require('./helpers/viewer-browser');
 // elements the desktop column fills. Reading and typing hide the bar with the
 // top bar; a sheet keeps it. The Android back button asks the page first.
 test('phone shell: bottom bar, sheets, one-row head, back hook, desktop untouched', { timeout: 90000 }, async t => {
-  const { home, base, work, auth, evaluate: ev, until, size, screenshot, exceptions } = await viewerBrowser(t, { firstRun: true });
+  const { home, base, work, auth, evaluate: ev, until, size, screenshot, exceptions } = await viewerBrowser(t);
   // A fresh install first asks about background AI; its modal would hold focus.
-  await until(`document.querySelector('dialog.bg-ask [data-none]')`, 'no first-run question');
-  await ev(`document.querySelector('dialog.bg-ask [data-none]').click()`);
   await until(`!document.querySelector('dialog.bg-ask')`, 'the first-run question stayed');
   const fixture = path.join(home, '.pi/agent/sessions/fixture');
   const keys = {};
@@ -138,6 +136,12 @@ test('phone shell: bottom bar, sheets, one-row head, back hook, desktop untouche
   // Gantt and New from the bar; leaving for a page closes the sheet.
   await ev(`document.querySelector('[data-phone-tab=gantt]').click()`);
   await until(`viewKind==='home' && document.querySelector('[data-phone-tab=gantt]').getAttribute('aria-pressed')==='true'`);
+  // New follows the chosen project (design/50): the file above was in
+  // `work`, so New would start there. (The fixture's `work` is a label on
+  // the file, not a registered project, so its reviewed start is not run.)
+  assert.equal(await ev(`workspaceScope() + '|' + sideNewProject()`), 'work|work');
+  // With All projects chosen, New is a blank draft.
+  await ev(`setWorkspaceScope('')`);
   await ev(`document.querySelector('[data-phone-tab=new]').click()`);
   await until(`viewKind==='draft' && document.querySelector('[data-phone-tab=new]').getAttribute('aria-pressed')==='true'`, 'New starts a draft');
   await ev(`document.querySelector('[data-phone-tab=agents]').click()`);

@@ -19,8 +19,6 @@ test('the ask box: over the text, what goes along, choices that stick, a send an
   fs.writeFileSync(path.join(b.work, 'notes.md'), DOC);
   await until(`sessions.length && nav.current()`);
   // A new install asks about background AI first, in a modal: answer it.
-  await until(`document.querySelector('dialog.bg-ask [data-none]')`, 'no first-run question');
-  await ev(`document.querySelector('dialog.bg-ask [data-none]').click()`);
   await until(`!document.querySelector('dialog.bg-ask')`, 'the first-run question stayed');
   await b.open('notes.md', { project: null }); // the server names the folder's project
   await until(`docState && docState.path.endsWith('notes.md') && fileWs && fileWs.editor`, 'the document did not open');

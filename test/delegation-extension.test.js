@@ -9,7 +9,7 @@ const { randomUUID } = require('node:crypto');
 const D = require('../delegation');
 const S = require('../delegation-store');
 
-const packageDir = process.env.PI_CODING_AGENT_PACKAGE || path.resolve(path.dirname(process.execPath), '../lib/node_modules/@earendil-works/pi-coding-agent');
+const packageDir = require('./helpers/pi-package.js').piPackageForTests() || path.join(__dirname, 'no-pi-package-here');
 const loaderPath = path.join(packageDir, 'dist/core/extensions/loader.js');
 const available = fs.existsSync(loaderPath);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));

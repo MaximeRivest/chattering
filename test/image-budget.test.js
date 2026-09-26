@@ -9,7 +9,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
 const extPath = path.resolve(__dirname, '../extensions/image-budget.ts');
-const packageDir = process.env.PI_CODING_AGENT_PACKAGE || path.resolve(path.dirname(process.execPath), '../lib/node_modules/@earendil-works/pi-coding-agent');
+const packageDir = require('./helpers/pi-package.js').piPackageForTests() || path.join(__dirname, 'no-pi-package-here');
 const loaderPath = path.join(packageDir, 'dist/core/extensions/loader.js');
 
 const MB = 1024 * 1024;

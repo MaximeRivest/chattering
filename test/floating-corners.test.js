@@ -12,12 +12,10 @@ const path = require('node:path');
 const { viewerBrowser } = require('./helpers/viewer-browser');
 
 test('floating corners cover no button on any view; the voice button has a home', { timeout: 180000 }, async t => {
-  const b = await viewerBrowser(t, { firstRun: true });
+  const b = await viewerBrowser(t);
   const { evaluate: ev, until } = b;
   fs.writeFileSync(path.join(b.work, 'doc.md'), '# Title\n\nSome prose.\n');
   await until(`sessions.length && nav.current()`);
-  await until(`document.querySelector('dialog.bg-ask [data-none]')`, 'no first-run question');
-  await ev(`document.querySelector('dialog.bg-ask [data-none]').click()`);
 
   // Every clickable thing of the page that a floating button overlaps.
   const covered = `(() => {

@@ -1,6 +1,15 @@
 import { createAssistantMessageEventStream } from '@earendil-works/pi-ai';
 import fs from 'node:fs';
 import path from 'node:path';
+// The system prompt a provider receives: before Pi 0.87 a context field;
+// since, system messages in the transcript (content, then named sections).
+function systemText(context: any): string {
+  if (typeof context.systemPrompt === 'string') return context.systemPrompt;
+  const text = (c: any) => typeof c === 'string' ? c : (c || []).map((b: any) => b?.text || '').join('');
+  return (context.messages || []).filter((m: any) => m?.role === 'system')
+    .map((m: any) => [text(m.content), ...Object.values(m.sections || {}).filter(Boolean)].join('\n')).join('\n');
+}
+
 export default function (pi: any) {
   let requests = 0;
   pi.registerProvider('fixture', {
@@ -42,7 +51,7 @@ export default function (pi: any) {
           Object.assign(result, { content: [], stopReason: 'error', errorMessage: 'terminated' });
           stream.push({ type: 'error', reason: 'error', error: result }); stream.end(); return;
         }
-        if (process.env.FIXTURE_EXPECT_MODE && !context.systemPrompt.includes('# Current prompt mode: ' + process.env.FIXTURE_EXPECT_MODE)) {
+        if (process.env.FIXTURE_EXPECT_MODE && !systemText(context).includes('# Current prompt mode: ' + process.env.FIXTURE_EXPECT_MODE)) {
           Object.assign(result, { content: [], stopReason: 'error', errorMessage: 'Callback lost its prompt mode.' });
           stream.push({ type: 'error', reason: 'error', error: result }); stream.end(); return;
         }

@@ -19,8 +19,6 @@ test('AI commands in source and text files, and notes in the file editor', { tim
   fs.mkdirSync(notes, { recursive: true });
   fs.writeFileSync(path.join(notes, 'memo.md'), '# Memo\n\n## First\n\nOne.\n\n## Second\n\nTwo.\n');
   await until(`sessions.length && nav.current()`);
-  await until(`document.querySelector('dialog.bg-ask [data-none]')`, 'no first-run question');
-  await ev(`document.querySelector('dialog.bg-ask [data-none]').click()`);
   await command('Emulation.setFocusEmulationEnabled', { enabled: true });
   const key = async (key, code, vk, modifiers = 0) => {
     await command('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: vk, modifiers });

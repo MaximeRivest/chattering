@@ -14,8 +14,7 @@ test('text size, wrapping, document width and font', { timeout: 60000 }, async t
   fs.writeFileSync(path.join(b.work, 'long.py'), 'x = "' + 'long '.repeat(80) + '"\n');
   fs.writeFileSync(path.join(b.work, 'doc.md'), '# Title\n\nSome prose.\n\n```python\nx = 1\n```\n');
   await until(`sessions.length && nav.current()`);
-  await until(`document.querySelector('dialog.bg-ask [data-none]')`, 'no first-run question');
-  await ev(`document.querySelector('dialog.bg-ask [data-none]').click(); localStorage.removeItem('chattering.fileView.v1'); applyFileViewStyle()`);
+  await ev(`localStorage.removeItem('chattering.fileView.v1'); applyFileViewStyle()`);
   const key = async (key, code, vk, modifiers = 0) => {
     await command('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode: vk, modifiers });
     await command('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: vk, modifiers });

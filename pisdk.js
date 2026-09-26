@@ -44,6 +44,7 @@ function errorOf(value) {
   const error = new Error(value && value.message || String(value || 'Pi worker failed'));
   if (value && value.name) error.name = value.name;
   if (value && value.code) error.code = value.code;
+  if (value && typeof value.stack === 'string') { error.workerStack = value.stack; error.stack += '\n  -- in the Pi worker:\n' + value.stack; }
   return error;
 }
 

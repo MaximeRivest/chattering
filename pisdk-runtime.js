@@ -14,7 +14,7 @@ const { forkPiSnapshot } = require('./session-snapshot.js');
 const { captureRewriteRequest } = require('./pisdk-rewrite.js');
 const { createSpeedMeter } = require('./responsespeed.js');
 
-const PI_TESTED_VERSION = '0.84.1';
+const PI_TESTED_VERSION = '0.87.1';
 const WARM_IDLE_MS = 5 * 60 * 1000;
 const DIALOG_MAX_MS = 30 * 60 * 1000;
 

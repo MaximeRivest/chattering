@@ -3,8 +3,11 @@
 const { createRuntimeEngine } = require('./pisdk-runtime.js');
 const { randomUUID } = require('crypto');
 
+// The stack crosses too (bounded): a failure inside the worker is found
+// where it happened, not where the parent rethrew it.
 function serializedError(error) {
-  return { name: error?.name || 'Error', message: String(error?.message || error).slice(0, 8000), code: error?.code };
+  return { name: error?.name || 'Error', message: String(error?.message || error).slice(0, 8000), code: error?.code,
+    stack: typeof error?.stack === 'string' ? error.stack.slice(0, 4000) : undefined };
 }
 function createWorkerController({ send, exit, engineFactory = createRuntimeEngine, shutdownMs = 4000 }) {
   let active = null;
