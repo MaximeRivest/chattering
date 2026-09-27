@@ -4,7 +4,8 @@
 // that has never seen Chattering, no Pi or Node installed as far as it
 // knows (PATH holds only the system's folders). Start it with its own
 // launcher, find a conversation, search it, read the page, use the records
-// command, stop it. Run by CI on every system before a release.
+// command, connect a model and hold a first conversation, stop it. Run by
+// CI on every system before a release.
 //   node scripts/smoke-release.js dist/chattering-<version>-<os>-<arch>
 const fs = require('fs');
 const os = require('os');
@@ -76,6 +77,8 @@ let ok = false;
     const models = JSON.parse((await get('/api/models')).text);
     assert.ok(Array.isArray(models.models), 'Pi lists its models (none signed in is fine): ' + JSON.stringify(models).slice(0, 200));
     step('Pi answers (' + models.models.length + ' models listed' + (models.error ? '; ' + models.error.slice(0, 80) : '') + ')');
+    // The first minutes: connect a model, its hello, a first reply (design/73).
+    await require('./journey.js').firstConversation({ base, token, home, step });
     const stopped = run([path.join(app, 'launcher.js'), 'stop']);
     assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
     assert.equal(run([path.join(app, 'launcher.js'), 'status']).status, 3, 'stopped means stopped');

@@ -72,7 +72,38 @@ async function freePort(from, avoid = []) {
   for (let p = from; p < from + 200; p++) if (!avoid.includes(p) && await portFree(p)) return p;
   throw new Error('no free port from ' + from);
 }
+// One start at a time: a second click on the app while the first start is
+// under way waits for that server instead of starting a twin. The lock
+// names its process; a lock whose process is gone, or older than two
+// minutes, is stale.
+const LOCK_FILE = path.join(DIRS.data, 'starting.lock');
+function takeStartLock() {
+  fs.mkdirSync(DIRS.data, { recursive: true });
+  for (let tries = 0; tries < 2; tries++) {
+    try { fs.writeFileSync(LOCK_FILE, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: 'wx' }); return true; }
+    catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      const held = readJson(LOCK_FILE);
+      const alive = held && held.pid && (() => { try { process.kill(held.pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } })();
+      if (alive && Date.now() - held.at < 120000) return false;
+      try { fs.unlinkSync(LOCK_FILE); } catch {}
+    }
+  }
+  return false;
+}
 async function start({ quiet = false } = {}) {
+  const already = await running();
+  if (already) return already;
+  if (!takeStartLock()) {
+    if (!quiet) say('Chattering is starting…');
+    for (let i = 0; i < 1200; i++) { await sleep(100); const r = await running(); if (r) return r; if (!fs.existsSync(LOCK_FILE)) break; }
+    const r = await running();
+    if (r) return r;
+    throw new Error('Another start of Chattering did not finish; its log: ' + LOG_FILE);
+  }
+  try { return await startLocked({ quiet }); } finally { try { fs.unlinkSync(LOCK_FILE); } catch {} }
+}
+async function startLocked({ quiet }) {
   const already = await running();
   if (already) return already;
   const port = await freePort(Number(process.env.PORT) || 7433);
@@ -155,10 +186,20 @@ function autostart(on) {
     return f;
   }
   if (platform.IS_WIN) {
-    const f = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup', 'Chattering.cmd');
-    if (!on) { try { fs.unlinkSync(f); } catch {} return f; }
-    fs.writeFileSync(f, `@echo off\r\n${cmd.map(a => `"${a}"`).join(' ')} start\r\n`);
-    return f;
+    const startup = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
+    const cmdFile = path.join(startup, 'Chattering.cmd'), lnk = path.join(startup, 'Chattering.lnk');
+    const exe = INSTALL_HOME && path.join(INSTALL_HOME, 'Chattering.exe');
+    if (!on) { for (const f of [cmdFile, lnk]) { try { fs.unlinkSync(f); } catch {} } return startup; }
+    // Installed by Setup: a shortcut to the windowless Chattering.exe (as
+    // Setup's own "start when I sign in" makes), so nothing flashes at sign-in.
+    if (exe && fs.existsSync(exe)) {
+      const script = `$s = [Activator]::CreateInstance([type]::GetTypeFromProgID('WScript.Shell')).CreateShortcut($env:C_LNK); $s.TargetPath = $env:C_EXE; $s.Arguments = '"' + $env:C_OPEN + '" start'; $s.WorkingDirectory = $env:USERPROFILE; $s.IconLocation = $env:C_ICON; $s.Save()`;
+      const r = spawnSync(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command', script],
+        { windowsHide: true, env: { ...process.env, C_LNK: lnk, C_EXE: exe, C_OPEN: path.join(INSTALL_HOME, 'bin', 'open.js'), C_ICON: path.join(INSTALL_HOME, 'chattering.ico') } });
+      if (r.status === 0) { try { fs.unlinkSync(cmdFile); } catch {} return lnk; }
+    }
+    fs.writeFileSync(cmdFile, `@echo off\r\n${cmd.map(a => `"${a}"`).join(' ')} start\r\n`);
+    return cmdFile;
   }
   const f = path.join(os.homedir(), '.config', 'autostart', 'chattering.desktop');
   if (!on) { try { fs.unlinkSync(f); } catch {} return f; }
@@ -231,6 +272,54 @@ async function update({ force = false } = {}) {
     }
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 }
+// 0.10.0 after 0.9.2; a version with more parts after its prefix.
+function newer(a, b) {
+  const pa = String(a).split(/[.-]/).map(x => Number(x) || 0), pb = String(b).split(/[.-]/).map(x => Number(x) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+  return false;
+}
+// The commands a download adds (as install.sh writes them): bin/ scripts
+// that run the current version with its own Node, linked from ~/.local/bin.
+function writeUnixShims() {
+  const bin = path.join(INSTALL_HOME, 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  for (const [cmd, entry] of [['chattering-app', 'launcher.js'], ['chattering', 'chattering']]) {
+    const f = path.join(bin, cmd);
+    fs.writeFileSync(f, `#!/bin/sh\nexec "${INSTALL_HOME}/current/runtime/node/bin/node" "${INSTALL_HOME}/current/${entry}" "$@"\n`);
+    fs.chmodSync(f, 0o755);
+    const link = path.join(os.homedir(), '.local', 'bin', cmd);
+    try {
+      fs.mkdirSync(path.dirname(link), { recursive: true });
+      let ours = true;
+      try { ours = fs.lstatSync(link).isSymbolicLink(); } catch {}
+      if (ours) { try { fs.unlinkSync(link); } catch {} fs.symlinkSync(f, link); }
+    } catch {}
+  }
+}
+// The macOS app's first step (install/macos): its own version, unpacked by
+// the app into versions/, becomes current unless an update already put a
+// newer one there; then Chattering opens. Dragging a newer app over an
+// older one therefore updates, and an update is not undone by opening the
+// app it came from.
+async function bundleOpen() {
+  if (!INSTALL_HOME) fail('bundle-open runs from an unpacked version in the program folder');
+  let current = '';
+  try { current = fs.readFileSync(path.join(INSTALL_HOME, 'current.txt'), 'utf8').trim(); } catch {}
+  const currentDir = current && path.join(INSTALL_HOME, 'versions', current);
+  if (current && current !== VERSION && newer(current, VERSION) && fs.existsSync(path.join(currentDir, 'launcher.js'))) {
+    const next = spawn(path.join(currentDir, 'runtime', 'node', 'bin', 'node'), [path.join(currentDir, 'launcher.js'), 'open'], { stdio: 'inherit' });
+    await new Promise(res => next.on('exit', code => { process.exitCode = code || 0; res(); }));
+    return;
+  }
+  if (current !== VERSION) {
+    if (current) fs.writeFileSync(path.join(INSTALL_HOME, 'previous.txt'), current + '\n');
+    // A server from the older version is stopped first, work allowing.
+    if (await running()) await stop({ force: false });
+    setCurrent(VERSION);
+  }
+  if (!platform.IS_WIN) writeUnixShims();
+  return main(['open']);
+}
 async function rollback() {
   if (!INSTALL_HOME) fail('this Chattering is not a download');
   let prev = '';
@@ -261,6 +350,7 @@ async function main(argv) {
     if (cmd === 'autostart') { const on = rest[0] !== 'off'; say((on ? 'Chattering will start with your session: ' : 'Chattering no longer starts with your session: ') + autostart(on)); return; }
     if (cmd === 'update') return await update({ force });
     if (cmd === 'rollback') return await rollback();
+    if (cmd === 'bundle-open') return await bundleOpen();
     if (cmd === 'version' || cmd === '--version') { say('Chattering ' + VERSION + ' · Node ' + process.version + ' · Pi ' + (runtime.piVersion() || 'not found')); return; }
     if (cmd === 'help' || cmd === '--help' || cmd === '-h') { say(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 17).map(l => l.replace(/^\/\/ ?/, '')).join('\n')); return; }
     fail('unknown command "' + cmd + '" (chattering-app help)');
@@ -268,4 +358,4 @@ async function main(argv) {
 }
 
 if (require.main === module) main(process.argv.slice(2));
-module.exports = { main, assetName, start, stop, running, INSTALL_HOME };
+module.exports = { main, assetName, start, stop, running, newer, INSTALL_HOME };

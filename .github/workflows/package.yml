@@ -1,7 +1,9 @@
 # Build the Chattering download on each given system, unpack the archive
 # (not the build folder: what people get is what is tested), and run the
 # stranger test on it: a fresh home, no Node or Pi installed, start, find a
-# conversation, search, the page, the records command, stop (design/71).
+# conversation, search, the page, the records command, a model connected and
+# a first reply, stop (design/71, 73). Then the same for the installer a
+# person double-clicks (.dmg, Setup), and the first minutes photographed.
 name: package
 
 on:
@@ -43,11 +45,46 @@ jobs:
           echo "dir=$(ls -d unpacked/chattering-*)" >> "$GITHUB_OUTPUT"
       - name: The stranger test
         run: node scripts/smoke-release.js "${{ steps.unpack.outputs.dir }}"
+
+      # The installer a person double-clicks: a .dmg on macOS, a Setup on
+      # Windows (design/71); Linux installs from the archive.
+      - name: Inno Setup (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: if (-not (Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe')) { choco install innosetup -y --no-progress }
+      - name: Build the installer
+        id: installer
+        if: runner.os != 'Linux'
+        run: |
+          node scripts/build-installer.js
+          echo "file=$(node -p "require('./dist/installer-result.json').installer")" >> "$GITHUB_OUTPUT"
+      - name: The installer's stranger test
+        if: runner.os != 'Linux'
+        run: node scripts/smoke-installer.js "${{ steps.installer.outputs.file }}"
+
+      # The first minutes in this system's browser, photographed, from the
+      # download itself: kept with the run to look at.
+      - name: Chrome
+        id: chrome
+        uses: ./.github/actions/chrome
+      - name: The first minutes, photographed
+        env:
+          CHATTERING_TEST_CHROMIUM: ${{ steps.chrome.outputs.chrome-path }}
+        run: node scripts/stranger-screens.js first-minutes --app "${{ steps.unpack.outputs.dir }}"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: first-minutes-${{ matrix.runner }}
+          path: first-minutes/*.png
+          if-no-files-found: warn
+
       - uses: actions/upload-artifact@v7
         with:
           name: download-${{ matrix.runner }}
           path: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.dmg
+            dist/*.exe
             dist/*.sha256
           if-no-files-found: error

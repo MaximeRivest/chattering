@@ -1,0 +1,40 @@
+#!/bin/sh
+# Chattering.app's program (design/71). The app carries this version of
+# Chattering as one archive; the first open unpacks it beside earlier
+# versions, where the command-line install puts them (~/Library/Application
+# Support/Chattering/program/versions/<v>), then opens Chattering. Updates
+# and rollback work on that folder, the same for both ways of installing.
+# Anything that goes wrong is said in an alert, and written to
+# ~/Library/Logs/Chattering.log.
+set -u
+RES="$(cd "$(dirname "$0")/../Resources" && pwd -P)"
+V="$(cat "$RES/version.txt")"
+PROGRAM="$HOME/Library/Application Support/Chattering/program"
+DEST="$PROGRAM/versions/$V"
+LOG="$HOME/Library/Logs/Chattering.log"
+mkdir -p "$PROGRAM/versions" "$HOME/Library/Logs"
+printf '\n--- %s: Chattering %s opened\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$V" >>"$LOG"
+
+alert() {
+  /usr/bin/osascript -e 'on run argv' -e 'display alert "Chattering could not start" message (item 1 of argv) as critical' -e 'end run' "$1" >/dev/null 2>&1 || true
+}
+
+if [ ! -x "$DEST/runtime/node/bin/node" ] || [ ! -f "$DEST/launcher.js" ]; then
+  TMP="$PROGRAM/versions/.partial-$V-$$"
+  rm -rf "$TMP" && mkdir -p "$TMP"
+  if ! /usr/bin/tar -xzf "$RES/chattering.tar.gz" -C "$TMP" >>"$LOG" 2>&1; then
+    rm -rf "$TMP"
+    alert "Its program could not be unpacked into $PROGRAM. Is the disk full? Details: ~/Library/Logs/Chattering.log"
+    exit 1
+  fi
+  rm -rf "$DEST" && mv "$TMP"/chattering-* "$DEST" && rm -rf "$TMP"
+  # Unpacked from a downloaded app: this is now installed, not a download.
+  /usr/bin/xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
+fi
+
+if ! "$DEST/runtime/node/bin/node" "$DEST/launcher.js" bundle-open >>"$LOG" 2>&1; then
+  alert "$(tail -n 4 "$LOG" | sed 's/^chattering: //')
+
+Details: ~/Library/Logs/Chattering.log"
+  exit 1
+fi

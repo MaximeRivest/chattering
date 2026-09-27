@@ -4,9 +4,27 @@
 
 A place to think and to work with AI agents: every conversation with them on record, searchable and distilled into notes, project memory and epics; files, diffs, reviews and delegated work in one workspace; the same on the computer, the phone and the e-ink tablet.
 
+## Download
+
+| Your computer | |
+|---|---|
+| Mac with Apple silicon (M1 and later) | [Chattering-mac-arm64.dmg](https://github.com/MaximeRivest/chattering/releases/latest/download/Chattering-mac-arm64.dmg) |
+| Mac with an Intel processor | [Chattering-mac-x64.dmg](https://github.com/MaximeRivest/chattering/releases/latest/download/Chattering-mac-x64.dmg) |
+| Windows 10 or 11 | [Chattering-Setup-x64.exe](https://github.com/MaximeRivest/chattering/releases/latest/download/Chattering-Setup-x64.exe) (ARM: [arm64](https://github.com/MaximeRivest/chattering/releases/latest/download/Chattering-Setup-arm64.exe)) |
+| Linux | the one-line install below |
+
+Mac: open the `.dmg` and drag Chattering onto Applications. Windows: run the
+Setup. No administrator password, nothing else to install. It opens on a
+welcome that connects your AI (a Claude or ChatGPT plan, an API key, or a
+model on your own computer) and gets you to a first reply.
+
+These downloads are not yet signed, so the first open asks once. **Mac:**
+click Done, then System Settings → Privacy & Security → Open Anyway.
+**Windows:** More info → Run anyway. The one-line install below does not ask.
+
 Until 2026-09-22 this project was called *aiconvo*. Records written under that name are still read; on first start the server moves its data folders to the new name (see `legacy-homes.js`).
 
-Installed as a system app:
+On this household's Linux machines, it is installed as a system app:
 
 - The server runs as a systemd user service: `systemctl --user status chattering`.
 - A tray icon sits in the top-right panel (via `yad`). Left click opens the app in a Chromium app window (no tabs, no URL bar). Right click gives Open / Rescan / Restart / Quit. It autostarts at login (`~/.config/autostart/chattering-tray.desktop`).
@@ -14,7 +32,7 @@ Installed as a system app:
 
 Browse, search, and export all Claude Code and pi conversations on this computer.
 
-## Install (macOS, Linux, Windows)
+## Install from the command line (macOS, Linux, Windows)
 
 One download per system, with its own Node and Pi; nothing else to install,
 no administrator rights:
@@ -36,7 +54,7 @@ again, `chattering-app stop` stops it, `chattering-app update` updates it
 conversations with Claude Code and Pi are found where those tools keep them.
 Details: design/71. What works on which system: design/70. For a team or a
 company (company sign-in, walls per person, spending limits): settings →
-team, design/72.
+team, design/72. Connecting an AI: settings → AI accounts, design/73.
 
 ## Start from a checkout
 

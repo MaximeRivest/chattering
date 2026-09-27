@@ -33,6 +33,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: out
+          pattern: download-*
           merge-multiple: true
       - name: Checksums
         run: cd out && cat *.sha256 > SHA256SUMS && cat SHA256SUMS
@@ -40,5 +41,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --title "Chattering ${GITHUB_REF_NAME#v}" --generate-notes \
-            out/*.tar.gz out/*.zip out/SHA256SUMS install/install.sh install/install.ps1
+          gh release create "$GITHUB_REF_NAME" --title "Chattering ${GITHUB_REF_NAME#v}" --notes-file install/RELEASE_NOTES.md --generate-notes \
+            out/*.tar.gz out/*.zip out/*.dmg out/*.exe out/SHA256SUMS install/install.sh install/install.ps1
