@@ -232,6 +232,8 @@ test('real app surfaces follow the theme together, including nested painted edge
   assert.equal(await evaluate(`getComputedStyle(gallery.querySelector('.cr-file')).overflow`), 'visible', 'cards do not clip escaping menus');
   assert.equal(await evaluate(`getComputedStyle(gallery.querySelector('.cr-file > summary')).borderTopLeftRadius`), '5px', 'summary follows card corners');
   await size(390, 844);
+  // The phone layout follows the width change by an event: wait for it.
+  await until('phoneShellOn()');
   // On a phone the agent tray is a full-screen sheet (design/58): edge to
   // edge, so no corners to round.
   const phoneSquare = new Set(['agent tray']);

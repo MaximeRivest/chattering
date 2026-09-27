@@ -454,8 +454,7 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   await evaluate(`$('imageFit').click();$('imageReload').click()`);
   await until(`$('fileImage')?.naturalWidth===2400 && !$('fileImage').hidden`, 'reload returns to fit');
   await size(390, 844);
-  await new Promise(r => setTimeout(r, 100));
-  assert.equal(await evaluate(fits), true, 'phone fit does not overflow');
+  await until(fits, 'phone fit does not overflow');
   assert.equal(await evaluate(`document.documentElement.scrollWidth<=innerWidth`), true, 'no horizontal page overflow');
   await evaluate('window.beforeReloadMark = true'); // the old page matches until it is gone
   await send('Page.reload', {}, sid);
