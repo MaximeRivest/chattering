@@ -66,7 +66,7 @@ function install(cp = require('child_process')) {
   };
   for (const name of ['spawn', 'spawnSync', 'execFile', 'execFileSync', 'fork']) wrap(name, true);
   for (const name of ['exec', 'execSync']) wrap(name, false);
-  cp[PATCHED] = true;
+  Object.defineProperty(cp, PATCHED, { value: true }); // not enumerable: a copy of the module is not marked
   // `import { spawn } from 'node:child_process'` (Pi is ES modules) reads
   // the built-in's ESM bindings: bring them in line with the patched ones.
   require('module').syncBuiltinESMExports();

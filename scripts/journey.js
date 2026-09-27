@@ -61,9 +61,13 @@ async function firstConversation({ base, token, home, step = () => {} }) {
     assert.ok(model.requests.some(r => /tomatoes go/.test(JSON.stringify(r.body || ''))), 'the message reached the model');
     step('a first conversation got its reply');
     // An agent at work: a command through its bash tool.
-    await call('/api/conversation/start-loose', { prompt: 'Run the check.', draftId: 'strangerdraft02' });
-    for (let i = 0; i < 300 && !fs.existsSync(mark); i++) await new Promise(r => setTimeout(r, 200));
-    assert.ok(fs.existsSync(mark), 'the agent ran a command with its bash tool');
+    const agent = await call('/api/conversation/start-loose', { prompt: 'Run the check.', draftId: 'strangerdraft02' });
+    const transcript = () => { let t = ''; try { for (const f of fs.readdirSync(sessions, { recursive: true })) if (String(f).endsWith('.jsonl')) { const x = fs.readFileSync(path.join(sessions, String(f)), 'utf8'); if (/Run the check/.test(x)) t = x; } } catch {} return t; };
+    // Its turn is over when its last reply is saved (then nothing is running).
+    for (let i = 0; i < 450 && !/The check ran/.test(transcript()); i++) await new Promise(r => setTimeout(r, 200));
+    const why = () => '\n--- the agent’s conversation ' + agent.key + '\n' + transcript().slice(-3000) + '\n--- asked of the model: ' + model.requests.map(r => (r.body && r.body.messages || []).map(m => m.role).join(',')).join(' | ');
+    assert.ok(fs.existsSync(mark), 'the agent ran a command with its bash tool' + why());
+    assert.match(transcript(), /The check ran/, 'the agent finished its turn' + why());
     if (process.platform === 'win32') {
       for (let i = 0; i < 300 && !fs.existsSync(seen); i++) await new Promise(r => setTimeout(r, 200));
       assert.equal(fs.readFileSync(seen, 'utf8').trim(), 'False', 'the agent’s command opened no window');

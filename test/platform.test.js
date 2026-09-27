@@ -48,7 +48,8 @@ test('Pi: found, started as node + its cli.js, sessions named as Pi names them',
   const found = R.locatePi({ fresh: true });
   if (!found) return; // no Pi here: the tests needing it say so themselves
   const cmd = R.piCommand(['--version']);
-  assert.ok(fs.existsSync(cmd.args[0]) && /cli\.js$/.test(cmd.args[0]), 'Pi\'s own entry, not a shim');
+  const entry = cmd.args[R.piNodeArgs().length]; // after node's own (--require win-hide on Windows)
+  assert.ok(fs.existsSync(entry) && /cli\.js$/.test(entry), 'Pi\'s own entry, not a shim');
   // Pi's own rule, on this system's paths.
   if (process.platform === 'win32') assert.equal(R.piSessionDirName('C:\\Users\\x\\p'), '--C--Users-x-p--');
   else assert.equal(R.piSessionDirName('/home/x/Projects/p'), '--home-x-Projects-p--');

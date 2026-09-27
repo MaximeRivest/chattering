@@ -259,7 +259,8 @@ test('pause blocks descendants; resume does not undo durable subtree cancellatio
   const childSpec = { ...f.spec, parentSessionPath: nested.sessionPath, parentEntryId: 'mode1', delivery: 'none', prompt: 'wait' };
   await D.controlDelegation(parent.id, 'pause', f.options);
   assert.equal((await D.getDelegation(nested.id, f.options)).paused, true);
-  assert.equal((await D.getDelegation(parent.id, f.options)).status, 'running');
+  // Paused is not stopped: the parent keeps running (once its supervisor has recorded the start).
+  await until(async () => (await D.getDelegation(parent.id, f.options)).status === 'running', 8000, () => account(f.root, parent.id));
   await assert.rejects(D.launchDelegation(childSpec, f.options), /paused/);
   await D.controlDelegation(parent.id, 'resume', f.options);
   const grandchild = await D.launchDelegation(childSpec, f.options);

@@ -53,7 +53,9 @@ test('patched, every way of starting a program still works, promisified included
 // console has a window with the visible style (GetConsoleWindow,
 // IsWindowVisible). A process with no console, or a hidden one, writes false.
 const win = process.platform === 'win32';
-const PROBE = `Add-Type -Namespace W -Name K -MemberDefinition '[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr h);'; $h = [W.K]::GetConsoleWindow(); Set-Content -Path $env:PROBE_OUT -Value ([bool]($h -ne [System.IntPtr]::Zero -and [W.K]::IsWindowVisible($h)))`;
+const PROBE = `Add-Type -Namespace W -Name K -MemberDefinition '[DllImport("kernel32.dll")] public static extern System.IntPtr GetConsoleWindow(); [DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr h);'
+$h = [W.K]::GetConsoleWindow()
+Set-Content -Path $env:PROBE_OUT -Value ([bool]($h -ne [System.IntPtr]::Zero -and [W.K]::IsWindowVisible($h)))`;
 const powershell = win ? path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : '';
 // Run `code` in a Node started the way Chattering's server is (detached: no
 // console), with or without win-hide, and read what each probe it starts saw.
@@ -62,9 +64,10 @@ async function fromConsoleless(code, { hide }, t) {
   t.after(() => require('./helpers/cleanup.js').stopAndRemove(null, dir));
   const script = path.join(dir, 'parent.' + (code.includes('import ') ? 'mjs' : 'cjs'));
   fs.writeFileSync(script, code);
+  fs.writeFileSync(path.join(dir, 'probe.ps1'), PROBE);
   const child = spawn(process.execPath, [...(hide ? ['--require', require.resolve('../win-hide.js')] : []), script], {
     detached: true, windowsHide: true, stdio: 'ignore',
-    env: { ...process.env, PROBE_DIR: dir, PROBE_PS: powershell, PROBE_CMD: PROBE, CHATTERING_WIN_HIDE: hide ? '1' : '0' },
+    env: { ...process.env, PROBE_DIR: dir, PROBE_PS: powershell, CHATTERING_WIN_HIDE: hide ? '1' : '0' },
   });
   await new Promise(res => child.on('exit', res));
   const out = {};
@@ -75,14 +78,14 @@ async function fromConsoleless(code, { hide }, t) {
 const STARTS = `
 const cp = require('node:child_process'), path = require('node:path');
 const run = (name, f) => { const env = { ...process.env, PROBE_OUT: path.join(process.env.PROBE_DIR, name + '.out') }; return f(env); };
-const args = ['-NoProfile', '-NonInteractive', '-Command', process.env.PROBE_CMD];
+const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(process.env.PROBE_DIR, 'probe.ps1')];
 (async () => {
   run('spawnSync', env => cp.spawnSync(process.env.PROBE_PS, args, { env }));
   run('execFileSync', env => { try { cp.execFileSync(process.env.PROBE_PS, args, { env }); } catch {} });
   await run('spawn', env => new Promise(r => cp.spawn(process.env.PROBE_PS, args, { env, stdio: 'ignore' }).on('exit', r)));
   await run('execFile', env => new Promise(r => cp.execFile(process.env.PROBE_PS, args, { env }, () => r())));
   // A grandchild: started by the hidden child, as bash starts git.
-  await run('grandchild', env => new Promise(r => cp.spawn('cmd.exe', ['/d', '/c', 'call', process.env.PROBE_PS, ...args.slice(0, 3), '"' + process.env.PROBE_CMD.replace(/"/g, '\\\\"') + '"'], { env, stdio: 'ignore' }).on('exit', r)));
+  await run('grandchild', env => new Promise(r => cp.spawn('cmd.exe', ['/d /s /c "' + ['"' + process.env.PROBE_PS + '"', ...args.slice(0, 5), '"' + args[5] + '"'].join(' ') + '"'], { env, stdio: 'ignore', windowsVerbatimArguments: true }).on('exit', r)));
 })();`;
 
 test('Windows: without win-hide a console-less process pops windows (the probe can see them)', { skip: !win && 'Windows only', timeout: 180000 }, async t => {
@@ -98,7 +101,7 @@ test('Windows: with win-hide nothing started opens a window, grandchildren inclu
 test('Windows: an ES module importing child_process (as Pi does) is covered too', { skip: !win && 'Windows only', timeout: 120000 }, async t => {
   const seen = await fromConsoleless(`import { spawnSync } from 'node:child_process';
 import path from 'node:path';
-spawnSync(process.env.PROBE_PS, ['-NoProfile', '-NonInteractive', '-Command', process.env.PROBE_CMD], { env: { ...process.env, PROBE_OUT: path.join(process.env.PROBE_DIR, 'esm.out') } });`, { hide: true }, t);
+spawnSync(process.env.PROBE_PS, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(process.env.PROBE_DIR, 'probe.ps1')], { env: { ...process.env, PROBE_OUT: path.join(process.env.PROBE_DIR, 'esm.out') } });`, { hide: true }, t);
   assert.deepEqual(seen, { esm: 'False' });
 });
 
