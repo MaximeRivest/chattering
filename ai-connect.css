@@ -83,6 +83,8 @@
 .wel-kind input { margin-top: 4px; }
 .wel-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
 .wel-actions button { min-height: 38px; }
+.wel-skip { margin: 18px 0 0; text-align: end; }
+.wel-skip button { color: var(--text-dim); }
 .wel-examples { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 .wel-examples button { border-radius: var(--r-pill, 999px); font-size: 13px; color: var(--text-dim); }
 .wel-found { margin: 0 0 20px; padding: 12px 14px; border: 1px solid var(--border-strong); border-radius: var(--r-dialog, var(--r)); background: var(--surface-1); font-size: 14px; }

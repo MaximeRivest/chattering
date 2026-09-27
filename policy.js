@@ -37,6 +37,7 @@ const ROUTES = {
   'PUT /api/settings': 'owner',
   'POST /api/settings': 'owner',
   '/api/settings/background-ai': 'owner',
+  '/api/settings/welcome': 'owner',
   'GET /api/users': 'guest',
   'POST /api/users/*': 'guest', // a person edits their own profile; roster changes are checked in the handler
   '/api/users/avatar': 'guest',

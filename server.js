@@ -16805,6 +16805,18 @@ async function handleRequest(req, res) {
       // Newly allowed memory: the next sweep reads what changed meanwhile.
       if (next.names && !(before.decidedAt && before.names)) scheduleTimelineTitles(1000);
       json(res, 200, settingsResponse(identity));
+    } else if (u.pathname === '/api/settings/welcome' && req.method === 'POST') {
+      // The welcome was done ({done: true}), or is wanted again ({done: false},
+      // "Show the welcome again" in Settings → AI accounts). One per install.
+      if (!usersLib.canManageUsers(identity)) return json(res, 403, { error: 'only the owner or an admin sees the welcome' });
+      let body = '';
+      for await (const chunk of req) { body += chunk; if (body.length > 1024) return json(res, 413, { error: 'too large' }); }
+      let p;
+      try { p = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
+      if (typeof p.done !== 'boolean') return json(res, 400, { error: 'done must be true or false' });
+      appSettings = settingsLib.normalizeSettings({ ...appSettings, welcome: { doneAt: p.done ? new Date().toISOString() : null } });
+      saveAppSettings();
+      json(res, 200, settingsResponse(identity));
     } else if (u.pathname === '/api/machines/connect' && req.method === 'POST') {
       if (!usersLib.canManageUsers(identity)) return json(res, 403, { error: 'only the owner or an admin can connect machines' });
       let body = '';

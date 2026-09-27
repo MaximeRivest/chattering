@@ -1,16 +1,23 @@
-/* welcome.js — a new person's first minutes (design/73).
+/* welcome.js — a new person's first minutes (design/73, design/75).
  *
- * Home, before there is anything to show, is three steps: connect an AI
- * (ai-connect.js), decide what may run in the background (the first-run
- * question, asked here once a model exists to run it), and start a
- * conversation. A home that already has conversations but no AI gets one
- * line above them instead: they can be read now, continued once connected.
+ * The welcome is three steps: connect an AI (ai-connect.js), decide what may
+ * run in the background (the first-run question, asked here once a model
+ * exists to run it), and start. It takes home's place on an install's first
+ * open, whether or not conversations already exist: someone arriving with
+ * Pi or Claude Code history is welcomed too, and told it was found. Settings
+ * remember when it was done (settings.welcome); Settings → AI accounts, or
+ * ?welcome in the address, shows it again. A home that is simply empty is
+ * always the welcome. A home with conversations but no AI, after the
+ * welcome, gets one line above them: they can be read now, continued once
+ * connected.
  */
 (function () {
   'use strict';
   const W = window.Welcome = {};
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  let host = null, banner = null, sig = '', changingAi = false;
+  let host = null, banner = null, sig = '', changingAi = false, history = 0;
+  // ?welcome in the address shows it for this visit without changing what is saved.
+  let forced = /(?:^|[?&])welcome(?:[=&]|$)/.test(location.search.slice(1));
 
   // settingsState is the page's (a script-level let, not a window property).
   const settings = () => (typeof settingsState !== 'undefined' ? settingsState : null);
@@ -18,13 +25,41 @@
   const bg = () => (settings() && settings().settings && settings().settings.backgroundAi) || {};
   const aiKnown = () => !!(window.AiConnect && AiConnect.summary);
   const aiReady = () => aiKnown() ? AiConnect.ready() : false;
+  const welcomeState = () => (settings() && settings().settings && settings().settings.welcome) || null;
+  const done = () => !!(welcomeState() && welcomeState().doneAt);
 
-  // Home's list is empty: the welcome takes its place.
-  W.paint = function paint(list) {
+  // Should home be the welcome although it has conversations? The owner's
+  // first open (until done), or asked for. Unknown settings: not yet. A
+  // server without the setting (older than design/75) never had it pending.
+  W.wanted = () => forced || (owner() && !!welcomeState() && !done());
+  // The welcome was done: remembered for the install, and home is home again.
+  W.finish = async function finish() {
+    forced = false;
+    if (owner() && !done()) {
+      const out = await postJson('/api/settings/welcome', { done: true });
+      if (out && !out.error) settingsState = out;
+    }
+    if (typeof render === 'function') render();
+  };
+  // Show it again (Settings → AI accounts).
+  W.replay = async function replay() {
+    forced = true;
+    if (owner()) {
+      const out = await postJson('/api/settings/welcome', { done: false });
+      if (out && !out.error) settingsState = out;
+    }
+    sig = '';
+    if (typeof goHome === 'function') goHome(); else if (typeof render === 'function') render();
+  };
+
+  // The welcome takes home's place. found: how many conversations home has
+  // (a repaint without it keeps the last count).
+  W.paint = function paint(list, opts = {}) {
     host = list;
+    if (Number.isFinite(opts.found)) history = opts.found;
     if (owner() && !aiKnown() && window.AiConnect && !AiConnect.asked) AiConnect.refresh().catch(() => {});
     const d = aiKnown() ? AiConnect.summary.default || {} : {};
-    const next = JSON.stringify([owner(), aiKnown(), aiReady(), d.provider, d.model, !!bg().decidedAt, changingAi]);
+    const next = JSON.stringify([owner(), aiKnown(), aiReady(), d.provider, d.model, !!bg().decidedAt, changingAi, history]);
     if (next === sig && list.querySelector('.wel')) return;
     sig = next;
     list.innerHTML = html();
@@ -55,13 +90,24 @@
         <label class="wel-kind"><input type="checkbox" data-wel-kind="memory"><span><b>Project memory</b><small>After a conversation changes and goes quiet for 10 minutes, the AI re-reads it to keep that project’s notes current. Much more text.</small></span></label>
         <div class="wel-actions"><button type="button" class="primary" data-wel-helpers>Save</button><button type="button" class="ghost" data-wel-helpers-off>Keep both off</button></div>`);
     const canStart = ready && (!owner() || decided);
-    const three = step(owner() ? 3 : 2, canStart ? 'now' : 'later', 'Start a conversation', canStart
-      ? `<p>Ask anything. The AI can read and write files in the folder you choose, and every conversation stays searchable here.</p>
-        <div class="wel-actions"><button type="button" class="primary" data-wel-start>New conversation</button><button type="button" data-wel-project>Work in a folder…</button></div>
-        <div class="wel-examples">${EXAMPLES.map(x => `<button type="button" data-wel-example="${esc(x)}">${esc(x)}</button>`).join('')}</div>`
-      : '<p>Then: your first conversation.</p>');
+    const n = history, many = n === 1 ? 'conversation' : 'conversations';
+    const three = n
+      ? step(owner() ? 3 : 2, canStart ? 'now' : 'later', 'Your conversations', canStart
+        ? `<p>Every one is here: searchable, and you can pick any of them up where it stopped.</p>
+          <div class="wel-actions"><button type="button" class="primary" data-wel-home>See my ${esc(many)}</button><button type="button" data-wel-start>New conversation</button></div>`
+        : `<p>Then: your ${esc(many)}, ready to pick up.</p>`)
+      : step(owner() ? 3 : 2, canStart ? 'now' : 'later', 'Start a conversation', canStart
+        ? `<p>Ask anything. The AI can read and write files in the folder you choose, and every conversation stays searchable here.</p>
+          <div class="wel-actions"><button type="button" class="primary" data-wel-start>New conversation</button><button type="button" data-wel-project>Work in a folder…</button></div>
+          <div class="wel-examples">${EXAMPLES.map(x => `<button type="button" data-wel-example="${esc(x)}">${esc(x)}</button>`).join('')}</div>`
+        : '<p>Then: your first conversation.</p>');
+    const lead = n
+      ? `Chattering found <b>${n.toLocaleString()}</b> ${esc(many)} already on this computer, from Pi and Claude Code. Connect your AI and they are yours to continue, next to new ones.`
+      : 'Conversations with AI that work on your files, all kept and searchable in one place.';
+    // With conversations to go back to, the welcome can be left at any step.
+    const skip = n ? `<p class="wel-skip"><button type="button" class="ghost" data-wel-skip>Skip the welcome</button></p>` : '';
     return `<div class="wel" role="region" aria-labelledby="welTitle"><h1 id="welTitle">Welcome to Chattering</h1>
-      <p class="wel-lead">Conversations with AI that work on your files, all kept and searchable in one place.</p>${one}${two}${three}</div>`;
+      <p class="wel-lead">${lead}</p>${one}${two}${three}${skip}</div>`;
   }
   const EXAMPLES = ['Help me plan this week', 'Explain a file I will attach', 'Make a small website in a new folder'];
   function helpersSummary() {
@@ -89,11 +135,14 @@
     const helpers = root.querySelector('[data-wel-helpers]'); if (helpers) helpers.onclick = () => save(false);
     const off = root.querySelector('[data-wel-helpers-off]'); if (off) off.onclick = () => save(true);
     const start = root.querySelector('[data-wel-start]'); if (start) start.onclick = () => startWith('');
-    const project = root.querySelector('[data-wel-project]'); if (project) project.onclick = () => typeof openNewProjectForm === 'function' && openNewProjectForm();
+    const home = root.querySelector('[data-wel-home]'); if (home) home.onclick = () => W.finish();
+    const skip = root.querySelector('[data-wel-skip]'); if (skip) skip.onclick = () => W.finish();
+    const project = root.querySelector('[data-wel-project]'); if (project) project.onclick = () => { W.finish(); if (typeof openNewProjectForm === 'function') openNewProjectForm(); };
     root.querySelectorAll('[data-wel-example]').forEach(b => b.onclick = () => startWith(b.dataset.welExample));
   }
   // A new conversation, its box focused, with an example already written.
   function startWith(text) {
+    W.finish();
     if (typeof startNewConversation === 'function') startNewConversation();
     const put = (tries = 0) => {
       const ta = document.getElementById('agentText');

@@ -719,6 +719,14 @@ body:not(.home) #left, body:not(.home) #ganttResize { display: none !important; 
 .tday.major line { stroke: var(--border-strong); stroke-dasharray: none; }
 .tday text, .tnow text { fill: var(--text-faint); font: 10px var(--font); }
 .tnow line { stroke: var(--live); stroke-width: 1; }
+/* Quiet time drawn narrower than to scale (timeline-chart.js): a faint band,
+   a zigzag seam, and how long it lasted in the date strip. */
+.tbreak rect { fill: color-mix(in srgb, var(--text) 4%, transparent); }
+.tbreak path { fill: none; stroke: var(--border-strong); stroke-width: 1; }
+.tbreak text { fill: var(--text-faint); font: 10px var(--font); }
+.tbreak { pointer-events: auto; }
+:root[data-theme-mode="binary"] .tbreak rect { fill: none; }
+:root[data-theme-mode="binary"] .tbreak path { stroke: var(--text); }
 .tmark { cursor: pointer; }
 .tmark .duration { stroke-width: 1.5; opacity: .8; }
 .tmark .violin { stroke-width: 1; opacity: .9; }
@@ -5373,16 +5381,20 @@ function mobileConversationCard(s) {
       <div class="snip">${esc(shortDir(s.cwd || ''))}</div></div></div>`;
 }
 
-// A home with nothing in it yet is the welcome (welcome.js): connect an AI,
-// decide the background helpers, start. A home with conversations but no
-// AI gets one line above them. True when the welcome took the list.
+// Home is the welcome (welcome.js: connect an AI, decide the background
+// helpers, start) while it has nothing in it, and on an install's first open
+// even when it does: someone arriving with Pi or Claude Code history is
+// welcomed and told it was found (design/75). After that, a home with
+// conversations but no AI gets one line above them. True when the welcome
+// took the list.
 function homeWelcome(list) {
   if (viewKind !== 'home' || !window.Welcome) return false;
+  const found = sessions.filter(s => s.key).length;
   // After the timeline is drawn (this render is synchronous).
-  if (sessions.some(s => s.key)) { queueMicrotask(() => Welcome.banner(list)); return false; }
+  if (found && !Welcome.wanted()) { queueMicrotask(() => Welcome.banner(list)); return false; }
   disposeHomeTimeline();
   Welcome.banner(list);
-  Welcome.paint(list);
+  Welcome.paint(list, { found });
   $('projSort').hidden = true;
   return true;
 }
@@ -5520,6 +5532,25 @@ function renderTimeline() {
 // camera and the repaint loop, so nothing here runs during a zoom or a pan.
 // A new chart opens at "now"; while it lives, data updates keep the view.
 let homeTimeline = null;
+// Quiet stretches this long collapse into a break once they would be wider
+// than one (design/75): old history and today fit on one screen.
+const QUIET_GAP_MS = 3 * DAY_MS;
+// Where a freshly opened chart begins: the last ten conversations or the
+// last three days of activity, whichever is shorter, and at least two
+// hours. Quiet weeks do not count as days (they are drawn as breaks), and
+// long conversations count from their last day, so one that started a
+// month ago does not stretch the view back to its start.
+function recentFocusStart(rows, now) {
+  if (!rows.length) return now - 2 * 3600e3;
+  const recent = rows.slice().sort((a, b) => b.end - a.end).slice(0, 10);
+  const latest = recent[0].end;
+  const gaps = TimelineChart.findGaps(rows, now, QUIET_GAP_MS);
+  let from = Math.min(...recent.map(row => Math.max(row.start, row.end - DAY_MS)));
+  from = Math.max(from, TimelineChart.activeSince(gaps, latest, 3 * DAY_MS));
+  from = Math.min(from, latest - 2 * 3600e3);
+  // A little room before the first mark: 4% of the active time shown.
+  return TimelineChart.activeSince(gaps, from, (latest - from - gaps.reduce((q, g) => q + Math.max(0, Math.min(g.end, latest) - Math.max(g.start, from)), 0)) * 0.04);
+}
 function disposeHomeTimeline() {
   homeTimeline?.destroy();
   homeTimeline = null;
@@ -5537,6 +5568,12 @@ const SELECTION_HATCH = '<pattern id="selHatch" width="5" height="5" patternUnit
 function paintHomeTimeline(rows, layout, marks) {
   const list = $('list');
   if (homeTimeline && !homeTimeline.surface.isConnected) disposeHomeTimeline(); // another view took the list
+  // A chart that just opened looks at recent work. Someone who has never
+  // zoomed gets it framed; a chosen zoom is kept unless it would show
+  // nothing but quiet time (the last activity is older than its view).
+  const opening = !homeTimeline;
+  let zoomChosen = false;
+  try { zoomChosen = !!(localStorage.getItem('chattering.ganttZoom') || localStorage.getItem('chattering.ganttScale')); } catch {}
   if (!homeTimeline) homeTimeline = new TimelineChart({
     scroller: list, scale: PX_DAY_BASE * ganttZoom,
     minScale: PX_DAY_BASE * ZOOM_MIN, maxScale: PX_DAY_BASE * ZOOM_MAX,
@@ -5560,7 +5597,8 @@ function paintHomeTimeline(rows, layout, marks) {
       y: LABEL_H + row.baseLane * PROJECT_LANE_H, height: row.laneCount * PROJECT_LANE_H,
     })),
     defs: SELECTION_HATCH,
-  });
+    collapseGapsMs: QUIET_GAP_MS,
+  }, opening && rows.length ? { focus: { from: recentFocusStart(rows, now), ifEmpty: zoomChosen } } : {});
 }
 
 let timelineResizeTimer;
@@ -8004,7 +8042,6 @@ function miniGanttHtml(rows, color) {
 let mgUI = { key: null, expanded: false, query: '', scale: null, center: null, top: 0 };
 let mgLive = null; // { host, items, color, chart } — the mounted masthead; chart only while open
 const MG_LANE_H = 44;
-const MG_INITIAL_SPAN_MS = 7 * DAY_MS; // the first open shows about a week, ending now
 
 function mgDestroyChart() {
   mgLive?.chart?.destroy();
@@ -8145,10 +8182,16 @@ function mgPaintOpen(host, items, color) {
     onChange: state => { mgUI.scale = state.scale; mgUI.center = state.center; mgUI.top = state.top; },
   });
   const chart = mgLive.chart;
+  const end = Math.max(Date.now(), ...items.map(it => it.b));
+  // First opened: framed on the project's recent work (the home chart's
+  // rule), with its quiet months collapsed, so a project last touched in
+  // spring does not open on an empty week. Reopened: where it was left.
   chart.setData({
-    start: items[0].a, end: Math.max(Date.now(), ...items.map(it => it.b)),
-    height: LABEL_H + laneCount * MG_LANE_H + 10, marks,
-  }, firstMount ? { fit: mgUI.scale == null ? MG_INITIAL_SPAN_MS : undefined, center: mgUI.center, top: mgUI.top } : {});
+    start: items[0].a, end,
+    height: LABEL_H + laneCount * MG_LANE_H + 10, marks, collapseGapsMs: QUIET_GAP_MS,
+  }, firstMount ? mgUI.scale == null
+    ? { focus: { from: recentFocusStart(items.map(it => ({ start: it.a, end: it.b })), end) }, top: mgUI.top }
+    : { center: mgUI.center, top: mgUI.top } : {});
   host.onkeydown = e => {
     if (e.target.matches('input')) return;
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); mgCollapseOpen(); return; }
@@ -15651,11 +15694,14 @@ function paneAi() {
   if (settingsState && settingsState.canEditSettings === false) return `<h2>AI accounts</h2><p class="hint">The owner of this computer connects the AI everyone here uses.</p>`;
   return `<h2>AI accounts</h2>
     <p class="hint">Which AI Chattering talks to on this computer: a plan you already pay for, a key, or a model you run yourself. New conversations use the model chosen here; each conversation can pick another.</p>
-    <div id="aiAccountsHost"></div>`;
+    <div id="aiAccountsHost"></div>
+    <p class="hint">New here, or showing Chattering to someone? <button type="button" class="ghost" id="replayWelcome">Show the welcome again</button></p>`;
 }
 function bindPaneAi(root) {
   const host = root.querySelector('#aiAccountsHost');
   if (host && window.AiConnect) { AiConnect.mount(host); AiConnect.refresh().catch(() => {}); }
+  const replay = root.querySelector('#replayWelcome');
+  if (replay && window.Welcome) replay.onclick = () => Welcome.replay();
 }
 
 function paneModel() {
@@ -16186,6 +16232,8 @@ async function loadSettings() {
   renderMachineBtn();
   applyCapabilities();
   if (settingsOpen) renderSettings();
+  // An install's first open: the welcome takes home once settings say so.
+  if (window.Welcome && Welcome.wanted() && viewKind === 'home') render();
   maybeAskBackgroundAi();
 }
 

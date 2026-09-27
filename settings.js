@@ -29,7 +29,13 @@ const DONE_SOUND_MODES = ['off', 'chime', 'title', 'summary', 'voice'];
 // that needs a server, and no model call it was not asked for
 // (backgroundAi). An install that predates version 2 is migrated with the
 // values it was already using (LEGACY_DEFAULTS), so nothing changes for it.
-const SETTINGS_VERSION = 2;
+//
+// Version 3 (2026-09-27, design/75): the welcome is shown once per install,
+// on its first open, whether or not conversations already exist; `welcome`
+// remembers it was done. An install that ran before this version has had
+// its first open, so it is migrated as done and nothing appears on update.
+const SETTINGS_VERSION = 3;
+const WELCOME_UNDONE = { doneAt: null };
 
 // Background AI work: model calls Chattering makes without being asked in
 // that moment. Nothing runs until the owner has decided (decidedAt).
@@ -64,6 +70,7 @@ const DEFAULT_SETTINGS = {
   voiceModelUrl: '',
   voiceModel: '',
   backgroundAi: { ...BACKGROUND_AI_UNDECIDED },
+  welcome: { ...WELCOME_UNDONE },
   // Engine for web sends: 'sdk' embeds pi in-process (fast forks, full
   // extension UI); 'rpc' spawns pi child processes (isolation fallback).
   piEngine: 'sdk',
@@ -147,8 +154,12 @@ const LEGACY_DEFAULTS = {
 // install gets the neutral defaults and is asked. Pure: the caller writes.
 function migrateSettings(raw, { priorInstall = false } = {}) {
   const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? { ...raw } : {};
-  if (Number(src.settingsVersion) >= SETTINGS_VERSION) return { settings: src, migrated: false };
-  if (priorInstall) {
+  const version = Number(src.settingsVersion) || 0;
+  if (version >= SETTINGS_VERSION) return { settings: src, migrated: false };
+  // Version 3: a file at version 2 was written by a run of Chattering, and
+  // an older one counts when the machine ran before. Either had its first open.
+  if (version === 2 || priorInstall) src.welcome = { doneAt: 'before-welcome' };
+  if (version < 2 && priorInstall) {
     // Mirror the old normalizer exactly: only `usePiDefault === true` meant
     // Pi's default, and an empty provider, model or URL meant the default.
     if (src.usePiDefault !== true) {
@@ -169,6 +180,11 @@ function migrateSettings(raw, { priorInstall = false } = {}) {
   }
   src.settingsVersion = SETTINGS_VERSION;
   return { settings: src, migrated: true };
+}
+
+function normalizeWelcome(raw) {
+  const doneAt = raw && typeof raw.doneAt === 'string' && raw.doneAt.trim() ? raw.doneAt.trim().slice(0, 40) : null;
+  return { doneAt };
 }
 
 function normalizeBackgroundAi(raw) {
@@ -376,6 +392,7 @@ function normalizeSettings(input) {
   const ttsVoice = VOICE_NAME.test(String(src.ttsVoice || '').trim()) ? String(src.ttsVoice).trim() : '';
   const voiceModel = MODEL_NAME.test(String(src.voiceModel || '').trim()) ? String(src.voiceModel).trim() : '';
   const backgroundAi = normalizeBackgroundAi(src.backgroundAi);
+  const welcome = normalizeWelcome(src.welcome);
   const semanticNs = String(src.semanticNs || DEFAULT_SETTINGS.semanticNs).trim().replace(/[^\w.-]+/g, '-') || 'default';
   const piEngine = src.piEngine === 'rpc' ? 'rpc' : 'sdk';
   const artifactNetwork = src.artifactNetwork === 'libraries' ? 'libraries' : 'open';
@@ -415,6 +432,7 @@ function normalizeSettings(input) {
     voiceModelUrl,
     voiceModel,
     backgroundAi,
+    welcome,
     piEngine,
     artifactNetwork,
     previewBase,
@@ -508,6 +526,7 @@ module.exports = {
   BACKGROUND_AI_KINDS,
   migrateSettings,
   normalizeBackgroundAi,
+  normalizeWelcome,
   settingsInputError,
   hasClaudeCodeCredential,
   parseTokenCount,

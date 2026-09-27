@@ -5,6 +5,7 @@ const vm = require('node:vm');
 const TimelineChart = require('../timeline-chart.js');
 const html = fs.readFileSync(require('node:path').join(__dirname, '../app.html'), 'utf8');
 const source = html.slice(html.indexOf('function mgPaintOpen('), html.indexOf('// The open hero reuses'));
+const focusSource = html.slice(html.indexOf('const QUIET_GAP_MS'), html.indexOf('function disposeHomeTimeline('));
 
 const DAY = 86400000;
 
@@ -25,23 +26,30 @@ function render(query = '', { scale = null } = {}) {
     host, items, sessions: items,
     mgUI: { key: null, expanded: true, query, scale, center: null, top: 0 },
     mgLive: { host, items, color: null, chart: null },
-    LABEL_H: TimelineChart.HEADER_HEIGHT, PX_DAY_BASE: 160, MG_LANE_H: 44, MG_INITIAL_SPAN_MS: 7 * DAY,
+    LABEL_H: TimelineChart.HEADER_HEIGHT, PX_DAY_BASE: 160, MG_LANE_H: 44, DAY_MS: DAY,
     matchMedia: () => ({ matches: false }), Date, Map, Math, esc: x => String(x), isActive: () => false,
     mgTip: () => '', hideMarkPop() {}, mgCollapseOpen() {},
     TimelineChart: class {
       static packLanes = TimelineChart.packLanes;
+      static findGaps = TimelineChart.findGaps;
+      static activeSince = TimelineChart.activeSince;
       constructor(options) { mounts++; chart.construction = options; return chart; }
     },
   };
   vm.createContext(context);
-  vm.runInContext(source + '\nmgPaintOpen(host, items, {stroke:"black",fill:"black"});', context);
+  vm.runInContext(focusSource + source + '\nmgPaintOpen(host, items, {stroke:"black",fill:"black"});', context);
   return { host, context, chart, mounts: () => mounts };
 }
 
-test('expanded project timeline uses readable titles and first opens on about a week', () => {
-  const { host, chart } = render();
+test('expanded project timeline uses readable titles and first opens on its recent work', () => {
+  const { host, chart, context } = render();
   assert.equal(chart.construction.fitMinimum, true);
-  assert.equal(chart.options.fit, 7 * DAY);
+  assert.equal(chart.options.fit, undefined);
+  // The only conversation ended 29 days ago: the view frames it (its last
+  // day, with a little room), and the month since then is quiet time.
+  const item = context.items[0];
+  assert.ok(chart.options.focus.from < item.b - 2 * 3600e3 && chart.options.focus.from >= item.a - DAY, 'framed on the conversation');
+  assert.equal(chart.data.collapseGapsMs, 3 * DAY);
   assert.equal(chart.data.marks.length, 1);
   assert.match(chart.data.marks[0].label, /Long useful conversation title abou/);
   assert.doesNotMatch(host.innerHTML, /max-height:/);

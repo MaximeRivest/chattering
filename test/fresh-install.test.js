@@ -78,8 +78,9 @@ const modelCalls = pi => pi.calls().filter(l => /--mode json/.test(l));
 test('a new install is neutral, asks before any background model call, and starts only what was allowed', async t => {
   const s = await boot(t, { prepare: seedClaudeConversation });
   const saved = s.savedSettings();
-  assert.equal(saved.settingsVersion, 2, 'the version is written at first start, so the next start is not mistaken for an old install');
+  assert.equal(saved.settingsVersion, require('../settings.js').SETTINGS_VERSION, 'the version is written at first start, so the next start is not mistaken for an old install');
   assert.deepEqual(saved.backgroundAi, { decidedAt: null, names: false, memory: false });
+  assert.deepEqual(saved.welcome, { doneAt: null }, 'the welcome waits for the first open, although a conversation was found');
   for (const k of ['semanticUrl', 'speechUrl', 'ttsUrl', 'voiceModelUrl']) assert.equal(saved[k], '', k + ' starts empty');
   assert.equal(saved.doneSound, 'chime');
   assert.equal(saved.usePiDefault, true);
@@ -125,7 +126,8 @@ test('an install that ran before keeps the values it already used, and backgroun
     fs.writeFileSync(path.join(cache, 'index.json'), '{}');
   } });
   const saved = s.savedSettings();
-  assert.equal(saved.settingsVersion, 2);
+  assert.equal(saved.settingsVersion, require('../settings.js').SETTINGS_VERSION);
+  assert.equal(saved.welcome.doneAt, 'before-welcome', 'an update shows no welcome');
   assert.equal(saved.provider, 'openai-codex');
   assert.equal(saved.doneSound, 'voice');
   assert.match(saved.speechUrl, /^http:\/\/100\.86\.49\.54:8078$/);

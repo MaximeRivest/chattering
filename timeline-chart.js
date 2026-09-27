@@ -27,6 +27,7 @@
   const LABEL_CHAR_PX = 7;        // conservative glyph width for the label budget
   const LABEL_GAP = 12;
   const MIN_TICK_SPACING = 75;    // px between grid lines before the step coarsens
+  const BREAK_PX = 48;            // px a collapsed stretch of quiet time takes
   const TICK_STEPS_DAYS = [1 / 24, 3 / 24, 6 / 24, 1, 7, 30, 90, 365];
   const WINDOW_PAD = 256;         // px drawn beyond the viewport on each side
   const LABEL_REACH = 320;        // px a title may extend past its mark into the window
@@ -156,16 +157,140 @@
     return out;
   }
 
+  // ---- the time axis, with quiet time collapsed ----
+  //
+  // A stretch with no activity at least minGapMs long (between two marks, or
+  // between the last mark and the end) is a gap. At a given scale a gap takes
+  // min(its linear width, BREAK_PX) pixels: it is drawn to scale while that is
+  // narrow and becomes a fixed break once it would be wider. The width is
+  // continuous in the scale, so zooming never makes the layout jump; the time
+  // inside a break is squeezed linearly into it.
+  function findGaps(intervals, end, minGapMs) {
+    if (!(minGapMs > 0) || !intervals.length) return [];
+    const sorted = [...intervals].sort((a, b) => a.start - b.start);
+    const gaps = [];
+    let reach = sorted[0].end;
+    for (const item of sorted) {
+      if (item.start - reach >= minGapMs) gaps.push({ start: reach, end: item.start });
+      reach = Math.max(reach, item.end);
+    }
+    if (end - reach >= minGapMs) gaps.push({ start: reach, end });
+    return gaps;
+  }
+  // The time `activeMs` of activity before `end`: walking back, quiet gaps
+  // do not count. "The last three days" of someone who was away all summer
+  // are the three days before they left, not three empty ones.
+  function activeSince(gaps, end, activeMs) {
+    let t = end, left = activeMs;
+    for (let i = gaps.length - 1; i >= 0 && left > 0; i--) {
+      const gap = gaps[i];
+      if (gap.start >= t) continue;
+      const span = t - Math.min(t, gap.end);
+      if (span >= left) return t - left;
+      left -= span;
+      t = Math.min(t, gap.start);
+    }
+    return t - left;
+  }
+  const gapWidth = (gap, scale) => Math.min((gap.end - gap.start) / DAY * scale, BREAK_PX);
+  const collapsed = (gap, scale) => (gap.end - gap.start) / DAY * scale > BREAK_PX;
+  // Pixels between two times at a scale, gaps accounted for. Pure: the fit
+  // search evaluates it at many scales without touching the chart.
+  function spanPixels(gaps, scale, from, to) {
+    let px = (to - from) / DAY * scale;
+    for (const gap of gaps) {
+      const overlap = Math.min(gap.end, to) - Math.max(gap.start, from);
+      if (overlap <= 0 || !collapsed(gap, scale)) continue;
+      px += gapWidth(gap, scale) * overlap / (gap.end - gap.start) - overlap / DAY * scale;
+    }
+    return px;
+  }
+  // The scale at which [from, to] takes `pixels`. spanPixels grows with the
+  // scale, so a bisection in log space finds it; without gaps it is exact.
+  function scaleForSpan(gaps, from, to, pixels) {
+    const span = Math.max(1, to - from);
+    const linear = Math.max(1e-6, pixels / span * DAY);
+    if (!gaps.some(gap => gap.end > from && gap.start < to)) return linear;
+    let lo = Math.log(linear), hi = Math.log(1e7);
+    if (spanPixels(gaps, Math.exp(hi), from, to) <= pixels) return Math.exp(hi);
+    for (let i = 0; i < 60; i++) {
+      const mid = (lo + hi) / 2;
+      if (spanPixels(gaps, Math.exp(mid), from, to) < pixels) lo = mid; else hi = mid;
+    }
+    return Math.exp(lo);
+  }
+  // x = origin + pixels from `start`; before `start` the axis extends linearly.
+  class Axis {
+    constructor(start, origin, gaps) {
+      this.start = start; this.origin = origin; this.gaps = gaps;
+      this.scale = 1; this.gapX = []; this.widths = [];
+    }
+    setScale(scale) {
+      this.scale = scale;
+      let x = this.origin, t = this.start;
+      this.gapX = []; this.widths = [];
+      for (const gap of this.gaps) {
+        x += (gap.start - t) / DAY * scale;
+        this.gapX.push(x);
+        const w = gapWidth(gap, scale);
+        this.widths.push(w);
+        x += w;
+        t = gap.end;
+      }
+    }
+    x(time) {
+      const i = lowerBound(this.gaps, time, gap => gap.end); // first gap not ended before time
+      // Gaps before i ended at or before `time`.
+      if (i < this.gaps.length && time > this.gaps[i].start) {
+        const gap = this.gaps[i];
+        return this.gapX[i] + (time - gap.start) / (gap.end - gap.start) * this.widths[i];
+      }
+      if (i === 0) return this.origin + (time - this.start) / DAY * this.scale;
+      const prev = this.gaps[i - 1];
+      return this.gapX[i - 1] + this.widths[i - 1] + (time - prev.end) / DAY * this.scale;
+    }
+    t(x) {
+      const i = lowerBound(this.gapX, x, gx => gx); // first gap starting at or after x
+      const k = i - 1;                             // the last gap starting before x
+      if (k < 0) return this.start + (x - this.origin) / this.scale * DAY;
+      const gap = this.gaps[k];
+      if (x < this.gapX[k] + this.widths[k]) return gap.start + (x - this.gapX[k]) / this.widths[k] * (gap.end - gap.start);
+      return gap.end + (x - this.gapX[k] - this.widths[k]) / this.scale * DAY;
+    }
+    // The drawn breaks overlapping [from, to]: gaps too wide to show to scale.
+    breaksIn(from, to) {
+      const out = [];
+      this.gaps.forEach((gap, i) => {
+        if (gap.end > from && gap.start < to && collapsed(gap, this.scale)) out.push({ ...gap, x: this.gapX[i], width: this.widths[i] });
+      });
+      return out;
+    }
+  }
+  // "3 days", "5 weeks", "4 months": the quiet time a break stands for.
+  function quietLabel(ms) {
+    const days = ms / DAY;
+    if (days < 14) return Math.round(days) + ' days';
+    if (days < 60) return Math.round(days / 7) + ' weeks';
+    if (days < 730) return Math.round(days / 30.44) + ' months';
+    return Math.round(days / 365.25) + ' years';
+  }
+
   class TimelineChart {
     static HEADER_HEIGHT = HEADER_HEIGHT;
     static packLanes = packLanes;
     static ticks = calendarTicks;
+    static findGaps = findGaps;
+    static activeSince = activeSince;
+    static Axis = Axis;
+    static scaleForSpan = scaleForSpan;
+    static quietLabel = quietLabel;
+    static BREAK_PX = BREAK_PX;
 
     #scroller; #options; #surface; #labels; #drawing; #defs;
-    #bandLayer; #tickLayer; #markLayer; #nowLine; #nowText;
+    #bandLayer; #breakLayer; #tickLayer; #markLayer; #nowLine; #nowText;
     #abort = new AbortController(); #resize;
-    #nodes = new Map(); #tickNodes = new Map(); #bandNodes = new Map();
-    #model = null; #tracks = []; #marksById = new Map(); #labelsHtml = ''; #defsHtml = '';
+    #nodes = new Map(); #tickNodes = new Map(); #bandNodes = new Map(); #breakNodes = new Map();
+    #model = null; #axis = null; #lead = 0; #tracks = []; #marksById = new Map(); #labelsHtml = ''; #defsHtml = '';
     // Camera. left/top are the unrounded scroll offsets the chart wants;
     // committedLeft/Top are what the browser last held, so native scrolling
     // between frames can be folded in as a delta.
@@ -199,6 +324,7 @@
       this.#drawing.style.cssText = 'position:absolute;overflow:hidden;display:block;pointer-events:none';
       this.#defs = svg('defs');
       this.#bandLayer = svg('g');
+      this.#breakLayer = svg('g');
       this.#tickLayer = svg('g');
       this.#markLayer = svg('g');
       const nowLayer = svg('g', { class: 'tnow' });
@@ -206,7 +332,7 @@
       this.#nowText = svg('text', { y: HEADER_HEIGHT - 6 });
       this.#nowText.textContent = 'now';
       nowLayer.append(this.#nowLine, this.#nowText);
-      this.#drawing.append(this.#defs, this.#bandLayer, this.#tickLayer, nowLayer, this.#markLayer);
+      this.#drawing.append(this.#defs, this.#bandLayer, this.#breakLayer, this.#tickLayer, nowLayer, this.#markLayer);
       this.#surface.append(this.#labels, this.#drawing);
       this.#scroller.replaceChildren(this.#surface);
       this.#scroller.classList.add('timeline-scroller');
@@ -253,14 +379,18 @@
       };
     }
 
-    // data: { start, end, height, marks, gutter?, rightPad?, bands?, labelsHtml?, defs? }
+    // data: { start, end, height, marks, gutter?, rightPad?, bands?, labelsHtml?, defs?,
+    //         collapseGapsMs? (quiet stretches at least this long may become breaks) }
     // mark: { id, start, end, y, className?, attributes?, title?, label?, bins?,
     //         fat?, color?, live?, working?, active?, laneHeight?, minWidth?,
     //         labelMinScale?, labelCharWidth?, glyph? ('triangle' | 'square') }
     // band: { key, y, height, className? }
-    // options: { fit?: true | spanMs, center?: time, top?: px }
+    // options: { fit?: true | spanMs, center?: time, top?: px,
+    //            focus?: { from: time, ifEmpty?: boolean } }
     // The chart keeps the time under the viewport center (or stays pinned to
-    // the end of history) unless an option places it. Marks are owned by the
+    // the end of history) unless an option places it. focus fits [from, end]
+    // into the viewport; with ifEmpty, only when the current scale, pinned to
+    // the end, would show no mark at all (a view of nothing but quiet time). Marks are owned by the
     // chart after this call: it annotates them with drawn geometry.
     setData(data, options = {}) {
       if (this.#destroyed) return;
@@ -275,6 +405,7 @@
       this.#readScroll();
       const keep = this.#model ? this.#anchor() : null;
       this.#model = model;
+      this.#axis = new Axis(model.start, model.gutter, findGaps(model.marks, model.end, model.collapseGapsMs));
       this.#tracks = tracks;
       this.#marksById = new Map(model.marks.map(mark => [mark.id, mark]));
       if (this.#labelsHtml !== model.labelsHtml) {
@@ -288,9 +419,10 @@
         this.#defs.innerHTML = model.defs;
       }
       keep?.();
-      const { fit, center, top } = options;
-      if (fit || Number.isFinite(center) || Number.isFinite(top)) {
+      const { fit, center, top, focus } = options;
+      if (fit || Number.isFinite(center) || Number.isFinite(top) || Number.isFinite(focus?.from)) {
         this.#pending = () => {
+          if (Number.isFinite(focus?.from) && !(focus.ifEmpty && this.#showsMarks())) this.#fitFrom(focus.from);
           if (fit) this.#fitSpan(fit === true ? undefined : fit);
           if (Number.isFinite(center)) this.#left = this.#xFor(center) - this.#width / 2;
           if (Number.isFinite(top)) this.#top = top;
@@ -320,6 +452,8 @@
     }
     // Fit spanMs (default: the whole history) into the viewport width.
     fit(spanMs) { this.#place(() => this.#fitSpan(spanMs)); }
+    // Fit [time, end of history] into the viewport width, pinned to the end.
+    fitFrom(time) { if (Number.isFinite(time)) this.#place(() => this.#fitFrom(time)); }
     // Put time at the given fraction of the viewport width.
     jump(time, fraction = 0.5) {
       if (!Number.isFinite(time)) return;
@@ -345,21 +479,27 @@
       this.#resize.disconnect();
       cancelAnimationFrame(this.#frame);
       clearTimeout(this.#settleTimer);
-      this.#nodes.clear(); this.#tickNodes.clear(); this.#bandNodes.clear(); this.#marksById.clear();
+      this.#nodes.clear(); this.#tickNodes.clear(); this.#bandNodes.clear(); this.#breakNodes.clear(); this.#marksById.clear();
       this.#scroller.classList.remove('timeline-scroller');
     }
 
     // ---- camera ----
 
-    #xFor(time) { return this.#model.gutter + (time - this.#model.start) / DAY * this.#scale; }
-    #tFor(x) { return this.#model.start + (x - this.#model.gutter) / this.#scale * DAY; }
-    #spanScale(spanMs) {
-      return Math.max(1e-6, (this.#width - this.#model.gutter - this.#model.rightPad) / Math.max(1, spanMs) * DAY);
+    // #lead: when all of history is narrower than the viewport, the axis is
+    // shifted right so "now" sits at the right edge, with the days before the
+    // first conversation on the left, rather than a screen of empty future.
+    #xFor(time) { return this.#lead + this.#axis.x(time); }
+    #tFor(x) { return this.#axis.t(x - this.#lead); }
+    // The scale at which [from, end of history] fills the viewport.
+    #scaleFrom(from) {
+      const pixels = Math.max(1, this.#width - this.#model.gutter - this.#model.rightPad);
+      return Math.max(1e-6, scaleForSpan(this.#axis.gaps, Math.min(from, this.#model.end - 1), this.#model.end, pixels));
     }
+    #spanScale(spanMs) { return this.#scaleFrom(this.#model.end - Math.max(1, spanMs)); }
     #limits() {
       const { minScale, maxScale, fitMinimum } = this.#options;
       const history = Math.max(1, this.#model.end - this.#model.start);
-      const low = fitMinimum ? this.#spanScale(history) : minScale;
+      const low = fitMinimum ? this.#scaleFrom(this.#model.start) : minScale;
       const physical = (MAX_EXTENT - this.#model.gutter - this.#model.rightPad) / history * DAY;
       const high = Math.min(Math.max(low, maxScale), physical);
       return [Math.min(low, high), high];
@@ -367,7 +507,10 @@
     // Clamp the scale and size the chart for it.
     #measure() {
       this.#scale = clamp(this.#scale, ...this.#limits());
-      this.#chartWidth = Math.max(this.#width, this.#xFor(this.#model.end) + this.#model.rightPad);
+      this.#axis.setScale(this.#scale);
+      const content = this.#axis.x(this.#model.end) + this.#model.rightPad;
+      this.#lead = Math.max(0, this.#width - content);
+      this.#chartWidth = Math.max(this.#width, content + this.#lead);
       this.#chartHeight = Math.max(this.#height, this.#model.height);
     }
     #clampScroll() {
@@ -396,6 +539,19 @@
       const keep = this.#anchor();
       this.#scale = this.#spanScale(spanMs);
       keep();
+    }
+    #fitFrom(from) {
+      this.#scale = this.#scaleFrom(from);
+      this.#measure();
+      this.#left = this.#chartWidth - this.#width; // pinned to the end
+      this.#clampScroll();
+    }
+    // Would the viewport, pinned to the end at the current scale, show any
+    // mark? (A mark that ends inside the visible stretch of time.)
+    #showsMarks() {
+      this.#measure();
+      const from = this.#tFor(Math.max(0, this.#chartWidth - this.#width) + this.#model.gutter);
+      return this.#model.marks.some(mark => mark.end >= from);
     }
     // Viewport x of a client coordinate, no further left than the gutter.
     #anchorX(clientX) {
@@ -525,7 +681,9 @@
       const marks = marksInWindow(this.#tracks, this.#tFor(x - LABEL_REACH), this.#tFor(x + w), y - LANE_REACH, y + h + LANE_REACH);
       this.#paintMarks(marks);
       this.#paintBands(x, y, w, h);
-      this.#paintTicks(x, y, w, h);
+      const breaks = this.#axis.breaksIn(this.#tFor(x), this.#tFor(x + w));
+      this.#paintBreaks(breaks, y, h);
+      this.#paintTicks(x, y, w, h, breaks);
       const nowX = this.#xFor(this.#model.end);
       setAttributes(this.#nowLine, { x1: nowX, x2: nowX, y1: y, y2: y + h });
       this.#nowText.setAttribute('x', nowX + 6);
@@ -634,9 +792,52 @@
         this.#bandNodes.delete(key);
       }
     }
-    #paintTicks(x, y, w, h) {
+    // A break is quiet time drawn narrower than to scale: a faint band with a
+    // zigzag seam, and how long it stands for in the date strip.
+    #paintBreaks(breaks, y, h) {
       const keep = new Set();
-      for (const tick of calendarTicks(this.#tFor(x), this.#tFor(x + w), this.#scale)) {
+      for (const brk of breaks) {
+        keep.add(brk.start);
+        let node = this.#breakNodes.get(brk.start);
+        if (!node) {
+          node = { group: svg('g', { class: 'tbreak' }), rect: svg('rect'), seam: svg('path'), text: svg('text', { y: 11, 'text-anchor': 'middle' }), title: svg('title') };
+          node.group.append(node.title, node.rect, node.seam, node.text);
+          this.#breakLayer.append(node.group);
+          this.#breakNodes.set(brk.start, node);
+        }
+        const x0 = this.#lead + brk.x, mid = x0 + brk.width / 2, label = quietLabel(brk.end - brk.start);
+        setAttributes(node.rect, { x: x0, y, width: brk.width, height: h });
+        let d = `M${mid},${y}`;
+        for (let yy = y, k = 0; yy < y + h; yy += 6, k++) d += `L${mid + (k % 2 ? -3 : 3)},${yy + 6}`;
+        node.seam.setAttribute('d', d);
+        node.text.setAttribute('x', mid);
+        // Too narrow to say while it is still being squeezed: the tooltip says it.
+        node.text.textContent = brk.width >= BREAK_PX - 0.5 ? label : '';
+        const quiet = 'Nothing happened for ' + label;
+        if (node.title.textContent !== quiet) node.title.textContent = quiet;
+      }
+      for (const [key, node] of this.#breakNodes) {
+        if (keep.has(key)) continue;
+        node.group.remove();
+        this.#breakNodes.delete(key);
+      }
+    }
+    // Grid lines for the stretches of time drawn to scale; none inside a break.
+    #paintTicks(x, y, w, h, breaks) {
+      const keep = new Set();
+      const segments = [];
+      let from = this.#tFor(x);
+      for (const brk of breaks) {
+        if (brk.start > from) segments.push([from, brk.start]);
+        from = Math.max(from, brk.end);
+      }
+      const to = this.#tFor(x + w);
+      if (to > from) segments.push([from, to]);
+      const ticks = segments.flatMap(([a, b]) => calendarTicks(a, b, this.#scale).filter(tick => tick.time >= a && tick.time <= b));
+      // A date label that would run into a break's label gives way to it.
+      const quietLabels = breaks.map(brk => this.#lead + brk.x);
+      const crowds = tx => quietLabels.some(bx => tx > bx - 34 && tx < bx + BREAK_PX);
+      for (const tick of ticks) {
         keep.add(tick.time);
         let node = this.#tickNodes.get(tick.time);
         if (!node) {
@@ -649,7 +850,8 @@
         setAttributes(node.group, { class: tick.major ? 'tday major' : 'tday' });
         setAttributes(node.line, { x1: tx, x2: tx, y1: y, y2: y + h });
         setAttributes(node.text, { x: tx + 4 });
-        if (node.text.textContent !== tick.label) node.text.textContent = tick.label;
+        const label = crowds(tx) ? '' : tick.label;
+        if (node.text.textContent !== label) node.text.textContent = label;
       }
       for (const [time, node] of this.#tickNodes) {
         if (keep.has(time)) continue;

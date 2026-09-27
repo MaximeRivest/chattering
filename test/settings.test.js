@@ -194,8 +194,21 @@ test('an old install keeps every value it was already using, and its background 
   assert.equal(s.usePiDefault, true);
 });
 
+test('the welcome waits for a new install, and an install that ran before has had it', () => {
+  assert.deepStrictEqual(normalizeSettings(migrateSettings(null, { priorInstall: false }).settings).welcome, { doneAt: null });
+  assert.deepStrictEqual(normalizeSettings(migrateSettings(null, { priorInstall: true }).settings).welcome, { doneAt: 'before-welcome' });
+  // A version 2 file was written by a run of Chattering: done, and nothing else changes.
+  const v2 = { settingsVersion: 2, speechUrl: '', provider: 'anthropic', model: 'm', usePiDefault: false, backgroundAi: { decidedAt: null } };
+  const { settings, migrated } = migrateSettings(v2, { priorInstall: false });
+  assert.equal(migrated, true);
+  const s = normalizeSettings(settings);
+  assert.deepStrictEqual(s.welcome, { doneAt: 'before-welcome' });
+  assert.deepStrictEqual([s.speechUrl, s.provider, s.backgroundAi.decidedAt], ['', 'anthropic', null]);
+  assert.equal(s.settingsVersion, SETTINGS_VERSION);
+});
+
 test('a migrated file is never migrated again', () => {
-  const once = migrateSettings({ settingsVersion: 2, speechUrl: '', backgroundAi: { decidedAt: null } }, { priorInstall: true });
+  const once = migrateSettings({ settingsVersion: SETTINGS_VERSION, speechUrl: '', backgroundAi: { decidedAt: null } }, { priorInstall: true });
   assert.equal(once.migrated, false);
   assert.equal(normalizeSettings(once.settings).speechUrl, '');
   assert.equal(normalizeSettings(once.settings).backgroundAi.decidedAt, null);
