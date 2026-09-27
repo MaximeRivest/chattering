@@ -76,10 +76,10 @@ nothing unless all pass.
   not quarantined; the script unblocks what it unpacks); an archive
   downloaded by a browser and opened by hand will meet Gatekeeper and
   SmartScreen. Node itself is signed by its publisher.
-- **No `.dmg` / `.msi`.** A script install is per person, needs no
-  administrator, and updates itself; installers are for when signing exists.
-- **The Start-menu entry opens a console window briefly** on Windows (a
-  `.cmd`); the server itself runs without one.
-- **macOS app bundle without an icon** (`~/Applications/Chattering.app`);
-  it needs an `.icns`, not yet made.
+- **Installers (2026-09-27, design/73):** a `.dmg` for macOS and a per-person
+  Inno Setup for Windows, built from this archive by
+  `scripts/build-installer.js` and given their own stranger test
+  (`scripts/smoke-installer.js`). The Windows Start menu opens a windowless
+  `Chattering.exe` (no console flash); the Mac app has its icon. Their names
+  carry no version, for `releases/latest/download/` links.
 - **Size.** Pruning Pi's provider libraries would break providers people use.
