@@ -36,7 +36,10 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
   if (m.t === 'cancel') { cancel.abort(new Error('Login cancelled')); for (const w of waiting.values()) w.reject(new Error('Login cancelled')); waiting.clear(); }
   if (m.t === 'answer' && waiting.has(m.id)) { const w = waiting.get(m.id); waiting.delete(m.id); w.resolve(String(m.value ?? '')); }
 });
-process.stdin.on('end', () => cancel.abort(new Error('Login cancelled')));
+// The server holds this pipe open for as long as it wants the answer. Its
+// end means the server is gone (it exited or crashed, on any system): stop
+// at once, so nothing keeps writing into Pi's folder for a server that left.
+process.stdin.on('end', () => { cancel.abort(new Error('Login cancelled')); process.exit(1); });
 
 // The person's side of a Pi login: questions go to the page, answers come back.
 const interaction = {
@@ -68,7 +71,9 @@ const plainPrompt = p => ({ type: p.type, message: String(p.message || ''), plac
 async function main() {
   const dir = piPackageDir();
   const SDK = await import(pathToFileURL(path.join(dir, 'dist', 'index.js')).href);
-  const rt = await SDK.ModelRuntime.create({ authPath, modelsPath, signal: AbortSignal.timeout(30000) });
+  // Listing reads what is on disk (Pi's catalog, its accounts, models.json);
+  // signing in and saying hello may refresh from the network.
+  const rt = await SDK.ModelRuntime.create({ authPath, modelsPath, signal: AbortSignal.timeout(30000), ...(op === 'list' ? { allowModelNetwork: false } : {}) });
   if (op === 'list') {
     let defaults = {};
     try { defaults = (await import(pathToFileURL(path.join(dir, 'dist', 'core', 'model-resolver.js')).href)).defaultModelPerProvider || {}; } catch {}

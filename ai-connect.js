@@ -51,7 +51,8 @@
   }
 
   A.refresh = function refresh() {
-    A.loading = api('/api/ai').then(s => { A.summary = s; A.paintAll(); if (window.Welcome) Welcome.repaint(); return s; })
+    A.asked = true;
+    A.loading = api('/api/ai').then(s => { A.summary = s; A.error = null; A.paintAll(); if (window.Welcome) Welcome.repaint(); return s; })
       .catch(e => { A.error = e.message; A.paintAll(); throw e; }).finally(() => { A.loading = null; });
     return A.loading;
   };

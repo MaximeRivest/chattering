@@ -40,8 +40,16 @@ async function signedIn(launcher, env) {
   throw new Error('Chattering did not come up');
 }
 async function status(base, token) {
-  const r = await fetch(base + '/api/app/status', { headers: { Authorization: 'Bearer ' + token } });
+  let r;
+  try { r = await fetch(base + '/api/app/status', { headers: { Authorization: 'Bearer ' + token } }); }
+  catch (e) { throw new Error(`${base} did not answer: ${e.cause ? e.cause.code || e.cause.message : e.message}`); }
   return r.json();
+}
+// What a failure needs: the end of the server's log, and Setup's.
+function showLogs() {
+  const files = [path.join(require('../platform.js').appDirs().data, 'logs', 'server.log'), path.join(require('../platform.js').appDirs().data, 'logs', 'server.log.1'),
+    path.join(os.tmpdir(), 'chattering-setup.log'), path.join(os.homedir(), 'Library', 'Logs', 'Chattering.log')];
+  for (const f of files) { try { console.error(`--- ${f}\n` + fs.readFileSync(f, 'utf8').slice(-3000)); } catch {} }
 }
 
 async function mac() {
@@ -154,7 +162,7 @@ async function windows() {
     else if (process.platform === 'win32') await windows();
     else throw new Error('no installer on this system');
     ok = true;
-  } catch (e) { console.error(e); }
+  } catch (e) { console.error(e); showLogs(); }
   console.log(ok ? 'The installer works for a stranger.' : 'The installer FAILED the stranger test.');
   process.exit(ok ? 0 : 1);
 })();

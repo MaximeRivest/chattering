@@ -22,7 +22,7 @@
   // Home's list is empty: the welcome takes its place.
   W.paint = function paint(list) {
     host = list;
-    if (owner() && !aiKnown() && window.AiConnect && !AiConnect.loading) AiConnect.refresh().catch(() => {});
+    if (owner() && !aiKnown() && window.AiConnect && !AiConnect.asked) AiConnect.refresh().catch(() => {});
     const d = aiKnown() ? AiConnect.summary.default || {} : {};
     const next = JSON.stringify([owner(), aiKnown(), aiReady(), d.provider, d.model, !!bg().decidedAt, changingAi]);
     if (next === sig && list.querySelector('.wel')) return;
@@ -110,7 +110,7 @@
     if (!list || !list.parentElement) return;
     const want = owner() && aiKnown() && !aiReady() && !list.querySelector('.wel');
     let el = list.previousElementSibling && list.previousElementSibling.classList.contains('wel-banner') ? list.previousElementSibling : null;
-    if (!want) { if (el) el.remove(); banner = null; if (owner() && !aiKnown() && window.AiConnect && !AiConnect.loading) AiConnect.refresh().catch(() => {}); return; }
+    if (!want) { if (el) el.remove(); banner = null; if (owner() && !aiKnown() && window.AiConnect && !AiConnect.asked) AiConnect.refresh().catch(() => {}); return; }
     if (!el) {
       el = document.createElement('div');
       el.className = 'wel-banner';

@@ -99,3 +99,29 @@ test('a plan sign-in: the address to open and a place to paste, and it can be ca
   assert.throws(() => ai.startLogin('anthropic', 'magic'), /how to sign in/);
   assert.throws(() => ai.startLogin('../x', 'oauth'), /provider/);
 });
+
+test('a helper ends when the server that started it is gone', { skip, timeout: 60000 }, async t => {
+  const { dir } = await setup(t);
+  const { spawn } = require('node:child_process');
+  const http = require('node:http');
+  // A model that takes its time: the hello is still waiting when the server dies.
+  const slow = http.createServer((req, res) => { if (req.url.endsWith('/models')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ data: [{ id: 'slow' }] })); } });
+  await new Promise(r => slow.listen(0, '127.0.0.1', r));
+  t.after(() => { slow.closeAllConnections(); slow.close(); });
+  fs.writeFileSync(path.join(dir, 'models.json'), JSON.stringify({ providers: { slow: { baseUrl: `http://127.0.0.1:${slow.address().port}/v1`, api: 'openai-completions', apiKey: 'none', models: [{ id: 'slow' }] } } }));
+  // A stand-in server: the real accounts module, asked for a hello, then killed.
+  const parent = spawn(process.execPath, ['-e', `
+    const A = require(${JSON.stringify(require.resolve('../ai-accounts.js'))});
+    const d = ${JSON.stringify(dir)}, p = require('node:path');
+    const ai = A.createAiAccounts({ agentDir: d, authPath: p.join(d, 'auth.json'), modelsPath: p.join(d, 'models.json'), settingsPath: p.join(d, 'settings.json'), env: { ...process.env, PI_OFFLINE: '1' } });
+    ai.test('slow', 'slow').catch(() => {});
+    setInterval(() => {}, 1000);`], { stdio: 'ignore', env: { ...process.env, ...(pi ? { CHATTERING_PI_PACKAGE_DIR: pi } : {}) } });
+  const helpers = () => require('../processes.js').list().filter(p => p.ppid === parent.pid && p.argv.some(a => a.endsWith('ai-accounts-worker.js'))).map(p => p.pid);
+  const [helper] = await until(() => { const h = helpers(); return h.length && h; });
+  await new Promise(r => setTimeout(r, 1500)); // it is asking the model now
+  const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  assert.ok(alive(helper), 'the helper is waiting for the model');
+  parent.kill('SIGKILL');
+  try { await until(() => !alive(helper), 10000); }
+  finally { try { process.kill(helper, 'SIGKILL'); } catch {} }
+});

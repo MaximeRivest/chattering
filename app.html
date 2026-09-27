@@ -16205,7 +16205,11 @@ function maybeAskBackgroundAi() {
   // asks it in its own steps; this dialog is for a home that has history.
   if (window.Welcome && Welcome.showing()) return;
   if (window.AiConnect) {
-    if (!AiConnect.summary) { (AiConnect.loading || AiConnect.refresh()).then(() => maybeAskBackgroundAi(), () => {}); return; }
+    if (!AiConnect.summary) {
+      if (AiConnect.asked && !AiConnect.loading) return; // it failed: asked again when accounts change
+      (AiConnect.loading || AiConnect.refresh()).then(() => maybeAskBackgroundAi(), () => {});
+      return;
+    }
     if (!AiConnect.ready()) return;
   }
   bgAskShown = true;

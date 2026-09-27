@@ -78,7 +78,7 @@ function createAiAccounts({ agentDir, authPath, modelsPath, settingsPath, onChan
   const logins = new Map();
   let listCache = null; // { at, promise }
 
-  function runWorker(args, { onMessage, stdin = false } = {}) {
+  function runWorker(args, { onMessage } = {}) {
     const child = spawn(nodePath, [WORKER, authPath, modelsPath, ...args], {
       env: { ...env, PI_CODING_AGENT_DIR: agentDir }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
     });
@@ -95,7 +95,8 @@ function createAiAccounts({ agentDir, authPath, modelsPath, settingsPath, onChan
       }
     });
     child.stderr.on('data', d => { errText = (errText + d).slice(-4000); });
-    if (!stdin) child.stdin.end();
+    // stdin stays open: its end tells the helper this server is gone.
+    child.stdin.on('error', () => {});
     const done = new Promise(resolve => {
       child.on('error', e => { error = error || e.message; resolve(); });
       child.on('close', () => resolve());
@@ -172,7 +173,6 @@ function createAiAccounts({ agentDir, authPath, modelsPath, settingsPath, onChan
     const id = crypto.randomUUID();
     const login = { id, provider, method, status: 'running', events: [], prompt: null, error: null, result: null, startedAt: Date.now(), finishedAt: null };
     const w = runWorker(['login', provider, method], {
-      stdin: true,
       onMessage: m => {
         if (m.t === 'event') login.events.push({ ...m.event, at: Date.now() });
         else if (m.t === 'prompt') login.prompt = { id: m.id, ...m.prompt };

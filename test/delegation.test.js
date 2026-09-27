@@ -104,7 +104,8 @@ async function fixture(t) {
     fs.rmSync(dir, { recursive: true, force: true });
   });
   return { dir, root, parent, fake, mode, options, spec, launch: patch => D.launchDelegation({ ...spec, ...patch }, options),
-    done: id => until(async () => { const task = await D.getDelegation(id, options); return S.TERMINAL.has(task.status) ? task : null; }) };
+    // A worker's whole run: up to thirty seconds on a slow machine, with the task's account on failure.
+    done: id => until(async () => { const task = await D.getDelegation(id, options); return S.TERMINAL.has(task.status) ? task : null; }, 30000, () => account(root, id)) };
 }
 
 test('preflight rejects invalid cwd, model, mode, tool mismatch, parent and delivery before persistence', async t => {
