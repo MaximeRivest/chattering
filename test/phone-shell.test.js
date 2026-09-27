@@ -70,7 +70,7 @@ test('phone shell: bottom bar, sheets, one-row head, back hook, desktop untouche
   // The head is drawn just after the view switches: wait for it rather than read once.
   await until(`(()=>{const t=$('chTitle')?.getBoundingClientRect();return !!t && t.width>innerWidth*0.5})()`, 'the title has the row');
   assert.equal(await ev(`$('phoneMore').checkVisibility() && ['newLoose','brand','activeBtn','chNew','chMove','barFold'].every(id=>!$(id).checkVisibility())`), true, 'one ⋯ instead of nine controls');
-  assert.equal(await ev(`(()=>{const c=$('composerDock').getBoundingClientRect(),b=$('phoneBar').getBoundingClientRect();return Math.abs(c.bottom-b.top)<1})()`), true, 'the composer sits on the bar');
+  await until(`(()=>{const c=$('composerDock')?.getBoundingClientRect(),b=$('phoneBar')?.getBoundingClientRect();return !!c && !!b && Math.abs(c.bottom-b.top)<1})()`, 'the composer sits on the bar');
   // The share control fills in from a request of its own: wait for it, as
   // the menu lists only what is ready.
   await until(`!$('shareBtn').hidden`, 'the share control is ready');

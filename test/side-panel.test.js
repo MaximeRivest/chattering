@@ -474,8 +474,8 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   await send('Page.reload', {}, sid);
   await until(`!window.beforeReloadMark && typeof settingsOpen !== 'undefined' && settingsOpen && !!document.querySelector('#setAppFont')`);
   assert.equal(await evaluate(`$('setAppFont').value`), 'sans', 'font preference survives reload');
-  await evaluate(`document.querySelector('.settings-pane').insertAdjacentHTML('beforeend','<div class="md" id="fontProbe"><code>const aligned = 1;</code></div>')`);
-  assert.match(await evaluate(`getComputedStyle(document.querySelector('#fontProbe code')).fontFamily`), /monospace/);
+  // Placed and read in one step: the pane may repaint between two.
+  assert.match(await evaluate(`(() => { const pane = document.querySelector('.settings-pane'); pane.insertAdjacentHTML('beforeend','<div class="md" id="fontProbe"><code>const aligned = 1;</code></div>'); return getComputedStyle(pane.querySelector('#fontProbe code')).fontFamily; })()`), /monospace/);
   await evaluate(`$('setAppFont').value='theme';$('setAppFont').dispatchEvent(new Event('change'))`);
   assert.equal(await evaluate(`document.documentElement.style.getPropertyValue('--font')`), '', 'theme default removes the override');
   await evaluate(`const r=document.querySelector('input[name=setLayout][value=top]'); r.checked=true; r.onchange()`);

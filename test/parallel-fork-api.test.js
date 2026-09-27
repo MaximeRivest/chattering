@@ -101,7 +101,8 @@ if (process.argv[1] === ${JSON.stringify(path.join(root, 'server.js'))}) {
   assert.doesNotMatch(forkText, /test-heartbeat/);
   assert.equal(JSON.parse(forkText.split('\n')[0]).parentSession, source);
   const second = await post('/api/node/send', { id: fork.key, prompt: 'Work independently' });
-  await new Promise(resolve => setTimeout(resolve, 120));
+  // The fork's first heartbeat, up to five seconds for a slow machine.
+  for (let i = 0; i < 100 && !/test-heartbeat/.test(await fs.readFile(fork.path, 'utf8')); i++) await new Promise(resolve => setTimeout(resolve, 50));
   const jobs = await get('/api/jobs');
   assert.equal(jobs.find(j => j.id === parent.job.id).status, 'running');
   assert.equal(jobs.find(j => j.id === second.job.id).status, 'running');
