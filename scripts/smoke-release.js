@@ -21,8 +21,12 @@ const build = JSON.parse(fs.readFileSync(path.join(app, 'BUILD.json'), 'utf8'));
 // Not under the temp folder: conversations there count as loose, not projects.
 const home = fs.mkdtempSync(path.join(os.homedir(), '.chattering-stranger-'));
 const systemPath = win ? [path.join(process.env.SystemRoot || 'C:\\Windows', 'System32'), process.env.SystemRoot || 'C:\\Windows'].join(';') : '/usr/bin:/bin:/usr/sbin:/sbin';
-const env = { SYSTEMROOT: process.env.SYSTEMROOT, SystemRoot: process.env.SystemRoot, TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR,
-  PATHEXT: process.env.PATHEXT, ComSpec: process.env.ComSpec, [win ? 'Path' : 'PATH']: systemPath, LANG: 'en_US.UTF-8',
+// Windows' standard variables, which every program there has (Pi finds Git
+// Bash through ProgramFiles); PATH still holds only the system's folders.
+const WIN_VARS = ['SystemRoot', 'SYSTEMROOT', 'windir', 'SystemDrive', 'TEMP', 'TMP', 'PATHEXT', 'ComSpec', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432',
+  'ProgramData', 'CommonProgramFiles', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'USERNAME', 'COMPUTERNAME', 'OS'];
+const env = { ...(win ? Object.fromEntries(WIN_VARS.map(k => [k, process.env[k]])) : {}), TMPDIR: process.env.TMPDIR,
+  [win ? 'Path' : 'PATH']: systemPath, LANG: 'en_US.UTF-8',
   HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
   CHATTERING_NO_BROWSER: '1', PORT: String(17433 + Math.floor(Math.random() * 500)) };
 for (const k of Object.keys(env)) if (env[k] === undefined) delete env[k];

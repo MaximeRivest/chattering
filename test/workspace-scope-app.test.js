@@ -6,7 +6,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { viewerBrowser } = require('./helpers/viewer-browser');
 
-test('one explicit project scope for browsing; a machine-wide Inbox; scope-aware history', { timeout: 60000 }, async t => {
+// Two minutes, as the other long browser tests: 17 s alone, once over 60 s on a loaded Windows CI machine.
+test('one explicit project scope for browsing; a machine-wide Inbox; scope-aware history', { timeout: 120000 }, async t => {
   const { home, base, evaluate: ev, until, command, screenshot, requests, exceptions, auth } = await viewerBrowser(t);
   const root = fs.mkdtempSync(path.join(os.homedir(), '.scope-projects-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
