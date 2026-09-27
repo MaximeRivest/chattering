@@ -1,4 +1,5 @@
 'use strict';
+require('./win-hide.js'); // first: on Windows nothing this starts opens a window (design/70)
 // Private IPC endpoint. Export the controller for tests with an injected SDK.
 const { createRuntimeEngine } = require('./pisdk-runtime.js');
 const { randomUUID } = require('crypto');

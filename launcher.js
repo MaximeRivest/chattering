@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 'use strict';
+require('./win-hide.js'); // first: on Windows nothing this starts opens a window (design/70)
 // launcher.js — the `chattering-app` command of a Chattering download
 // (design/71). One program for every system:
 //

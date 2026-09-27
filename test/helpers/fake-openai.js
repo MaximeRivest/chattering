@@ -5,6 +5,8 @@
 // so a real conversation can be held on a machine with no AI account.
 //
 //   const ai = await fakeOpenAI({ reply: 'Hello from the fixture.' });
+//   reply may be a function of the request; returning { tool: { name,
+//   arguments } } asks for a tool call (as a model does to run a command).
 //   ai.baseUrl   http://127.0.0.1:<port>/v1
 //   ai.requests  what was asked, in order
 //   await ai.close()
@@ -24,9 +26,24 @@ async function fakeOpenAI({ models = ['fixture-chat'], reply = 'Hello! I am read
     }
     if (req.method === 'POST' && /\/v1\/chat\/completions\/?$/.test(req.url)) {
       const p = JSON.parse(body || '{}');
-      const text = typeof reply === 'function' ? reply(p) : reply;
+      const answer = typeof reply === 'function' ? reply(p) : reply;
       const id = 'chatcmpl-fixture', created = Math.floor(Date.now() / 1000), model = p.model || models[0];
       const usage = { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 };
+      if (answer && typeof answer === 'object' && answer.tool) {
+        const call = { id: 'call_' + requests.length, type: 'function', function: { name: answer.tool.name, arguments: JSON.stringify(answer.tool.arguments) } };
+        if (!p.stream) {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          return res.end(JSON.stringify({ id, object: 'chat.completion', created, model, choices: [{ index: 0, message: { role: 'assistant', content: null, tool_calls: [call] }, finish_reason: 'tool_calls' }], usage }));
+        }
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+        const send = (delta, finish = null, extra = {}) => res.write('data: ' + JSON.stringify({ id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta, finish_reason: finish }], ...extra }) + '\n\n');
+        send({ role: 'assistant', content: null, tool_calls: [{ index: 0, id: call.id, type: 'function', function: { name: call.function.name, arguments: '' } }] });
+        send({ tool_calls: [{ index: 0, function: { arguments: call.function.arguments } }] });
+        send({}, 'tool_calls', { usage });
+        res.write('data: [DONE]\n\n');
+        return res.end();
+      }
+      const text = answer;
       if (!p.stream) {
         res.writeHead(200, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ id, object: 'chat.completion', created, model, choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }], usage }));

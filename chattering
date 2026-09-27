@@ -5,6 +5,7 @@
 // Every answer is plain text rendered by the server (records.js), so this
 // file only parses arguments and prints. Run `chattering help` for the list.
 'use strict';
+require('./win-hide.js'); // first: on Windows nothing this starts opens a window (design/70)
 const http = require('http');
 const path = require('path');
 

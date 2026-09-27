@@ -2,6 +2,7 @@
 // Chattering — browse, search and export Claude Code conversations.
 // No dependencies. Run: node server.js  → http://localhost:7433
 'use strict';
+require('./win-hide.js'); // first: on Windows nothing this starts opens a window (design/70)
 
 const fs = require('fs');
 const fsp = fs.promises;

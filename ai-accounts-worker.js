@@ -1,4 +1,5 @@
 'use strict';
+require('./win-hide.js'); // first: on Windows nothing this starts opens a window (design/70)
 // ai-accounts-worker.js — Pi's own sign-in, key and model code, run in a
 // process of its own for the server's AI accounts (ai-accounts.js,
 // design/73). One operation per process:

@@ -122,10 +122,16 @@ function nodePath(env = process.env) {
 // CHATTERING_PI still names a whole command (an existing override).
 // CHATTERING_PI_CLI names a JavaScript file to run in Pi's place, started
 // like Pi (node + file): the portable seam tests use for a fake Pi.
+// On Windows every Pi process loads win-hide.js first (node --require):
+// Pi starts rg, fd, git and extension commands without hiding their
+// windows, and a delegated worker has no console to lend them.
+function piNodeArgs({ isWin = platform.IS_WIN } = {}) {
+  return isWin ? ['--require', path.join(APP_DIR, 'win-hide.js')] : [];
+}
 function piCommand(args = [], { env = process.env } = {}) {
   if (env.CHATTERING_PI) return { file: env.CHATTERING_PI, args: [...args] };
-  if (env.CHATTERING_PI_CLI) return { file: nodePath(env), args: [env.CHATTERING_PI_CLI, ...args] };
-  return { file: nodePath(env), args: [piCliPath({ env }), ...args] };
+  if (env.CHATTERING_PI_CLI) return { file: nodePath(env), args: [...piNodeArgs(), env.CHATTERING_PI_CLI, ...args] };
+  return { file: nodePath(env), args: [...piNodeArgs(), piCliPath({ env }), ...args] };
 }
 // The same as one argv array (for terminals, which take a command line).
 function piArgv(args = [], opts) { const c = piCommand(args, opts); return [c.file, ...c.args]; }
@@ -146,4 +152,4 @@ function piAgentDir(env = process.env, home = os.homedir()) {
   return path.join(home, '.pi', 'agent');
 }
 
-module.exports = { piAgentDir, piSessionDirName, PI_TESTED_VERSION, PI_PACKAGE, BUNDLED_PI, isPiPackage, locatePi, piPackageDir, piVersion, piCliPath, nodePath, piCommand, piArgv };
+module.exports = { piAgentDir, piSessionDirName, PI_TESTED_VERSION, PI_PACKAGE, BUNDLED_PI, isPiPackage, locatePi, piPackageDir, piVersion, piCliPath, nodePath, piCommand, piNodeArgs, piArgv };

@@ -1,4 +1,5 @@
 'use strict';
+require('./win-hide.js'); // first: on Windows nothing this starts opens a window (design/70)
 
 // Build a Chattering theme from a terminal or OS color scheme.
 // Terminal palettes and Chattering tokens have the same shape: a background,

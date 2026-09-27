@@ -1,4 +1,5 @@
 'use strict';
+require('./win-hide.js'); // first: on Windows nothing this starts opens a window (design/70)
 // keyproxy-worker.js — the only process that holds the owner's model
 // credentials on behalf of guests (design/53).
 //
