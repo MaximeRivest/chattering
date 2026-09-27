@@ -22,6 +22,10 @@ place, never tested with `process.platform` where it is used:
 | opening a file, showing it in the file manager | `platform.openCommand` |
 | playing a sound, recording the room microphone | `platform.audioPlayCommand/audioRecordCommand` |
 | an agent's PATH | `agentpath.js` |
+| where a step's local file may be captured or shown; what is a secret | `task-locations.js` `permittedLocal`, `sensitive` (either separator) |
+| a path in an agent's tool call, local or remote | `task-locations.js` `location` (this system's rules locally, POSIX on a remote host) |
+| in the page: is this a full path, is it inside that folder | `isFullPath`, `pathWithin` (app.html's first script; either separator, drive letters without case) |
+| in the page: the command key | `IS_MAC`, `modHeld(e)`, `modKey('K')` (app.html's first script, CodeMirror's own rule) |
 
 ## Decisions
 
@@ -45,7 +49,30 @@ place, never tested with `process.platform` where it is used:
   refreshed every ten seconds in the background, and caching a process's
   start time while it lives. A delegated worker's identity (start time and
   boot) now exists on all three, so workers are no longer "lost" off Linux.
-  Windows stops a worker's tree with `taskkill /T /F`.
+  Windows stops a worker's tree with `taskkill /T /F`, except a nested
+  delegation's supervisor and what it runs (`stopTree`'s `spare`): on Unix
+  those lead their own process group, see the cancel in their records, and
+  end as cancelled; on Windows too now, rather than as lost.
+- **PowerShell without cmdlets.** The process list, start times and boot
+  time come from .NET and WMI directly (`[System.Diagnostics.Process]`,
+  `ManagementObjectSearcher`), never `Get-Process`, `Get-CimInstance`,
+  `New-Object` or `Add-Type`: a cmdlet's first use makes PowerShell scan
+  every installed module, which without its per-user cache in AppData took
+  over ten seconds on CI and failed every delegation in a fresh profile.
+  PowerShell itself is started from `%SystemRoot%\System32`, not by PATH.
+  The server starts its first listing in the background at startup
+  (`processes.warm()`) and never waits for it.
+- **The command key is ⌘ on a Mac** where Ctrl has a text meaning there:
+  Ctrl+K deletes to the line's end and Ctrl+F moves the cursor, in the editor
+  and in every Mac text field. So the ask box (K) and find (F) take ⌘ on a
+  Mac and Ctrl elsewhere (`modHeld`), labels and the help name the key that
+  works (`modKey`), and voice undo and redo press the editor's own keys
+  (⌘Z, ⌘⇧Z). Shortcuts with no Mac text meaning (Enter, S, R, M) accept
+  either. The help stays Ctrl+? everywhere: ⌘? is the Mac's Help menu.
+  `test/mac-keys.test.js` checks this on any system (Chrome reports a Mac).
+- **Paths arrive in the system's own form.** Windows paths are
+  `C:\…` in the page too: a leading `/` never means "absolute" there, a file
+  name is split on either separator, and a drive letter is not a URL scheme.
 - **What a machine cannot do is said, not failed** (`capabilities` in
   `GET /api/settings`): terminal windows (Linux with Alacritty and
   Python), sound on this machine, the room microphone (Linux with
@@ -64,13 +91,29 @@ place, never tested with `process.platform` where it is used:
   not from Unix permission bits (which Windows ignores). Chattering's
   folders sit in the person's profile, private by default.
 - **Windows process listing costs about a second** in PowerShell; hence the
-  background snapshot, which can be ten seconds old.
+  background snapshot, which can be ten seconds old. Until the server's first
+  listing arrives (a second or two after it starts), it sees no running
+  agent processes. A new process's identity still costs one PowerShell call
+  (cached while it lives).
+- **Windows has no polite stop for console programs**: cancelling a worker
+  ends it at once (Unix asks with SIGTERM first). Pi's session file is
+  appended line by line, so at worst the last line is cut short.
 - **The room microphone** stays Linux-only (PipeWire); the browser's
   microphone works everywhere.
 - **Notebooks need a `rat` that is not yet published.** The released `rat`
   (a9a74ed) lacks `run --doc` and `doctor --json`, which Chattering uses;
   the notebook tests say so and skip on CI until it is. Publishing rat
   makes them run everywhere.
+
+## CI notes
+
+- On macOS, setup-chrome's channel installs drop the `.app` from Chrome's
+  path; started from there, Chrome's helper processes die at birth and no
+  page answers. `.github/actions/chrome` hands on a path through a `.app`
+  link (setup-chrome#658).
+- Never run `chrome --version` on Windows (tests, CI steps): it opens a
+  browser and does not return. Tests ask `chromiumAvailable()`.
+- Tests press the system's command key (`MOD` in `test/helpers/chromium.js`).
 
 ## Verified
 
