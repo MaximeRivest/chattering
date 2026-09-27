@@ -40,9 +40,14 @@ async function signedIn(launcher, env) {
   throw new Error('Chattering did not come up');
 }
 async function status(base, token) {
-  let r;
-  try { r = await fetch(base + '/api/app/status', { headers: { Authorization: 'Bearer ' + token } }); }
-  catch (e) { throw new Error(`${base} did not answer: ${e.cause ? e.cause.code || e.cause.message : e.message}`); }
+  // A fresh connection each time: a kept-alive one may belong to a server
+  // this test stopped on the same port (Windows then answers ECONNRESET).
+  let r, last;
+  for (let i = 0; i < 5 && !r; i++) {
+    try { r = await fetch(base + '/api/app/status', { headers: { Authorization: 'Bearer ' + token, Connection: 'close' } }); }
+    catch (e) { last = e; await sleep(300); }
+  }
+  if (!r) throw new Error(`${base} did not answer: ${last.cause ? last.cause.code || last.cause.message : last.message}`);
   return r.json();
 }
 // What a failure needs: the end of the server's log, and Setup's.

@@ -33,10 +33,22 @@ async function stopAndRemove(child, dir, { graceMs = 3000 } = {}) {
     // virus scan) still holds: retried like the others, for about twenty
     // seconds by the clock. Node 24's rm does not retry by itself on every
     // code, so the count of attempts says nothing about the time.
-    const until = Date.now() + 20000;
+    const until = Date.now() + 60000;
     for (;;) {
-      try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); return; }
-      catch (e) { if (Date.now() > until || !['EPERM', 'EBUSY', 'ENOTEMPTY', 'EACCES'].includes(e.code)) throw e; await new Promise(r => setTimeout(r, 300)); }
+      try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); return; }
+      catch (e) {
+        if (!['EPERM', 'EBUSY', 'ENOTEMPTY', 'EACCES'].includes(e.code)) throw e;
+        if (Date.now() > until) {
+          // Say what is still there and who holds it: the next fix starts from that.
+          let left = [];
+          try { left = fs.readdirSync(dir, { recursive: true }).slice(0, 15); } catch {}
+          let holders = [];
+          try { holders = require('../../processes.js').list().filter(p => p.argv.some(a => a.includes(dir))).map(p => p.argv.join(' ').slice(0, 160)); } catch {}
+          e.message += `\nstill in the folder: ${left.join(', ') || '(nothing listed)'}\nprocesses naming it: ${holders.join(' | ') || 'none'}`;
+          throw e;
+        }
+        await new Promise(r => setTimeout(r, 300));
+      }
     }
   }
 }
