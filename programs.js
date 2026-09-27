@@ -18,7 +18,7 @@ const crypto = require('crypto');
 const { DatabaseSync } = require('node:sqlite');
 
 const FORMAT = 1;
-const SCHEMA = 4; // bump to rebuild every existing index from the log
+const SCHEMA = 6; // bump to rebuild every existing index from the log
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const CHUNK = 4 * 1024 * 1024;
 const FULL_EVERY_MS = 5 * 60 * 1000;
@@ -154,7 +154,24 @@ function ratingState(call, ratings) {
   const values = rs.map(r => says(r, call)).filter(v => v !== null).map(canonical);
   const verdicts = new Set(rs.map(r => r.verdict));
   const state = verdicts.size > 1 || new Set(values).size > 1 ? 'disputed' : rs[0].verdict;
-  return { state, people: rs.length, open: state === 'wrong' && !values.length ? 1 : 0 };
+  // The latest right answer someone gave for a wrong one, for the table.
+  const fixed = [...rs].reverse().find(r => r.verdict === 'wrong' && 'answer' in r);
+  return { state, people: rs.length, open: state === 'wrong' && !values.length ? 1 : 0, fix: fixed ? canonical(fixed.answer) : null };
+}
+
+// What the function tells the model, read from the system message FunctAI's
+// layouts write ("Function: name", the instruction, then the reply form),
+// and the allowed answers when the form lists them ("one of: a, b, c").
+// Best effort: a hand-written template has no such parts, and gives nulls.
+function readInstruction(system, answer = 'result') {
+  if (typeof system !== 'string' || !system.trim()) return { instruction: null, choices: null };
+  let text = system.replace(/^Function: [^\n]*\n+/, '');
+  const cut = text.search(/\n\n(?:Reply in exactly this form|Answer in this form|Reply with|Respond with|Your (?:input|output) fields|Output guidance|Input guidance)\b/);
+  const instruction = (cut >= 0 ? text.slice(0, cut) : text).trim() || null;
+  const esc = answer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = system.match(new RegExp('<' + esc + '>\\s*one of: ([^\\n<]+)')) || system.match(/\bone of: ([^\n<]+)/);
+  const choices = m ? m[1].split(',').map(x => x.trim()).filter(Boolean) : null;
+  return { instruction, choices: choices && choices.length > 1 && choices.length <= 60 ? choices : null };
 }
 
 // ---- the log folder, read line by line ------------------------------------------
@@ -198,7 +215,7 @@ function readSlice(abs, offset, length) {
 const CALL_COLUMNS = ['id', 'parent', 'root', 'name', 'module', 'kind', 'version', 'signature', 'answer', 'saved', 'file', 'line',
   'started', 'seconds', 'content', 'truncated', 'error_type', 'error_code', 'error_message', 'model', 'provider',
   'tokens_in', 'tokens_out', 'exchanges', 'cached', 'confidence', 'purpose', 'caller_kind', 'caller', 'caller_ref', 'person', 'host',
-  'language', 'functai', 'input_key', 'inputs_preview', 'outputs_preview', 'answer_json', 'search', 'src', 'src_offset', 'src_length'];
+  'language', 'functai', 'in_fields', 'out_fields', 'input_key', 'inputs_preview', 'outputs_preview', 'answer_json', 'search', 'src', 'src_offset', 'src_length'];
 
 function openDb(file) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -218,7 +235,7 @@ function openDb(file) {
     CREATE INDEX IF NOT EXISTS calls_caller_ref ON calls(caller_ref);
     CREATE TABLE IF NOT EXISTS ratings (id TEXT PRIMARY KEY, call TEXT NOT NULL, at TEXT, by TEXT, verdict TEXT, sample TEXT, raw TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS ratings_call ON ratings(call);
-    CREATE TABLE IF NOT EXISTS rating_state (call TEXT PRIMARY KEY, state TEXT NOT NULL, people INTEGER NOT NULL, open INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS rating_state (call TEXT PRIMARY KEY, state TEXT NOT NULL, people INTEGER NOT NULL, open INTEGER NOT NULL, fix TEXT);
     PRAGMA user_version = ${SCHEMA};`);
   return db;
 }
@@ -257,6 +274,10 @@ function callRow(rec, src, offset, length) {
     caller_ref: caller.conversation ? 'conversation:' + caller.conversation : caller.notebook ? 'notebook:' + caller.notebook : null,
     person: caller.user ? String(caller.user) : proc.user ? String(proc.user) : null, host: proc.host || null,
     language: proc.language || null, functai: proc.functai || null,
+    // The field names, even when values were not recorded (sizes always are):
+    // what the arrow signature is written from.
+    in_fields: JSON.stringify(Object.keys((rec.sizes && rec.sizes.inputs) || rec.inputs || {})),
+    out_fields: JSON.stringify(Object.keys((rec.sizes && rec.sizes.outputs) || rec.outputs || {})),
     input_key: content && rec.inputs ? sha(canonical(rec.inputs)) : null,
     inputs_preview: inputsPreview, outputs_preview: outputsPreview, answer_json: answerJson, search,
     src, src_offset: offset, src_length: length,
@@ -271,7 +292,7 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
   const getFile = db.prepare('SELECT offset, size FROM files WHERE path = ?');
   const hasRatings = db.prepare('SELECT 1 FROM ratings WHERE call = ? LIMIT 1');
   let seq = 0, lastRefresh = 0, lastFull = 0, knownDays = new Set();
-  const projectMemo = new Map();
+  const projectMemo = new Map(), describeMemo = new Map();
   // Chattering's own file in the log: one per process, never shared.
   const writerName = `chattering-${String(host).replace(/[^\w.-]+/g, '-')}-${process.pid}-${crypto.randomBytes(3).toString('hex')}.jsonl`;
 
@@ -287,7 +308,7 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
   }
   function restate(callIds) {
     const del = db.prepare('DELETE FROM rating_state WHERE call = ?');
-    const put = db.prepare('INSERT OR REPLACE INTO rating_state (call, state, people, open) VALUES (?, ?, ?, ?)');
+    const put = db.prepare('INSERT OR REPLACE INTO rating_state (call, state, people, open, fix) VALUES (?, ?, ?, ?, ?)');
     const answerOf = db.prepare('SELECT answer, answer_json, content FROM calls WHERE id = ?');
     for (const id of callIds) {
       const rs = ratingsOf(id);
@@ -295,7 +316,7 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
       // Enough of the call for the rules: its id, its answer's name and value.
       const call = c ? { id, program: { answer: c.answer }, outputs: c.answer_json != null ? { [c.answer]: JSON.parse(c.answer_json) } : null } : { id, outputs: null };
       const st = rs.length ? ratingState(call, rs) : null;
-      if (st) put.run(id, st.state, st.people, st.open); else del.run(id);
+      if (st) put.run(id, st.state, st.people, st.open, st.fix); else del.run(id);
     }
   }
 
@@ -368,21 +389,39 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
       SUM(purpose IS NULL AND error_type IS NOT NULL) AS errors, MIN(started) AS first, MAX(started) AS last,
       COUNT(DISTINCT version) AS versions, SUM(tokens_in) AS tokens_in, SUM(tokens_out) AS tokens_out
       FROM calls GROUP BY name, module`).all();
-    const latest = db.prepare(`SELECT kind, version, signature, answer, file, line, language, caller FROM calls
+    const latest = db.prepare(`SELECT kind, version, signature, answer, file, line, language, caller, in_fields, out_fields FROM calls
       WHERE name = ? AND module = ? ORDER BY started DESC, id DESC LIMIT 1`);
+    const answered = db.prepare(`SELECT COUNT(*) AS n FROM calls c LEFT JOIN rating_state s ON s.call = c.id
+      WHERE c.name = ? AND c.module = ? AND c.purpose IS NULL AND c.error_type IS NULL AND s.state IS NULL`);
     const since = iso(now() - 7 * 86400000);
     const recent = db.prepare('SELECT COUNT(*) AS n FROM calls WHERE name = ? AND module = ? AND purpose IS NULL AND started >= ?');
     const states = db.prepare(`SELECT s.state, SUM(s.open) AS open, COUNT(*) AS n FROM rating_state s JOIN calls c ON c.id = s.call
       WHERE c.name = ? AND c.module = ? GROUP BY s.state`);
     const langs = db.prepare('SELECT DISTINCT language FROM calls WHERE name = ? AND module = ? AND language IS NOT NULL');
+    // The instruction and allowed answers, read once per version from the
+    // newest call that recorded its messages.
+    const newestText = db.prepare(`SELECT id, version FROM calls WHERE name = ? AND module = ? AND content = 1 AND exchanges > 0 ORDER BY started DESC LIMIT 1`);
+    const described = key => {
+      const row = newestText.get(...key);
+      if (!row) return { instruction: null, choices: null };
+      const memo = key.join('\u0000') + '\u0000' + row.version;
+      if (!describeMemo.has(memo)) {
+        const rec = summaryCall(row.id), req = rec && rec.exchanges && rec.exchanges[0] && rec.exchanges[0].request;
+        describeMemo.set(memo, req ? readInstruction(req.system, (rec.program && rec.program.answer) || 'result') : { instruction: null, choices: null });
+      }
+      return describeMemo.get(memo);
+    };
     return rows.map(r => {
       const l = latest.get(r.name, r.module) || {};
+      const { instruction, choices } = described([r.name, r.module]);
       const ratings = { right: 0, wrong: 0, disputed: 0, open: 0 };
       for (const s of states.all(r.name, r.module)) { ratings[s.state] = s.n; ratings.open += s.open || 0; }
       const caller = callerOf(l);
       return {
         name: r.name, module: r.module, kind: l.kind || 'ai', version: l.version || null, signature: l.signature || null,
         answer: l.answer || 'result', file: l.file || null, line: l.line ?? null,
+        inputs: JSON.parse(l.in_fields || '[]'), outputs: JSON.parse(l.out_fields || '[]'), instruction, choices,
+        unjudged: answered.get(r.name, r.module).n,
         project: projectOf(l.file) || projectOf(caller.notebook) || null,
         languages: langs.all(r.name, r.module).map(x => x.language),
         calls: r.calls, useCalls: r.use_calls || 0, errors: r.errors || 0, recent: recent.get(r.name, r.module, since).n,
@@ -447,11 +486,13 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
     const secsOf = db.prepare('SELECT seconds FROM calls WHERE name = ? AND module = ? AND version IS ? AND purpose IS NULL ORDER BY seconds');
     const states = db.prepare(`SELECT s.state, COUNT(*) AS n FROM rating_state s JOIN calls c ON c.id = s.call
       WHERE c.name = ? AND c.module = ? AND c.version IS ? GROUP BY s.state`);
+    // Versions are named by when they first appeared: v1, v2, …
+    const order = [...rows].sort((a, b) => String(a.first).localeCompare(String(b.first))).map(v => v.version);
     return rows.map((v, i) => {
       const secs = secsOf.all(name, module, v.version).map(r => r.seconds);
       const ratings = { right: 0, wrong: 0, disputed: 0 };
       for (const s of states.all(name, module, v.version)) ratings[s.state] = s.n;
-      return { version: v.version, current: i === 0, first: v.first, last: v.last, useCalls: v.use_calls || 0, otherCalls: v.other_calls || 0,
+      return { version: v.version, n: order.indexOf(v.version) + 1, current: i === 0, first: v.first, last: v.last, useCalls: v.use_calls || 0, otherCalls: v.other_calls || 0,
         errors: v.errors || 0, p50: percentile(secs, 0.5), tokens: v.tokens == null ? null : Math.round(v.tokens),
         languages: String(v.languages || '').split(',').filter(Boolean), saved: v.saved || null, ratings,
         sample: v.version ? sampleScore(name, module, v.version) : null };
@@ -461,7 +502,7 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
   const RUN_FIELDS = `c.id, c.parent, c.root, c.name, c.module, c.kind, c.version, c.answer, c.started, c.seconds, c.content, c.error_type,
     c.error_code, c.error_message, c.model, c.provider, c.tokens_in, c.tokens_out, c.exchanges, c.cached, c.confidence, c.purpose,
     c.caller_kind, c.caller, c.person, c.host, c.language, c.inputs_preview, c.outputs_preview, c.answer_json,
-    s.state AS rating, s.people AS rated_by_n, s.open AS rating_open`;
+    s.state AS rating, s.people AS rated_by_n, s.open AS rating_open, s.fix AS rating_fix`;
   function runView(r) {
     const caller = callerOf(r);
     return {
@@ -472,6 +513,7 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
       confidence: r.confidence, purpose: r.purpose, caller, callerKind: r.caller_kind, person: r.person, host: r.host, language: r.language,
       inputs: r.inputs_preview, outputs: r.outputs_preview, answerValue: r.answer_json != null ? JSON.parse(r.answer_json) : undefined,
       rating: r.rating || null, ratedBy: r.rated_by_n || 0, ratingOpen: !!r.rating_open,
+      fix: r.rating_fix != null ? JSON.parse(r.rating_fix) : undefined,
     };
   }
 
@@ -480,6 +522,21 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
     if (o.version) { where.push('c.version = ?'); args.push(o.version); }
     if (o.purpose === 'evaluation' || o.purpose === 'optimization' || o.purpose === 'test') { where.push('c.purpose = ?'); args.push(o.purpose); }
     else if (o.purpose !== 'all') where.push('c.purpose IS NULL');
+    // What the page counts and slices by, before its own filters: how many
+    // calls are judged each way, and which answers the program gives.
+    const base = `FROM calls c LEFT JOIN rating_state s ON s.call = c.id WHERE ${where.join(' AND ')}`, baseArgs = [...args];
+    const counts = db.prepare(`SELECT SUM(c.error_type IS NOT NULL) AS failed, SUM(c.error_type IS NULL AND s.state IS NULL) AS unjudged,
+      SUM(s.state = 'right') AS right, SUM(s.state = 'wrong') AS wrong, SUM(s.state = 'disputed') AS disputed, SUM(s.open = 1) AS open,
+      COUNT(*) AS total ${base}`).get(...baseArgs);
+    for (const k of Object.keys(counts)) counts[k] = counts[k] || 0;
+    const answers = db.prepare(`SELECT c.answer_json AS a, COUNT(*) AS n ${base} AND c.answer_json IS NOT NULL AND length(c.answer_json) <= 120
+      GROUP BY c.answer_json ORDER BY n DESC LIMIT 12`).all(...baseArgs).map(r => ({ value: JSON.parse(r.a), n: r.n }));
+    if (o.judged === 'failed') where.push('c.error_type IS NOT NULL');
+    else if (o.judged === 'unjudged') where.push('c.error_type IS NULL AND s.state IS NULL');
+    else if (o.judged === 'wrong') where.push("s.state = 'wrong'");
+    else if (o.judged === 'right' || o.judged === 'disputed') { where.push('s.state = ?'); args.push(o.judged); }
+    else if (o.judged === 'open') where.push('s.open = 1');
+    if (o.answer !== undefined && o.answer !== '') { where.push('c.answer_json = ?'); args.push(canonical(JSON.parse(o.answer))); }
     if (o.status === 'error') where.push('c.error_type IS NOT NULL');
     else if (o.status === 'ok') where.push('c.error_type IS NULL');
     if (o.rating === 'unrated') where.push('s.state IS NULL');
@@ -497,7 +554,7 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
     const limit = Math.max(1, Math.min(500, Number(o.limit) || 50)), offset = Math.max(0, Number(o.offset) || 0);
     const total = db.prepare('SELECT COUNT(*) AS n ' + sql).get(...args).n;
     const list = db.prepare(`SELECT ${RUN_FIELDS} ${sql} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...args, limit, offset).map(runView);
-    return { total, runs: list, seq };
+    return { total, runs: list, seq, counts, answers };
   }
 
   function run(id) {
@@ -584,4 +641,4 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
   };
 }
 
-module.exports = { createProgramIndex, ratedRows, currentRatings, ratingState, wilson, newId, iso, canonical, readLines };
+module.exports = { createProgramIndex, readInstruction, ratedRows, currentRatings, ratingState, wilson, newId, iso, canonical, readLines };

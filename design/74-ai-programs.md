@@ -39,35 +39,45 @@ writer.
   every `rated` case of the contract (copied to `test/fixtures/functai-rated`),
   and a check on a real log gave identical rows in Chattering, FunctAI
   TypeScript and FunctAI Python.
-- **Where it shows.** Right panel → **Programs** (beside Files and Artifacts,
-  same All / Project switch; a program's project is the one holding its file
-  or its notebook). `#programs`: every program as a table. A program's page
-  (`#program={"name","module"}`): six numbers (calls with a 30-day strip,
-  failed, time p50/p95, tokens, rated, *right, measured*), then four tabs:
-  - **Calls**: input → output rows (use only by default; evaluation,
-    optimization and test calls are counted apart), filters (search, rating,
-    result, version, caller, where it came from), a call opened whole beside
-    the table: its fields, what the model saw (every request and reply),
-    who judged it, the calls it made or ran inside, and a link to the
-    conversation or notebook that called it. ✓ / ✗ on each row.
-  - **Review**: one call at a time, keys `1` right, `2` wrong, `j`/`k`;
-    queues: a random draw of 20, not rated yet, least sure first (when the
-    model gave probabilities), wrong-with-no-answer.
-  - **Versions**: per version: calls, failures, time, tokens, ratings, the
-    measured share; **compare** lines up inputs both versions answered,
-    differences first.
-  - **Data**: the rows with known answers, as FunctAI's `evaluate` and `.opt`
-    read them, with CSV and JSON-lines downloads and the Python and
-    TypeScript lines that read the same rows from the log.
-- **👎 is a correction form.** "What should `result` have been?" with the
-  answers this program gave elsewhere as one-click choices, reason tags, a
-  note; or "wrong, answer unknown", which stays in a queue for someone who
-  knows.
-- **Measured means drawn at random.** A random draw gives every rating its
-  id (`sample`); *right, measured* is computed from those ratings only, with a
-  Wilson 95% range, on the current version. Ratings people chose to make are
-  shown as counts and labelled as not a fair sample. A draw takes answered
-  calls only; failures are their own number.
+- **The job, and the page it makes.** *Show me what my AI program actually
+  does, and let me tell it when it is wrong, in seconds.* So the page is the
+  examples, not a dashboard (the first build was a dashboard: six number
+  cards, six filters, hashes and timings before any example; it lost to the
+  Program Atlas mockup and was rebuilt, 2026-09-27). Top to bottom:
+  - the promise: name, the instruction's first paragraph, and the **arrow
+    signature** (`message → shipping · billing · product · account`: the
+    input names, then the allowed answers when the reply form lists them,
+    else the output names);
+  - one sentence of use (`46 answers this week · 1 failure`) and **the one
+    number that matters**, *right, measured* — or, before anyone has checked,
+    "How often is it right? Nobody knows yet. **Check 20 random answers**";
+  - **Examples**: input → output rows. Pills show a slice (not judged, right,
+    wrong, disputed, failed); *it answers* shows the spread of answers as bars
+    that filter when clicked. A row opens **in place**: the whole input and
+    output, "Is **billing** right for this?" ✓ / ✗, and folded away what the
+    model saw (as a conversation) and details in words (when, from which
+    notebook or conversation, which model, how long). Judging moves on to the
+    next unjudged example; `j`/`k`, `1`/`2`, `esc`.
+  - ✗ asks one question: **"What should it have said?"**, with the allowed
+    answers as buttons (`1`–`9`), or a field shaped by the answer's type, a
+    note, and "I don't know the right answer". A wrong row then reads
+    ~~billing~~ ✗ wrong · should be **product**.
+  - **Check 20 random answers**: one at a time, dots filling green and red,
+    then "12 of 15 were right" and the rate with its likely range.
+  - **Compare versions** (only when there are two): the questions both
+    answered where the answers differ; click the answer that is right (one
+    click judges both), or "neither"; a scoreboard (v1 was right · v2 was
+    right · to judge) ends with what the change did.
+  - **Answer key**: the examples with a known right answer, what the next
+    version is tested against, with the two lines of Python and TypeScript
+    that read them, and CSV / JSON-lines downloads.
+  - **About**: the whole instruction, how it runs (models, time, tokens,
+    failures) in sentences, versions named v1, v2… (hashes in small print),
+    who calls it, where the code is.
+  Versions are named by first appearance, never by hash, on every screen. The
+  list (`#programs`, and right panel → **Programs**, same All / Project
+  switch) shows each program with its signature, its instruction and one line
+  of status.
 - **Agents.** Every Pi run Chattering starts gets
   `FUNCTAI_CALLER={"kind":"agent","conversation":<key>,"user":…}`, so a
   script an agent runs is linked to its conversation. With *record the calls
@@ -79,10 +89,11 @@ writer.
 
 ### Trade-offs, stated
 
-- **No typed correction form yet.** The log names a program's signature by
-  hash, not its field shapes, so the form is built from the current value's
-  JSON type plus the answers seen before (an enum's unseen choices are not
-  offered). Proposed contract addition: the signature's plain data (lmcc's
+- **The allowed answers are read from the prompt.** The log names a
+  program's signature by hash, not its field shapes, so the signature's
+  choices and the correction buttons come from the reply form FunctAI's
+  layouts write ("one of: a, b, c"), else from the answers seen, else a field
+  shaped by the current value. A hand-written template loses the choices. Proposed contract addition: the signature's plain data (lmcc's
   shared form) on the call record, or one `functai_program` line per version.
 - **Polling, not pushing.** An open program page asks every five seconds
   (one small request) whether the log changed; the index is read on demand.
