@@ -78,15 +78,8 @@ jobs:
       - name: Tests
         env:
           CHATTERING_TEST_CHROMIUM: ${{ steps.chrome.outputs.chrome-path }}
-        run: node --test --test-concurrency=4 --test-timeout=180000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=test-results.xml "test/*.test.js"
+        run: node scripts/test-each.js
 
-      - name: Test report
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: test-results-${{ matrix.os }}-${{ matrix.node }}
-          path: test-results.xml
-          if-no-files-found: ignore
 
   # The downloads, built and given to a stranger on every push.
   package:

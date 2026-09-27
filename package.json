@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node server.js",
-    "test": "node --test --test-concurrency=4 \"test/*.test.js\"",
+    "test": "node scripts/test-each.js",
     "runtime": "npm ci --prefix runtime --no-audit --no-fund"
   }
 }

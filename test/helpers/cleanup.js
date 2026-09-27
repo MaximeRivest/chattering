@@ -20,6 +20,14 @@ async function stopAndRemove(child, dir, { graceMs = 3000 } = {}) {
   // Linear backoff, about twenty seconds at most: a Pi worker takes a few
   // seconds to notice its server is gone, and Chrome's crash reporter can
   // outlive the browser writing into its profile.
-  if (dir) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  // Detached helpers outlive their server by design (delegated work
+  // survives a restart): end whatever still runs from inside this home.
+  if (dir) {
+    try {
+      const P = require('../../processes.js');
+      for (const p of P.list()) if (p.pid !== process.pid && p.argv.some(a => a.includes(dir))) P.stopTree(p.pid, 'SIGKILL');
+    } catch {}
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  }
 }
 module.exports = { stopAndRemove, exited };

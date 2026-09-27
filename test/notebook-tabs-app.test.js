@@ -118,7 +118,8 @@ test('a notebook runs on while you are elsewhere, and comes back as it was', { t
 
   // Run the first cell; the row appears, working.
   await evaluate(`window.first = docState; runDocCell(docState.editor.listCells()[0]); 0`);
-  await until(`streams.length === 1`, 'the run was not requested');
+  for (let i = 0; i < 160 && !(await evaluate(`streams.length === 1`)); i++) await new Promise(r => setTimeout(r, 50));
+  if (!(await evaluate(`streams.length === 1`))) assert.fail('the run was not requested; the page said: ' + await evaluate(`JSON.stringify({ toasts: [...document.querySelectorAll('.toast')].map(t => t.textContent), running: docState && docState.running, runner: !!(docState && docState.runner), cells: docState && docState.editor && docState.editor.listCells().length })`));
   await evaluate(`emit(0, { type: 'output', text: 'working on it\\n' })`);
   await until(`!!document.querySelector('.ag-row.ag-nb.working.current')`, 'the notebook row is not listed as running');
   assert.match(await evaluate(`document.querySelector('.ag-row.ag-nb .ag-dir').textContent`), /running a cell/);
