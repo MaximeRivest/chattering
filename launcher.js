@@ -39,6 +39,8 @@ const REPO = process.env.CHATTERING_RELEASE_REPO || 'MaximeRivest/chattering';
 // checkout run directly has no such parent; update is refused there.
 const INSTALL_HOME = path.basename(path.dirname(APP_DIR)) === 'versions' ? path.dirname(path.dirname(APP_DIR)) : null;
 
+// A reader that stops early (`chattering-app status | head -1`) is not an error.
+process.stdout.on('error', e => { if (e.code === 'EPIPE') process.exit(process.exitCode || 0); throw e; });
 const say = m => process.stdout.write(m + '\n');
 const fail = m => { process.stderr.write('chattering: ' + m + '\n'); process.exit(1); };
 const readJson = f => { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return null; } };
