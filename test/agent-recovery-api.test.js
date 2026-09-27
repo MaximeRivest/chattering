@@ -22,7 +22,7 @@ test('real host and panel recover saved failures without duplicate launches or s
     child.kill('SIGTERM'); const timeout = setTimeout(() => child.kill('SIGKILL'), 3000);
     try { await exited; } finally { clearTimeout(timeout); }
   };
-  t.after(async () => { ws?.close(); await stop(browser); await stop(server); fs.rmSync(home, { recursive: true, force: true, maxRetries: 5 }); });
+  t.after(async () => { ws?.close(); await require('./helpers/cleanup.js').stopAndRemove(browser, null); await stop(server); await require('./helpers/cleanup.js').stopAndRemove(null, home); });
   const agent = path.join(home, '.pi/agent'), dir = path.join(agent, 'sessions/fixture'), cache = path.join(home, 'cache');
   fs.mkdirSync(dir, { recursive: true }); fs.mkdirSync(cache);
   const source = path.join(dir, 'chat.jsonl');
@@ -122,7 +122,7 @@ if (process.argv[1] === ${JSON.stringify(path.join(root, 'server.js'))}) {
     await evaluate('document.querySelector("[data-recovery-action=resume]").click()');
     await waitFor(async () => (await get('/api/agents/recovery')).interrupted.length === 0);
     assert.deepEqual(exceptions, []);
-    ws.close(); ws = null; await stop(browser);
+    ws.close(); ws = null; await require('./helpers/cleanup.js').stopAndRemove(browser, null);
   } else {
     t.diagnostic('Chromium unavailable; testing resume over HTTP only');
     assert.equal((await post('/api/agents/recovery', { id: record.id, action: 'resume' })).status, 200);

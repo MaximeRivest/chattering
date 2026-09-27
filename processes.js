@@ -64,7 +64,7 @@ function darwinList() {
 let darwinBoot = null;
 function darwinIdentity(pid) {
   let text = '';
-  try { text = execFileSync('ps', ['-o', 'lstart=,pgid=,stat=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000 }).trim(); }
+  try { text = execFileSync('ps', ['-o', 'lstart=,pgid=,stat=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
   catch { return null; } // ps exits 1 when the pid is gone
   if (!text) return null;
   // lstart is a fixed 24-character date ("Sat Sep 26 17:31:52 2026").
@@ -117,7 +117,7 @@ function parseWinList(text) {
 function winRefresh() {
   if (winRefreshing) return;
   winRefreshing = true;
-  execFile(POWERSHELL, psArgs(WIN_LIST_SCRIPT), { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 20000, windowsHide: true }, (err, stdout) => {
+  execFile(POWERSHELL, psArgs(WIN_LIST_SCRIPT), { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 20000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }, (err, stdout) => {
     winRefreshing = false;
     if (!err) { winSnapshot = parseWinList(stdout); winSnapshotAt = Date.now(); }
   });
@@ -126,7 +126,7 @@ function winList() {
   // The first call waits for an answer; later ones get the snapshot and
   // start a fresh one when it is older than ten seconds.
   if (!winSnapshotAt) {
-    try { winSnapshot = parseWinList(execFileSync(POWERSHELL, psArgs(WIN_LIST_SCRIPT), { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 20000, windowsHide: true })); winSnapshotAt = Date.now(); }
+    try { winSnapshot = parseWinList(execFileSync(POWERSHELL, psArgs(WIN_LIST_SCRIPT), { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 20000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })); winSnapshotAt = Date.now(); }
     catch { return []; }
   } else if (Date.now() - winSnapshotAt > 10000) winRefresh();
   return winSnapshot;
@@ -141,13 +141,13 @@ function winIdentity(pid) {
   // now and then so a reuse between two looks is still noticed.
   if (!known || Date.now() - known.checkedAt > 30000) {
     let start = null;
-    try { start = execFileSync(POWERSHELL, psArgs(`(Get-Process -Id ${Number(pid)} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`), { encoding: 'utf8', timeout: 10000, windowsHide: true }).trim() || null; }
+    try { start = execFileSync(POWERSHELL, psArgs(`(Get-Process -Id ${Number(pid)} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`), { encoding: 'utf8', timeout: 10000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null; }
     catch { return null; }
     known = { start, checkedAt: Date.now() };
     winStarts.set(pid, known);
   }
   if (!winBoot) {
-    try { winBoot = execFileSync(POWERSHELL, psArgs("(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')"), { encoding: 'utf8', timeout: 10000, windowsHide: true }).trim() || 'unknown'; }
+    try { winBoot = execFileSync(POWERSHELL, psArgs("(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')"), { encoding: 'utf8', timeout: 10000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || 'unknown'; }
     catch { winBoot = 'unknown'; }
   }
   // Windows has no process groups; a detached child is its own tree root.

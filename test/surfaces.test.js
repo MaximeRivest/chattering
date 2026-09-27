@@ -128,7 +128,7 @@ test('real app surfaces follow the theme together, including nested painted edge
     child.kill('SIGTERM'); const timer = setTimeout(() => child.kill('SIGKILL'), 3000);
     try { await done; } finally { clearTimeout(timer); }
   };
-  t.after(async () => { ws?.close(); await stop(browser); await stop(server); fs.rmSync(home, { recursive: true, force: true }); });
+  t.after(async () => { ws?.close(); await require('./helpers/cleanup.js').stopAndRemove(browser, null); await stop(server); await require('./helpers/cleanup.js').stopAndRemove(null, home); });
   const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
   const port = socket.address().port; await new Promise(r => socket.close(r));
   registerConsole(port, TEST_TOKEN);

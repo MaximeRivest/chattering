@@ -30,8 +30,8 @@ test('back and forward through the screens', { timeout: 90000 }, async t => {
   };
   t.after(async () => {
     ws?.close();
-    await stop(browser); await stop(server);
-    fs.rmSync(home, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    await require('./helpers/cleanup.js').stopAndRemove(browser, null); await stop(server);
+    await require('./helpers/cleanup.js').stopAndRemove(null, home);
   });
   const agent = path.join(home, '.pi/agent'), sessionDir = path.join(agent, 'sessions/fixture');
   fs.mkdirSync(sessionDir, { recursive: true });

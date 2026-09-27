@@ -55,8 +55,10 @@ test('large result sets are explicitly marked incomplete', async t => {
 });
 test('activity is scoped, ordered, capped, and never reclassifies unknown writes', async t => {
   const root = await fixture(t);
-  const ledger = new FileLedger(path.join(root, 'ledger.db'));
-  t.after(() => ledger.close());
+  // Its own folder, closed before removed: Windows cannot delete an open database.
+  const dbDir = await fs.mkdtemp(path.join(os.tmpdir(), 'files-browser-db-'));
+  const ledger = new FileLedger(path.join(dbDir, 'ledger.db'));
+  t.after(async () => { ledger.close(); await fs.rm(dbDir, { recursive: true, force: true }); });
   for (const [id, ts, actor, conv_key, project, outcome] of [
     ['a', 10, 'ai', 'c1', 'p', 'applied'], ['b', 20, 'human', null, 'p', 'applied'],
     ['c', 30, 'external', null, 'p', 'applied'], ['d', 40, 'ai', 'c2', 'other', 'applied'],

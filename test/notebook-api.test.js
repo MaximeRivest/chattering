@@ -60,7 +60,7 @@ async function bootServer(t, extraEnv = {}, { sessionCwd = null } = {}) {
     server.kill('SIGTERM');
     await new Promise(r => server.on('exit', r));
     // A stopping kernel may still flush its log; retry the removal.
-    fs.rmSync(home, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    await require('./helpers/cleanup.js').stopAndRemove(null, home);
   });
   const post = (p, body) => fetch(base + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
   return { home, base, post, log: () => log, fixtureKey };

@@ -74,7 +74,7 @@ test('worktrees: readHead, readRemoteUrl, and listWorktrees see through the .git
   assert.strictEqual(await gm.readRemoteUrl(wt), 'https://example.com/u/r.git');
   assert.strictEqual(await gm.findGitRoot(path.join(wt)), wt);
   const expected = git(root, 'worktree', 'list', '--porcelain').split('\n')
-    .filter(l => l.startsWith('worktree ')).map(l => l.slice(9)).sort();
+    .filter(l => l.startsWith('worktree ')).map(l => path.resolve(l.slice(9))).sort(); // native, as listWorktrees answers (git writes / on Windows)
   assert.deepStrictEqual((await gm.listWorktrees(root)).sort(), expected);
   assert.deepStrictEqual((await gm.listWorktrees(wt)).sort(), expected);
   // A worktree whose folder is gone is skipped, never thrown.

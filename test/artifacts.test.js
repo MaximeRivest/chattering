@@ -58,7 +58,7 @@ test('a real server: versions follow the head, the preview origin serves them, w
     const timer = setTimeout(() => child.kill('SIGKILL'), 3000); await exited; clearTimeout(timer);
   };
   // Pi workers finish within seconds of the server's exit: the removal retries (helpers/cleanup.js).
-  t.after(async () => { ws?.close(); await stop(browser); await stop(server); await require('./helpers/cleanup.js').stopAndRemove(null, home); });
+  t.after(async () => { ws?.close(); await require('./helpers/cleanup.js').stopAndRemove(browser, null); await stop(server); await require('./helpers/cleanup.js').stopAndRemove(null, home); });
 
   // Two versions of the page, captured after two tool calls, as the
   // checkpoint extension does during a run.

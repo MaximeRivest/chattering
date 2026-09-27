@@ -223,8 +223,7 @@ class CheckpointStore {
       const f = await fsp.open(temp, 'wx', 0o600);
       try { await f.writeFile(packed); await f.sync(); } finally { await f.close(); }
       try { await fsp.link(temp, dest); } catch (e) { if (e.code !== 'EEXIST') throw e; }
-      const directory = await fsp.open(path.dirname(dest), 'r');
-      try { await directory.sync(); } finally { await directory.close(); }
+      require('./platform.js').syncDirSync(path.dirname(dest)); // nothing to do on Windows, which journals the link
     } finally { await fsp.rm(temp, { force: true }); }
     return oid;
   }
