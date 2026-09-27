@@ -24,7 +24,8 @@ async function firstConversation({ base, token, home, step = () => {} }) {
   const slash = p => p.split(path.sep).join('/'); // Git Bash reads C:/x
   const mark = path.join(work, 'tool-ran.txt'), probe = path.join(work, 'probe.ps1'), seen = path.join(work, 'window.txt');
   if (process.platform === 'win32') fs.writeFileSync(probe, WINDOW_PROBE);
-  const command = `echo tool-ran > "${slash(mark)}"` + (process.platform === 'win32' ? ` && powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${slash(probe)}" "${slash(seen)}"` : '');
+  const powershell = process.platform === 'win32' ? slash(path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')) : '';
+  const command = `echo tool-ran > "${slash(mark)}"` + (process.platform === 'win32' ? ` && "${powershell}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${slash(probe)}" "${slash(seen)}"` : '');
   const model = await fakeOpenAI({ models: ['stranger-model'], reply: p => {
     const text = JSON.stringify(p.messages);
     const last = (p.messages || []).at(-1) || {};
@@ -73,6 +74,7 @@ async function firstConversation({ base, token, home, step = () => {} }) {
     assert.match(transcript(), /The check ran/, 'the agent finished its turn' + why());
     if (process.platform === 'win32') {
       for (let i = 0; i < 300 && !fs.existsSync(seen); i++) await new Promise(r => setTimeout(r, 200));
+      assert.ok(fs.existsSync(seen), 'the window probe answered' + why());
       assert.equal(fs.readFileSync(seen, 'utf8').trim(), 'False', 'the agent’s command opened no window');
       step('the agent ran a command, and no window opened');
     } else step('the agent ran a command with its bash tool');
