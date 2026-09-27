@@ -64,10 +64,13 @@ jobs:
 
       # The first minutes in this system's browser, photographed, from the
       # download itself: kept with the run to look at.
+      # setup-chrome has no Chrome for Windows on ARM: photographed elsewhere.
       - name: Chrome
         id: chrome
+        if: runner.os != 'Windows' || runner.arch != 'ARM64'
         uses: ./.github/actions/chrome
       - name: The first minutes, photographed
+        if: runner.os != 'Windows' || runner.arch != 'ARM64'
         env:
           CHATTERING_TEST_CHROMIUM: ${{ steps.chrome.outputs.chrome-path }}
         run: node scripts/stranger-screens.js first-minutes --app "${{ steps.unpack.outputs.dir }}"
