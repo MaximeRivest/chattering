@@ -13,7 +13,7 @@ test('real SDK in isolated processes: environment, tool execution, dialogs, idle
   skip: !available && 'Pi executable is unavailable; real SDK integration is not validated', timeout: 60000,
 }, async t => {
   const root = await fs.mkdtemp(path.join(os.homedir(), '.pisdk-real-test-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  t.after(() => require('./helpers/cleanup.js').stopAndRemove(null, root)); // ends what still runs from here, retries (Windows: open files)
   const agent = path.join(root, '.pi', 'agent'); await fs.mkdir(agent, { recursive: true });
   await fs.writeFile(path.join(agent, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: 'one', defaultThinkingLevel: 'off' }));
   // No inherited credentials, user settings, extensions, or provider endpoints.

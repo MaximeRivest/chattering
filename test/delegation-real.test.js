@@ -23,7 +23,7 @@ test('real Pi runner persists a valid mode contract and blocks a changed snapsho
   skip: !pi && 'Pi is not installed; real runner validation is blocked', timeout: 45000,
 }, async t => {
   const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'delegation-real-')));
-  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  t.after(() => require('./helpers/cleanup.js').stopAndRemove(null, home)); // ends what still runs from here, retries (Windows: open files)
   const agent = path.join(home, '.pi', 'agent'); await fs.mkdir(agent, { recursive: true });
   await fs.writeFile(path.join(agent, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: 'one', defaultThinkingLevel: 'off', retry: { enabled: true, maxRetries: 2, baseDelayMs: 50 } }));
   const parent = path.join(home, 'parent.jsonl');
@@ -72,7 +72,7 @@ test('real Pi worker stopped by a usage limit continues on the same session with
   skip: !pi && 'Pi is not installed; real runner validation is blocked', timeout: 60000,
 }, async t => {
   const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'delegation-resume-')));
-  t.after(() => fs.rm(home, { recursive: true, force: true }));
+  t.after(() => require('./helpers/cleanup.js').stopAndRemove(null, home)); // ends what still runs from here, retries (Windows: open files)
   const agent = path.join(home, '.pi', 'agent'); await fs.mkdir(agent, { recursive: true });
   await fs.writeFile(path.join(agent, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: 'one', defaultThinkingLevel: 'off', retry: { enabled: true, maxRetries: 1, baseDelayMs: 20 } }));
   const parent = path.join(home, 'parent.jsonl');

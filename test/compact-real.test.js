@@ -16,7 +16,10 @@ test('compact: both engines write a compaction entry and continue from it', {
   skip: !available && 'Pi executable is unavailable', timeout: 120000,
 }, async t => {
   const root = await fs.mkdtemp(path.join(os.homedir(), '.compact-real-test-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  // The shared cleanup: it ends what still runs from this home (a Pi worker
+  // notices a few seconds late) and retries, as Windows cannot delete an
+  // open database.
+  t.after(() => require('./helpers/cleanup.js').stopAndRemove(null, root));
   const agent = path.join(root, '.pi', 'agent'); await fs.mkdir(agent, { recursive: true });
   // keepRecentTokens 1: a three-message conversation has something to compact.
   await fs.writeFile(path.join(agent, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: 'one', defaultThinkingLevel: 'off', compaction: { keepRecentTokens: 1 } }));

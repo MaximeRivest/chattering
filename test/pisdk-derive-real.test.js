@@ -12,7 +12,7 @@ test('installed SDK: a derivation is one raw completion on a private snapshot wi
   skip: !available && 'Pi is unavailable', timeout: 60000,
 }, async t => {
   const root = await fs.mkdtemp(path.join(os.homedir(), '.pisdk-derive-test-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  t.after(() => require('./helpers/cleanup.js').stopAndRemove(null, root)); // ends what still runs from here, retries (Windows: open files)
   const agent = path.join(root, '.pi', 'agent'); await fs.mkdir(agent, { recursive: true });
   await fs.writeFile(path.join(agent, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: 'one', defaultThinkingLevel: 'off' }));
   const env = { ...require('./helpers/home-env.js').systemEnv(), ...require('./helpers/home-env.js').homeEnv(root), PATH: process.env.PATH, PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
