@@ -8,12 +8,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
-const { chromiumBinary } = require('./helpers/chromium.js');
+const { chromiumBinary, chromiumAvailable } = require('./helpers/chromium.js');
 const { viewerBrowser } = require('./helpers/viewer-browser.js');
 
 test('the side list: opened conversations, previews, typing dots, unread dot, close with undo', { timeout: 60000 }, async t => {
-  if (spawnSync(chromiumBinary(), ['--version']).error) return t.skip('chromium is not installed');
+  if (!chromiumAvailable()) return t.skip('chromium is not installed');
   const { home, base, work, auth, evaluate: ev, until, screenshot, exceptions } = await viewerBrowser(t);
   const fixture = path.join(home, '.pi/agent/sessions/fixture');
   const keys = {};

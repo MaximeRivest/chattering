@@ -548,7 +548,7 @@ function peopleInProject(name) {
   return peopleOthersHere().filter(p => {
     if (p.route === 'project:' + name) return true;
     if (p.route.startsWith('conversation:')) { const s = list.find(x => x.key === p.route.slice(13)); return !!s && (typeof projectOf === 'function' ? projectOf(s) : s.project) === name; }
-    if (p.route.startsWith('file:')) { const f = p.route.slice(5); return !!cwd && (f === cwd || f.startsWith(cwd + '/')); }
+    if (p.route.startsWith('file:')) { const f = p.route.slice(5); return !!cwd && pathWithin(f, cwd); }
     return false;
   });
 }
@@ -593,8 +593,9 @@ function peopleActivityMaybeRefresh(d) {
 function peopleActivityAgo(ts) { return typeof ago === 'function' ? ago(Date.now() - ts) + ' ago' : new Date(ts).toLocaleString(); }
 function peopleActivityRel(p, root) {
   const cwd = typeof projectOverview !== 'undefined' && projectOverview && projectOverview.cwd ? String(projectOverview.cwd).replace(/\/$/, '') : '';
-  const base = root && p.startsWith(root + '/') ? root : cwd && p.startsWith(cwd + '/') ? cwd : '';
-  return base ? p.slice(base.length + 1) : p;
+  const under = dir => !!dir && pathWithin(p, dir) && !pathWithin(dir, p);
+  const base = under(root) ? root : under(cwd) ? cwd : '';
+  return base ? p.slice(base.replace(/[\\/]+$/, '').length + 1) : p;
 }
 function renderProjectPeopleActivity() {
   const host = $('pPeopleDid');

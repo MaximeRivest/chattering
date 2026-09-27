@@ -175,7 +175,7 @@ function createRecords(deps) {
     const raw = String(id || '').trim();
     if (!raw) throw new Error('missing conversation id');
     if (idx[raw]) return raw;
-    if (raw.startsWith('/')) {
+    if (path.isAbsolute(raw)) {
       const k = keyForSessionPath(raw);
       if (k) return k;
     }

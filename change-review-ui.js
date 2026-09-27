@@ -167,7 +167,7 @@ function crFileCard(s, file) {
   card.querySelector('[data-cr-live]').onclick = e => {
     e.preventDefault();
     const root = s.step ? s.steps.find(t => t.call === s.step)?.root : s.root;
-    const full = s.schema === 2 ? file.livePath : file.path.startsWith('/') ? file.path : root ? root + '/' + file.path : null;
+    const full = s.schema === 2 ? file.livePath : isFullPath(file.path) ? file.path : root ? root + '/' + file.path : null;
     if (!full) return errToast('The live file location is unavailable.');
     return openLiveFile(full, { project: s.project, root, back: currentHash,
       reviewRef: s.schema === 2 || s.coverage || s.step ? { id: s.id, step: s.step, path: file.path, scope: s.scope || 'task' } : null,

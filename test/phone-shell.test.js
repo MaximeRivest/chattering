@@ -67,7 +67,8 @@ test('phone shell: bottom bar, sheets, one-row head, back hook, desktop untouche
   await ev(`document.querySelector('#agentsUnread .ag-row[data-key=${JSON.stringify(keys.alpha)}]').click()`);
   await until(`viewKind==='conversation' && current?.key===${JSON.stringify(keys.alpha)} && $('agentsPop').hidden`, 'a row opens and the sheet closes');
   assert.equal(await ev(`document.body.classList.contains('phone-sheet')`), false);
-  assert.equal(await ev(`(()=>{const t=$('chTitle').getBoundingClientRect();return t.width>innerWidth*0.5})()`), true, 'the title has the row');
+  // The head is drawn just after the view switches: wait for it rather than read once.
+  await until(`(()=>{const t=$('chTitle')?.getBoundingClientRect();return !!t && t.width>innerWidth*0.5})()`, 'the title has the row');
   assert.equal(await ev(`$('phoneMore').checkVisibility() && ['newLoose','brand','activeBtn','chNew','chMove','barFold'].every(id=>!$(id).checkVisibility())`), true, 'one ⋯ instead of nine controls');
   assert.equal(await ev(`(()=>{const c=$('composerDock').getBoundingClientRect(),b=$('phoneBar').getBoundingClientRect();return Math.abs(c.bottom-b.top)<1})()`), true, 'the composer sits on the bar');
   // The share control fills in from a request of its own: wait for it, as

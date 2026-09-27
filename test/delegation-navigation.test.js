@@ -7,12 +7,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
-const { chromiumBinary } = require('./helpers/chromium.js');
+const { chromiumBinary, chromiumAvailable } = require('./helpers/chromium.js');
 const { viewerBrowser } = require('./helpers/viewer-browser');
 
 test('entry links land on abandoned branches, open folded tools, follow Back, and never write the transcript', { timeout: 60000 }, async t => {
-  if (spawnSync(chromiumBinary(), ['--version']).error) return t.skip('chromium is not installed');
+  if (!chromiumAvailable()) return t.skip('chromium is not installed');
   const { home, base, auth, evaluate: ev, until, exceptions } = await viewerBrowser(t);
   const file = path.join(home, '.pi/agent/sessions/fixture/parent.jsonl');
   const at = i => `2026-09-01T12:00:${String(i).padStart(2, '0')}Z`;

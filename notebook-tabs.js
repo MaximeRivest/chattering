@@ -44,7 +44,7 @@ const NotebookTabs = (() => {
     let rows = [];
     try { rows = JSON.parse(localStorage.getItem(STORE) || '[]'); } catch {}
     for (const r of Array.isArray(rows) ? rows : []) {
-      if (!r || typeof r.path !== 'string' || !r.path.startsWith('/')) continue;
+      if (!r || !isFullPath(r.path)) continue;
       const e = make(r.path, r.project);
       e.listedAt = Number(r.listedAt) || e.listedAt;
       e.last = r.last && typeof r.last === 'object' ? r.last : null;

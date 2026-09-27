@@ -44,4 +44,11 @@ function chromiumBinary() {
 // store make it ask nobody. The rest keep a headless run quiet and alone.
 const CHROMIUM_TEST_FLAGS = ['--headless', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--use-mock-keychain', '--password-store=basic',
   '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-sync', '--disable-component-update'];
-module.exports = { chromiumBinary, CHROMIUM_TEST_FLAGS };
+// Is the test browser there? Found, never run: on Windows `chrome.exe
+// --version` opens a browser and does not return, so asking it would hang.
+function chromiumAvailable() {
+  const bin = chromiumBinary();
+  if (path.isAbsolute(bin)) { try { return fs.statSync(bin).isFile(); } catch { return false; } }
+  return !!require('../../platform.js').findOnPath(bin);
+}
+module.exports = { chromiumBinary, chromiumAvailable, CHROMIUM_TEST_FLAGS };

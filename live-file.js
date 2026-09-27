@@ -436,7 +436,7 @@ async function liveFileHover(ws, line) {
   return [marker, s.blame.get(key)].filter(Boolean).join('\n');
 }
 function liveFileNavigate(ws, location) {
-  if (fileWs !== ws || !location || typeof location.path !== 'string' || !location.path.startsWith('/')) return;
+  if (fileWs !== ws || !location || !isFullPath(location.path)) return;
   return openLiveFile(location.path, { project: ws.project, root: ws.touched.repoRoot, line: Number(location.line) || 1, back: fileWsHash(ws) });
 }
 function liveFileStash(ws) {

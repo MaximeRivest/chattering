@@ -653,7 +653,7 @@
     let best = null;
     for (const it of items()) {
       if (it.widget || !file) continue;
-      if (file === it.path || file.startsWith(it.path.replace(/\/$/, '') + '/')) if (!best || it.path.length > best.path.length) best = it;
+      if (pathWithin(file, it.path)) if (!best || it.path.length > best.path.length) best = it;
     }
     return best;
   }

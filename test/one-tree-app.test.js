@@ -8,13 +8,13 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
-const { spawn, spawnSync } = require('node:child_process');
-const { chromiumBinary } = require('./helpers/chromium.js');
+const { spawn } = require('node:child_process');
+const { chromiumBinary, chromiumAvailable } = require('./helpers/chromium.js');
 
 const browserBin = chromiumBinary();
 
 test('one head: side-by-side answers, instant moves, versions, shared head, phone swipe, sends from the head', { timeout: 90000 }, async t => {
-  if (spawnSync(browserBin, ['--version']).error) return t.skip('chromium is not installed');
+  if (!chromiumAvailable()) return t.skip('chromium is not installed');
   const root = path.join(__dirname, '..'), home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'one-tree-')));
   const agent = path.join(home, '.pi/agent'), dir = path.join(agent, 'sessions/fixture');
   fs.mkdirSync(dir, { recursive: true }); fs.mkdirSync(path.join(home, 'work'));

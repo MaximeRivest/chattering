@@ -5,8 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
-const {spawnSync} = require('node:child_process');
-const { chromiumBinary } = require('./helpers/chromium.js');
+const { chromiumBinary, chromiumAvailable } = require('./helpers/chromium.js');
 const source = fs.readFileSync(path.join(__dirname, '../app.html'), 'utf8');
 const start = source.indexOf('function projectSetupDialog(');
 const end = source.indexOf("$('newProject').onclick", start);
@@ -26,10 +25,12 @@ test('folder preview preserves parent and matches new-name normalization', () =>
 
 test('project setup works in a real browser without starting agents', async t => {
   const binary = chromiumBinary();
-  const probe = spawnSync(binary, ['--version'], {encoding: 'utf8'});
-  if (probe.error) { t.skip('chromium is not installed (or set CHATTERING_TEST_CHROMIUM)'); return; }
+  if (!chromiumAvailable()) { t.skip('chromium is not installed (or set CHATTERING_TEST_CHROMIUM)'); return; }
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'project-setup-ui-')));
-  t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+  // One cleanup, in this order: Chrome's whole tree (on Windows it holds its
+  // profile folder open), then the folder.
+  let browser = null;
+  t.after(() => require('./helpers/cleanup.js').stopAndRemove(browser, dir));
   const checks = `
 const check = (value, message) => { if (!value) throw new Error(message); };
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -93,9 +94,8 @@ async function fetch() { return {json: async () => ({version:setupVersion,path:'
   const file = path.join(dir, 'test.html'); fs.writeFileSync(file, html);
   // Driven over the DevTools protocol, as the other browser tests are: the
   // one-shot --dump-dom mode can wait out its time budget on current Chrome.
-  const browser = require('node:child_process').spawn(binary, [...require('./helpers/chromium.js').CHROMIUM_TEST_FLAGS, '--window-size=390,844', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--no-first-run',
+  browser = require('node:child_process').spawn(binary, [...require('./helpers/chromium.js').CHROMIUM_TEST_FLAGS, '--window-size=390,844', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--no-first-run',
     '--user-data-dir=' + path.join(dir, 'profile'), '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
-  t.after(() => { try { browser.kill(); } catch {} });
   const endpoint = await new Promise((resolve, reject) => {
     let err = ''; const timer = setTimeout(() => reject(new Error(err)), 15000);
     browser.stderr.on('data', d => { err += d; const m = err.match(/DevTools listening on (ws:\/\/\S+)/); if (m) { clearTimeout(timer); resolve(m[1]); } });

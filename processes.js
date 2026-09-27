@@ -122,9 +122,15 @@ function winRefresh() {
     if (!err) { winSnapshot = parseWinList(stdout); winSnapshotAt = Date.now(); }
   });
 }
+// A long-running caller (the server) starts the first Windows listing at
+// startup and never waits for it: PowerShell takes seconds there, and a
+// blocked server answers nobody. Until that answer, no processes are seen.
+function warm() { if (PLATFORM === 'win32' && !winSnapshotAt) winRefresh(); }
 function winList() {
-  // The first call waits for an answer; later ones get the snapshot and
-  // start a fresh one when it is older than ten seconds.
+  // A one-off caller's first call waits for an answer; later ones get the
+  // snapshot and start a fresh one when it is older than ten seconds. After
+  // warm(), nothing waits: the listing under way answers soon.
+  if (!winSnapshotAt && winRefreshing) return winSnapshot;
   if (!winSnapshotAt) {
     try { winSnapshot = parseWinList(execFileSync(POWERSHELL, psArgs(WIN_LIST_SCRIPT), { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 20000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })); winSnapshotAt = Date.now(); }
     catch { return []; }
@@ -196,4 +202,4 @@ function stopTree(pid, signal = 'SIGTERM') {
   }
 }
 
-module.exports = { reliable, list, identity, cwd, stopTree, splitWindowsCommandLine, parseWinList };
+module.exports = { reliable, list, warm, identity, cwd, stopTree, splitWindowsCommandLine, parseWinList };

@@ -9,7 +9,7 @@ const path = require('node:path');
 const net = require('node:net');
 const { spawn, spawnSync } = require('node:child_process');
 const preview = require('../preview.js');
-const { chromiumBinary } = require('./helpers/chromium.js');
+const { chromiumBinary, chromiumAvailable } = require('./helpers/chromium.js');
 
 const freePort = async () => { const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); const p = s.address().port; await new Promise(r => s.close(r)); return p; };
 
@@ -159,7 +159,7 @@ test('a real server: versions follow the head, the preview origin serves them, w
 
   // ---- the browser --------------------------------------------------------
   const bin = chromiumBinary();
-  if (spawnSync(bin, ['--version']).error) return t.skip('chromium is not installed');
+  if (!chromiumAvailable()) return t.skip('chromium is not installed');
   browser = spawn(bin, [...require('./helpers/chromium.js').CHROMIUM_TEST_FLAGS, '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--disable-sync', '--no-first-run', '--user-data-dir=' + path.join(home, 'browser'), '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   const endpoint = await new Promise((resolve, reject) => {
     let out = ''; const timer = setTimeout(() => reject(Error(out)), 10000);

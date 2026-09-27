@@ -135,7 +135,7 @@ test('voice commands on the page: cursor, buttons, folds, scrolling, zen, tree, 
   assert.match(await ev(`voicePicks().items.find(it => it.kind === 'mark').title`), /· project /);
 
   // A file: find (parse config finds parse_config), select, code chunks.
-  const notes = await ev(`sessions.find(s => s.key === 'pi:fixture/work.jsonl').cwd + '/notes.md'`);
+  const notes = path.join(await ev(`sessions.find(s => s.key === 'pi:fixture/work.jsonl').cwd`), 'notes.md');
   await ev(`openLiveFile(${JSON.stringify(notes)})`);
   await until(`voiceEditor() && voiceEditor().listCells && voiceEditor().listCells().length === 2`, 'the notebook did not open');
   const selected = `(() => { const s = voiceEditor().view.state; return s.sliceDoc(s.selection.main.from, s.selection.main.to); })()`;

@@ -115,6 +115,7 @@ let LAN_TOKEN = loadLanToken();
 const authGuard = require('./authguard.js');
 const runtimeLib = require('./runtime.js');
 const processesLib = require('./processes.js');
+processesLib.warm(); // Windows: the first process listing starts now, in the background
 const frontDoor = require('./frontdoor.js');
 const signInLimiter = authGuard.createLimiter();
 const signInLog = authGuard.createAuthLog(path.join(DATA_DIR, 'sign-ins.jsonl'));

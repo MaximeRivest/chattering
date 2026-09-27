@@ -15,14 +15,13 @@
 // (test/conversation-reader.test.js), which is why the suite never caught
 // this. These scenarios run the REAL production esc.
 const { describe, it, before } = require('node:test');
-const { spawnSync } = require('node:child_process');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const http = require('node:http');
 const os = require('node:os');
 const { spawn } = require('node:child_process');
-const { chromiumBinary } = require('./helpers/chromium.js');
+const { chromiumBinary, chromiumAvailable } = require('./helpers/chromium.js');
 
 const root = path.join(__dirname, '..');
 const app = fs.readFileSync(path.join(root, 'app.html'), 'utf8');
@@ -56,7 +55,7 @@ describe('Scenario: JSON tokens survive the HTML round-trip', () => {
   // A plain Chromium (test/helpers/chromium.js). Without one, the round-trip
   // is skipped and the source-level scenarios above still guard the fix.
   const chromium = chromiumBinary();
-  const haveChromium = !spawnSync(chromium, ['--version']).error;
+  const haveChromium = chromiumAvailable();
 
   before(async () => {
     if (!haveChromium) return;

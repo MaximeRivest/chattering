@@ -9,8 +9,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
-const { spawn, spawnSync } = require('node:child_process');
-const { chromiumBinary } = require('./helpers/chromium.js');
+const { spawn } = require('node:child_process');
+const { chromiumBinary, chromiumAvailable } = require('./helpers/chromium.js');
 const pause = ms => new Promise(r => setTimeout(r, ms));
 
 test('real host and panel recover saved failures without duplicate launches or stale writes', { timeout: 60000 }, async t => {
@@ -67,9 +67,11 @@ if (process.argv[1] === ${JSON.stringify(path.join(root, 'server.js'))}) {
     server.stdout.on('data', b => log += b); server.stderr.on('data', b => log += b);
   };
   const base = 'http://127.0.0.1:' + port, key = 'pi:fixture/chat.jsonl';
-  const get = async route => { const r = await fetch(base + route, { signal: AbortSignal.timeout(3000) }); assert.ok(r.ok, route); return r.json(); };
+  // A request that times out names its route: a slow system's failure then says where.
+  const named = (route, p) => p.catch(e => { throw Object.assign(new Error(`${route}: ${e.message}`), { cause: e }); });
+  const get = async route => { const r = await named(route, fetch(base + route, { signal: AbortSignal.timeout(3000) })); assert.ok(r.ok, route); return r.json(); };
   const post = async (route, body) => {
-    const r = await fetch(base + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) });
+    const r = await named(route, fetch(base + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) }));
     return { status: r.status, body: await r.json() };
   };
   const waitFor = async predicate => {
@@ -87,7 +89,7 @@ if (process.argv[1] === ${JSON.stringify(path.join(root, 'server.js'))}) {
   await waitFor(async () => (await get('/api/sessions')).some(s => s.key === key));
   assert.equal((await get('/api/agents/recovery')).interrupted[0].id, record.id, 'restart lost interruption');
 
-  if (!spawnSync(chromiumBinary(), ['--version']).error) {
+  if (chromiumAvailable()) {
     browser = spawn(chromiumBinary(), [...require('./helpers/chromium.js').CHROMIUM_TEST_FLAGS, '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--disable-sync', '--no-first-run', '--user-data-dir=' + path.join(home, 'browser'), '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
     const endpoint = await new Promise((resolve, reject) => {
       let text = ''; const timer = setTimeout(() => reject(Error(text)), 10000);

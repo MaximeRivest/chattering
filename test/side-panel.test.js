@@ -13,10 +13,10 @@ const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
 const { spawn, spawnSync } = require('node:child_process');
-const { chromiumBinary } = require('./helpers/chromium.js');
+const { chromiumBinary, chromiumAvailable } = require('./helpers/chromium.js');
 
 test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, async t => {
-  if (spawnSync(chromiumBinary(), ['--version']).error) return t.skip('chromium is not installed');
+  if (!chromiumAvailable()) return t.skip('chromium is not installed');
   const root = path.join(__dirname, '..'), home = fs.mkdtempSync(path.join(os.homedir(), '.side-panel-test-'));
   let server, browser, ws;
   const stop = async child => {

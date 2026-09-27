@@ -17,6 +17,17 @@
 <link rel="stylesheet" href="/tokens.css">
 <link rel="stylesheet" href="/surfaces.css">
 <script>
+// Is `file` the folder `root` or inside it? Paths arrive as the server's
+// system writes them: C:\work\a on Windows, /home/u/a elsewhere. Either
+// separator counts, and drive-letter paths compare without case, as Windows
+// does. The one containment test for full paths in the page.
+window.pathWithin = function (file, root) {
+  const norm = p => { const s = String(p || '').replace(/\\/g, '/').replace(/\/+$/, ''); return /^[A-Za-z]:(\/|$)/.test(s) ? s.toLowerCase() : s; };
+  const f = norm(file), r = norm(root);
+  return !!r && !!f && (f === r || f.startsWith(r + '/'));
+};
+// A full path on the server's system: /home/u/a, C:\a or C:/a, \\server\share.
+window.isFullPath = p => typeof p === 'string' && /^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(p);
 // Local font choices use installed fonts only: no network or font downloads.
 window.appFonts = {
   theme: { label: 'Theme default', value: '' },
@@ -14019,12 +14030,13 @@ function mdRender(src, q = '') {
   const pathButton = (p, label) => `<button type="button" class="msg-path" data-transcript-path="${p}" title="Open ${p}">${label}</button>`;
   const mdLink = (text, target) => {
     if (/^(?:https?:\/\/|mailto:)/i.test(target)) return `<a href="${target}" target="_blank" rel="noopener">${text}</a>`;
-    if (/^(?:~\/|\/)/.test(target)) return pathButton(target, text);
+    if (/^(?:~\/|\/|[A-Za-z]:[\\/])/.test(target)) return pathButton(target, text);
     if (target.startsWith('#') || /[<>&]/.test(target)) return text;
     return `<a class="md-file" data-path-candidate="${target.replace(/^\.\//, '')}" title="${target}">${text}</a>`;
   };
   const linkify = h => h.replace(
-    /\[([^\]\n]+)\]\(([^()\s]+)(?:\s+&quot;[^&]*&quot;)?\)|(^|[\s(*`>;])((?:~\/|\/)(?:[\w.@+-]+\/)+[\w.@+-]*[A-Za-z0-9_])|(^|[\s(\["'>;])(https?:\/\/(?:[^\s<&"]|&amp;)+)/g,
+    // Full paths: /a/b, ~/a/b, and on a Windows server C:\a\b or C:/a/b.
+    /\[([^\]\n]+)\]\(([^()\s]+)(?:\s+&quot;[^&]*&quot;)?\)|(^|[\s(*`>;])((?:~\/|\/)(?:[\w.@+-]+\/)+[\w.@+-]*[A-Za-z0-9_]|[A-Za-z]:[\\/](?:[\w.@+-]+[\\/])+[\w.@+-]*[A-Za-z0-9_])|(^|[\s(\["'>;])(https?:\/\/(?:[^\s<&"]|&amp;)+)/g,
     (m, text, target, prePath, p, pre, url) => {
       if (target !== undefined) return mdLink(text, target);
       if (p !== undefined) return `${prePath}${pathButton(p, p)}`;
@@ -16736,7 +16748,7 @@ async function loadRecentFiles() {
   } catch {}
 }
 function recordRecentFile(pathValue, project) {
-  if (!pathValue || !String(pathValue).startsWith('/')) return;
+  if (!isFullPath(String(pathValue || ''))) return;
   fetch('/api/recent-files', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path: pathValue, project: project || '' }) }).catch(() => {});
 }

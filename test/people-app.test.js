@@ -11,7 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 const net = require('node:net');
 const { spawn, spawnSync } = require('node:child_process');
-const { chromiumBinary } = require('./helpers/chromium.js');
+const { chromiumBinary, chromiumAvailable } = require('./helpers/chromium.js');
 
 function lanIp() {
   for (const list of Object.values(os.networkInterfaces())) for (const n of list || []) if (!n.internal && n.family === 'IPv4' && !n.address.startsWith('172.')) return n.address;
@@ -20,7 +20,7 @@ function lanIp() {
 
 test('two people share a machine: sign-in, presence, one compose box, one file, a hidden project', { timeout: 90000 }, async t => {
   const chromium = chromiumBinary();
-  if (spawnSync(chromium, ['--version']).error) return t.skip('chromium is not installed');
+  if (!chromiumAvailable()) return t.skip('chromium is not installed');
   if (!lanIp()) return t.skip('no LAN address');
   const root = path.join(__dirname, '..'), home = fs.mkdtempSync(path.join(os.homedir(), '.people-app-test-'));
   let server, browser, ws;
