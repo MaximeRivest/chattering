@@ -1446,10 +1446,12 @@ async function indexFile(source, relPath, stat) {
       densityChat: densityProfile(messages, meta.firstTs, meta.lastTs, false),
       densityAll: densityProfile(messages, meta.firstTs, meta.lastTs, true),
     };
+    // Its cached copy first, then the listing: a conversation that is listed
+    // can always be read (a retitle right after indexing read nothing).
+    await writeFileAtomic(cachePathFor(key), JSON.stringify({ key, relPath, ...entry, messages, entryParents }));
     index[key] = entry;
     indexRevision++;
     scheduleProjectFoldRefresh(meta.cwd);
-    await writeFileAtomic(cachePathFor(key), JSON.stringify({ key, relPath, ...entry, messages, entryParents }));
     // Local transcript tools have explicit paths and completion results.
     // Remote-only paths must never be offered as local files.
     if (source === 'pi' || source === 'claude') {
