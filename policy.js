@@ -223,6 +223,7 @@ const ROUTES = {
   '/api/doc/run-input': 'member',
   '/api/doc/cancel-run': 'member',
   '/api/doc/doctor': 'member',
+  '/api/doc/setup-guide': 'member',
   '/api/doc/kernel': 'member',
   '/api/doc/variables': 'member',
   '/api/doc/ai': 'member',

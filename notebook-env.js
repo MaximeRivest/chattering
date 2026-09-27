@@ -349,6 +349,26 @@
 
   // Where rat is: an explicit RAT_BIN, then PATH, then the places rat's own
   // installer and `go build` put it. Pure: the caller supplies the probes.
+  // Every rat this machine has, in order of preference: an explicit
+  // RAT_BIN, the PATH, the places rat's installer and `go build` put it,
+  // then the rat inside Chattering's download (bundled).
+  function ratCandidates({ env = {}, platform = 'linux', homedir = '', exists = () => false, pathSep, bundled = null }) {
+    const exe = platform === 'win32' ? 'rat.exe' : 'rat';
+    const sep = pathSep || (platform === 'win32' ? ';' : ':');
+    const dirSep = platform === 'win32' ? '\\' : '/';
+    const joinPath = (a, b) => a.replace(/[\\/]+$/, '') + dirSep + b;
+    const out = [];
+    const add = (p, source) => { if (p && exists(p) && !out.some(c => c.path === p)) out.push({ path: p, source }); };
+    if (env.RAT_BIN) add(env.RAT_BIN, 'RAT_BIN');
+    for (const dir of String(env.PATH || '').split(sep).filter(Boolean)) add(joinPath(dir, exe), 'PATH');
+    const fallbacks = platform === 'win32'
+      ? [joinPath(joinPath(homedir, '.local'), 'bin'), joinPath(joinPath(homedir, 'go'), 'bin')]
+      : [joinPath(joinPath(homedir, '.local'), 'bin'), joinPath(joinPath(homedir, 'go'), 'bin'), joinPath(joinPath(homedir, '.nix-profile'), 'bin')];
+    for (const dir of fallbacks) add(joinPath(dir, exe), 'fallback');
+    if (bundled) add(bundled, 'bundled');
+    return out;
+  }
+
   function findRat({ env = {}, platform = 'linux', homedir = '', exists = () => false, pathSep }) {
     const exe = platform === 'win32' ? 'rat.exe' : 'rat';
     const sep = pathSep || (platform === 'win32' ? ';' : ':');
@@ -390,5 +410,5 @@
     return { language: head ? head[1] : null, state: head ? head[2] : null, count: head ? Number(head[3]) : vars.length, vars };
   }
 
-  return { addDependency, dependencies, setProject, setMapping, readScalar, afterList, missingModule, missingPackage, proposeRequirement, agentBrief, findRat, IMPORT_TO_DIST, RUN_LANGS, parseLookOverview };
+  return { addDependency, dependencies, setProject, setMapping, readScalar, afterList, missingModule, missingPackage, proposeRequirement, agentBrief, findRat, ratCandidates, IMPORT_TO_DIST, RUN_LANGS, parseLookOverview };
 });

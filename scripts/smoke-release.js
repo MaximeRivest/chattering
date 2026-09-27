@@ -18,6 +18,15 @@ assert.ok(fs.existsSync(path.join(app, 'launcher.js')), 'usage: smoke-release.js
 const win = process.platform === 'win32';
 const node = path.join(app, 'runtime', 'node', win ? 'node.exe' : path.join('bin', 'node'));
 const build = JSON.parse(fs.readFileSync(path.join(app, 'BUILD.json'), 'utf8'));
+// The rat inside, for notebooks: the one .rat-version pins, new enough.
+{
+  const rat = path.join(app, 'runtime', 'rat', win ? 'rat.exe' : 'rat');
+  assert.ok(fs.existsSync(rat), 'the download carries rat');
+  const v = JSON.parse(spawnSync(rat, ['version', '--json'], { encoding: 'utf8', timeout: 30000 }).stdout);
+  assert.equal(v.version, build.rat, 'the rat BUILD.json names');
+  assert.ok(v.notebook_api >= 2, 'rat answers notebook_api 2');
+  assert.ok(fs.existsSync(path.join(app, 'runtime', 'rat', 'LICENSE')), "rat's license ships with it");
+}
 // Not under the temp folder: conversations there count as loose, not projects.
 const home = fs.mkdtempSync(path.join(os.homedir(), '.chattering-stranger-'));
 const systemPath = win ? [path.join(process.env.SystemRoot || 'C:\\Windows', 'System32'), process.env.SystemRoot || 'C:\\Windows'].join(';') : '/usr/bin:/bin:/usr/sbin:/sbin';
@@ -59,6 +68,15 @@ let ok = false;
     assert.equal(status.version, build.version);
     assert.equal(status.pi, build.pi, 'the Pi that ships, not another');
     assert.equal(status.piSource, 'bundled');
+    // A stranger's machine has no rat: notebooks use the one inside
+    // (asked in the background at start, so wait for its answer).
+    let ratStatus = status.rat;
+    for (let i = 0; i < 50 && !(ratStatus && ratStatus.version); i++) {
+      await new Promise(r => setTimeout(r, 200));
+      ratStatus = JSON.parse((await get('/api/app/status')).text).rat;
+    }
+    assert.equal(ratStatus && ratStatus.source, 'bundled', 'notebooks run on the rat inside: ' + JSON.stringify(ratStatus));
+    assert.equal(ratStatus.version, build.rat);
     assert.equal(path.resolve(status.nodePath), path.resolve(node), 'the Node that ships');
     step(`running ${status.version}, Node ${status.node}, Pi ${status.pi} (${status.piSource})`);
     assert.equal((await fetch(base + '/api/sessions')).status, 401, 'no sign-in, no answer');

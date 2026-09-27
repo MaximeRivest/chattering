@@ -13516,13 +13516,70 @@ const docRunOwner = identity => (identity && identity.user && identity.user.id) 
 
 // Where rat is. Re-probed on every call (cheap: a few stat calls) so that
 // installing rat while the server runs is picked up without a restart.
-function ratBinary() {
-  return notebookEnv.findRat({
+// Which rat notebooks use. rat says what it offers in `rat version --json`
+// (notebook_api); Chattering needs RAT_NOTEBOOK_API. The first candidate
+// new enough wins — the machine's own rat when it is, else the one inside
+// this download (runtime/rat, pinned by .rat-version). Candidates are
+// asked in the background (probeRats), never inside a request; until an
+// answer comes, the first candidate is used as before.
+const RAT_NOTEBOOK_API = 2;
+const BUNDLED_RAT = path.join(__dirname, 'runtime', 'rat', process.platform === 'win32' ? 'rat.exe' : 'rat');
+const ratProbes = new Map(); // path → { mtime, api, version }
+function ratCandidateList() {
+  return notebookEnv.ratCandidates({
     env: process.env, platform: process.platform, homedir: os.homedir(),
     exists: p => { try { return fs.statSync(p).isFile(); } catch { return false; } },
-    pathSep: path.delimiter,
+    pathSep: path.delimiter, bundled: BUNDLED_RAT,
   });
 }
+function ratProbe(p) {
+  const hit = ratProbes.get(p);
+  let mtime = null;
+  try { mtime = fs.statSync(p).mtimeMs; } catch {}
+  return hit && hit.mtime === mtime ? hit : null;
+}
+function ratBinary() {
+  // The bundled rat stays "bundled" once its folder is on the PATH.
+  const all = ratCandidateList().map(c => c.path === BUNDLED_RAT ? { ...c, source: 'bundled' } : c);
+  if (!all.length) return { path: null, source: 'none' };
+  if (all[0].source === 'RAT_BIN') { // chosen by the person: used, and said when too old
+    const p = ratProbe(all[0].path);
+    return p && p.api < RAT_NOTEBOOK_API ? { ...all[0], outdated: true, note: ratOutdatedNote(all[0].path, p) } : all[0];
+  }
+  for (const c of all) {
+    const p = ratProbe(c.path);
+    if (p && p.api >= RAT_NOTEBOOK_API) return { ...c, version: p.version, note: c.source === 'bundled' ? 'rat ' + p.version + ', the one inside Chattering' : null };
+  }
+  const p = ratProbe(all[0].path);
+  if (p && all.every(c => ratProbe(c.path))) return { ...all[0], outdated: true, note: ratOutdatedNote(all[0].path, p) };
+  return all[0];
+}
+function ratOutdatedNote(p, probe) {
+  return 'rat ' + (probe.version || '?') + ' (' + p + ') is older than this Chattering needs for notebooks: update it with `rat update`, or install it again from https://runanything.dev';
+}
+let bundledRatOnPath = false;
+function probeRats() {
+  for (const c of ratCandidateList()) {
+    if (ratProbe(c.path)) continue;
+    let mtime = null;
+    try { mtime = fs.statSync(c.path).mtimeMs; } catch { continue; }
+    require('child_process').execFile(c.path, ['version', '--json'], { encoding: 'utf8', timeout: 10000, windowsHide: true }, (err, stdout) => {
+      let api = 0, version = null;
+      try { const v = JSON.parse(String(stdout || '').trim()); api = Number(v.notebook_api) || 1; version = v.version || null; }
+      catch { api = err ? 0 : 1; } // a rat from before `version --json`
+      ratProbes.set(c.path, { mtime, api, version });
+      // The rat inside the download is on the PATH of what Chattering
+      // starts (agents, terminals), when it is the one notebooks use.
+      const chosen = ratBinary();
+      if (!bundledRatOnPath && chosen.source === 'bundled') {
+        bundledRatOnPath = true;
+        process.env.PATH = path.dirname(chosen.path) + path.delimiter + (process.env.PATH || '');
+      }
+    });
+  }
+}
+setTimeout(probeRats, 500).unref();
+setInterval(probeRats, 60000).unref();
 
 const RAT_MISSING = 'rat is not installed on this server (or not on its PATH). Install it — https://runanything.dev — then run the cell again.';
 
@@ -17314,7 +17371,19 @@ async function handleRequest(req, res) {
       const r = await ratExec(['doctor', doc, '--json'], { cwd: path.dirname(doc), timeoutMs: 60000 });
       const report = ratJson(r.out);
       if (!report) return json(res, 502, { error: 'rat doctor failed', detail: r.out.trim().slice(-2000) });
-      json(res, 200, { ...report, ratPath: rat.path, ratNote: rat.note || null });
+      json(res, 200, { ...report, ratPath: rat.path, ratNote: rat.note || null, ratOutdated: !!rat.outdated });
+    } else if (u.pathname === '/api/doc/setup-guide' && req.method === 'GET') {
+      // How to install a language on this computer: `rat guide`, for the
+      // person or their AI. Installs nothing.
+      const doc = notebookPath(u.searchParams.get('doc'));
+      if (!doc) return json(res, 400, { error: 'doc (the notebook path) is required' });
+      const lang = String(u.searchParams.get('lang') || '');
+      if (!/^[a-z]{1,12}$/.test(lang)) return json(res, 400, { error: 'lang is a language name' });
+      if (!ratBinary().path) return json(res, 200, { ratMissing: true, error: RAT_MISSING });
+      const r = await ratExec(['guide', lang, '--doc', doc, '--json'], { cwd: path.dirname(doc), timeoutMs: 10000 });
+      const out = ratJson(r.out);
+      if (!out || !out.guide) return json(res, 502, { error: r.out.trim().split('\n').at(-1) || 'rat guide failed' });
+      json(res, 200, out);
     } else if (u.pathname === '/api/doc/kernel' && req.method === 'GET') {
       // The notebook's kernel: which one, whether it runs, idle or busy.
       const doc = notebookPath(u.searchParams.get('doc'));
@@ -17883,7 +17952,8 @@ async function handleRequest(req, res) {
       // and whether work is running (an update or stop waits for it).
       json(res, 200, { app: 'chattering', version: APP_VERSION, pid: process.pid, appDir: __dirname,
         node: process.version, nodePath: process.execPath, pi: runtimeLib.piVersion(), piSource: (runtimeLib.locatePi() || {}).source || null,
-        activeRuns: headlessRuns.size, startedAt: BOOT_AT });
+        activeRuns: headlessRuns.size, startedAt: BOOT_AT,
+        rat: (() => { const r = ratBinary(); return r.path ? { path: r.path, source: r.source, version: r.version || null, outdated: !!r.outdated } : null; })() });
     } else if (u.pathname === '/api/app/stop' && req.method === 'POST') {
       // A clean stop asked over HTTP: Windows has no SIGTERM to ask with.
       // Running work is stopped only when asked to (force).

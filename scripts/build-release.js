@@ -7,6 +7,8 @@
 //       helpers that do not ship), its vendored browser libraries,
 //     runtime/node/…        this Node (the pinned .node-version), whole
 //     runtime/node_modules/ Pi and its dependencies, exactly as locked
+//     runtime/rat/rat       rat, the notebooks' kernels, the release .rat-version
+//                           pins, checked against that release's checksums
 //     BUILD.json            version, commit, Node, Pi, when, for what
 //     THIRD_PARTY.md        the licenses of what ships beside the app
 //   dist/<name>.tar.gz (.zip on Windows) and <name>.sha256
@@ -72,14 +74,42 @@ fs.chmodSync(nodeDest, 0o755);
 const nodeLicense = [path.join(path.dirname(process.execPath), 'LICENSE'), path.join(path.dirname(process.execPath), '..', 'LICENSE')].find(f => fs.existsSync(f));
 if (nodeLicense) fs.copyFileSync(nodeLicense, path.join(OUT, 'runtime', 'node', 'LICENSE'));
 
+// ---- rat, pinned (.rat-version), from its release, checked ----
+// Notebooks run on rat. The download carries the rat this Chattering was
+// tested with; a newer rat on the machine's PATH is preferred (server.js
+// ratBinary). Languages themselves (Python, R, Julia) are never bundled:
+// `rat guide <lang>` explains their one-time install.
+const ratVersion = fs.readFileSync(path.join(ROOT, '.rat-version'), 'utf8').trim();
+const ratAsset = `rat-${{ linux: 'linux', macos: 'darwin', win: 'windows' }[osName]}-${arch === 'x64' ? 'amd64' : 'arm64'}${osName === 'win' ? '.exe' : ''}`;
+const ratBase = process.env.CHATTERING_RAT_BASE_URL || `https://github.com/MaximeRivest/rat/releases/download/v${ratVersion}`;
+const ratDir = path.join(OUT, 'runtime', 'rat');
+fs.mkdirSync(ratDir, { recursive: true });
+const ratDest = path.join(ratDir, osName === 'win' ? 'rat.exe' : 'rat');
+const fetched = spawnSync(process.execPath, ['-e', `
+  const fs = require('fs'), crypto = require('crypto');
+  const [base, asset, dest, licenseUrl, licenseDest] = process.argv.slice(1);
+  (async () => {
+    const get = async u => { const r = await fetch(u); if (!r.ok) throw new Error(u + ': HTTP ' + r.status); return Buffer.from(await r.arrayBuffer()); };
+    const sums = (await get(base + '/checksums.txt')).toString('utf8');
+    const line = sums.split(String.fromCharCode(10)).find(l => l.trim().endsWith(' ' + asset));
+    if (!line) throw new Error('checksums.txt lists no ' + asset);
+    const bin = await get(base + '/' + asset);
+    const sha = crypto.createHash('sha256').update(bin).digest('hex');
+    if (sha !== line.trim().split(' ').filter(Boolean)[0]) throw new Error(asset + ': checksum mismatch');
+    fs.writeFileSync(dest, bin, { mode: 0o755 });
+    fs.writeFileSync(licenseDest, await get(licenseUrl));
+  })().catch(e => { console.error(String(e.message || e)); process.exit(1); });
+`, ratBase, ratAsset, ratDest, `https://raw.githubusercontent.com/MaximeRivest/rat/v${ratVersion}/LICENSE`, path.join(ratDir, 'LICENSE')], { stdio: 'inherit' });
+if (fetched.status !== 0) throw new Error('could not fetch rat ' + ratVersion);
+
 // ---- what it is ----
 const piPkg = require(path.join(OUT, 'runtime', 'node_modules', '@earendil-works', 'pi-coding-agent', 'package.json'));
 let commit = null;
 try { commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim(); } catch {}
-fs.writeFileSync(path.join(OUT, 'BUILD.json'), JSON.stringify({ version: pkg.version, commit, os: osName, arch, node: process.version, pi: piPkg.version, builtAt: new Date().toISOString() }, null, 2) + '\n');
+fs.writeFileSync(path.join(OUT, 'BUILD.json'), JSON.stringify({ version: pkg.version, commit, os: osName, arch, node: process.version, pi: piPkg.version, rat: ratVersion, builtAt: new Date().toISOString() }, null, 2) + '\n');
 
 // ---- licenses of what ships beside the app ----
-const notices = ['# Third-party software in this download', '', `Node.js ${process.version}: MIT license and its bundled components (runtime/node/LICENSE).`, ''];
+const notices = ['# Third-party software in this download', '', `Node.js ${process.version}: MIT license and its bundled components (runtime/node/LICENSE).`, '', `rat ${ratVersion}: MIT license (runtime/rat/LICENSE).`, ''];
 const walk = dir => {
   let entries = [];
   try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }

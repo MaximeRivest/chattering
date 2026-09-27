@@ -150,3 +150,12 @@ test('Julia: the package error, the header section, the brief', () => {
   assert.match(brief, /rat restart jl/);
   assert.doesNotMatch(brief, /rat\.r\./);
 });
+
+test('ratCandidates: every rat, preferred first, the bundled one last', () => {
+  const have = new Set(['/opt/rat', '/usr/bin/rat', '/home/u/.local/bin/rat', '/app/runtime/rat/rat']);
+  const exists = p => have.has(p);
+  const all = NE.ratCandidates({ env: { RAT_BIN: '/opt/rat', PATH: '/usr/bin:/nope' }, homedir: '/home/u', exists, bundled: '/app/runtime/rat/rat' });
+  assert.deepEqual(all.map(c => [c.path, c.source]), [['/opt/rat', 'RAT_BIN'], ['/usr/bin/rat', 'PATH'], ['/home/u/.local/bin/rat', 'fallback'], ['/app/runtime/rat/rat', 'bundled']]);
+  assert.deepEqual(NE.ratCandidates({ env: { PATH: '/usr/bin:/usr/bin' }, homedir: '/h', exists }).map(c => c.path), ['/usr/bin/rat'], 'no duplicates');
+  assert.deepEqual(NE.ratCandidates({ env: {}, homedir: '/h', exists: () => false, bundled: '/x' }), []);
+});

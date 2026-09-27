@@ -908,6 +908,11 @@ body.side-layout.zen:not(.home) .mgantt[data-mg-open] { left: 0; }
 .doc-run-setup .doc-setup-go, .doc-run-setup .doc-setup-recreate, .doc-run-setup .doc-setup-agent, .doc-run-fix .doc-fix-agent { height: 22px; padding: 0 8px; font-size: var(--fs-micro); }
 .doc-run-setup .doc-setup-recreate { color: var(--danger); }
 .doc-run-setup .doc-setup-hint { flex-basis: 100%; }
+.doc-run-setup .doc-setup-lang { height: 22px; padding: 0 8px; font-size: var(--fs-micro); }
+.doc-setup-guide { border-top: 1px solid var(--border); background: var(--bg); padding: 6px 10px 8px; font-size: var(--fs-micro); }
+.doc-setup-guide pre { max-height: 38vh; overflow: auto; margin: 6px 0; padding: 8px 10px; background: var(--surface-1); border: 1px solid var(--border); white-space: pre-wrap; font-size: var(--fs-micro); line-height: 1.45; }
+.doc-setup-guide .doc-guide-actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; align-items: center; }
+.doc-setup-guide .doc-guide-actions button { height: 22px; padding: 0 8px; font-size: var(--fs-micro); }
 .doc-run-fix .doc-fix-pkg { width: 18ch; height: 22px; font: inherit; font-size: var(--fs-micro); background: var(--surface-1); color: var(--text); border: 1px solid var(--border); padding: 0 6px; }
 .doc-run-fix .doc-fix-go { height: 22px; padding: 0 8px; font-size: var(--fs-micro); }
 /* project documents list */
@@ -7043,6 +7048,11 @@ function renderDocDoctor(st, strip, report) {
     chip.textContent = '⚙ ' + report.project_source + ' project ' + shortDir(report.project);
     chip.title = 'No python cells. Project: ' + report.project;
   }
+  if (report.ratOutdated) {
+    const line = docSetupLine(strip);
+    line.innerHTML = `<span class="doc-setup-item">✗ <b>rat</b> ${esc(report.ratNote || 'is older than this Chattering needs')}</span>`;
+    return;
+  }
   if (report.ok) return;
   const line = docSetupLine(strip);
   const problems = (report.checks || []).filter(c => !c.ok);
@@ -7063,13 +7073,53 @@ function renderDocDoctor(st, strip, report) {
   // receives a brief built from this very report; the person reads and
   // edits it before anything is sent.
   if (typeof askBubbleServes === 'function' && askBubbleServes(st.path)) buttons += `<button class="doc-setup-agent" title="Open the ask box with a brief built from this report: fix the header or environment, then prove it with rat play. You review the text before it is sent.">ask an agent to fix it</button>`;
+  // A language this computer lacks (the check's hint names `rat guide`):
+  // its one-time setup, for the person or their AI.
+  const guideLangs = [...new Set(problems.map(c => ((c.hint || '').match(/rat guide (\w+)/) || [])[1]).filter(Boolean))];
+  buttons += guideLangs.map(l => `<button class="doc-setup-lang" data-lang="${esc(l)}" title="How to install ${esc(DOC_LANG_NAMES[l] || l)} on this computer — to follow, or to hand to an agent">set up ${esc(DOC_LANG_NAMES[l] || l)}…</button>`).join('');
   line.innerHTML = parts.join(' ') + ' ' + buttons + (hints.length ? `<span class="doc-setup-hint dim">→ ${esc(hints.join(' · '))}</span>` : '');
+  line.querySelectorAll('.doc-setup-lang').forEach(b => b.onclick = () => showDocSetupGuide(st, b.dataset.lang));
   const go = line.querySelector('.doc-setup-go');
   if (go) go.onclick = () => ensureDocEnvironment(st, {});
   const agent = line.querySelector('.doc-setup-agent');
   if (agent) agent.onclick = () => askAgentToFixNotebook(st);
   const rec = line.querySelector('.doc-setup-recreate');
   if (rec) rec.onclick = () => { if (confirm('Delete ' + (py ? py.venv : 'the environment') + ' and rebuild it? Packages installed there are lost.')) ensureDocEnvironment(st, { recreate: true }); };
+}
+
+// The one-time install of a language on this computer, from `rat guide`:
+// readable as it is, and written so an AI can carry it out. Nothing is
+// installed from here; the person follows it or hands it to an agent.
+async function showDocSetupGuide(st, lang) {
+  if (!st || docState !== st) return;
+  document.querySelector('.doc-setup-guide')?.remove();
+  const panel = document.createElement('div');
+  panel.className = 'doc-setup-guide';
+  panel.textContent = 'asking rat how to set up ' + (DOC_LANG_NAMES[lang] || lang) + ' here…';
+  (document.querySelector('.doc-run-setup') || docRunStrip())?.insertAdjacentElement('afterend', panel);
+  const r = await docGetJson('/api/doc/setup-guide?' + new URLSearchParams({ doc: st.path, lang }));
+  if (!panel.isConnected || docState !== st) return;
+  if (r.error || !r.guide) { panel.textContent = '✗ ' + (r.error || 'rat has no guide for ' + lang); return; }
+  const name = DOC_LANG_NAMES[lang] || lang;
+  const agent = typeof askBubbleServes === 'function' && askBubbleServes(st.path);
+  panel.innerHTML = `<div class="doc-guide-actions"><b>Set up ${esc(name)} on this computer (${esc(r.system || '')})</b>
+      <button type="button" class="doc-guide-copy" title="Copy the guide">copy</button>
+      ${agent ? '<button type="button" class="doc-guide-agent" title="Open the ask box with this guide: an agent installs ' + esc(name) + ' and proves it with rat doctor. You read it before it is sent.">ask an agent to do it</button>' : ''}
+      <button type="button" class="doc-guide-check" title="Ask rat again whether this notebook can run">check again</button>
+      <button type="button" class="ghost doc-guide-close" title="Close">×</button></div>
+    <pre></pre>
+    <div class="dim">Only ${esc(name)} itself: the notebook's packages come from its header, with "make it run". Chattering finds ${esc(name)} as soon as it is installed.</div>`;
+  panel.querySelector('pre').textContent = r.guide;
+  panel.querySelector('.doc-guide-close').onclick = () => panel.remove();
+  panel.querySelector('.doc-guide-copy').onclick = async () => {
+    try { await navigator.clipboard.writeText(r.guide); toast('✓ copied'); } catch { toast('could not copy — select the text instead', null, 'err'); }
+  };
+  panel.querySelector('.doc-guide-check').onclick = async () => { const report = await refreshDocDoctor(); if (report && !(report.checks || []).some(c => !c.ok && /rat guide/.test(c.hint || ''))) panel.remove(); };
+  const ask = panel.querySelector('.doc-guide-agent');
+  if (ask) ask.onclick = async () => {
+    const text = 'Set up ' + name + ' on this computer so the notebook `' + st.path + '` can run, following this guide from rat:\n\n' + r.guide;
+    if (await fileWsOpenAsk({ text })) toast('guide ready — read it, then send');
+  };
 }
 
 // Open the file's ask box with a brief from the doctor report (and the
