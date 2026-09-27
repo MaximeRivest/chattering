@@ -203,5 +203,26 @@
     return { input, prompt };
   }
 
-  return { LIMITS, SURFACES, COMMANDS, surfaceOf, publicCommands, commandById, validateRequest, buildPrompt, documentWindow };
+  /**
+   * The same call as the inputs of the command's AI program (ai-programs.js,
+   * `doc_<id>`): the template there writes them into the fenced message
+   * buildPrompt writes here.
+   */
+  function programInputs(command, request, { path = '', nonce }) {
+    if (!/^[0-9a-f]{8,}$/.test(String(nonce || ''))) throw new Error('programInputs needs a random hex nonce');
+    const { document, from, to, scope, language, block, target, instruction, surface = 'document' } = request;
+    const what = surface === 'source' ? `a ${language || 'source'} file` : surface === 'text' ? 'a plain-text file' : 'a Markdown document';
+    const out = {
+      what, nonce, path: String(path).replace(/"/g, ''), document: documentWindow(document, from, to, LIMITS.document),
+      block_kind: scope === 'code' ? `kind="code" language="${language}"` : 'kind="prose"', block,
+      language: language || 'text', request: command.instruction ? `\u201c${instruction}\u201d` : '',
+    };
+    if (command.kind === 'insert') {
+      out.before_cursor = document.slice(Math.max(0, from - LIMITS.before), from);
+      out.after_cursor = document.slice(to, to + LIMITS.after);
+    } else out.target = target;
+    return out;
+  }
+
+  return { LIMITS, SURFACES, COMMANDS, REPLY, surfaceOf, publicCommands, commandById, validateRequest, buildPrompt, programInputs, documentWindow };
 });

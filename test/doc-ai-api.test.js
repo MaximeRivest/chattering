@@ -24,8 +24,12 @@ function fakePi(home) {
   const script = `#!/usr/bin/env node
 const fs = require('fs');
 const args = process.argv.slice(2);
-const file = args.find(a => a.startsWith('@'));
-fs.appendFileSync(${JSON.stringify(path.join(home, 'pi-calls.jsonl'))}, JSON.stringify({ args, input: file ? fs.readFileSync(file.slice(1), 'utf8') : '' }) + '\\n');
+// Chattering's AI programs send the system message as a file (--system-prompt)
+// and the user message on standard input.
+const sp = args.indexOf('--system-prompt');
+const system = sp >= 0 ? fs.readFileSync(args[sp + 1], 'utf8') : '';
+const input = fs.readFileSync(0, 'utf8');
+fs.appendFileSync(${JSON.stringify(path.join(home, 'pi-calls.jsonl'))}, JSON.stringify({ args, system, input }) + '\\n');
 const answer = fs.readFileSync(${JSON.stringify(path.join(home, 'answer.txt'))}, 'utf8');
 if (answer === 'slow') { setTimeout(() => {}, 60000); return; }
 const out = e => process.stdout.write(JSON.stringify(e) + '\\n');
@@ -106,9 +110,9 @@ test('a command streams its answer from a tool-less model call; an accepted edit
   for (const flag of ['--no-tools', '--no-session', '--no-extensions', '--no-context-files']) assert.ok(call.args.includes(flag), flag);
   assert.equal(call.args[call.args.indexOf('--thinking') + 1], 'off', 'a grammar fix needs no reasoning');
   assert.match(call.input, /<target-[0-9a-f]{12}>\nTheir going to the store.\n<\/target-[0-9a-f]{12}>/);
-  assert.match(call.args.at(-1), /Correct the grammar/);
+  assert.match(call.system, /Correct the grammar/);
   const usage = fs.readFileSync(path.join(s.home, '.cache', 'chattering', 'internal-usage.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).at(-1);
-  assert.equal(usage.chatteringPurpose, 'ai-command');
+  assert.equal(usage.chatteringPurpose, 'doc_grammar', 'the usage of the program that made the call');
 
   // Accepting: the notice, then the save that writes exactly that text.
   const after = "# Essay\n\nThey're going to the store.\n";
@@ -165,7 +169,7 @@ test('source files: their own commands and prompt; an accepted edit saved later 
   s.pi.answer('def add(a: int, b: int) -> int:\n    return a + b');
   const events = await ndjson(await post(s.base, '/api/doc/ai', request('types')));
   assert.equal(events.at(-1).type, 'done', JSON.stringify(events.at(-1)));
-  assert.match(s.pi.calls().at(-1).args.at(-1), /^You are editing part of a python file/);
+  assert.match(s.pi.calls().at(-1).system, /^You are editing part of a python file/);
 
   const edits = () => fs.readFileSync(path.join(s.home, 'notes', 'chattering', 'doc-edits.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
   // Accepted with nothing unsaved; saved later with Save: the AI's edit.

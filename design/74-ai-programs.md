@@ -107,8 +107,72 @@ writer.
 - **Notebook runs are linked only when the kernel says so.** rat should set
   `FUNCTAI_CALLER={"kind":"notebook","notebook":<path>}` for a document's
   kernel (a change in rat, not here).
-- Chattering's own 26 model calls are not ported yet (phase 2): that waits for
-  FunctAI TypeScript and lmcc on npm, and for the subscription-login check.
+
+### Chattering's own AI programs (2026-09-27)
+
+Every single-turn model call Chattering makes is now a FunctAI program
+(`ai-programs.js`), 37 of them: conversation_title, timeline_labels,
+project_title (projects and epics), note_title, document_commit_title;
+session_problems, problem_note, parent_note; conversation_evidence,
+section_evidence, evidence_merge, epic_story; memory_dialogue, memory_tools,
+project_overview, intent_weigh, intent_weigh_changes, project_intent,
+project_environment, project_status; review_repair; speech_script,
+reply_digest, voice_gate; and doc_<command> for the 13 editor commands.
+`runPi`, `runPiJson` and `modelJson` are gone.
+
+- **Instructions kept, reply forms replaced.** Each instruction is the old
+  prompt nearly word for word; "reply with STRICT JSON in this shape" became
+  the program's typed outputs, which FunctAI's layout asks for and checks
+  (one re-ask with the reader's hint, instead of the old tolerant JSON
+  repair). Output names inside records keep the keys the server reads, so
+  the code after each call did not change shape.
+- **The transport is Pi** (`pirouter.js`, `piExec`): same sign-ins,
+  extensions and billing as before, the model of settings → model, the same
+  health pauses, background permissions, usage ledger (now under the
+  program's name). The system message goes to `--system-prompt` (a file) and
+  the user message on standard input, so the model reads FunctAI's request
+  exactly, plus the `<cwd>` section Pi adds to any system prompt. Before, the
+  model got Pi's coding-assistant system prompt and the input as an attached
+  file. A re-ask with earlier turns is folded into one message quoting them,
+  because `pi -p` takes one message; the call log shows the structured
+  request. The spoken-word programs use the chat router to the voice model.
+- **Why not lm15 as the transport:** lm15 does not yet speak for Pi's
+  sign-ins and extension providers (the Claude Code provider some installs
+  use), and a quiet move to an API key would change who pays. The router is
+  one file to swap when it does.
+- **The editor commands keep their design** through FunctAI templates: the
+  material in tags with a random suffix no document can close, the whole
+  reply as the new text, streamed as Pi writes it (raw, leading space kept).
+  Their usage purpose is now `doc_<command>` rather than `ai-command`.
+- **Logged, with who called:** `caller: {kind: "chattering", conversation,
+  project, epic, file, user, automatic}` as they apply, never inherited from a
+  `$FUNCTAI_CALLER` the server process carries. Inputs over 128 KiB (whole
+  transcripts) are logged as sizes only; everything else with its values.
+  `FUNCTAI_LOG_CALLS=0` keeps them out of the log. In the Programs list they
+  form their own group, *Chattering itself*.
+- **Renaming is a correction.** A conversation title the program wrote keeps
+  its call id; a person renaming it writes a rating (`wrong`, the new title as
+  the answer, origin `edit`, by that person). Only the first rename after an
+  AI title counts: after it, the title is the person's.
+- **FunctAI is vendored** (`vendor/functai/0.1.0/functai.mjs`, one ES module
+  with lmcc 0.8.4 and lm15 1.0.0-rc.2, built by `scripts/vendor-functai.js`
+  with the esbuild in Chattering's Pi runtime; `SOURCE.json` pins the
+  commits). When FunctAI is on npm it becomes a line in
+  `runtime/package.json`.
+- **Not programs, on purpose:** the notebook derived from an answer and the
+  simpler rewrite of a reply (both need the conversation's own Pi session and
+  cached context), and the TypeSafe voice commands (their choices are what is
+  on screen that moment).
+
+Found on the way, for upstream:
+- **lmcc** declares `"sideEffects": false` while its entry imports
+  `./plan.ts` and `./serde.ts` for their effects; any bundler drops them.
+  The vendoring script builds with `ignoreAnnotations`.
+- **FunctAI**: where a function was defined is found by skipping frames whose
+  path matches `/functai/ts/src/`; bundled, FunctAI's frames are the bundle's
+  and every program claims to live inside it, and the check never matches
+  Windows separators. The vendoring script patches both (one marked line);
+  FunctAI should compare against its own module URL.
 
 ### Verified
 
@@ -377,12 +441,8 @@ Datasets export to JSONL and Parquet so `dpyr.read` takes them directly.
 
 ## Chattering's own 26 programs
 
-Port them to FunctAI TypeScript when it is ready; the signatures are already
-listed (Program Atlas). Start with the conversation title: small, frequent,
-and it has implicit labels (manual renames). Before switching any of them,
-confirm the Claude and ChatGPT subscription logins work through lm15, so no
-call quietly moves to a paid key. The speech programs keep their separate
-local model.
+*Done (see "Chattering's own AI programs" above), through Pi rather than
+lm15 for the reason given there.*
 
 ## Phases (each useful alone)
 

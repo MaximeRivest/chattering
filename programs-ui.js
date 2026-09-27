@@ -172,10 +172,11 @@
     const data = list.data;
     const groups = new Map();
     for (const p of data.programs.filter(p => matches(p, '', list.query))) {
-      const g = projectName(p.project) || 'no project';
+      const g = p.own ? 'Chattering itself' : projectName(p.project) || 'no project';
       if (!groups.has(g)) groups.set(g, []);
       groups.get(g).push(p);
     }
+    if (groups.has('Chattering itself')) { const own = groups.get('Chattering itself'); groups.delete('Chattering itself'); groups.set('Chattering itself', own); }
     const cards = [...groups].map(([g, ps]) => `<section class="pg-group"><h2>${h(g)}</h2>${ps.map(p => `
       <button type="button" class="pg-card" data-program="${h(JSON.stringify([p.name, p.module]))}">
         <span class="pg-card-name"><span class="pg-glyph" aria-hidden="true">ƒ</span> ${h(p.name)}</span>

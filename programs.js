@@ -422,7 +422,9 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
         answer: l.answer || 'result', file: l.file || null, line: l.line ?? null,
         inputs: JSON.parse(l.in_fields || '[]'), outputs: JSON.parse(l.out_fields || '[]'), instruction, choices,
         unjudged: answered.get(r.name, r.module).n,
-        project: projectOf(l.file) || projectOf(caller.notebook) || null,
+        // Chattering's own programs (module "chattering") belong to no project.
+        project: r.module === 'chattering' ? null : projectOf(l.file) || projectOf(caller.notebook) || null,
+        own: r.module === 'chattering',
         languages: langs.all(r.name, r.module).map(x => x.language),
         calls: r.calls, useCalls: r.use_calls || 0, errors: r.errors || 0, recent: recent.get(r.name, r.module, since).n,
         first: r.first, last: r.last, versions: r.versions, tokensIn: r.tokens_in || 0, tokensOut: r.tokens_out || 0, ratings,

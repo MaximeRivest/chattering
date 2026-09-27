@@ -1,0 +1,18 @@
+{
+  "patches": [
+    "definedAt skips the bundle file itself and either path separator (FunctAI fn.ts)"
+  ],
+  "functai": {
+    "version": "0.1.0",
+    "commit": "14f14ee796e3e34f3055efcacb349b49dbc016c2",
+    "dirty": false
+  },
+  "lmcc": {
+    "version": "0.8.4",
+    "commit": "d348955d1b482371b84205814a24549e29530859"
+  },
+  "lm15": {
+    "version": "1.0.0-rc.2"
+  },
+  "builtAt": "2026-09-27T11:16:17.007Z"
+}

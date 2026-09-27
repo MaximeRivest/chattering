@@ -29,13 +29,15 @@ async function suggest(service, token, model, run) {
     return JSON.parse(service.db.prepare('SELECT output FROM review_repair_proposals WHERE id=?').get(token).output);
   }
   try {
+    // run: the review_repair AI program (ai-programs.js), which answers with
+    // its proposals; a caller may still hand back the reply's JSON text.
     const raw = await run(request.input, PROMPT);
-    const values = JSON.parse(String(raw).trim().replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, ''));
+    const values = Array.isArray(raw) ? raw : JSON.parse(String(raw).trim().replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, ''));
     if (!Array.isArray(values) || values.length > 10) throw Error('The model did not return a bounded candidate list');
     const proposals = [];
     for (const value of values) {
       const loc = input.locations.find(l => l.id === value?.locationId); if (!loc) continue;
-      const item = { locationId: loc.id, host: loc.host, path: typeof value.path === 'string' ? value.path.slice(0, 4096) : loc.path, reason: String(value.reason || '').slice(0, 1000), verifiedLocal: false };
+      const item = { locationId: loc.id, host: loc.host, path: typeof value.path === 'string' && value.path ? value.path.slice(0, 4096) : loc.path, reason: String(value.reason || '').slice(0, 1000), verifiedLocal: false };
       if (typeof value.localPath === 'string' && path.isAbsolute(value.localPath) && !sensitive(value.localPath)) {
         const candidate = path.resolve(value.localPath);
         if (candidate.startsWith(input.root + path.sep) || (loc.localCopies || []).includes(candidate)) {

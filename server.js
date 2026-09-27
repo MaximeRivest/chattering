@@ -4602,12 +4602,6 @@ function setProjectTitle(project, rawTitle, manual = true) {
   return { project, title, manual };
 }
 
-const PROJECT_RETITLE_PROMPT =
-  'The attached JSON describes one work project: its folder name, path, overview (when one exists), and recent conversation titles. ' +
-  'Write the display title for this project on a personal dashboard. Reply with STRICT JSON only, no prose or code fence: {"title":"..."} — ' +
-  'a short, dense, honest title, 2 to 6 words, at most 48 characters, no trailing period, ' +
-  'no filler words such as project, repo, tool, app unless they are the essence of the work.';
-
 // Retitle one project on demand, from its memory overview and recent work.
 async function retitleProject(project, manual = true) {
   const meta = projectMetaFor(project);
@@ -4619,14 +4613,10 @@ async function retitleProject(project, manual = true) {
     .slice(0, 12)
     .map(({ entry }) => entry.title || entry.timelineTitle || '')
     .filter(Boolean);
-  const payload = {
-    folderName: project, path: meta.cwd || '',
-    identity: o.identity || '', overview: o.summary || '',
-    recentConversationTitles: recent,
-  };
-  const raw = await runPi(JSON.stringify(payload), PROJECT_RETITLE_PROMPT);
-  const parsed = JSON.parse(raw.replace(/^```(json)?\s*|\s*```$/g, ''));
-  return setProjectTitle(project, parsed.title, manual);
+  const { outputs } = await aiProgram('project_title', {
+    folder_name: project, path: meta.cwd || '', identity: o.identity || '', overview: o.summary || '', recent_conversation_titles: recent,
+  }, { caller: { project } });
+  return setProjectTitle(project, outputs.title, manual);
 }
 
 // Epic titles: an epic is a recursive project, so it renames the same way.
@@ -4643,16 +4633,13 @@ function setEpicTitle(id, rawTitle) {
 async function retitleEpic(id) {
   const epic = epics[id];
   if (!epic) throw new Error('unknown epic');
-  const payload = {
-    folderName: epic.title || 'epic', path: '',
-    identity: '', overview: epic.abstract || '',
-    recentConversationTitles: (epic.sessionIds || [])
+  const { outputs } = await aiProgram('project_title', {
+    folder_name: epic.title || 'epic', path: '', identity: '', overview: epic.abstract || '',
+    recent_conversation_titles: (epic.sessionIds || [])
       .map(k => (index[k] && (index[k].title || index[k].timelineTitle)) || '')
       .filter(Boolean).slice(0, 20),
-  };
-  const raw = await runPi(JSON.stringify(payload), PROJECT_RETITLE_PROMPT);
-  const parsed = JSON.parse(raw.replace(/^```(json)?\s*|\s*```$/g, ''));
-  return setEpicTitle(id, parsed.title);
+  }, { caller: { epic: id } });
+  return setEpicTitle(id, outputs.title);
 }
 
 // Auto title: a titleless project names itself the first time its panel opens.
@@ -4794,7 +4781,7 @@ memoryModelHealth.setIdentity(currentModelLabel());
 // ---- background AI: asked, then shown ----
 // Model calls nobody asked for in that moment (titles, memory) run only
 // for the kinds the owner allowed (settings → backgroundAi). Each place
-// that starts such work checks first; runPi checks again as the last
+// that starts such work checks first; piExec (every AI program's Pi call) checks again as the last
 // line, so a path nobody gated still cannot send anything.
 function backgroundAllowed(kind) {
   const b = appSettings.backgroundAi || {};
@@ -5828,78 +5815,78 @@ function splitTextToTokenBudget(text, tokenBudget) {
   return parts;
 }
 
-// One no-session model call: `fileContent` attached, `prompt` sent, the
-// answer's text returned. Options:
-//   automatic / background  the call is not a person's (see backgroundAllowed)
-//   timeoutMs               overall limit (default 30 min)
-//   thinking                this call's thinking level (settings otherwise)
-//   signal                  an AbortSignal: stops the pi process; the call
-//                           then rejects with code 'ABORTED', and the model's
-//                           health is untouched (a person's stop is no failure)
-//   purpose                 the usage record's chatteringPurpose
-//   trim: false             keep the answer's edge whitespace
-async function runPi(fileContent, prompt, onChunk, options = {}) {
-  if (options.signal && options.signal.aborted) throw abortedModelCall();
-  const inherited = modelCallContext.getStore();
-  const automatic = options.automatic == null ? !!(inherited && inherited.automatic) : !!options.automatic;
+// One `pi -p` call: the transport of Chattering's AI programs (pirouter.js,
+// ai-programs.js). The system message goes to --system-prompt as a file, the
+// user message on standard input. Tool-less, session-less, on the model
+// settings → model names, with the call context the program runs in
+// (modelCallContext: automatic or asked for, the background kind, the
+// thinking level, a time limit, a stop signal: a stopped call rejects with
+// code 'ABORTED' and leaves the model's health untouched, since a person's
+// stop is no failure). Resolves with Pi's final assistant message; its usage
+// joins the internal usage ledger under the program's name (purpose).
+async function piExec({ system, input, signal: ownSignal = null, onDelta = null }) {
+  const ctx = modelCallContext.getStore() || {};
+  const signal = ownSignal || ctx.signal || null;
+  if (signal && signal.aborted) throw abortedModelCall();
+  const automatic = !!ctx.automatic;
   // Background work names its kind; an automatic call that names none is
   // treated as memory, the stricter reading. Refused before anything is
   // written or sent, and before the model's health is touched: a person's
   // "no" is not a model failure.
-  const background = options.background || (inherited && inherited.background) || (automatic ? 'memory' : null);
+  const background = ctx.background || (automatic ? 'memory' : null);
   if (background && !backgroundAllowed(background)) throw backgroundRefusal(background);
-  const tmp = path.join(os.tmpdir(), 'chattering-distill-' + process.pid + '-' + Math.random().toString(36).slice(2) + '.md');
-  fs.writeFileSync(tmp, fileContent, { mode: 0o600 });
+  const tmp = path.join(os.tmpdir(), 'chattering-system-' + process.pid + '-' + Math.random().toString(36).slice(2) + '.md');
+  fs.writeFileSync(tmp, String(system || ''), { mode: 0o600 });
   let permit = null;
   let carry = '';
   try {
     memoryModelHealth.setIdentity(currentModelLabel());
     permit = memoryModelHealth.begin({ automatic });
-    const pi = runtimeLib.piCommand([...piArgs(options.thinking ? { thinking: options.thinking } : null), '--mode', 'json', '@' + tmp, prompt]);
+    const pi = runtimeLib.piCommand([...piArgs(ctx.thinking ? { thinking: ctx.thinking } : null), '--mode', 'json', '--system-prompt', tmp]);
     const result = await execFileWithActivityTimeout(
       execFile,
       pi.file,
       pi.args,
-      { maxBuffer: 64 * 1024 * 1024, timeout: options.timeoutMs || 1800000, ...(options.signal ? { signal: options.signal } : {}) },
+      { maxBuffer: 64 * 1024 * 1024, timeout: ctx.timeoutMs || 1800000, ...(signal ? { signal } : {}) },
       {
         activityTimeoutMs: MODEL_ACTIVITY_TIMEOUT_MS,
-        onChild: child => child.stdin.end(), // pi -p waits for stdin EOF otherwise
+        onChild: child => child.stdin.end(String(input || '')), // the user message
         onStdout: data => {
-          if (!onChunk) return;
+          if (!onDelta) return;
           carry += String(data);
           const lines = carry.split('\n');
           carry = lines.pop() || '';
           for (const line of lines) {
             let event; try { event = JSON.parse(line); } catch { continue; }
             const update = event.type === 'message_update' && event.assistantMessageEvent;
-            if (update && update.type === 'text_delta') onChunk(String(update.delta || ''));
+            if (update && update.type === 'text_delta') onDelta(String(update.delta || ''));
           }
         },
       },
     );
-    memoryModelHealth.success(permit);
-
-    // JSON mode gives the final provider usage. These no-session calls were
-    // previously invisible to every cost report.
     let finalMessage = null;
     for (const line of result.stdout.split('\n')) {
       let event; try { event = JSON.parse(line); } catch { continue; }
       if (event.type === 'message_end' && event.message && event.message.role === 'assistant') finalMessage = event.message;
     }
-    if (finalMessage && finalMessage.usage) {
+    if (!finalMessage) throw new Error(String(result.stderr || '').trim() || 'pi gave no answer');
+    if (finalMessage.stopReason === 'error') throw Object.assign(new Error(finalMessage.errorMessage || 'the model call failed'), { stderr: '' });
+    memoryModelHealth.success(permit);
+    // JSON mode gives the final provider usage: these no-session calls join
+    // the cost reports under the program's name.
+    if (finalMessage.usage) {
       const record = {
         type: 'message', id: crypto.randomUUID(), parentId: null,
         timestamp: new Date(finalMessage.timestamp || Date.now()).toISOString(),
         chatteringCategory: 'internal',
-        ...(options.purpose ? { chatteringPurpose: String(options.purpose) } : {}),
+        ...(ctx.purpose ? { chatteringPurpose: String(ctx.purpose) } : {}),
         message: { ...finalMessage, content: [] },
       };
       try { fs.appendFileSync(INTERNAL_USAGE_FILE, JSON.stringify(record) + '\n', { mode: 0o600 }); } catch {}
     }
-    const answer = finalMessage ? textOf(finalMessage.content) : result.stdout;
-    return options.trim === false ? answer : answer.trim();
+    return finalMessage;
   } catch (error) {
-    if (options.signal && options.signal.aborted) {
+    if (signal && signal.aborted) {
       memoryModelHealth.release(permit);
       throw abortedModelCall();
     }
@@ -5918,17 +5905,42 @@ async function runPi(fileContent, prompt, onChunk, options = {}) {
   }
 }
 
+// Chattering's own AI programs (ai-programs.js, design/74): FunctAI
+// functions on the model settings → model names, reached through Pi, logged
+// to the FunctAI call log the Programs pages read.
+const OFF_WORDS = new Set(['0', 'false', 'no', 'off']);
+const aiPrograms = require('./ai-programs.js').createAiPrograms({
+  piExec,
+  chatPost: (url, body, timeoutMs) => httpJson(url, body, timeoutMs),
+  voiceEndpoint: () => ({ url: voiceSetting('voiceModelUrl'), model: voiceSetting('voiceModel'), timeoutMs: (modelCallContext.getStore() || {}).timeoutMs || 60000 }),
+  lm: () => {
+    const d = readPiDefault();
+    const provider = appSettings.usePiDefault ? d.provider : appSettings.provider;
+    const model = appSettings.usePiDefault ? d.model : appSettings.model;
+    return provider && model ? provider + '/' + model : 'pi-default';
+  },
+  // $FUNCTAI_LOG_CALLS=0 (or off) keeps Chattering's programs out of the log too.
+  logFolder: () => (OFF_WORDS.has(String(process.env.FUNCTAI_LOG_CALLS || '').trim().toLowerCase()) ? false : platform.functaiCallsDir()),
+});
+// Run one of them within this call's context. `caller` goes to the log
+// (a conversation key, a project, the person); the rest is the context
+// piExec reads. Resolves with { outputs, callId, response }.
+function aiProgram(name, inputs, { automatic, background, purpose, thinking, timeoutMs, signal, caller = {}, onText = null } = {}) {
+  const inherited = modelCallContext.getStore() || {};
+  const ctx = { ...inherited };
+  for (const [k, v] of Object.entries({ automatic, background, thinking, timeoutMs, signal })) if (v !== undefined) ctx[k] = v;
+  ctx.purpose = purpose || name;
+  const who = { ...caller };
+  for (const [k, v] of Object.entries(who)) if (v === undefined || v === null || v === '') delete who[k];
+  if (ctx.automatic) who.automatic = true;
+  return modelCallContext.run(ctx, () => aiPrograms.run(name, inputs, { caller: who, onText, signal }));
+}
+
 function abortedModelCall() {
   const e = new Error('the model call was stopped');
   e.code = 'ABORTED';
   return e;
 }
-
-const TIMELINE_TITLE_PROMPT =
-  'The attached JSON array contains conversation ids and initial user requests. ' +
-  'Write a useful task label for each conversation. Each label must name the actual work, use at most 10 characters, and contain no period. ' +
-  'Do not use generic labels such as conversation, request, help, or question. ' +
-  'Reply with STRICT JSON only, no prose or code fence: [{"id":N,"title":"..."}]. Keep every input id.';
 
 let timelineTitleRunning = false;
 let timelineTitleAgain = false;
@@ -5964,11 +5976,10 @@ async function refreshTimelineTitles() {
     const batches = [];
     for (let i = 0; i < pending.length; i += 60) batches.push(pending.slice(i, i + 60));
     await mapTimelineLimit(batches, 3, async batch => {
-      const input = batch.map(([, e], id) => ({ id, request: e.title }));
+      const input = batch.map(([, e], id) => ({ id, request: String(e.title || '') }));
       try {
-        const raw = await runPi(JSON.stringify(input), TIMELINE_TITLE_PROMPT, null, { automatic: true, background: 'names' });
-        const result = JSON.parse(raw.replace(/^```(json)?\s*|\s*```$/g, ''));
-        if (!Array.isArray(result)) return;
+        const { outputs } = await aiProgram('timeline_labels', { conversations: input }, { automatic: true, background: 'names' });
+        const result = (outputs.labels || []).map(x => ({ id: x.id, title: x.label }));
         const updates = [];
         for (const item of result) {
           const pair = batch[Number(item.id)];
@@ -6008,9 +6019,11 @@ async function refreshTimelineTitles() {
 
 // Store a durable title override. It wins over re-indexing and the background labeler;
 // only another explicit override replaces it.
-async function applyTitleOverride(key, fullTitle, shortTitle) {
+async function applyTitleOverride(key, fullTitle, shortTitle, { aiCall = null } = {}) {
   const entry = index[key];
-  timelineTitles[key] = { hash: entry.timelineTitleHash, title: shortTitle, fullTitle, manual: true };
+  // aiCall: the conversation_title call that wrote this title, so a person
+  // renaming it later is recorded as that call's correction.
+  timelineTitles[key] = { hash: entry.timelineTitleHash, title: shortTitle, fullTitle, manual: true, ...(aiCall ? { aiCall } : {}) };
   entry.title = fullTitle;
   entry.timelineTitle = shortTitle;
   try {
@@ -6026,19 +6039,23 @@ async function applyTitleOverride(key, fullTitle, shortTitle) {
   return { key, title: fullTitle, timelineTitle: shortTitle, manual: true };
 }
 
-async function setConversationTitle(key, rawTitle) {
+async function setConversationTitle(key, rawTitle, { by = null } = {}) {
   if (!index[key]) throw new Error('unknown conversation');
   const fullTitle = String(rawTitle || '').replace(/\s+/g, ' ').trim().slice(0, 200);
   if (!fullTitle) throw new Error('empty title');
+  // A person renaming a title the conversation_title program wrote corrects
+  // that call (the call log's origin "edit"): the new name is what it should
+  // have said. Edits are noisier than reviews; the Programs pages say which.
+  const had = timelineTitles[key];
+  if (by && had && had.aiCall && had.fullTitle !== fullTitle) {
+    try {
+      const log = programLog();
+      log.refresh({ force: true });
+      log.rate({ call: had.aiCall, verdict: 'wrong', answer: fullTitle, origin: 'edit', by });
+    } catch (e) { if (e.status !== 404) console.error('title correction not recorded:', e.message); }
+  }
   return applyTitleOverride(key, fullTitle, timelineTitle(fullTitle));
 }
-
-const RETITLE_PROMPT =
-  'The attached JSON array contains the opening user messages of one AI work conversation, in order. ' +
-  'Name the actual work. Reply with STRICT JSON only, no prose or code fence: {"title":"...","label":"..."} — ' +
-  'title: a short, dense noun phrase for the work, 3 to 7 words, at most 60 characters, no filler words, ' +
-  'no trailing period, no generic words such as conversation, session, request, help; ' +
-  'label: the same work in at most 10 characters, no period.';
 
 // Auto retitle: fire once, when a conversation crosses from fewer than two real
 // user messages to two or more. A manual/override title always blocks this.
@@ -6083,12 +6100,11 @@ async function retitleConversation(key, options = {}) {
   const real = users.filter(m => !isBootstrapMessage(m.text));
   const chosen = (real.length ? real : users).slice(0, 4).map(m => String(m.text).slice(0, 2000));
   if (!chosen.length) throw new Error('no user messages to title from');
-  const raw = await runPi(JSON.stringify(chosen), RETITLE_PROMPT, null, options);
-  const parsed = JSON.parse(raw.replace(/^```(json)?\s*|\s*```$/g, ''));
-  const fullTitle = String(parsed.title || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  const { outputs, callId } = await aiProgram('conversation_title', { opening_user_messages: chosen }, { ...options, caller: { conversation: key } });
+  const fullTitle = String(outputs.title || '').replace(/\s+/g, ' ').trim().slice(0, 200);
   if (!fullTitle) throw new Error('the model returned no title');
-  const shortTitle = timelineTitle(String(parsed.label || parsed.title)).slice(0, 10);
-  return applyTitleOverride(key, fullTitle, shortTitle);
+  const shortTitle = timelineTitle(String(outputs.label || outputs.title)).slice(0, 10);
+  return applyTitleOverride(key, fullTitle, shortTitle, { aiCall: callId });
 }
 
 // Every message, numbered, nothing dropped. Tool results stay (already capped at 4k).
@@ -6103,30 +6119,6 @@ function numberedTranscript(messages, from = 0, to = Infinity) {
   }
   return out.join('\n\n');
 }
-
-const TREE_PROMPT =
-  'The attached file is a full, numbered transcript of a work session (user, assistant, tool calls, results). ' +
-  'Map it into a tree of the distinct problems worked on. A session often contains several unrelated problems; split them. ' +
-  'Nest sub-problems under their parent. Reply with STRICT JSON only, no prose, no code fence: ' +
-  '{"problems":[{"title":"...","from":N,"to":N,"children":[...]}]} ' +
-  'where from/to are the first and last message numbers (the [#N] markers) belonging to that problem, inclusive. ' +
-  'Cover every message; ranges of siblings must not overlap.';
-
-const DISTILL_PROMPT = (title, outline) =>
-  'You get the full transcript of one problem from a work session, plus the outline of the whole session for orientation.\n' +
-  'Session outline:\n' + outline + '\n\n' +
-  `Write a note about the problem "${title}" for the person who had this conversation, to be read months from now. ` +
-  'State: the problem in one line; what actually worked (quote commands, paths and config exactly); ' +
-  'what failed and why, if instructive; one thing to remember. Under 250 words. ' +
-  'Use bold labels like **Problem:** for structure — never markdown headings (#), they are reserved for the document. ' +
-  'No praise, no narration of the conversation flow, no "the user asked". ' +
-  'If this problem contains nothing worth keeping, reply with exactly: NOTHING-TO-KEEP';
-
-const ROLLUP_PROMPT = title =>
-  'The attached file holds the finished notes of the sub-problems of "' + title + '". ' +
-  'Write the parent note: one line per sub-problem stating what happened there, ' +
-  'plus — only if it exists — the decision, ordering, or turning point that connects them and appears in no child note. ' +
-  'Hard cap: 6 lines. No headings, no summary phrases like "overall" or "in this session", no restating child details.';
 
 function treeOutline(nodes, depth = 0) {
   return nodes.map(n =>
@@ -6173,12 +6165,10 @@ async function distill(data, emit = () => {}) {
   let prior = null;
   try { prior = JSON.parse(await fsp.readFile(treePathFor(data.key), 'utf8')); } catch {}
   let tree;
+  const caller = { conversation: data.key };
   try {
-    const prompt = TREE_PROMPT + (prior
-      ? ' A prior mapping of an earlier version of this session follows; keep its boundaries and titles unless new messages require changes: ' + JSON.stringify(prior)
-      : '');
-    const raw = await runPi(full, prompt);
-    tree = JSON.parse(raw.replace(/^```(json)?\s*|\s*```$/g, '')).problems;
+    const { outputs } = await aiProgram('session_problems', { transcript: full, prior_mapping: prior ? JSON.stringify(prior) : 'none' }, { caller });
+    tree = outputs.problems;
     if (!Array.isArray(tree) || !tree.length) throw new Error('empty tree');
   } catch {
     tree = [{ title: data.title || 'Session', from: 0, to: data.messages.length - 1, children: [] }];
@@ -6203,8 +6193,8 @@ async function distill(data, emit = () => {}) {
           n.note = leafCache[h]; // may be null (NOTHING-TO-KEEP)
           if (n.note) emit({ type: 'chunk', i, text: n.note });
         } else {
-          const text = await runPi(seg, DISTILL_PROMPT(n.title, outline),
-            chunk => emit({ type: 'chunk', i, text: chunk }));
+          const text = (await aiProgram('problem_note', { problem: n.title, session_outline: outline, transcript: seg },
+            { caller, onText: chunk => emit({ type: 'chunk', i, text: chunk }) })).outputs.note.trim();
           n.note = /^NOTHING-TO-KEEP/m.test(text) ? null : text;
           leafCache[h] = n.note;
           saveLeafCache();
@@ -6224,8 +6214,8 @@ async function distill(data, emit = () => {}) {
       .map(c => `### ${c.title}\n\n${nodeText(c) || '(nothing kept)'}`)
       .join('\n\n');
     try {
-      const text = await runPi(childNotes, ROLLUP_PROMPT(n.title),
-        chunk => emit({ type: 'chunk', i, text: chunk }));
+      const text = (await aiProgram('parent_note', { problem: n.title, child_notes: childNotes },
+        { caller, onText: chunk => emit({ type: 'chunk', i, text: chunk }) })).outputs.note.trim();
       n.rollup = /^NOTHING-TO-KEEP/m.test(text) ? null : text;
     } catch (e) { n.rollup = null; }
     emit({ type: 'leaf-done', i, title: '⤴ ' + n.title, empty: !n.rollup, done: ++done, total: grandTotal });
@@ -6249,11 +6239,6 @@ function noteFileFor(data, title) {
   const slug = (title || data.title || 'session').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
   return path.join(NOTES_DIR, `${date}-${slug}.md`);
 }
-
-const TITLE_PROMPT =
-  'The attached file is a distilled note of a work session. Reply with STRICT JSON only, no prose, no code fence: ' +
-  '{"title":"...","abstract":"..."} — title: specific and short (max 60 chars), names the actual work, no generic words like "session" or "conversation"; ' +
-  'abstract: 2–4 sentences stating what was done and what the note contains.';
 
 // Cross-session evidence is cached because an undistilled conversation needs one model pass.
 const EPIC_EVIDENCE_FILE = path.join(CACHE_DIR, 'epic-evidence-cache.json');
@@ -6279,35 +6264,16 @@ function saveEvidenceStateMemoSoon() {
   }, 2000);
 }
 
-const EPIC_EVIDENCE_PROMPT =
-  'The attached file is one work conversation. Extract evidence for a later cross-session project narrative. ' +
-  'State the goal, important actions, decisions, results, failures, and unresolved work. Keep exact commands and paths only when important. ' +
-  'Use at most 300 words. Do not describe the conversation itself. Do not use markdown headings.';
-
-const EPIC_SECTION_PROMPT = (part, total) =>
-  `The attached file is large section ${part} of ${total} from one work conversation. ` +
-  'Extract evidence for a later cross-session project narrative. Preserve chronology and exact important decisions, results, failures, commands, paths, and unresolved work. ' +
-  'Use at most 450 words. Do not describe the conversation or use markdown headings.';
-
-const EPIC_SECTION_ROLLUP_PROMPT =
-  'The attached file contains chronological evidence extracted from large sections of one conversation. ' +
-  'Merge it into one evidence card. Remove repeats but preserve the causal order, reversals, important decisions, results, failures, exact important commands and paths, and unresolved work. ' +
-  'Use at most 300 words. Do not describe the summarization process. Do not use markdown headings.';
-
-const EPIC_PROMPT = focus =>
-  'The attached file contains chronological evidence from several work conversations that belong to one larger problem or epic. ' +
-  (focus ? `Use this preferred epic name or focus: "${focus}". ` : '') +
-  'Find the causal narrative across sessions. Combine repeated work. Keep reversals, failed approaches, decisions, and turning points in time order. ' +
-  'Reply with STRICT JSON only, no prose, no code fence, in this shape: ' +
-  '{"title":"max 70 chars","abstract":"2-4 sentences","chapters":[{"date":"YYYY-MM-DD or range","title":"...","sessionIds":["exact id"],"narrative":"...","outcome":"..."}],"currentState":"...","openQuestions":["..."]}. ' +
-  'Use only exact session ids from the evidence. Each chapter must represent a meaningful phase, not merely one conversation. ' +
-  'Do not put markdown headings in text fields.';
-
 const isContextLimitError = e => /context window|input exceeds|too many tokens|maximum context/i.test(e.message || '');
 
-async function summarizeEpicSection(section, prompt, emit, depth = 0) {
-  try { return await runPi(section, prompt); }
-  catch (e) {
+// Evidence from one conversation (where: null), or from one of its large
+// sections (where: { part, total }).
+async function summarizeEpicSection(section, where, emit, depth = 0) {
+  try {
+    return where
+      ? (await aiProgram('section_evidence', { section: `${where.part} of ${where.total}`, conversation_section: section })).outputs.evidence
+      : (await aiProgram('conversation_evidence', { conversation: section })).outputs.evidence;
+  } catch (e) {
     if (!isContextLimitError(e) || depth >= 4 || estimateInputTokens(section) < 32000) throw e;
     // Tokenizers vary by content. If the 80% estimate is rejected, halve only this section.
     const retryBudget = Math.max(16000, Math.floor(estimateInputTokens(section) * 0.48));
@@ -6315,21 +6281,23 @@ async function summarizeEpicSection(section, prompt, emit, depth = 0) {
     if (parts.length < 2) throw e;
     emit({ phase: 'retry-split', sections: parts.length });
     const summaries = await mapLimit(parts, 2, (part, i) =>
-      summarizeEpicSection(part, EPIC_SECTION_PROMPT(i + 1, parts.length), emit, depth + 1));
-    return runPi(summaries.map((text, i) => `=== RETRY SECTION ${i + 1}/${summaries.length} ===\n${text}`).join('\n\n'), EPIC_SECTION_ROLLUP_PROMPT);
+      summarizeEpicSection(part, { part: i + 1, total: parts.length }, emit, depth + 1));
+    return mergeEvidence(summaries.map((text, i) => `=== RETRY SECTION ${i + 1}/${summaries.length} ===\n${text}`).join('\n\n'));
   }
 }
+
+const mergeEvidence = async text => (await aiProgram('evidence_merge', { section_evidence: text })).outputs.evidence_card;
 
 async function summarizeLargeEpicEvidence(transcript, emit = () => {}) {
   const promptReserve = 6000;
   const sections = splitTextToTokenBudget(transcript, piTargetTokens() - promptReserve);
-  if (sections.length === 1) return summarizeEpicSection(transcript, EPIC_EVIDENCE_PROMPT, emit);
+  if (sections.length === 1) return summarizeEpicSection(transcript, null, emit);
   const summaries = await mapLimit(sections, 3, async (section, i) => {
     emit({ phase: 'section', section: i + 1, sections: sections.length });
     const h = crypto.createHash('sha256').update('epic-section-v2\x00' + section).digest('hex').slice(0, 32);
     const cached = epicEvidenceCache[h];
     if (cached && typeof cached.text === 'string') return cached.text;
-    const text = await summarizeEpicSection(section, EPIC_SECTION_PROMPT(i + 1, sections.length), emit);
+    const text = await summarizeEpicSection(section, { part: i + 1, total: sections.length }, emit);
     epicEvidenceCache[h] = { text, kind: 'section', createdAt: Date.now() };
     saveEpicEvidenceCache();
     return text;
@@ -6345,10 +6313,10 @@ async function summarizeLargeEpicEvidence(transcript, emit = () => {}) {
       group.push(item); tokens += n;
     }
     if (group.length) groups.push(group);
-    if (groups.length === 1) return runPi(groups[0].join('\n\n'), EPIC_SECTION_ROLLUP_PROMPT);
+    if (groups.length === 1) return mergeEvidence(groups[0].join('\n\n'));
     level = await mapLimit(groups, 3, async (items, i) => {
       emit({ phase: 'rollup', pass, group: i + 1, groups: groups.length });
-      return runPi(items.join('\n\n'), EPIC_SECTION_ROLLUP_PROMPT);
+      return mergeEvidence(items.join('\n\n'));
     });
     level = level.map((text, i) => `=== ROLLUP ${i + 1}/${level.length} ===\n${text}`);
     pass++;
@@ -6430,30 +6398,6 @@ const PROJECT_MEMORY_DIR = path.join(NOTES_DIR, 'projects');
 const PROJECT_MEMORY_INPUTS_DIR = path.join(CACHE_DIR, 'project-memory');
 fs.mkdirSync(PROJECT_MEMORY_DIR, { recursive: true });
 fs.mkdirSync(PROJECT_MEMORY_INPUTS_DIR, { recursive: true });
-
-function modelJson(raw) {
-  const s = String(raw).replace(/^```(?:json)?\s*|\s*```$/g, '').trim();
-  try { return JSON.parse(s); } catch {}
-  // Tolerate prose around the JSON and trailing commas before retrying.
-  const a = Math.min(...[s.indexOf('{'), s.indexOf('[')].filter(i => i >= 0));
-  const b = Math.max(s.lastIndexOf('}'), s.lastIndexOf(']'));
-  if (Number.isFinite(a) && b > a) {
-    const cut = s.slice(a, b + 1);
-    try { return JSON.parse(cut); } catch {}
-    try { return JSON.parse(cut.replace(/,\s*([}\]])/g, '$1')); } catch {}
-  }
-  return JSON.parse(s); // throws with the original position info
-}
-
-// One corrective retry: strict-JSON replies fail rarely but kill whole jobs.
-async function runPiJson(input, prompt, tries = 2) {
-  let lastErr = null;
-  for (let attempt = 0; attempt < tries; attempt++) {
-    const raw = await runPi(input, prompt + (attempt ? ' Your previous reply was not valid JSON. Reply again with VALID strict JSON only — no prose, no code fence, escape all quotes and newlines inside strings.' : ''));
-    try { return modelJson(raw); } catch (e) { lastErr = e; }
-  }
-  throw lastErr;
-}
 
 function projectMemorySlug(project) {
   const slug = String(project || 'project').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 50) || 'project';
@@ -6591,29 +6535,9 @@ function cleanEpicCandidates(profile, meta) {
 const MEMORY_LEAVES_DIR = path.join(CACHE_DIR, 'memory-leaves');
 const LEAF_VERSION = 2; // v2: two focused calls, force+situation on intent, narrative abstracts
 
-// Dialogue call: judgment work (abstract + intent candidates). It gets the
-// project primer for WEIGHING only — facts must come from this conversation.
-const LEAF_DIALOGUE_PROMPT =
-  'The attached file is the dialogue of one AI-assisted work conversation from a software project: numbered user messages, each with the assistant message immediately before it. ' +
-  'PROJECT CONTEXT, when present, tells you what the project is about — use it only to judge importance; extract facts only from THIS conversation. ' +
-  'Reply with STRICT JSON only, no prose or code fence: ' +
-  '{"abstract":"one narrative paragraph, 4-8 sentences",' +
-  '"intent":[{"id":N,"kind":"vision|motivation|outcome|principle|constraint|preference|non-goal","force":"reactive-fix|local-preference|considered-direction|core-drive","situation":"one line: what the user was reacting to","confidence":0.0,"reason":"one line"}]}. ' +
-  'abstract: tell what the user was trying to do and WHY, how the direction changed along the way, what actually came out, and what this conversation means for the project. Write it as an honest narrative, not a list. ' +
-  'intent: select ONLY numbered user messages that reveal durable, implementation-independent user intent — vision, motivation, desired outcome or experience, values, product principles, durable constraints, trade-offs, explicit non-goals. ' +
-  'Judge the force honestly: a complaint while fixing a bug is a reactive-fix — select it only when it hints at a deeper durable want; an unprompted statement of direction or values is a considered-direction or core-drive. ' +
-  'Routine commands, narrow implementation requests, and status checks are not intent. Use the exact ids from the input. ' +
-  'An empty intent array is fine. Extract only what the conversation supports; do not invent.';
-
-// Tool call: extraction work (environment + problems) from the tool slice.
-const LEAF_TOOLS_PROMPT =
-  'The attached file lists the tool activity (commands, file edits, results, errors) and the final exchange of one AI-assisted work conversation from a software project. ' +
-  'Reply with STRICT JSON only, no prose or code fence: ' +
-  '{"environment":[{"type":"setup|command|service|location|tooling|auth|caution","fact":"one line"}],' +
-  '"problems":[{"state":"open|resolved","fact":"one line"}]}. ' +
-  'environment: reusable setup facts only — commands that matter, services and addresses, important paths, tooling, authentication METHODS. NEVER output passwords, tokens, private keys, secret values, or copied credentials. ' +
-  'problems: what broke and stayed open, and notable resolutions that changed the approach. ' +
-  'Empty arrays are fine. Extract only what the activity supports; do not invent.';
+// Two focused programs per conversation (ai-programs.js): memory_dialogue
+// (judgment: abstract + intent candidates, with the project primer for
+// weighing only) and memory_tools (extraction: environment + problems).
 
 function leafPathFor(key) {
   return path.join(MEMORY_LEAVES_DIR, key.replace(/[:\/\\]/g, '__') + '.json');
@@ -6694,12 +6618,12 @@ async function extractLeaf(key) {
     `Date: ${data.firstTs || entry.firstTs || '?'} -> ${data.lastTs || entry.lastTs || '?'}`,
     `Title: ${oneLine(data.title || entry.title, '(untitled)')}`,
   ].join('\n');
-  const runGrouped = async (head, blocks, prompt) => {
+  const runGrouped = async (head, blocks, program, field) => {
     const budget = piTargetTokens() - 8000 - estimateInputTokens(head);
     const groups = packTextBlocks(blocks, Math.max(20000, budget));
     return mapLimit(groups, 2, async (items, i) => {
       const label = groups.length > 1 ? `SECTION ${i + 1}/${groups.length}\n\n` : '';
-      try { return await runPiJson(head + label + items.join('\n\n'), prompt); }
+      try { return (await aiProgram(program, { [field]: head + label + items.join('\n\n') }, { caller: { conversation: key, project } })).outputs; }
       catch (e) { throw new Error(`leaf extraction failed (${key}): ${e.message}`); }
     });
   };
@@ -6712,7 +6636,7 @@ async function extractLeaf(key) {
     dialogueResults = await runGrouped(dialogueHeader, [
       '=== USER MESSAGES (numbered, each with the assistant message immediately before it) ===',
       ...intentItems.map(it => `[#${it.id}] ${it.ts || '?'}\nASSISTANT BEFORE: ${clipped(it.assistantBefore, 6000) || '(none)'}\nUSER: ${clipped(it.user, 12000)}`),
-    ], LEAF_DIALOGUE_PROMPT);
+    ], 'memory_dialogue', 'conversation');
   }
 
   // Call 2 — tools: environment + problems, plus the final exchange as context.
@@ -6723,7 +6647,7 @@ async function extractLeaf(key) {
     toolResults = await runGrouped(header + '\n\n', [
       '=== TOOL ACTIVITY (chronological, clipped) ===', ...tools,
       '=== FINAL EXCHANGE ===', ...(lastChat.length ? lastChat : ['(none)']),
-    ], LEAF_TOOLS_PROMPT);
+    ], 'memory_tools', 'activity');
   }
 
   const byId = new Map(intentItems.map(it => [it.id, it]));
@@ -6815,86 +6739,28 @@ async function seedLeavesFromSnapshots() {
 }
 
 // ---- layer 2: document regeneration ----
-const PYRAMID_PARTIAL_SUFFIX = ' This is one chronological section of a larger project; produce a partial result of the same JSON shape for later merging.';
-const PYRAMID_MERGE_SUFFIX = ' The attached file contains partial results from chronological sections of one project. Merge them into one result of the same JSON shape, without duplication; newer evidence wins on conflict.';
+// The lanes (ai-programs.js): project_overview, project_intent,
+// project_environment, project_status; intent_weigh and
+// intent_weigh_changes weigh the intent quotes first (layer 1.5: per-
+// conversation classifiers cannot compare across sessions; this pass sees
+// every candidate quote at once).
 
-const PYRAMID_OVERVIEW_PROMPT =
-  'The attached file lists dated narrative abstracts for every conversation of one software project, oldest first. ' +
-  'Understand the WHOLE arc, then describe the project as it truly stands today. ' +
-  'Be honest and specific: if this is a prototype, an experiment, a personal daily tool, an abandoned spike, or a real product, say so plainly. ' +
-  'Trace the evolution: what it began as and what it became. When a newer direction clearly supersedes an older one, describe the current direction and drop the old one from purpose and vision. ' +
-  'When an older direction was never revoked, it still stands — keep it even if recent work went elsewhere. ' +
-  'Do not hedge, do not average conflicting evidence into vague prose, and do not pad lists. ' +
-  'Also find coherent multi-session epic candidates not already covered by the listed existing epics. ' +
-  'Reply with STRICT JSON only, no prose or code fence: ' +
-  '{"overview":{"summary":"an honest paragraph: what this is, for whom, and where it truly stands","identity":"one line: prototype | experiment | personal daily tool | product | … with a qualifier","evolution":["began as X, became Y because Z"],"purpose":"...","vision":"...","desiredOutcomes":["..."],"principles":["..."],"nonGoals":["..."]},' +
-  '"epicCandidates":[{"title":"max 70 chars","abstract":"2-4 sentences","reason":"...","sessionIds":["exact session id"]}]}. ' +
-  'Epic candidates need at least two related sessions. Use only exact session ids from the input.';
-
-// Layer 1.5 — the global weighing pass. Per-conversation classifiers cannot
-// compare across sessions; this pass sees every candidate quote at once and
-// restores the cross-session judgment the old whole-project classifier had.
-const PYRAMID_WEIGH_PROMPT =
-  'The attached file lists candidate user-intent quotes from one software project, in chronological order with dates. ' +
-  'Weigh them AGAINST EACH OTHER to find what the user truly, durably wants. ' +
-  'For each quote judge: was the user just reacting to fix a momentary problem, or revealing a lasting goal? Does a later quote supersede it? Is it part of a repeated pattern across sessions? ' +
-  'Assign every id exactly one tier: ' +
-  '"core" — a deep drive, stated with force or returned to repeatedly; ' +
-  '"standing" — a durable direction never revoked; ' +
-  '"pattern" — weak alone but part of a clearly repeated preference; ' +
-  '"superseded" — a real direction later clearly replaced (name the replacing direction in the note); ' +
-  '"one-off" — a momentary reaction with no durable signal. ' +
-  'Be strict: when in doubt between one-off and anything higher, choose one-off. ' +
-  'Reply with STRICT JSON only, no prose or code fence: {"tiers":[{"id":"...","tier":"core|standing|pattern|superseded|one-off","note":"one line"}]}. Keep every input id.';
-
-const PYRAMID_WEIGH_MERGE_PROMPT =
-  'The attached file lists tier assignments for user-intent quotes, produced from chronological sections of the same project that could not see each other. ' +
-  'Find cross-section corrections: promote quotes that form cross-section repeated patterns, and mark quotes superseded when a later section clearly replaced their direction. ' +
-  'Reply with STRICT JSON only, listing ONLY the ids whose tier you change — never repeat unchanged rows: ' +
-  '{"changes":[{"id":"...","tier":"core|standing|pattern|superseded|one-off","note":"one line"}]}. If nothing changes, reply {"changes":[]}.';
-
-const PYRAMID_INTENT_PROMPT =
-  'The attached file contains user intent evidence for one software project: verbatim user quotes weighed into tiers (core, standing, pattern, superseded — momentary one-offs were already removed), in chronological order with dates. ' +
-  'Recover what the user truly wants: the deep goals that survive implementation changes. ' +
-  'Weigh the evidence — core and repeated quotes dominate; a quote stated once in reaction to a bug is weak; superseded quotes are history: report the CURRENT direction, and describe the old direction only under evolution when it explains the project. ' +
-  'Resolve repetition and evolution. Keep real tensions instead of forcing false agreement. ' +
-  'Be honest and plain: if the project is a prototype, an experiment, or a personal tool, say so. Do not hedge, do not average opposing signals into mush, and never turn current implementation details into goals. ' +
-  'Reply with STRICT JSON only, no prose or code fence: ' +
-  '{"coreIntent":"...","vision":"...","currentDirection":"where the work is truly pointed now and why","whatMatters":["..."],"desiredOutcomes":["..."],"principles":["..."],"constraints":["..."],"tensions":["..."],"nonGoals":["..."],"evolution":["wanted X, now wants Y because Z"],"openIntentQuestions":["..."]}.';
-
-const PYRAMID_ENV_PROMPT =
-  'The attached file lists dated environment facts extracted from every conversation of one software project, oldest first. Each fact names the HOST (machine) it was observed on; several people may work on the project from different machines. ' +
-  'Build the CURRENT development environment document in TWO levels. ' +
-  'PROJECT level: only facts true in any checkout on any machine — how to build, test, run and lint, conventions, tools the project needs, services the project itself provides, relative paths inside the repository. ' +
-  'MACHINE level: one entry per host — absolute paths, home-directory locations, IP addresses and hostnames, ports that answer on that host, credential locations, machine-specific tooling and quirks. A fact that names an absolute path outside the repository, an address, or a hostname belongs to a machine, never to the project. ' +
-  'The newest evidence wins; drop superseded setup; put unresolved conflicts in cautions of the level they belong to. ' +
-  'NEVER output passwords, tokens, private keys, secret values, or copied credentials — only methods, variable names, commands, and credential locations. ' +
-  'Reply with STRICT JSON only, no prose or code fence: ' +
-  '{"summary":"1-2 sentences about the project environment as a whole",' +
-  '"project":{"setup":["..."],"commands":["..."],"services":["..."],"locations":["..."],"tooling":["..."],"authentication":["..."],"cautions":["..."]},' +
-  '"machines":[{"host":"exact host name from the input","summary":"one line: what this machine is for the project","setup":["..."],"commands":["..."],"services":["..."],"locations":["..."],"tooling":["..."],"authentication":["..."],"cautions":["..."]}]}. ' +
-  'Every host that appears in the input gets exactly one machines entry; use empty arrays rather than inventing.';
-
-const PYRAMID_STATUS_PROMPT =
-  'The attached file lists dated problem records (open or resolved) and the newest conversation abstracts for one software project, oldest first. ' +
-  'Build the CURRENT status snapshot. A problem resolved later is not open. Finished work is not unfinished. Prefer the newest evidence. ' +
-  'Be specific and plain — name the real things, do not pad lists, and drop anything the newest evidence shows as done or abandoned. ' +
-  'Reply with STRICT JSON only, no prose or code fence: ' +
-  '{"recentFocus":["..."],"unfinished":["..."],"todos":["..."],"openQuestions":["..."]}.';
-
-async function synthesizeLaneJson(header, blocks, prompt, emit, label, step, steps) {
+async function synthesizeLaneJson(header, blocks, program, emit, label, step, steps) {
   const budget = piTargetTokens() - 16000;
   const whole = header + blocks.join('\n\n');
+  const lane = async (part, evidence) => (await aiProgram(program, { part, evidence }, { caller: { project: laneProjectOf(header) } })).outputs;
   if (estimateInputTokens(whole) <= budget) {
     emit(label + '…', step, steps);
-    return runPiJson(whole, prompt);
+    return lane('the whole project', whole);
   }
   const groups = packTextBlocks(blocks, Math.max(20000, budget - estimateInputTokens(header)));
   emit(`${label} (${groups.length} sections)…`, step, steps);
   const partials = await mapLimit(groups, 2, (items, i) =>
-    runPi(`${header}SECTION ${i + 1}/${groups.length}\n\n${items.join('\n\n')}`, prompt + PYRAMID_PARTIAL_SUFFIX));
-  return runPiJson(`${header}PARTIAL RESULTS:\n${partials.join('\n\n=== PARTIAL ===\n')}`, prompt + PYRAMID_MERGE_SUFFIX);
+    lane(`section ${i + 1} of ${groups.length}`, `${header}SECTION ${i + 1}/${groups.length}\n\n${items.join('\n\n')}`));
+  return lane('partial results to merge', `${header}PARTIAL RESULTS:\n${partials.map(r => JSON.stringify(r, null, 1)).join('\n\n=== PARTIAL ===\n')}`);
 }
+// The project a lane's header names ("PROJECT: name"), for the call log.
+const laneProjectOf = header => { const m = /^PROJECT: ([^\n]+)/m.exec(String(header)); return m ? m[1].trim() : undefined; };
 
 const laneHashOf = items => crypto.createHash('sha256').update('lane-v1\x00' + JSON.stringify(items)).digest('hex').slice(0, 32);
 
@@ -6920,7 +6786,7 @@ async function weighIntentCandidates(project, overview, candidates, emit, step, 
     const groups = packTextBlocks(quotes.map(blockOf), Math.max(20000, budget - estimateInputTokens(header)));
     const partials = await mapLimit(groups, 2, async (items, i) => {
       const label = groups.length > 1 ? `SECTION ${i + 1}/${groups.length}\n\n` : '';
-      return runPiJson(header + label + items.join('\n'), PYRAMID_WEIGH_PROMPT);
+      return (await aiProgram('intent_weigh', { quotes: header + label + items.join('\n') }, { caller: { project } })).outputs;
     });
     return { rows: partials.flatMap(p => Array.isArray(p.tiers) ? p.tiers : []), sections: groups.length };
   };
@@ -6929,7 +6795,7 @@ async function weighIntentCandidates(project, overview, candidates, emit, step, 
   // (a full rewrite of 800+ rows can exceed the provider output cap).
   const deltaPass = async rows => {
     const compact = rows.map(t => JSON.stringify({ id: t.id, tier: t.tier, note: oneLine(t.note, '') }));
-    const merged = await runPiJson(header + compact.join('\n'), PYRAMID_WEIGH_MERGE_PROMPT);
+    const merged = (await aiProgram('intent_weigh_changes', { tiers: header + compact.join('\n') }, { caller: { project } })).outputs;
     const changes = Array.isArray(merged.changes) ? merged.changes : Array.isArray(merged.tiers) ? merged.tiers : [];
     const byId = new Map(rows.map(t => [String(t.id), t]));
     for (const c of changes) if (c && c.id != null && byId.has(String(c.id))) byId.set(String(c.id), c);
@@ -7143,7 +7009,7 @@ async function regenerateDocsCore({ label, entries, paths, existingEpics, discov
     emit('Overview unchanged — keeping it.', 1, 6);
     profile = { overview: prev.overview, epicCandidates: (prev.candidates || []) };
   } else {
-    profile = await synthesizeLaneJson(header, abstractBlocks, PYRAMID_OVERVIEW_PROMPT, emit, 'Building the project overview', 1, 6);
+    profile = await synthesizeLaneJson(header, abstractBlocks, 'project_overview', emit, 'Building the project overview', 1, 6);
   }
   const overview = profile.overview || {};
 
@@ -7167,7 +7033,7 @@ async function regenerateDocsCore({ label, entries, paths, existingEpics, discov
     if (!weighedQuotes.length) weighedQuotes = intentSelected; // weighing failed or everything one-off: keep all rather than nothing
     const intentBlocks = weighedQuotes.map(q => pyramidIntentBlock(q, tiers.get(q.id) || { tier: 'standing', note: '' }));
     const intentHeader = `PROJECT: ${project}\nHIGH-LEVEL OVERVIEW:\n${clipped(JSON.stringify(overview), 2500)}\n\n`;
-    intent = await synthesizeLaneJson(intentHeader, intentBlocks, PYRAMID_INTENT_PROMPT, emit, `Synthesizing ${weighedQuotes.length} weighed intent quotes`, 3, 6);
+    intent = await synthesizeLaneJson(intentHeader, intentBlocks, 'project_intent', emit, `Synthesizing ${weighedQuotes.length} weighed intent quotes`, 3, 6);
   } else emit('Intent unchanged — keeping it.', 3, 6);
 
   let environment = null, status = null;
@@ -7175,12 +7041,12 @@ async function regenerateDocsCore({ label, entries, paths, existingEpics, discov
   await Promise.all([
     (async () => {
       if (skip('environment')) return emit('Environment unchanged — keeping it.', 4, 6);
-      environment = await synthesizeLaneJson(envHeader, envFacts.length ? envFacts : ['(no environment facts yet)'], PYRAMID_ENV_PROMPT, emit, 'Building the environment document', 4, 6);
+      environment = await synthesizeLaneJson(envHeader, envFacts.length ? envFacts : ['(no environment facts yet)'], 'project_environment', emit, 'Building the environment document', 4, 6);
     })(),
     (async () => {
       if (skip('status')) return;
       const statusBlocks = ['=== PROBLEMS ===', ...(problemFacts.length ? problemFacts : ['(none)']), '=== NEWEST ABSTRACTS ===', ...newestAbstracts];
-      status = normalizeProjectStatus(await synthesizeLaneJson(envHeader, statusBlocks, PYRAMID_STATUS_PROMPT, emit, 'Building the status document', 4, 6));
+      status = normalizeProjectStatus(await synthesizeLaneJson(envHeader, statusBlocks, 'project_status', emit, 'Building the status document', 4, 6));
     })(),
   ]);
 
@@ -7299,9 +7165,8 @@ async function buildEpicStory(evidenceInputs, focus, emit = () => {}) {
     '', e.text,
   ].join('\n'));
   const budget = piTargetTokens() - 12000;
-  if (estimateInputTokens(blocks.join('\n\n')) <= budget) {
-    return runPi(blocks.join('\n\n'), EPIC_PROMPT(focus));
-  }
+  const story = async (part, evidence) => (await aiProgram('epic_story', { focus: focus || 'none', part, evidence })).outputs;
+  if (estimateInputTokens(blocks.join('\n\n')) <= budget) return story('all the evidence', blocks.join('\n\n'));
   // Very large epics get chronological chapter drafts first, then one final merge.
   const groups = [];
   let group = [], tokens = 0;
@@ -7312,12 +7177,10 @@ async function buildEpicStory(evidenceInputs, focus, emit = () => {}) {
   }
   if (group.length) groups.push(group);
   emit({ text: `Writing ${groups.length} epic timeline sections…` });
-  const drafts = await mapLimit(groups, 3, (items, i) => runPi(items.join('\n\n'),
-    EPIC_PROMPT(focus) + ` This is chronological evidence group ${i + 1} of ${groups.length}.`));
-  const merged = drafts.map((text, i) => `=== TIMELINE DRAFT ${i + 1}/${drafts.length} ===\n${text}`).join('\n\n');
+  const drafts = await mapLimit(groups, 3, (items, i) => story(`evidence group ${i + 1} of ${groups.length}`, items.join('\n\n')));
+  const merged = drafts.map((d, i) => `=== TIMELINE DRAFT ${i + 1}/${drafts.length} ===\n${JSON.stringify(d, null, 1)}`).join('\n\n');
   if (estimateInputTokens(merged) > budget) throw new Error('Epic timeline drafts remain too large. Split this epic into smaller epics.');
-  return runPi(merged,
-    EPIC_PROMPT(focus) + ' The attached file contains chronological partial timeline drafts. Merge them into one timeline and preserve exact session ids.');
+  return story('drafts to merge', merged);
 }
 
 // Absolute path of the original transcript behind an index key ("source:relPath").
@@ -7403,9 +7266,8 @@ async function buildEpic(ids, epicId = null, focus = '', assignedId = null, emit
     };
   });
   emit({ text: 'Writing the cross-session timeline…', done: sessions.length, total: sessions.length + 1 });
-  const raw = await buildEpicStory(evidenceInputs, focus || (old && old.title) || '', progress =>
+  const story = await buildEpicStory(evidenceInputs, focus || (old && old.title) || '', progress =>
     emit({ ...progress, done: sessions.length, total: sessions.length + 1 }));
-  const story = JSON.parse(raw.replace(/^```(json)?\s*|\s*```$/g, ''));
   if (!Array.isArray(story.chapters) || !story.chapters.length) throw new Error('the epic narrative had no timeline');
   const id = (old && old.id) || assignedId || crypto.randomUUID();
   const now = Date.now();
@@ -7578,9 +7440,8 @@ function startDistillJob(key, data, options = {}) {
       emit({ type: 'status', text: 'Titling and saving…' });
       let title = null, abstract = null;
       try {
-        const raw = await runPi(note, TITLE_PROMPT);
-        const j = JSON.parse(raw.replace(/^```(json)?\s*|\s*```$/g, ''));
-        title = j.title; abstract = j.abstract;
+        const { outputs } = await aiProgram('note_title', { note }, { caller: { conversation: key } });
+        title = outputs.title; abstract = outputs.abstract;
       } catch {}
       const lines = note.split('\n');
       if (title) lines[0] = `# ${title}`;
@@ -11743,7 +11604,7 @@ async function aiCommandFile(p, identity) {
 
 // Whether AI commands are open to this person: the reason when not.
 // Guests: an AI command runs on the owner's account outside the guest's
-// sandbox and limits (runPi is not sandbox-aware yet), so not for them.
+// sandbox and limits (piExec is not sandbox-aware yet), so not for them.
 function aiCommandsRefusal(identity) {
   if (identity && usersLib.isWalled(identity.user)) return 'AI commands are not available to guests yet';
   return null;
@@ -11851,11 +11712,6 @@ async function docSaveResponse(body, user = null) {
   return { ok: true, path: abs, sha: sha256Hex(text), changed: oldText !== text, historyWarning };
 }
 
-const DOC_COMMIT_TITLE_PROMPT =
-  'The attached file is a git diff of one markdown document revision. ' +
-  'Write a commit title that names what changed in the document (content, not formatting mechanics). ' +
-  'Reply with STRICT JSON only, no prose or code fence: {"title":"max 60 chars, no period"}.';
-
 // Fire-and-forget: give the fresh commit an AI title. Amend only while HEAD
 // is still that exact commit and the stage is clean — never rewrite other work.
 function scheduleDocCommitTitle(root, hash, diffText) {
@@ -11863,8 +11719,8 @@ function scheduleDocCommitTitle(root, hash, diffText) {
   if (!backgroundAllowed('names')) return;
   setTimeout(async () => {
     try {
-      const raw = await runPi(clipped(diffText, 60000), DOC_COMMIT_TITLE_PROMPT, null, { background: 'names' });
-      const title = oneLine(JSON.parse(raw.replace(/^```(json)?\s*|\s*```$/g, '')).title, '').slice(0, 60);
+      const { outputs } = await aiProgram('document_commit_title', { diff: clipped(diffText, 60000) }, { background: 'names', caller: { repository: root } });
+      const title = oneLine(outputs.title, '').slice(0, 60);
       if (!title) return;
       const head = (await gitText(root, ['rev-parse', 'HEAD'])).trim();
       if (head !== hash) return;
@@ -14070,7 +13926,6 @@ function voiceCapabilities() {
 const REWRITE_API_KEY = process.env.REWRITE_API_KEY || 'inktype-local';
 const ttsJobs = new Map();
 
-const TTS_REWRITE_PROMPT = 'You are a text-to-speech preprocessor. Rewrite the text so it sounds natural when spoken. Spell out abbreviations and numbers. Skip code syntax and URLs. Output only the spoken script.';
 
 function pcmToWav(pcm, sampleRate) {
   const header = Buffer.alloc(44);
@@ -14157,18 +14012,8 @@ function httpPcm(urlStr, body, timeoutMs) {
 
 async function rewriteForSpeech(text) {
   if (!voiceModelReady()) throw voiceServiceError('A model for spoken text');
-  const res = await httpJson(voiceSetting('voiceModelUrl'), {
-    model: voiceSetting('voiceModel'),
-    messages: [
-      { role: 'system', content: TTS_REWRITE_PROMPT },
-      { role: 'user', content: text },
-    ],
-    max_tokens: 4096,
-    chat_template_kwargs: { enable_thinking: false },
-  }, 90000);
-  const out = res.json && res.json.choices && res.json.choices[0] && res.json.choices[0].message
-    && res.json.choices[0].message.content;
-  return String(out || '').trim();
+  const { outputs } = await aiProgram('speech_script', { text }, { timeoutMs: 90000 });
+  return String(outputs.spoken_script || '').trim();
 }
 
 async function synthesizeSpeech(text, rewrite, speed = 1) {
@@ -14224,7 +14069,6 @@ async function synthesizeSpeech(text, rewrite, speed = 1) {
 // open microphone. Fire and forget. When speech cannot be made (Kokoro or
 // Qwen down) the chime plays instead, so a finished run is never silent
 // unless the mode is off or voice is muted.
-const SPEAK_SUMMARY_PROMPT = 'You are a voice announcer for a person who runs several coding-agent conversations. One conversation just returned a new reply. You get an OPENING line, the conversation title, and the full reply. Speak a short digest: start with the OPENING exactly as given, then say in two to four short sentences what there is to read in the reply — what it did, what it found, and what it asks or recommends, if anything. Talk about the reply in the third person ("it says", "it recommends"). Plain spoken words only: no code, no file paths, no markdown, no lists. Keep the whole thing under sixty words.';
 
 // Spoken playback speed for announcements and confirmations.
 const VOICE_SPEED = Number(process.env.CHATTERING_VOICE_SPEED) || 1.5;
@@ -14275,17 +14119,8 @@ async function speakRunDone(job) {
     if (mode === 'title') sentence = opening;
     else if (voiceModelReady()) {
       try {
-        const res = await httpJson(voiceSetting('voiceModelUrl'), {
-          model: voiceSetting('voiceModel'),
-          messages: [
-            { role: 'system', content: SPEAK_SUMMARY_PROMPT },
-            { role: 'user', content: 'OPENING: ' + opening + '\nTITLE: ' + title + '\n\nFull reply:\n' + text.slice(0, 16000) },
-          ],
-          max_tokens: 400,
-          chat_template_kwargs: { enable_thinking: false },
-        }, 45000);
-        sentence = String(res.json && res.json.choices && res.json.choices[0]
-          && res.json.choices[0].message && res.json.choices[0].message.content || '').trim();
+        const { outputs } = await aiProgram('reply_digest', { opening, title, reply: text.slice(0, 16000) }, { timeoutMs: 45000, caller: { conversation: job.key } });
+        sentence = String(outputs.digest || '').trim();
       } catch (e) { console.log('speak-done summarizer unreachable, using fallback: ' + e.message); }
     }
     if (!sentence) sentence = fallbackSpokenLine(text, opening);
@@ -14334,7 +14169,6 @@ async function previewDoneSound() {
 const voice = { queue: [], playing: false, mutedUntil: 0, lastAnnouncedKey: null, current: null, paused: false };
 const voiceMuted = () => voice.mutedUntil && Date.now() < voice.mutedUntil;
 
-const VOICE_GATE_PROMPT = 'You are a voice gate for a coding-agent app. The user just heard a spoken summary of an agent reply and the microphone opened. You get the full transcript captured so far; the user paused, and you must decide what to do. The user often thinks in silence between phrases, so an unfinished thought is normal. Answer STRICT JSON only, no prose, no code fence: {"action":"send|wait|command|ignore","command":"mute|skip|status|read|goto|none","target":"...","text":"..."}. Use "send" ONLY when the user clearly ended the message with a send word such as: send, done, go, submit, enter, control enter, ship it, that is all. Put the cleaned message in "text" with the trailing send word removed. Use "wait" when the user dictated something addressed to the agent but no send word ended it yet — they are still thinking; keep the microphone open. Use "command" for short standalone app commands: "mute" (also: stop, be quiet, shut up, pause notifications), "skip" (also: next, dismiss), "status" (also: what is running, what is done), "read" (read a reply aloud — matches: read it, read the reply, read me the last reply, what did it say; put any named conversation or project in "target", empty means the one that just spoke), "goto" (open something on screen — matches: go to, open, show me; put the named conversation or project in "target"). Use "ignore" ONLY when the transcript is clearly not addressed to the app: background noise, other people talking to each other, phone calls, or the user talking to someone else in the room. The topic does not matter — the user may ask the agent anything, including casual requests. The strongest signal that speech is addressed to the app is a trailing send word. A message that ends with a send word is a send even when the topic is casual. Transcription is imperfect: stray trailing words after the send word (like "complete" or "thank you") still count as a send. Examples: "can you tell me a joke? send" is send with text "can you tell me a joke?". "I will pick it up on the way home no worries" is ignore (talking to someone else, no send word). "refactor the queue and add tests, send" is send. "maybe we should split that function" is wait.';
 
 // Small state tones. Each is a distinct earcon:
 //   done  — three rising notes (C E G): a run finished, a reply is ready
@@ -14889,20 +14723,8 @@ function voiceListenUpgrade(req, socket, head) {
 
 async function voiceGate(transcript) {
   if (voiceModelReady()) try {
-    const res = await httpJson(voiceSetting('voiceModelUrl'), {
-      model: voiceSetting('voiceModel'),
-      messages: [
-        { role: 'system', content: VOICE_GATE_PROMPT },
-        { role: 'user', content: transcript },
-      ],
-      max_tokens: 300,
-      chat_template_kwargs: { enable_thinking: false },
-    }, 30000);
-    const raw = String(res.json && res.json.choices && res.json.choices[0]
-      && res.json.choices[0].message && res.json.choices[0].message.content || '');
-    const m = raw.match(/\{[\s\S]*\}/);
-    const parsed = JSON.parse(m ? m[0] : raw);
-    if (['send', 'wait', 'command', 'ignore'].includes(parsed.action)) return parsed;
+    const { outputs } = await aiProgram('voice_gate', { transcript }, { timeoutMs: 30000 });
+    if (['send', 'wait', 'command', 'ignore'].includes(outputs.action)) return outputs;
   } catch (e) { console.log('voice gate unreachable, using heuristic: ' + e.message); }
   // Heuristic fallback when Qwen is down: commands, an explicit send word at
   // the end sends, anything else with real length waits for more.
@@ -15868,7 +15690,7 @@ async function handleRequest(req, res) {
           const input = await reviewInput(review.key, review.sourceCalls || review.calls);
           json(res, 200, require('./review-repair').preview(service, review, input.tools, currentModelLabel()));
         } else if (u.pathname === '/api/reviews/suggest' && req.method === 'POST') {
-          json(res, 200, await require('./review-repair').suggest(service, String(body.token || ''), currentModelLabel(), (input, prompt) => runPi(input, prompt, null, { automatic: false, timeoutMs: 60000 })));
+          json(res, 200, await require('./review-repair').suggest(service, String(body.token || ''), currentModelLabel(), input => aiProgram('review_repair', { evidence: input }, { automatic: false, timeoutMs: 60000 }).then(r => r.outputs.proposals)));
         } else if (u.pathname === '/api/reviews/combine' && req.method === 'POST') {
           json(res, 200, service.combine(body.original, body.followup));
         } else if (u.pathname === '/api/reviews/comment' && req.method === 'POST') {
@@ -16341,7 +16163,7 @@ async function handleRequest(req, res) {
       try {
         const p = JSON.parse(body || '{}');
         assertCan(identity, 'act', targetOf(p.id), 'this conversation');
-        json(res, 200, await setConversationTitle(p.id, p.title));
+        json(res, 200, await setConversationTitle(p.id, p.title, { by: programRater(identity) }));
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/conversation/retitle' && req.method === 'POST') {
       let body = '';
@@ -17482,16 +17304,21 @@ async function handleRequest(req, res) {
       const who = docRunOwner(identity);
       if ((aiCallsRunning.get(who) || 0) >= AI_CALLS_PER_PERSON) return json(res, 429, { error: 'three AI commands are already running — wait for one to finish' });
       aiCallsRunning.set(who, (aiCallsRunning.get(who) || 0) + 1);
-      const { input, prompt } = aiCommands.buildPrompt(checked.command, checked.request, { path: displayPath(abs), nonce: crypto.randomBytes(6).toString('hex') });
+      const program = 'doc_' + checked.command.id.replace(/-/g, '_');
+      const all = aiCommands.programInputs(checked.command, checked.request, { path: displayPath(abs), nonce: crypto.randomBytes(6).toString('hex') });
+      const inputs = Object.fromEntries((await aiPrograms.inputNames(program)).map(k => [k, all[k]]));
       const stop = new AbortController();
       let finished = false;
       res.on('close', () => { if (!finished) stop.abort(); });
       res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' });
       const send = ev => { if (!res.writableEnded && !res.destroyed) res.write(JSON.stringify(ev) + '\n'); };
       try {
-        const text = await runPi(input, prompt, delta => send({ type: 'delta', text: delta }), {
-          automatic: false, thinking: checked.command.thinking, signal: stop.signal, purpose: 'ai-command', trim: false, timeoutMs: 5 * 60 * 1000,
+        // The reply as written is the new text (a leading space or line break included).
+        const { response } = await aiProgram(program, inputs, {
+          automatic: false, thinking: checked.command.thinking, signal: stop.signal, timeoutMs: 5 * 60 * 1000,
+          onText: delta => send({ type: 'delta', text: delta }), caller: { user: programRater(identity), file: abs },
         });
+        const text = aiPrograms.replyText(response);
         send({ type: 'done', text, model: currentModelLabel() });
       } catch (e) {
         if (e.code !== 'ABORTED') send({ type: 'error', message: e.code === 'MODEL_CALLS_PAUSED' ? 'the model is paused after repeated failures; try again in a moment' : e.message });

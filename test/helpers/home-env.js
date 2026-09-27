@@ -6,7 +6,10 @@
 const path = require('node:path');
 function homeEnv(home) {
   return { HOME: home, USERPROFILE: home,
-    APPDATA: path.join(home, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(home, 'AppData', 'Local') };
+    APPDATA: path.join(home, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
+    // The FunctAI call log Chattering's AI programs write to (design/74). The
+    // default follows XDG_DATA_HOME, which a test inherits from the machine.
+    FUNCTAI_LOG_CALLS: path.join(home, 'functai', 'calls') };
 }
 // What any program needs to start on this system, for tests that give a
 // child an otherwise minimal environment: nothing on Unix; on Windows the
