@@ -14,7 +14,7 @@ const { fakeOpenAI } = require('./helpers/fake-openai.js');
 const { chromiumAvailable } = require('./helpers/chromium.js');
 
 test('first minutes: welcome, connect a model, its hello, the helpers question, a first reply', { skip: !chromiumAvailable() && 'chromium is not installed', timeout: 120000 }, async t => {
-  const model = await fakeOpenAI({ models: ['fixture-chat'], reply: p => /ready to help/.test(JSON.stringify(p.messages)) ? 'Hello! I am ready to help.' : 'Here is a plan: rest on Sunday.' });
+  const model = await fakeOpenAI({ models: ['fixture-chat', 'fixture/other:7b'], reply: p => /ready to help/.test(JSON.stringify(p.messages)) ? 'Hello! I am ready to help.' : 'Here is a plan: rest on Sunday.' });
   t.after(() => model.close());
   const b = await viewerBrowser(t, { fixture: false, firstRun: true });
   const { evaluate: ev, until, home } = b;
@@ -40,9 +40,21 @@ test('first minutes: welcome, connect a model, its hello, the helpers question, 
   assert.match(await ev(`document.querySelector('.aic-success').textContent`), /Connected to local[\s\S]*fixture-chat/);
   await ev(`document.querySelector('.aic-dialog [data-aic-done]').click()`);
 
+  // Choosing another model in the picker makes it the default (the value
+  // once carried a NUL separator, which HTML turns into U+FFFD).
+  const piSettings = path.join(home, '.pi', 'agent', 'settings.json');
+  await ev(`document.querySelector('.wel [data-wel-change]')?.click()`);
+  await until(`document.querySelector('.wel [data-aic-default]')`, 'the model picker');
+  await ev(`(() => { const sel = document.querySelector('.wel [data-aic-default]'); sel.value = [...sel.options].find(o => o.textContent === 'fixture/other:7b').value; sel.dispatchEvent(new Event('change')); })()`);
+  await until(`/now uses/.test(document.body.textContent)`, 'the change confirmed');
+  assert.equal(JSON.parse(fs.readFileSync(piSettings, 'utf8')).defaultModel, 'fixture/other:7b');
+  await ev(`(() => { const sel = document.querySelector('.wel [data-aic-default]'); sel.value = [...sel.options].find(o => o.textContent === 'fixture-chat').value; sel.dispatchEvent(new Event('change')); })()`);
+  for (let i = 0; i < 50 && JSON.parse(fs.readFileSync(piSettings, 'utf8')).defaultModel !== 'fixture-chat'; i++) await new Promise(r => setTimeout(r, 100));
+  assert.equal(JSON.parse(fs.readFileSync(piSettings, 'utf8')).defaultModel, 'fixture-chat');
+
   // Step 2, asked now that a model exists; nothing is decided until answered.
   await until(`document.querySelector('.wel [data-wel-helpers]')`, 'the background question, in the welcome');
-  assert.match(await ev(`document.querySelector('.wel-step.done')?.textContent`), /fixture-chat · local/);
+  await until(`/fixture-chat · local/.test(document.querySelector('.wel-step.done')?.textContent || '')`, 'step 1 done, naming the model');
   await ev(`(() => { document.querySelector('.wel [data-wel-kind=names]').checked = true; document.querySelector('.wel [data-wel-kind=memory]').checked = false; document.querySelector('.wel [data-wel-helpers]').click(); })()`);
   await until(`document.querySelector('.wel [data-wel-start]')`, 'step 3');
   const saved = JSON.parse(fs.readFileSync(path.join(require('./helpers/home-env.js').appDir(home, 'config'), 'settings.json'), 'utf8'));

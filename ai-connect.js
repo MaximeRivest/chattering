@@ -85,7 +85,10 @@
     if (!rows.length) return '';
     const groups = new Map();
     for (const m of s.available || []) { if (!groups.has(m.provider)) groups.set(m.provider, []); groups.get(m.provider).push(m); }
-    const options = [...groups].map(([p, ms]) => `<optgroup label="${esc(nameOf(p))}">${ms.map(m => `<option value="${esc(p + '\u0000' + m.id)}"${p === d.provider && m.id === d.model ? ' selected' : ''}>${esc(m.name || m.id)}</option>`).join('')}</optgroup>`).join('');
+    // An option's value is its place in s.available: a model id can hold any
+    // character, and HTML turns some (NUL among them) into others.
+    const at = new Map((s.available || []).map((m, i) => [m, i]));
+    const options = [...groups].map(([p, ms]) => `<optgroup label="${esc(nameOf(p))}">${ms.map(m => `<option value="${at.get(m)}"${p === d.provider && m.id === d.model ? ' selected' : ''}>${esc(m.name || m.id)}</option>`).join('')}</optgroup>`).join('');
     const inList = (s.available || []).some(m => m.provider === d.provider && m.id === d.model);
     return `<div class="aic-connected">
       <ul class="aic-list">${rows.join('')}</ul>
@@ -132,8 +135,9 @@
     });
     const sel = $$(el, '[data-aic-default]');
     if (sel) sel.onchange = async () => {
-      if (!sel.value) return;
-      const [provider, model] = sel.value.split('\u0000');
+      const m = sel.value === '' ? null : ((A.summary && A.summary.available) || [])[Number(sel.value)];
+      if (!m) return;
+      const { provider, id: model } = m;
       try { await api('/api/ai/default', { provider, model }); toast('Chattering now uses ' + modelLabel(provider, model)); await afterChange(); } catch (e) { errToast(e.message); }
     };
     const hello = $$(el, '[data-aic-hello]');
