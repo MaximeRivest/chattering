@@ -44,9 +44,7 @@ jobs:
 
       - name: Chrome for the browser tests
         id: chrome
-        uses: browser-actions/setup-chrome@v2
-        with:
-          chrome-version: stable
+        uses: ./.github/actions/chrome
 
       # rat runs notebook cells. Built from a pinned published commit, so the
       # notebook tests run here too (those needing a newer rat say so and skip).

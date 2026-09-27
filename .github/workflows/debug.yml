@@ -38,9 +38,7 @@ jobs:
           node-version-file: .node-version
       - run: npm ci --prefix runtime --no-audit --no-fund
       - id: chrome
-        uses: browser-actions/setup-chrome@v2
-        with:
-          chrome-version: stable
+        uses: ./.github/actions/chrome
       - run: git config --global user.name "Chattering tests" && git config --global user.email "tests@chattering.invalid"
       - name: Tests, traced
         env:

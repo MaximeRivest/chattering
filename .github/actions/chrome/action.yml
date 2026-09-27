@@ -1,0 +1,40 @@
+# Chrome for Testing (stable) for the browser tests, at a path Chrome accepts
+# on every system.
+#
+# On macOS, setup-chrome's channel installs cache the *contents* of
+# "Google Chrome for Testing.app" under a folder named after the architecture
+# (browser-actions/setup-chrome#658). Started from a path without the ".app",
+# Chrome's helper processes cannot find the browser ("No rendezvous client,
+# terminating process"): the browser runs and lists a page, but no page ever
+# loads or answers. The same folder reached through a ".app"-named link works,
+# so that is the path handed on. Elsewhere the installed path is used as is.
+name: Chrome for the browser tests
+description: Chrome for Testing (stable), started from a path its helpers can find
+outputs:
+  chrome-path:
+    description: The Chrome executable to start
+    value: ${{ steps.path.outputs.chrome-path }}
+runs:
+  using: composite
+  steps:
+    - id: setup
+      uses: browser-actions/setup-chrome@v2
+      with:
+        chrome-version: stable
+    - id: path
+      shell: bash
+      env:
+        CHROME: ${{ steps.setup.outputs.chrome-path }}
+      run: |
+        chrome="$CHROME"
+        if [ "$RUNNER_OS" = macOS ]; then
+          exe="$(basename "$chrome")"
+          bundle="${chrome%/Contents/MacOS/$exe}"
+          if [ "$bundle" != "$chrome" ] && [ "${bundle%.app}" = "$bundle" ]; then
+            link="$RUNNER_TEMP/chrome/$exe.app"
+            mkdir -p "$(dirname "$link")" && ln -sfn "$bundle" "$link"
+            chrome="$link/Contents/MacOS/$exe"
+          fi
+        fi
+        "$chrome" --version
+        echo "chrome-path=$chrome" >> "$GITHUB_OUTPUT"
