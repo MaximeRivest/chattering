@@ -36,5 +36,6 @@ runs:
             chrome="$link/Contents/MacOS/$exe"
           fi
         fi
-        "$chrome" --version
+        # Never `"$chrome" --version` here: on Windows that opens a browser and
+        # does not return. setup-chrome has already printed the version.
         echo "chrome-path=$chrome" >> "$GITHUB_OUTPUT"

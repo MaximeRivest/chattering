@@ -138,7 +138,7 @@ async function supervise(root, id) {
     if (lastGate.cancelled) { S.appendEvent(dir, 'cancelled'); save({ status: 'cancelled', finishedAt: Date.now() }); return; }
     if (lastGate.paused) throw new Error('Ancestor paused during spawn preflight; no worker launched');
     child = spawn(invocation.command, invocation.args, { cwd: task.cwd, env: childEnvironment(process.env, root, id),
-      detached: true, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+      detached: true, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const outcome = new Promise(resolve => {
       let launchError = null, drainTimer, settled = false;
       const finish = (code, signal, pipeError = null) => {

@@ -25,6 +25,7 @@ function supervisionPlan(command, args, { id, mode = 'auto', env = process.env,
 function spawnSupervised(plan, options) {
   // Scope execution inherits this environment directly. No credential values
   // enter command arguments, service properties, or an extra environment file.
-  return spawn(plan.command, plan.args, { ...options, detached: true, shell: false });
+  // windowsHide: on Windows a detached child otherwise opens a console window of its own.
+  return spawn(plan.command, plan.args, { ...options, detached: true, shell: false, windowsHide: true });
 }
 module.exports = { supervisionPlan, spawnSupervised };
