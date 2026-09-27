@@ -1,6 +1,6 @@
 {
   "name": "chattering",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Chattering, by Rockfrog: a workspace for conversations with AI agents.",
   "license": "Apache-2.0",
