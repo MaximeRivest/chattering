@@ -1,13 +1,13 @@
 'use strict';
 const { randomUUID, createHash } = require('node:crypto');
 const path = require('node:path');
-const os = require('node:os');
 const fsp = require('node:fs/promises');
 const { blobId } = require('./checkpoint-store');
+const { isInside, samePath } = require('./platform.js');
 const LineDiff = require('./linediff');
 const { gzipSync, gunzipSync } = require('node:zlib');
 const { buildTaskReview, refKey } = require('./task-reviews');
-const { sensitive } = require('./task-locations');
+const { sensitive, outsideFolders } = require('./task-locations');
 const digest = text => createHash('sha256').update(text).digest('hex');
 class ChangeReviews {
   constructor(checkpoints, { archive = null, baseURL = '' } = {}) {
@@ -162,9 +162,17 @@ class ChangeReviews {
       const snapshots = [...new Set(review.steps.flatMap(s => [s.before, s.after]).filter(Boolean))];
       if (snapshots.some(id => { const s = this.cp.snapshot(id); return s.root === review.root && s.manifest.some(f => f.path === rel && f.oid); })) file = { livePath: requested };
     }
-    if (!file || sensitive(file.livePath) || ![review.root, os.homedir(), os.tmpdir()].filter(Boolean).some(root => file.livePath.startsWith(root + path.sep))) throw Error('No verified local file for this reference');
+    // The review's own folder, or a home or temporary folder under either of
+    // its names; strictly inside, never the folder itself.
+    const folders = [[review.root, review.root], ...outsideFolders()];
+    const within = file && folders.find(pair => pair.some(dir => dir && isInside(file.livePath, dir) && !samePath(file.livePath, dir)));
+    if (!file || sensitive(file.livePath) || !within) throw Error('No verified local file for this reference');
+    // The file on disk must be the one recorded. The only link allowed on the
+    // way is the folder's own (macOS: /var/folders → /private/var/folders).
+    const [given, onDisk] = within;
+    const expected = isInside(file.livePath, given) ? path.join(onDisk, path.relative(given, file.livePath)) : file.livePath;
     const real = await fsp.realpath(file.livePath), stat = await fsp.stat(real);
-    if (real !== file.livePath || sensitive(real) || !stat.isFile()) throw Error('The verified file location changed');
+    if (!(real === file.livePath || samePath(real, expected)) || sensitive(real) || !stat.isFile()) throw Error('The verified file location changed');
     return { path: real, size: stat.size, mediaType: file.mediaType || null };
   }
   async comment(id, data) {

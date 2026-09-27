@@ -96,6 +96,13 @@ function isInside(child, parent) {
 function samePath(a, b) {
   return !!a && !!b && sameCase(path.resolve(a)) === sameCase(path.resolve(b));
 }
+// A folder's name on disk: `dir` with every link in it resolved, or `dir`
+// itself when it does not exist. On macOS os.tmpdir() is /var/folders/…,
+// which the disk names /private/var/folders/…; on Windows it can be a short
+// name (RUNNER~1). A file's real path starts with the disk's name.
+function realFolder(dir) {
+  try { return fs.realpathSync.native(dir); } catch { return dir; }
+}
 // A path as it appears in records and URLs: forward slashes everywhere.
 // Records stay comparable across machines; native paths are for the disk.
 function toPortable(p) { return String(p || '').split(path.sep).join('/'); }
@@ -181,11 +188,14 @@ function bashPath(env = process.env) {
 // the target open (a reader, an antivirus scan): EPERM, EACCES or EBUSY
 // for a moment. Retry for about two seconds there; Unix renames at once.
 const RENAME_RETRY = new Set(['EPERM', 'EACCES', 'EBUSY']);
+// A folder onto an existing folder is refused for good on Windows (EPERM),
+// where Unix would say ENOTEMPTY: that is an answer, not a moment's lock.
+const lastingRefusal = (from, to) => { try { return fs.statSync(from).isDirectory() && fs.statSync(to).isDirectory(); } catch { return false; } };
 function renameSyncRetry(from, to) {
   for (let i = 0; ; i++) {
     try { return fs.renameSync(from, to); }
     catch (e) {
-      if (!IS_WIN || !RENAME_RETRY.has(e.code) || i >= 40) throw e;
+      if (!IS_WIN || !RENAME_RETRY.has(e.code) || i >= 40 || lastingRefusal(from, to)) throw e;
       const until = Date.now() + 50; while (Date.now() < until) { /* a short, bounded wait */ }
     }
   }
@@ -194,7 +204,7 @@ async function renameRetry(from, to) {
   for (let i = 0; ; i++) {
     try { return await fs.promises.rename(from, to); }
     catch (e) {
-      if (!IS_WIN || !RENAME_RETRY.has(e.code) || i >= 40) throw e;
+      if (!IS_WIN || !RENAME_RETRY.has(e.code) || i >= 40 || lastingRefusal(from, to)) throw e;
       await new Promise(r => setTimeout(r, 50));
     }
   }
@@ -249,6 +259,6 @@ module.exports = {
   renameSyncRetry, renameRetry, syncDirSync, gitNothingPaths, bashPath, audioPlayCommand, audioRecordCommand,
   PLATFORM, IS_WIN, IS_MAC, IS_LINUX, IS_WSL, hostKind,
   pathKey, pathEntries, withPath, findOnPath, isExecutable,
-  CASE_INSENSITIVE, isInside, samePath, toPortable, fromPortable, isAbsolutePath,
+  CASE_INSENSITIVE, isInside, samePath, realFolder, toPortable, fromPortable, isAbsolutePath,
   appDirs, openCommand,
 };

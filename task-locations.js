@@ -6,14 +6,39 @@ const os = require('node:os');
 const { createHash } = require('node:crypto');
 const VERSION = 2;
 const key = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-const sensitive = file => /(?:^|\/)\.(?:env(?:\.|$)|ssh(?:\/|$)|gnupg(?:\/|$))|\.(?:pem|key|p12|pfx)$|(?:^|\/)(?:auth|credentials)\.json$/i.test(file);
+const platform = require('./platform.js');
+// Secrets never captured, shown or served. Either separator counts: on
+// Windows C:\Users\u\.ssh\id_rsa is as secret as /home/u/.ssh/id_rsa.
+const sensitive = file => /(?:^|\/)\.(?:env(?:\.|$)|ssh(?:\/|$)|gnupg(?:\/|$))|\.(?:pem|key|p12|pfx)$|(?:^|\/)(?:auth|credentials)\.json$/i.test(String(file).replace(/\\/g, '/'));
+// Folders outside a workspace whose files an agent's step may name and have
+// captured or shown: the home folder and the temporary folders, as
+// [given, on disk] pairs, since a path can arrive under either name
+// (macOS: /tmp and /var/folders are links into /private).
+function outsideFolders() {
+  const given = [os.homedir(), os.tmpdir(), ...(platform.IS_WIN ? [] : ['/tmp'])].filter(Boolean);
+  return [...new Map(given.map(dir => [dir, [dir, platform.realFolder(dir)]])).values()];
+}
+// May a step's local file at `file` be captured or shown? Inside its
+// workspace `root`, or inside a home or temporary folder under either name.
+function permittedLocal(file, root) {
+  if (!file) return false;
+  return (!!root && platform.isInside(file, root)) || outsideFolders().some(pair => pair.some(dir => platform.isInside(file, dir)));
+}
+// Paths on this machine follow its own rules (C:\work or C:/work on
+// Windows); a remote host's are POSIX, whatever this machine is.
+const POSIX_RULES = { absolute: p => p.startsWith('/'), normalize: path.posix.normalize, resolve: path.posix.resolve, home: p => p.startsWith('~/') };
+const WINDOWS_RULES = { absolute: p => path.isAbsolute(p), normalize: p => path.resolve(p), resolve: path.resolve, home: p => /^~[\\/]/.test(p) };
+const pathRules = ctx => platform.IS_WIN && (ctx.host || 'local') === 'local' ? WINDOWS_RULES : POSIX_RULES;
+// C:\x or C:/x: a drive on this Windows machine, not a host named C.
+const windowsDrivePath = text => platform.IS_WIN && /^[A-Za-z]:[\\/]/.test(text);
 function location(raw, ctx, role = 'output', evidence = 'shell-literal') {
   raw = String(raw || '');
+  const rules = pathRules(ctx);
   let resolved = null, reason = '';
   if (!raw || /\x00/.test(raw) || evidence !== 'explicit-tool' && /[$`*?{}]/.test(raw)) reason = 'Dynamic path requires resolution';
-  else if ((raw === '~' || raw.startsWith('~/')) && ctx.host === 'local') resolved = path.resolve(ctx.home || os.homedir(), raw === '~' ? '' : raw.slice(2));
-  else if (raw.startsWith('/')) resolved = path.posix.normalize(raw);
-  else if (ctx.cwd && ctx.cwd.startsWith('/')) resolved = path.posix.resolve(ctx.cwd, raw);
+  else if ((raw === '~' || rules.home(raw)) && ctx.host === 'local') resolved = path.resolve(ctx.home || os.homedir(), raw === '~' ? '' : raw.slice(2));
+  else if (rules.absolute(raw)) resolved = rules.normalize(raw);
+  else if (ctx.cwd && rules.absolute(ctx.cwd)) resolved = rules.resolve(ctx.cwd, raw);
   else reason = 'Execution directory is unknown';
   const host = ctx.host || 'local';
   return { id: key([host, resolved || raw, resolved ? '' : ctx.cwd || '']), host, path: resolved, raw, cwd: ctx.cwd || null, role, evidence, reason };
@@ -95,6 +120,7 @@ function expandBraces(text) {
   return m && m[2].split(',').length <= 20 ? m[2].split(',').map(p => m[1] + p + m[3]) : [text];
 }
 function endpoint(text, ctx, role) {
+  if (windowsDrivePath(text)) return location(text, ctx, role, 'copy-command');
   const m = /^(?:([\w.-]+@)?([\w.-]+)):(.+)$/.exec(text);
   if (m) return location(m[3], { host: (m[1] || '') + m[2] + (ctx.port && ctx.port !== '22' ? ':' + ctx.port : ''), cwd: null }, role, 'copy-command');
   if (text.includes(':') && !text.startsWith('/') && !text.startsWith('./')) return location(text, { host: 'unresolved-remote', cwd: null }, role, 'copy-command');
@@ -219,4 +245,4 @@ function gather(tools, cwd, host = 'local') {
   }
   return { version: VERSION, locations: [...locations.values()], copies, warnings: [...new Set(warnings)] };
 }
-module.exports = { VERSION, location, directTargets, inspectShell, inspectTool, gather, sensitive, shellCommands };
+module.exports = { VERSION, location, directTargets, inspectShell, inspectTool, gather, sensitive, outsideFolders, permittedLocal, shellCommands };

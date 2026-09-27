@@ -1,9 +1,8 @@
 'use strict';
 const path = require('node:path');
 const fs = require('node:fs/promises');
-const os = require('node:os');
 const { createHash, randomUUID } = require('node:crypto');
-const { gather, sensitive, VERSION } = require('./task-locations');
+const { gather, sensitive, permittedLocal, VERSION } = require('./task-locations');
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const mediaType = file => ({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.mp4': 'video/mp4' })[path.extname(file || '').toLowerCase()] || null;
 const within = (root, file) => file === root || file.startsWith(root + path.sep);
@@ -50,7 +49,7 @@ async function fileDescriptor(service, loc, args, rows, tools, overrides) {
   const cp = service.cp, root = args.root;
   const display = loc.host !== 'local' ? `${loc.host}:${loc.path || loc.raw}` : loc.path && within(root, loc.path) ? path.relative(root, loc.path).split(path.sep).join('/') : loc.path || loc.raw;
   const f = { path: display, location: loc, locationId: loc.id, evidence: loc.evidence, calls: loc.calls, livePath: null, mediaType: mediaType(loc.path), oldRef: null, nextRef: null };
-  if (sensitive(loc.path || loc.raw) || loc.host === 'local' && loc.path && ![root, os.homedir(), os.tmpdir()].some(base => within(base, loc.path))) { f.unavailable = 'Protected or outside permitted task-file roots'; f.protected = true; return f; }
+  if (sensitive(loc.path || loc.raw) || loc.host === 'local' && loc.path && !permittedLocal(loc.path, root)) { f.unavailable = 'Protected or outside permitted task-file roots'; f.protected = true; return f; }
   const candidates = [...(loc.host === 'local' && loc.path ? [loc.path] : []), ...(loc.localCopies || [])];
   if (overrides[loc.id]) {
     const candidate = path.resolve(overrides[loc.id]);
@@ -59,7 +58,7 @@ async function fileDescriptor(service, loc, args, rows, tools, overrides) {
     candidates.unshift(candidate); f.resolution = 'User-approved local candidate; historical equivalence not assumed';
   }
   for (const candidate of candidates) {
-    if (![root, os.homedir(), os.tmpdir()].some(base => within(base, candidate))) continue;
+    if (!permittedLocal(candidate, root)) continue;
     const verified = await verifyLocal(candidate);
     if (verified.status === 'directory') { f.liveDirectory = verified.canonical; f.liveStatus = 'directory'; }
     if (verified.status === 'exists' && (verified.canonical === candidate || within(root, verified.canonical))) {

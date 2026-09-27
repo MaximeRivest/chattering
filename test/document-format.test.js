@@ -44,8 +44,10 @@ test('every document format routed to MRMD can save and commit, with stale-write
   const { root, git, ctx, events } = await harness(t);
   const browser = vm.createContext({});
   vm.runInContext(fs.readFileSync(require.resolve('../filesmode.js'), 'utf8'), browser);
-  for (const extension of ['md', 'MD', 'mdx', 'MDX', 'markdown', 'qmd', 'rmd']) {
-    const file = path.join(root, 'first-request.' + extension);
+  for (const [i, extension] of ['md', 'MD', 'mdx', 'MDX', 'markdown', 'qmd', 'rmd'].entries()) {
+    // One name per case: on macOS and Windows, first-request.md and .MD are one file.
+    const name = `first-request-${i}.${extension}`;
+    const file = path.join(root, name);
     assert.equal(browser.fileWsKind(file), 'md');
     await fsp.writeFile(file, mdx);
     const text = mdx.replace('# Hello', '# Updated');
@@ -57,7 +59,7 @@ test('every document format routed to MRMD can save and commit, with stale-write
     assert.equal(await fsp.readFile(file, 'utf8'), text);
     const revision = await ctx.docCommitResponse({ path: file, text, baseSha: saved.sha });
     assert.ok(revision.hash);
-    assert.equal(git(['show', `HEAD:first-request.${extension}`]), text);
+    assert.equal(git(['show', `HEAD:${name}`]), text);
     assert.ok(events.some(e => e.path === file && e.source === 'Markdown save'));
     // Both sources join recents, retaining their distinct actor.
     assert.ok(events.some(e => e.path === file && e.recent && e.kind === 'saved'));

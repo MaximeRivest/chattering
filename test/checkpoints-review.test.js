@@ -28,13 +28,15 @@ test('private checkpoints preserve staged changes, HEAD, raw bytes, modes and ig
   const staged = await fs.readFile(path.join(root, '.git/index'));
   const a = await store.capture(root, { ...meta, phase: 'before' }); assert.equal(a.error, '');
   await fs.writeFile(path.join(root, 'a & b.txt'), 'after\n');
-  await fs.writeFile(path.join(root, 'new\nname.txt'), 'new');
+  // Windows allows no line break in a name and keeps no executable bit.
+  const unix = process.platform !== 'win32', odd = unix ? 'new\nname.txt' : 'new name, #1.txt';
+  await fs.writeFile(path.join(root, odd), 'new');
   await fs.chmod(path.join(root, 'a & b.txt'), 0o755);
   const b = await store.capture(root, { ...meta, phase: 'after' }); assert.equal(b.error, '');
   assert.equal((await store.content(a.snapshot, 'a & b.txt')).text, 'staged');
   assert.equal((await store.content(b.snapshot, 'a & b.txt')).text, 'after\n');
-  assert.equal((await store.content(b.snapshot, 'new\nname.txt')).text, 'new');
-  assert.equal(store.snapshot(b.snapshot).manifest.find(f => f.path === 'a & b.txt').mode, '100755');
+  assert.equal((await store.content(b.snapshot, odd)).text, 'new');
+  if (unix) assert.equal(store.snapshot(b.snapshot).manifest.find(f => f.path === 'a & b.txt').mode, '100755');
   assert.ok(!store.snapshot(b.snapshot).manifest.some(f => f.path === 'secret'));
   assert.equal(store.diff(a.snapshot, b.snapshot).length, 2);
   assert.deepEqual(await fs.readFile(path.join(root, '.git/index')), staged);

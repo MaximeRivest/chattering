@@ -135,3 +135,20 @@ test('model proposals are opt-in, single-use, bounded and verified locally witho
   assert.equal(corrected.artifacts[0].livePath, path.join(root, 'scratch/wizard.py'));
   assert.equal(corrected.artifacts[0].nextRef, null);
 });
+test('secrets are recognized with either separator', () => {
+  for (const p of ['/home/u/.ssh/id_rsa', 'C:\\Users\\u\\.ssh\\id_rsa', 'C:\\proj\\.env', 'C:\\proj\\.env.local', 'C:\\Users\\u\\.gnupg\\pubring.kbx', 'C:\\app\\auth.json', 'D:\\x\\credentials.json', 'C:\\a\\cert.pem'])
+    assert.equal(L.sensitive(p), true, p);
+  for (const p of ['C:\\proj\\environment.md', 'C:\\proj\\sshd-notes.txt', '/home/u/src/key.js']) assert.equal(L.sensitive(p), false, p);
+});
+test('a temporary folder counts under both its names (macOS: /var/folders is /private/var/folders)', async t => {
+  const real = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'task-temp-real-')));
+  const alias = real.replace(/real-(\w+)$/, 'alias-$1');
+  await fs.symlink(real, alias, 'dir');
+  const saved = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP };
+  t.after(async () => { for (const [k, v] of Object.entries(saved)) v === undefined ? delete process.env[k] : process.env[k] = v; await fs.rm(alias, { force: true }); await fs.rm(real, { recursive: true, force: true }); });
+  process.env.TMPDIR = process.env.TMP = process.env.TEMP = alias;
+  assert.equal(os.tmpdir(), alias);
+  assert.equal(L.permittedLocal(path.join(alias, 'out.py'), '/nowhere/project'), true);
+  assert.equal(L.permittedLocal(path.join(real, 'out.py'), '/nowhere/project'), true);
+  assert.equal(L.permittedLocal(path.join(path.parse(real).root, 'etc-like', 'x'), '/nowhere/project'), false);
+});

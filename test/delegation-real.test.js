@@ -11,6 +11,13 @@ let pi;
 // Workers start the Pi the app would run (runtime.js).
 pi = require('./helpers/pi-package.js').piPackageForTests();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// A run's own account for a failure message: its error, then the tail of what
+// its supervisor and worker wrote (the cause of a start that never happened).
+async function account(task) {
+  const dir = path.dirname(task.eventLogPath);
+  const tail = async name => { try { return (await fs.readFile(path.join(dir, name), 'utf8')).slice(-2500) || '(empty)'; } catch { return '(none)'; } };
+  return `${task.error}\n--- supervisor.log\n${await tail('supervisor.log')}\n--- stderr.log\n${await tail('stderr.log')}`;
+}
 
 test('real Pi runner persists a valid mode contract and blocks a changed snapshot before provider work', {
   skip: !pi && 'Pi is not installed; real runner validation is blocked', timeout: 45000,
@@ -36,7 +43,7 @@ test('real Pi runner persists a valid mode contract and blocks a changed snapsho
   };
   const first = await D.launchDelegation(spec, options);
   const result = await done(first.id);
-  assert.equal(result.status, 'succeeded', result.error);
+  assert.equal(result.status, 'succeeded', await account(result));
   assert.equal(result.modeVerification.sha256, D.modeSha256(mode));
   assert.equal(result.review, 'unreviewed');
   assert.ok((await fs.readFile(marker, 'utf8')).includes('request'));
@@ -45,7 +52,7 @@ test('real Pi runner persists a valid mode contract and blocks a changed snapsho
     ...options, env: { ...env, FIXTURE_RETRY_ONCE: '1' },
   });
   const recovered = await done(recovery.id);
-  assert.equal(recovered.status, 'succeeded', recovered.error);
+  assert.equal(recovered.status, 'succeeded', await account(recovered));
   assert.equal(recovered.result.summary, 'Fixture reply.');
   assert.equal(recovered.result.parseProblems, 0);
   assert.equal((await fs.readFile(marker, 'utf8')).trim().split('\n').length, 2);
@@ -86,13 +93,13 @@ test('real Pi worker stopped by a usage limit continues on the same session with
   const task = await D.launchDelegation(spec, options);
   const stopped = await done(task.id);
   assert.equal(stopped.status, 'failed', stopped.error);
-  assert.equal(stopped.failure.kind, 'usage-limit');
+  assert.equal(stopped.failure.kind, 'usage-limit', await account(stopped));
   assert.ok(stopped.leafId, 'the stop records where the session ended');
   // Same model would fail again under this fixture; the parent chooses another one.
   const resumed = await D.resumeDelegation(task.id, { model: 'fixture/two', parentSessionPath: parent, instructions: 'Keep going.' }, options);
   assert.equal(resumed.attempt, 2);
   const finished = await done(task.id);
-  assert.equal(finished.status, 'succeeded', finished.error);
+  assert.equal(finished.status, 'succeeded', await account(finished));
   assert.equal(finished.model, 'fixture/two');
   assert.equal(finished.modeVerification.status, 'verified');
   assert.ok(finished.modeVerification.snapshots >= 2, 'each attempt saved its mode contract');

@@ -2,18 +2,18 @@
 const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
-const os = require('node:os');
 const crypto = require('node:crypto');
 const { deflateSync } = require('node:zlib');
 const { spawn } = require('node:child_process');
 const { DatabaseSync } = require('node:sqlite');
-const { sensitive } = require('./task-locations');
+const { sensitive, permittedLocal } = require('./task-locations');
 const SKIP = new Set(['.git', 'node_modules', '.venv', '.direnv', 'target', '__pycache__']);
 const READ_ONLY = new Set(['read', 'ls', 'find', 'grep']);
 const ARTIFACT_FILE_MAX = 25 * 1024 * 1024;
 const hash = s => crypto.createHash('sha256').update(s).digest('hex');
 const blobId = b => crypto.createHash('sha1').update(Buffer.from(`blob ${b.length}\0`)).update(b).digest('hex');
-const inside = (root, p) => p === root || p.startsWith(root + path.sep);
+const platform = require('./platform.js');
+const inside = (root, p) => platform.isInside(p, root);
 function cleanGitEnv(extra = {}) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')));
   return { ...env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: require('./platform.js').gitNothingPaths().config, GIT_TERMINAL_PROMPT: '0', ...extra };
@@ -65,7 +65,10 @@ class CheckpointStore {
         const temp = repo + '.init-' + crypto.randomUUID();
         try {
           await git(['init', '--bare', '--object-format=sha1', temp]);
-          try { await require('./platform.js').renameRetry(temp, repo); } catch (e) { if (!['EEXIST', 'ENOTEMPTY'].includes(e.code)) throw e; }
+          // Losing the race to another writer is fine: its rename was whole.
+          // Unix says EEXIST or ENOTEMPTY, Windows EPERM; the published
+          // repository is the answer either way.
+          try { await platform.renameRetry(temp, repo); } catch (e) { if (!fs.existsSync(path.join(repo, 'HEAD'))) throw e; }
         } finally { await fsp.rm(temp, { recursive: true, force: true }); }
       }
       return repo;
@@ -251,7 +254,7 @@ class CheckpointStore {
       if (loc.host !== 'local' || !loc.path) continue;
       const file = path.resolve(loc.path); let version = null, error = '';
       try {
-        if (sensitive(file) || !(inside(root, file) || inside(os.homedir(), file) || inside(os.tmpdir(), file)) || inside(this.dir, file) || file.split(path.sep).some(p => SKIP.has(p))) throw Error('Protected target: ' + file);
+        if (sensitive(file) || !permittedLocal(file, root) || inside(this.dir, file) || file.split(path.sep).some(p => SKIP.has(p))) throw Error('Protected target: ' + file);
         let text, state = 'present';
         try {
           const stat = await fsp.lstat(file);
