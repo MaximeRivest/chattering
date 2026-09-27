@@ -28,6 +28,14 @@ window.pathWithin = function (file, root) {
 };
 // A full path on the server's system: /home/u/a, C:\a or C:/a, \\server\share.
 window.isFullPath = p => typeof p === 'string' && /^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(p);
+// The command key, by CodeMirror's own rule (navigator.platform) so the page
+// and the editor always agree: ⌘ on a Mac, where Ctrl keeps its text
+// meaning (Ctrl+K deletes to the line's end, Ctrl+F moves forward), Ctrl
+// elsewhere. modHeld(e) for shortcuts that meet those keys; modKey('K') →
+// ⌘K or Ctrl+K for labels, modKey('k', true) → ⌘k or ctrl+k in the help.
+window.IS_MAC = /Mac/.test(navigator.platform);
+window.modHeld = e => IS_MAC ? e.metaKey : e.ctrlKey;
+window.modKey = (k, lower = false) => IS_MAC ? '⌘' + k : (lower ? 'ctrl+' : 'Ctrl+') + k;
 // Local font choices use installed fonts only: no network or font downloads.
 window.appFonts = {
   theme: { label: 'Theme default', value: '' },
@@ -17332,7 +17340,7 @@ function helpNow() {
     keys.push(['ctrl+enter', 'send'], ['alt+m', 'choose the model'], ['shift+tab', 'choose the reasoning level']);
     const mic = document.querySelector('.ask-bubble .ask-mic');
     if (mic && !mic.hidden) keys.push(['ctrl+m', 'start / stop dictation']);
-    keys.push(['esc · ctrl+k', 'back to the text — what you typed stays']);
+    keys.push(['esc · ' + modKey('k', true), 'back to the text — what you typed stays']);
     sections.push({ label: 'ask box', keys });
     return sections;
   }
@@ -17462,9 +17470,9 @@ function fileEditorHelp({ inEditor }) {
     for (const s of live) sections.push({ label: s.label, keys: s.keys.map(([names, what]) => [spell(names), what]) });
     if (live.some(s => s.exclusive)) return sections;
   }
-  const keys = [['ctrl+s', 'save to disk'], ['ctrl+f', 'find in this file'], ['ctrl+space', 'completion'], ['ctrl+k', 'ask an agent for a change here — a box opens over the text']];
+  const keys = [[modKey('s', true), 'save to disk'], [modKey('f', true), 'find in this file'], ['ctrl+space', 'completion'], [modKey('k', true), 'ask an agent for a change here — a box opens over the text']];
   // An editor bundle from before keyHelp() (the loader's fallback): its keys, as they were.
-  if (fileWs?.kind === 'md' && !reported) keys.push(['ctrl+enter', 'run this cell'], ['shift+enter', 'run and advance'], ['ctrl+j', 'AI commands']);
+  if (fileWs?.kind === 'md' && !reported) keys.push([modKey('enter', true), 'run this cell'], ['shift+enter', 'run and advance'], [modKey('j', true), 'AI commands']);
   keys.push(['alt+= · alt+−', 'larger / smaller text, in the text'], ['alt+0', 'text back to 100%, in the text']);
   if (fileWs?.kind === 'code') keys.push(['alt+z', 'wrap long lines on / off, in the text']);
   keys.push(['ctrl+?', 'this help — also while typing']);
@@ -17571,13 +17579,13 @@ document.addEventListener('keydown', e => {
   // must not steal Ctrl-F after CodeMirror opens its own search panel.
   if (fileWs?.focused && e.target.closest?.('.live-file-view')) {
     if (e.target.closest('.cm-editor')) return;
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'f' && fileWs.htmlPreviewOpen) return;
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'f' && fileWs.editor?.openSearch) { e.preventDefault(); fileWs.editor.openSearch(); return; }
+    if (modHeld(e) && !e.altKey && e.key.toLowerCase() === 'f' && fileWs.htmlPreviewOpen) return;
+    if (modHeld(e) && !e.altKey && e.key.toLowerCase() === 'f' && fileWs.editor?.openSearch) { e.preventDefault(); fileWs.editor.openSearch(); return; }
     if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 's') { e.preventDefault(); fileWs.kind === 'md' ? autosaveDocument() : fileWsSaveCode(fileWs); return; }
   }
   // Shortcuts never fire while typing in a field or editable region.
   const inField = e.target.closest && e.target.closest('input, select, textarea, [contenteditable="true"]');
-  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'f') {
+  if (modHeld(e) && !e.altKey && e.key.toLowerCase() === 'f') {
     e.preventDefault();
     searchModalOpen();
     return;

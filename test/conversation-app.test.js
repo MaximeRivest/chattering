@@ -379,8 +379,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   assert.equal(await evaluate(`fileWs.live.marks.size > 0`), true, 'Review changes were not marked in the gutter');
   assert.equal(await evaluate(`fileWs.editor.view.dom.getBoundingClientRect().width > document.querySelector('#view').clientWidth * 0.8`), true, 'Code editor should fill the page, not shrink around its text');
   // The system's own find key: Cmd+F on macOS, where Ctrl+F moves the cursor as in every Mac text field.
-  const findKey = process.platform === 'darwin' ? 'metaKey' : 'ctrlKey';
-  await evaluate(`fileWs.editor.view.contentDOM.dispatchEvent(new KeyboardEvent('keydown',{key:'f',${findKey}:true,bubbles:true}))`);
+  await evaluate(`fileWs.editor.view.contentDOM.dispatchEvent(new KeyboardEvent('keydown',{key:'f',${require('./helpers/chromium.js').MOD.prop}:true,bubbles:true}))`);
   assert.equal(await evaluate(`!!document.querySelector('.cm-search') && !searchModalOpenNow()`), true, 'Find (Ctrl+F, Cmd+F on macOS) must search this file, not open conversation search');
   await evaluate(`document.querySelector('.cm-search input').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
   assert.match(await evaluate(`liveFileHover(fileWs,1)`), /unknown|attribution/i);
@@ -565,15 +564,16 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   // help — ctrl+? opens it while typing — lists the document's keys, live.
   await send('Emulation.setFocusEmulationEnabled', { enabled: true }, sid); // the ✦ shows while the text has focus, in a focused page
   await until(`document.querySelector('.mrmd-ai-spark-gutter .cm-gutterElement:not([style*="visibility"]) .mrmd-ai-spark')?.dataset.mode === 'rest'`, 'no ✦ beside the cursor');
-  assert.deepEqual(await evaluate(`helpNow()[0]`), { label: 'document', keys: [['ctrl+j', 'AI commands: this paragraph — or click the ✦ beside the line']] });
+  const { MOD } = require('./helpers/chromium.js');
+  assert.deepEqual(await evaluate(`helpNow()[0]`), { label: 'document', keys: [[MOD.label + 'j', 'AI commands: this paragraph — or click the ✦ beside the line']] });
   await pressKey('?', 'Slash', 191, 2 | 8);
   await until(`!document.getElementById('helpOverlay').hidden`, 'ctrl+? did not open the help from inside the document');
-  assert.match(await evaluate(`document.getElementById('helpDialog').textContent`), /ctrl\+jAI commands: this paragraph/);
+  assert.ok((await evaluate(`document.getElementById('helpDialog').textContent`)).includes(MOD.label + 'jAI commands: this paragraph'));
   await pressKey('Escape', 'Escape', 27);
   await until(`document.getElementById('helpOverlay').hidden`, 'esc did not close the help');
   assert.equal(await evaluate(`document.activeElement === docState.editor.view.contentDOM`), true, 'the text kept the focus');
-  await pressKey('j', 'KeyJ', 74, 2);
-  await until(`document.activeElement?.classList.contains('mrmd-ai-menu-input')`, 'Ctrl+J did not open the AI command box');
+  await pressKey('j', 'KeyJ', 74, MOD.bit);
+  await until(`document.activeElement?.classList.contains('mrmd-ai-menu-input')`, `${MOD.name}+J did not open the AI command box`);
   assert.deepEqual(await evaluate(`helpNow().map(s => s.label)`), ['AI command box'], 'the open box owns the keyboard, and the help says so');
   assert.match(await evaluate(`document.querySelector('.mrmd-ai-menu-foot').textContent`), /model: fixture\/model/);
   await send('Input.insertText', { text: 'grammar' }, sid);

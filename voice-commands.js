@@ -1022,7 +1022,12 @@ function voiceKeyInField(el, key) {
 // Undo and redo, as the keys do (the editor's own history).
 function voiceUndo({ how = 'undo' }) {
   const ed = voiceEditor();
-  const key = how === 'redo' ? { key: 'y', code: 'KeyY', ctrlKey: true } : { key: 'z', code: 'KeyZ', ctrlKey: true };
+  // The editor's own keys, by CodeMirror's own rule (navigator.platform):
+  // Cmd+Z and Cmd+Shift+Z on a Mac, Ctrl+Z and Ctrl+Y elsewhere.
+  const mac = /Mac/.test(navigator.platform);
+  const key = how === 'redo'
+    ? (mac ? { key: 'z', code: 'KeyZ', metaKey: true, shiftKey: true } : { key: 'y', code: 'KeyY', ctrlKey: true })
+    : { key: 'z', code: 'KeyZ', [mac ? 'metaKey' : 'ctrlKey']: true };
   const before = ed.view.state.doc.toString();
   ed.view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { ...key, bubbles: true, cancelable: true }));
   if (ed.view.state.doc.toString() === before) throw new Error('nothing to ' + how);

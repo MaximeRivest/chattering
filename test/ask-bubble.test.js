@@ -9,6 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { viewerBrowser } = require('./helpers/viewer-browser');
+const { MOD } = require('./helpers/chromium.js'); // the system's command key: Cmd on macOS, where Ctrl+K deletes to the line's end
 
 // The paragraph to change is on line 27, with room above it for the box.
 const DOC = '# Notes\n\n' + Array.from({ length: 12 }, (_, i) => `Paragraph ${i + 1} says little.\n\n`).join('') + 'The paragraph to change.\n\n```python\nx = 1\n```\n';
@@ -31,7 +32,7 @@ test('the ask box: over the text, what goes along, choices that stick, a send an
   await ev(`(() => { const v = docState.editor.view; v.dispatch({ selection: { anchor: v.state.doc.toString().indexOf('paragraph to change') } }); v.focus(); })()`);
 
   // Ctrl+K: the box opens above the cursor's line, focused, and says where.
-  await key('k', 'KeyK', 75, 2);
+  await key('k', 'KeyK', 75, MOD.bit);
   await until(`document.activeElement?.classList.contains('ask-text')`, 'Ctrl+K did not open the ask box');
   const geometry = await ev(`(() => {
     const v = docState.editor.view, line = v.coordsAtPos(v.state.selection.main.head);
@@ -159,7 +160,7 @@ test('the ask box: over the text, what goes along, choices that stick, a send an
   await command('Input.insertText', { text: 'a draft' });
   await key('Escape', 'Escape', 27);
   await until(`!document.querySelector('.ask-bubble') && document.activeElement === docState.editor.view.contentDOM`, 'Esc did not close the box');
-  await key('k', 'KeyK', 75, 2);
+  await key('k', 'KeyK', 75, MOD.bit);
   await until(`document.querySelector('.ask-text')?.value === 'a draft'`, 'the draft did not come back');
   assert.equal(await ev(`document.querySelector('.ask-think').textContent`), '∴ low ▾', 'the level is remembered');
   assert.deepEqual(b.exceptions, []);

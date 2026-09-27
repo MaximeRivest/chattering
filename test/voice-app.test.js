@@ -99,7 +99,7 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
   // The fake microphone beeps with pauses: its sentences are no command.
   // The recording's sentence ends in a long pause: handed on, decided, no command.
   for (let i = 0; i < 30 && !(await ev(`voice.decisions.some(d => d.status === 'ignored' && d.said === 'hello there')`)); i++) await new Promise(r => setTimeout(r, 1000));
-  assert.ok(await ev(`voice.decisions.some(d => d.status === 'ignored' && d.said === 'hello there')`), 'the heard sentence was not decided');
+  assert.ok(await ev(`voice.decisions.some(d => d.status === 'ignored' && d.said === 'hello there')`), 'the heard sentence was not decided: ' + await ev(`JSON.stringify({ status: voice.status, error: voice.error, heard: voice.heard, decisions: voice.decisions.map(d => ({ said: d.said, status: d.status, note: d.note })) })`));
   assert.match(await ev(`document.querySelector('#voiceOverlay .vo-decisions').textContent`), /hello there[\s\S]*not a command/);
 
   // Sure: done at once.

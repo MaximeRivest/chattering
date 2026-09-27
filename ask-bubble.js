@@ -180,7 +180,7 @@ function askBubbleWire(b) {
     const mod = e.ctrlKey || e.metaKey;
     if (e.key === 'Escape') { e.preventDefault(); askBubbleClose({ refocus: true }); }
     else if (e.key === 'Enter' && (mod || (!e.shiftKey && askFinePointer()))) { e.preventDefault(); askBubbleSend(); }
-    else if (mod && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); askBubbleClose({ refocus: true }); }
+    else if (modHeld(e) && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); askBubbleClose({ refocus: true }); }
     else if (e.altKey && !mod && e.code === 'KeyM') { e.preventDefault(); q('.ask-model').click(); }
     else if (e.key === 'Tab' && e.shiftKey && !mod && !e.altKey) { e.preventDefault(); q('.ask-think').click(); }
     else if (mod && !e.altKey && e.key.toLowerCase() === 'm' && !b.mic.hidden && !b.mic.disabled) { e.preventDefault(); b.mic.click(); }

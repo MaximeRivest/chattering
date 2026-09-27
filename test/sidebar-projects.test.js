@@ -106,7 +106,7 @@ test('project timeline bounds, quiet badges and scroll-loaded lists in the real 
   await ev(`recentFilesList=Array.from({length:205},(_,i)=>({path:'/fixture/file-'+i+'.md',project:'fixture',actor:'human',kind:'opened',at:Date.now()-i}));agentSecState['files:actor']='human';panelListLimits.clear();setRightFiles('recent-files',true)`);
   assert.equal(await ev(`document.querySelectorAll('#rightFileList .ag-file').length`), 100, 'files page by a hundred');
   await ev(`$('rightFileList').scrollTop=$('rightFileList').scrollHeight;$('rightFileList').dispatchEvent(new Event('scroll'))`);
-  await until(`document.querySelectorAll('#rightFileList .ag-file').length===200`);
+  await until(`document.querySelectorAll('#rightFileList .ag-file').length===200`, async () => 'scrolling the files loads the next page: ' + await ev(`JSON.stringify((() => { const l = $('rightFileList'); return { rows: l.querySelectorAll('.ag-file').length, scrollTop: l.scrollTop, clientHeight: l.clientHeight, scrollHeight: l.scrollHeight, overflowY: getComputedStyle(l).overflowY, open: rightFilesOpen }; })())`));
   await ev(`document.querySelector('#rightFileList [data-panel-more=files]').click()`);
   assert.equal(await ev(`document.querySelectorAll('#rightFileList .ag-file').length`), 205);
   assert.equal(await ev(`!!document.querySelector('#rightFileList [data-panel-more=files]')`), false, 'no dead end before the last record');

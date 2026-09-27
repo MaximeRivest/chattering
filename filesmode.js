@@ -252,7 +252,7 @@ function fileWsSharedStatus(ws, note = '') {
   if (!el || !ws.collab) return;
   const others = ws.collab.people;
   el.innerHTML = (note || 'Shared · saves as you type') + (others.length ? ' · ' + collabPeopleHtml(others, { verb: 'is here' }) : '');
-  el.title = 'Everyone who opens this file edits the same text. It lands on disk moments after typing stops; Save (Ctrl+S) writes it right now.';
+  el.title = 'Everyone who opens this file edits the same text. It lands on disk moments after typing stops; Save (' + modKey('S') + ') writes it right now.';
 }
 // Save on a shared file: the disk follows by itself, but a person who
 // presses Ctrl+S means "now". Same text, same save path, no version check
@@ -396,7 +396,7 @@ async function fileWsMountCode(ws, opts) {
     review: {
       onResolved: outcome => {
         aiReviewHost(ws.path).onResolved(outcome);
-        if (fileWs === ws && ws.dirty && outcome.decision !== 'accepted') toast('your review changed the text: Save (Ctrl+S) writes it to disk');
+        if (fileWs === ws && ws.dirty && outcome.decision !== 'accepted') toast('your review changed the text: Save (' + modKey('S') + ') writes it to disk');
       },
     },
   });

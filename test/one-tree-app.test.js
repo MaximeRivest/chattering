@@ -76,7 +76,8 @@ test('one head: side-by-side answers, instant moves, versions, shared head, phon
   };
   const until = async (expression, label) => {
     for (let i = 0; i < 300; i++) { if (await evaluate(`(()=>{try{return !!(${expression})}catch{return false}})()`)) return; await new Promise(r => setTimeout(r, 25)); }
-    assert.fail('Timed out: ' + (label || expression) + '\n' + exceptions.join('\n'));
+    const said = typeof label === 'function' ? await label().catch(e => 'label failed: ' + e.message) : label;
+    assert.fail('Timed out: ' + (said || expression) + '\n' + exceptions.join('\n'));
   };
   const size = (width, height, mobile = false) => command('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile });
   await command('Runtime.enable'); await command('Page.enable');
@@ -155,7 +156,7 @@ test('one head: side-by-side answers, instant moves, versions, shared head, phon
   await evaluate(`(() => { const strip = document.querySelector('.rd-cards'); strip.dispatchEvent(new PointerEvent('pointerdown'));
     const other = [...strip.querySelectorAll('.rd-card')].find(c => c.getAttribute('aria-current') !== 'true');
     strip.scrollLeft = other.offsetLeft - strip.offsetLeft; return 1; })()`);
-  await until(`document.querySelector('.rd-card[aria-current="true"]')?.dataset.col !== ${JSON.stringify(before)}`, 'swipe chooses');
+  await until(`document.querySelector('.rd-card[aria-current="true"]')?.dataset.col !== ${JSON.stringify(before)}`, async () => 'swipe chooses: ' + await evaluate(`JSON.stringify((() => { const s = document.querySelector('.rd-cards'); return { scrollLeft: s.scrollLeft, clientWidth: s.clientWidth, scrollWidth: s.scrollWidth, snap: getComputedStyle(s).scrollSnapType, behavior: getComputedStyle(s).scrollBehavior, cards: [...s.querySelectorAll('.rd-card')].map(c => [c.dataset.col, c.offsetLeft, c.getAttribute('aria-current')]) }; })())`));
 
   // The tree lights the head's path and marks the head as "here".
   await size(1500, 1000);

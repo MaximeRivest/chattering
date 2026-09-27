@@ -194,15 +194,15 @@ function liveFileHead(ws) {
     ${/\.html?$/i.test(ws.path) ? '<div class="lf-html-switch" role="group" aria-label="HTML view"><button id="htmlSource" aria-pressed="true">Source</button><button id="htmlPreview" aria-pressed="false">Preview</button></div>' : ''}
     <button id="docReload" hidden title="Reload the current disk file">Reload</button>
     <button id="liveHistory" class="lf-wide" title="Recorded versions of this file: read one, or compare two">History</button>
-    <button id="liveAsk" class="lf-wide" title="Ask an agent for a change here: a box opens over the text · Ctrl+K">✦ Ask</button>
+    <button id="liveAsk" class="lf-wide" title="Ask an agent for a change here: a box opens over the text · ${modKey('K')}">✦ Ask</button>
     ${md ? '<button id="docRun" class="lf-wide" title="Run the cell at the cursor · Ctrl+Enter">▶ Run</button>' : ''}
     <button id="${md ? 'docSave' : 'fwSave'}" ${md ? '' : 'disabled'} title="Save to disk · Ctrl+S">Save</button>
     <details class="live-more"><summary aria-label="Editor options">⋯</summary><div>
       <button id="liveHistoryMenu" class="lf-narrow">History</button>
-      <button id="liveAskMenu" class="lf-narrow">✦ Ask for a change (Ctrl+K)</button>
+      <button id="liveAskMenu" class="lf-narrow">✦ Ask for a change (${modKey('K')})</button>
       ${md ? '<button id="docRunMenu" class="lf-narrow">▶ Run this cell</button>' : ''}
       ${ws.project ? '<button id="liveBrowse">Browse this folder</button>' : ''}
-      <button id="liveAi">✦ AI commands (Ctrl+J)</button>
+      <button id="liveAi">✦ AI commands (${modKey('J')})</button>
       ${md ? '<button id="docRunAll">Run all cells</button><button id="docVars">Variables</button><button id="docKernel">Kernel: restart, clear, shut down…</button><button id="docSource">Markdown source</button><button id="docUnwrap" hidden>Unwrap prose</button>' : ''}
       <span id="liveAnnotationStatus">Gutter: changes and line attribution</span>
       ${fileViewControlsHtml(md ? 'md' : 'code')}
@@ -341,7 +341,7 @@ function liveFileAfterMount(ws) {
     editor.view.dom.addEventListener('keydown', e => {
       const shown = fileWs && fileWs.editor === editor ? fileWs : null;
       if (!shown) return;
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); fileWsToggleAsk(true); }
+      if (modHeld(e) && !e.altKey && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); fileWsToggleAsk(true); }
       else fileViewKey(shown, e);
     });
   }

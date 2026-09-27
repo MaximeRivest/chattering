@@ -92,7 +92,9 @@ async function viewerBrowser(t, opts = {}) {
       await new Promise(r => setTimeout(r, 25));
     }
     const state = await evaluate(`JSON.stringify({hash:location.hash,view:typeof viewKind==='undefined'?null:viewKind,file:typeof fileWs==='undefined'?null:fileWs?.path,text:document.querySelector('#view')?.textContent.slice(0,1000)})`).catch(() => 'state unavailable');
-    assert.fail('Timed out: ' + (label || expression) + '\n' + state + '\n' + exceptions.join('\n'));
+    // label may be a function: it describes the state that matters, at the moment of failure.
+    const said = typeof label === 'function' ? await label().catch(e => 'label failed: ' + e.message) : label;
+    assert.fail('Timed out: ' + (said || expression) + '\n' + state + '\n' + exceptions.join('\n'));
   };
   const size = async (width, height, mobile = false) => {
     await command('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: mobile ? 2 : 1, mobile });

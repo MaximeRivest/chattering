@@ -94,7 +94,7 @@ test('work-first panel, visible timeline tools, quiet jobs and Back to the work 
   await until(`viewKind==='file' && fileWs?.path===${JSON.stringify(file)} && !!fileWs.editor`, 'Back returns to the file');
 
   await ev(`goHome();setSidePanel('inbox');selectTheme('eink')`);
-  assert.equal(await ev(`$('projSort').checkVisibility()`), true);
+  await until(`$('projSort').checkVisibility()`, 'the project sort shows on the e-ink home');
   await screenshot('workflow-home-eink.png');
   await size(390, 844, true);
   assert.equal(await ev(`document.documentElement.scrollWidth<=innerWidth`), true);

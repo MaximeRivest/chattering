@@ -46,8 +46,9 @@ test('AI commands in source and text files, and notes in the file editor', { tim
   await until(`fileWs && fileWs.kind === 'code' && fileWs.editor && fileWs.editor.openAiMenu`, 'the source file did not open');
   await ev(`(() => { const v = fileWs.editor.view; v.dispatch({ selection: { anchor: v.state.doc.toString().indexOf('return') } }); v.focus(); })()`);
   await until(`document.querySelector('.mrmd-ai-spark-gutter .cm-gutterElement:not([style*="visibility"]) .mrmd-ai-spark')`, 'no ✦ in the source file');
-  await key('j', 'KeyJ', 74, 2);
-  await until(`document.activeElement?.classList.contains('mrmd-ai-menu-input')`, 'Ctrl+J did not open the box in the source file');
+  const { MOD } = require('./helpers/chromium.js');
+  await key('j', 'KeyJ', 74, MOD.bit);
+  await until(`document.activeElement?.classList.contains('mrmd-ai-menu-input')`, `${MOD.name}+J did not open the box in the source file`);
   const labels = await ev(`[...document.querySelectorAll('.mrmd-ai-menu-label')].map(e => e.textContent)`);
   assert.ok(labels.includes('Finish this block') && labels.includes('Improve names'), labels.join());
   assert.ok(!labels.includes('Fix grammar and spelling') && !labels.includes('Finish this cell'), labels.join());

@@ -51,4 +51,9 @@ function chromiumAvailable() {
   if (path.isAbsolute(bin)) { try { return fs.statSync(bin).isFile(); } catch { return false; } }
   return !!require('../../platform.js').findOnPath(bin);
 }
-module.exports = { chromiumBinary, chromiumAvailable, CHROMIUM_TEST_FLAGS };
+// The system's command key, as the editor (CodeMirror's "Mod-") and every
+// Mac app read it: Cmd on macOS, Ctrl elsewhere. `bit` is the DevTools
+// protocol's modifier flag (Alt 1, Ctrl 2, Meta 4, Shift 8); `prop` is the
+// KeyboardEvent property; `label` is how the editor writes it in its help.
+const MOD = process.platform === 'darwin' ? { bit: 4, prop: 'metaKey', name: 'Cmd', label: '⌘' } : { bit: 2, prop: 'ctrlKey', name: 'Ctrl', label: 'ctrl+' };
+module.exports = { chromiumBinary, chromiumAvailable, CHROMIUM_TEST_FLAGS, MOD };
