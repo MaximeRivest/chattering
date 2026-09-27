@@ -29,11 +29,14 @@ async function stopAndRemove(child, dir, { graceMs = 3000 } = {}) {
       const P = require('../../processes.js');
       for (const p of P.list()) if (p.pid !== process.pid && p.argv.some(a => a.includes(dir))) P.stopTree(p.pid, 'SIGKILL');
     } catch {}
-    // Windows answers EPERM, not EBUSY, for a folder a dying process still
-    // holds: retried like the others (rmSync itself retries only some codes).
-    for (let i = 0; ; i++) {
+    // Windows answers EPERM, not EBUSY, for a folder a dying process (or a
+    // virus scan) still holds: retried like the others, for about twenty
+    // seconds by the clock. Node 24's rm does not retry by itself on every
+    // code, so the count of attempts says nothing about the time.
+    const until = Date.now() + 20000;
+    for (;;) {
       try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }); return; }
-      catch (e) { if (i >= 20 || !['EPERM', 'EBUSY', 'ENOTEMPTY', 'EACCES'].includes(e.code)) throw e; await new Promise(r => setTimeout(r, 250)); }
+      catch (e) { if (Date.now() > until || !['EPERM', 'EBUSY', 'ENOTEMPTY', 'EACCES'].includes(e.code)) throw e; await new Promise(r => setTimeout(r, 300)); }
     }
   }
 }

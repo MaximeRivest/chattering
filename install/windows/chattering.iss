@@ -48,6 +48,9 @@ WizardStyle=modern
 Compression=lzma2/max
 LZMADictionarySize=262144
 SolidCompression=yes
+; The compressor in its own 64-bit process: the 32-bit compiler runs out of
+; memory with a dictionary this size.
+LZMAUseSeparateProcess=yes
 ChangesEnvironment=yes
 CloseApplications=no
 VersionInfoVersion={#Version}

@@ -108,7 +108,7 @@ test('project timeline bounds, quiet badges and scroll-loaded lists in the real 
   await ev(`$('rightFileList').scrollTop=$('rightFileList').scrollHeight;$('rightFileList').dispatchEvent(new Event('scroll'))`);
   await until(`document.querySelectorAll('#rightFileList .ag-file').length===200`, async () => 'scrolling the files loads the next page: ' + await ev(`JSON.stringify((() => { const l = $('rightFileList'); return { rows: l.querySelectorAll('.ag-file').length, scrollTop: l.scrollTop, clientHeight: l.clientHeight, scrollHeight: l.scrollHeight, overflowY: getComputedStyle(l).overflowY, open: rightFilesOpen }; })())`));
   await ev(`document.querySelector('#rightFileList [data-panel-more=files]').click()`);
-  assert.equal(await ev(`document.querySelectorAll('#rightFileList .ag-file').length`), 205);
+  await until(`document.querySelectorAll('#rightFileList .ag-file').length===205`, 'the last page of files');
   assert.equal(await ev(`!!document.querySelector('#rightFileList [data-panel-more=files]')`), false, 'no dead end before the last record');
   await ev(`({sessions,recentFilesList,agentReadState,agentSecState}=panelFixtureKeep);panelListLimits.clear();saveAgentSecState();setRightFiles('recent-files',false);renderAgentsPop(false)`);
   assert.deepEqual(exceptions, []);
