@@ -100,6 +100,15 @@ const launcher = (...a) => spawnSync(node, [path.join(APP, 'launcher.js'), ...a]
   await step('the reply', `/rest on Sunday/.test(document.body.innerText)`, 90000);
   await new Promise(r => setTimeout(r, 800));
   await shot('10-first-reply');
+  await ev(`showSettingsPane('ai')`);
+  await step('settings → AI accounts', `document.querySelector('#aiAccountsHost [data-aic-remove]')`);
+  await new Promise(r => setTimeout(r, 300));
+  await shot('11-settings-ai');
+  await ev(`window.confirm = () => true; document.querySelector('#aiAccountsHost [data-aic-remove]').click()`);
+  await step('the model server removed', `!document.querySelector('#aiAccountsHost [data-aic-remove]')`);
+  await ev(`goHome()`);
+  await step('a home with history but no AI', `document.querySelector('.wel-banner')`);
+  await shot('12-home-no-ai-banner');
   await model.close();
   console.log('visible text:', (await ev(`document.body.innerText`) || '').replace(/\s+/g, ' ').slice(0, 1500));
   console.log(problems.length ? 'page problems:\n' + problems.join('\n') : 'no page problems');
