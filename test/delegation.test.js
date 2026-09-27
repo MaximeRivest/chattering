@@ -425,14 +425,14 @@ test('continuing with another model or reasoning level changes only the next att
 test('lost work continues after its supervisor vanished; refusals name the reason', async t => {
   const f = await fixture(t);
   const task = await f.launch({ prompt: 'hold' });
-  const running = await until(async () => { const r = await D.getDelegation(task.id, f.options); return r.status === 'running' && fs.existsSync(path.join(f.root, task.id, 'observed.json')) ? r : null; });
+  const running = await until(async () => { const r = await D.getDelegation(task.id, f.options); return r.status === 'running' && fs.existsSync(path.join(f.root, task.id, 'observed.json')) ? r : null; }, 8000, () => 'the worker to run\n' + account(f.root, task.id));
   process.kill(running.supervisorPid, 'SIGKILL');
-  await until(() => !S.sameProcess(running.supervisorIdentity));
+  await until(() => !S.sameProcess(running.supervisorIdentity), 8000, () => 'the supervisor to end\n' + account(f.root, task.id));
   const lost = await D.getDelegation(task.id, f.options);
   assert.equal(lost.status, 'lost'); assert.equal(lost.failure.kind, 'interrupted');
   await assert.rejects(D.resumeDelegation(task.id, {}, f.options), /still alive/);
   fs.writeFileSync(path.join(f.root, task.id, 'release'), '');
-  await until(() => !S.sameProcess(running.processIdentity));
+  await until(() => !S.sameProcess(running.processIdentity), 8000, () => 'the released worker to end\n' + account(f.root, task.id));
   const resumed = await D.resumeDelegation(task.id, {}, f.options);
   assert.equal(resumed.attempt, 2);
   assert.ok(['starting', 'running', 'succeeded'].includes(resumed.status), resumed.status);

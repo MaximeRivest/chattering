@@ -77,7 +77,7 @@ async function supervise(root, id) {
   if (S.TERMINAL.has(task.status)) return;
   // Exactly one launcher invokes this supervisor. Exclusive claim blocks accidental duplicate starts.
   const owner = S.identity(process.pid);
-  if (!owner) throw new Error('Linux process identity is unavailable');
+  if (!owner) throw new Error('This process\'s identity is unavailable' + (require('./processes.js').identityProblem() ? ': ' + require('./processes.js').identityProblem() : ''));
   const claim = path.join(dir, 'supervisor.json');
   const preparedClaim = path.join(dir, `owner-${process.pid}.json`);
   S.atomic(preparedClaim, owner);

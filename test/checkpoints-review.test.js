@@ -125,15 +125,18 @@ test('awaited hooks skip only known built-in readers, capture failures and overl
 
 test('separate checkpoint writers can initialize and publish the same workspace concurrently', async t => {
   const { store, root, meta } = await fixture(t);
-  const other = new CheckpointStore(store.dir); t.after(() => other.close());
-  const pair = await Promise.all([store.capture(root, { ...meta, phase: 'before' }), other.capture(root, { ...meta, run: 'other', call: 'other', phase: 'before' })]);
-  assert.deepEqual(pair.map(p => p.error), ['', '']);
-  assert.equal(pair[0].snapshot, pair[1].snapshot);
-  assert.equal((await store.content(pair[0].snapshot, 'a & b.txt')).text, 'one\ntwo\n');
-  await fs.writeFile(path.join(root, 'a & b.txt'), 'concurrent result');
-  const done = await other.capture(root, { ...meta, run: 'other', call: 'other', phase: 'after' });
-  assert.equal(done.error, '');
-  assert.ok(other.boundaries(meta.session, ['other']).some(b => b.overlapping));
+  // Closed here, before the fixture removes the folder: Windows cannot delete an open database.
+  const other = new CheckpointStore(store.dir);
+  try {
+    const pair = await Promise.all([store.capture(root, { ...meta, phase: 'before' }), other.capture(root, { ...meta, run: 'other', call: 'other', phase: 'before' })]);
+    assert.deepEqual(pair.map(p => p.error), ['', '']);
+    assert.equal(pair[0].snapshot, pair[1].snapshot);
+    assert.equal((await store.content(pair[0].snapshot, 'a & b.txt')).text, 'one\ntwo\n');
+    await fs.writeFile(path.join(root, 'a & b.txt'), 'concurrent result');
+    const done = await other.capture(root, { ...meta, run: 'other', call: 'other', phase: 'after' });
+    assert.equal(done.error, '');
+    assert.ok(other.boundaries(meta.session, ['other']).some(b => b.overlapping));
+  } finally { other.close(); }
 });
 
 test('non-Git workspaces respect .gitignore without creating a working .git directory', async t => {

@@ -35,9 +35,11 @@ test('SSH and heredoc outputs keep remote cwd/host, including stderr redirects',
 test('copy commands connect remote artifacts to local copies without claiming equal contents', () => {
   const tools = [{ id: 'make', name: 'bash', input: { command: `ssh user@host 'cd /tmp/run; python - <<"PY"\nfig.savefig("plot.png")\nPY'` } },
     { id: 'copy', name: 'bash', input: { command: 'rsync -az user@host:/tmp/run/{plot.png,summary.json} scratch/results/' } }];
-  const data = L.gather(tools, '/project');
+  // The project is local, so its paths follow this system's rules (D:\project on Windows); the remote host's stay POSIX.
+  const project = path.resolve('/project');
+  const data = L.gather(tools, project);
   const remote = data.locations.find(l => l.host === 'user@host' && l.path === '/tmp/run/plot.png');
-  assert.deepEqual(remote.localCopies, ['/project/scratch/results/plot.png']);
+  assert.deepEqual(remote.localCopies, [path.join(project, 'scratch', 'results', 'plot.png')]);
   assert.equal(L.location('relative.txt', { host: 'host', cwd: null }).path, null);
   assert.equal(L.location('$OUT/file', { host: 'local', cwd: '/project' }).path, null);
 });

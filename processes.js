@@ -4,6 +4,7 @@
 //   list()           [{ pid, ppid, argv }] every process this account can see
 //   identity(pid)    { pid, start, boot, pgrp } or null when it is gone: the
 //                    start time and boot make a reused pid a different process
+//   identityProblem() why the last identity() gave null for a live pid ('' if it did not)
 //   cwd(pid)         its working folder, or null when the system will not say
 //   stopTree(pid, signal)  the process and everything it started
 //
@@ -15,6 +16,7 @@
 // empty list is "unknown", not "nothing is running" (callers that decide
 // ownership check `reliable`).
 const fs = require('fs');
+const path = require('path');
 const { execFileSync, execFile, spawnSync } = require('child_process');
 
 const PLATFORM = process.platform;
@@ -99,7 +101,16 @@ function splitWindowsCommandLine(line) {
   if (has) out.push(cur);
   return out;
 }
-const POWERSHELL = 'powershell.exe';
+// PowerShell by its fixed place, not by PATH: a child started with a minimal
+// or sandboxed environment may not have System32 on its PATH.
+const POWERSHELL = (() => {
+  const root = process.env.SystemRoot || process.env.windir;
+  const fixed = root && path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  return fixed && fs.existsSync(fixed) ? fixed : 'powershell.exe';
+})();
+// What PowerShell said when it could not answer, for the caller's error.
+const psError = e => String((e && e.stderr) || (e && e.message) || e || '').trim().split(/\r?\n/).filter(Boolean).slice(0, 3).join(' ').slice(0, 400);
+let lastIdentityProblem = '';
 const psArgs = script => ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script];
 const WIN_LIST_SCRIPT = "Get-CimInstance Win32_Process | ForEach-Object { '{0}\t{1}\t{2}' -f $_.ProcessId, $_.ParentProcessId, $_.CommandLine }";
 let winSnapshot = [], winSnapshotAt = 0, winRefreshing = false;
@@ -147,8 +158,9 @@ function winIdentity(pid) {
   // now and then so a reuse between two looks is still noticed.
   if (!known || Date.now() - known.checkedAt > 30000) {
     let start = null;
-    try { start = execFileSync(POWERSHELL, psArgs(`(Get-Process -Id ${Number(pid)} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`), { encoding: 'utf8', timeout: 10000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null; }
-    catch { return null; }
+    try { start = execFileSync(POWERSHELL, psArgs(`(Get-Process -Id ${Number(pid)} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`), { encoding: 'utf8', timeout: 10000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim() || null; }
+    catch (e) { lastIdentityProblem = `PowerShell (${POWERSHELL}) could not give pid ${pid}'s start time: ${psError(e)}`; return null; }
+    if (!start) { lastIdentityProblem = `PowerShell (${POWERSHELL}) gave no start time for pid ${pid}`; return null; }
     known = { start, checkedAt: Date.now() };
     winStarts.set(pid, known);
   }
@@ -168,6 +180,7 @@ function list() {
   return [];
 }
 function identity(pid) {
+  lastIdentityProblem = '';
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   if (PLATFORM === 'linux') return linuxIdentity(pid);
   if (PLATFORM === 'darwin') return darwinIdentity(pid);
@@ -202,4 +215,5 @@ function stopTree(pid, signal = 'SIGTERM') {
   }
 }
 
-module.exports = { reliable, list, warm, identity, cwd, stopTree, splitWindowsCommandLine, parseWinList };
+function identityProblem() { return lastIdentityProblem; }
+module.exports = { reliable, list, warm, identity, identityProblem, cwd, stopTree, splitWindowsCommandLine, parseWinList };
