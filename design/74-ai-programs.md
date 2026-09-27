@@ -1,8 +1,119 @@
-# 70 — AI programs in Chattering (proposal)
+# 74 — AI programs in Chattering
 
-Status: proposal, 2026-09-26. Nothing here is built. It depends on FunctAI
-(Python 1.0.1 exists; TypeScript is being written) and extends the Program
+Status: the proposal (2026-09-26, below the line) and, first, what was built
+on 2026-09-27 (phase 1: see and judge). The proposal extends the Program
 Atlas mockup (`design/program-atlas.html`, fictional data).
+
+## As built (2026-09-27)
+
+FunctAI settled the run record itself before this was built: **the call log**
+(functai `contract/calls.md`, format 1). Every call of an AI function or a
+module is one line of JSON in a folder, one file per writing process and UTC
+day; people's ratings are lines in the same folder; Python and TypeScript
+write and read the same folder and compute the same rows with known answers
+(`rated`). So Chattering adds no record format and no database of its own
+truth. It reads that folder, and writes its ratings into it as one more
+writer.
+
+- **The folder.** `platform.functaiCallsDir()`: FunctAI's own rule —
+  `$FUNCTAI_LOG_CALLS` when it names a folder, else
+  `$XDG_DATA_HOME/functai/calls` (`~/.local/share/functai/calls`),
+  `~/Library/Application Support/functai/calls` on macOS,
+  `%LOCALAPPDATA%\functai\calls` on Windows.
+- **The index** (`programs.js`): SQLite in the cache
+  (`~/.cache/chattering/programs.db`). One row per call (program, version,
+  signature, times, tokens, error, caller, short previews, the answer's JSON,
+  and the byte range of its line) and per rating; each call's standing
+  (right, wrong, disputed, wrong-with-no-answer). Files are read from the byte
+  where the last read stopped; a partial last line (a writer mid-write) waits
+  for the next read. Quick reads look at the last two days, a full one every
+  five minutes. The whole record is read back from its line only when a person
+  opens a call. Delete the index and the next read rebuilds it: ratings live in
+  the log, so nothing is lost.
+- **Ratings** go to `<folder>/<UTC day>/chattering-<host>-<pid>-<hex>.jsonl`
+  (`0600`, folders `0700`), in the contract's shape. `by` is a person: the
+  owner is named as FunctAI names them in their own scripts (the system user,
+  `maxime`), so one person's ratings from Python, TypeScript and Chattering
+  count as one person's; anyone else by their name in Chattering.
+  Rows with known answers follow the contract's rules exactly; the test runs
+  every `rated` case of the contract (copied to `test/fixtures/functai-rated`),
+  and a check on a real log gave identical rows in Chattering, FunctAI
+  TypeScript and FunctAI Python.
+- **Where it shows.** Right panel → **Programs** (beside Files and Artifacts,
+  same All / Project switch; a program's project is the one holding its file
+  or its notebook). `#programs`: every program as a table. A program's page
+  (`#program={"name","module"}`): six numbers (calls with a 30-day strip,
+  failed, time p50/p95, tokens, rated, *right, measured*), then four tabs:
+  - **Calls**: input → output rows (use only by default; evaluation,
+    optimization and test calls are counted apart), filters (search, rating,
+    result, version, caller, where it came from), a call opened whole beside
+    the table: its fields, what the model saw (every request and reply),
+    who judged it, the calls it made or ran inside, and a link to the
+    conversation or notebook that called it. ✓ / ✗ on each row.
+  - **Review**: one call at a time, keys `1` right, `2` wrong, `j`/`k`;
+    queues: a random draw of 20, not rated yet, least sure first (when the
+    model gave probabilities), wrong-with-no-answer.
+  - **Versions**: per version: calls, failures, time, tokens, ratings, the
+    measured share; **compare** lines up inputs both versions answered,
+    differences first.
+  - **Data**: the rows with known answers, as FunctAI's `evaluate` and `.opt`
+    read them, with CSV and JSON-lines downloads and the Python and
+    TypeScript lines that read the same rows from the log.
+- **👎 is a correction form.** "What should `result` have been?" with the
+  answers this program gave elsewhere as one-click choices, reason tags, a
+  note; or "wrong, answer unknown", which stays in a queue for someone who
+  knows.
+- **Measured means drawn at random.** A random draw gives every rating its
+  id (`sample`); *right, measured* is computed from those ratings only, with a
+  Wilson 95% range, on the current version. Ratings people chose to make are
+  shown as counts and labelled as not a fair sample. A draw takes answered
+  calls only; failures are their own number.
+- **Agents.** Every Pi run Chattering starts gets
+  `FUNCTAI_CALLER={"kind":"agent","conversation":<key>,"user":…}`, so a
+  script an agent runs is linked to its conversation. With *record the calls
+  agents make* on (owner only, off by default, on the `#programs` page) it
+  also gets `FUNCTAI_LOG_CALLS=<the folder>`. New agent processes only.
+- **Access.** Every route is `member` (policy.js): the log holds what people
+  typed, like transcripts. Guests and walled people get nothing. The recording
+  switch is `owner`.
+
+### Trade-offs, stated
+
+- **No typed correction form yet.** The log names a program's signature by
+  hash, not its field shapes, so the form is built from the current value's
+  JSON type plus the answers seen before (an enum's unseen choices are not
+  offered). Proposed contract addition: the signature's plain data (lmcc's
+  shared form) on the call record, or one `functai_program` line per version.
+- **Polling, not pushing.** An open program page asks every five seconds
+  (one small request) whether the log changed; the index is read on demand.
+  A new event type on the live stream would need a policy rule; not worth it
+  yet.
+- **One folder per install.** Other machines' logs arrive only when that
+  machine's Chattering reads them; bringing them home needs design/52's sync.
+- **Program identity is name + module** (the contract's). TypeScript's module
+  is the file's base name, so two `team` functions in two `index.ts` files of
+  different projects are one program. The page lists every file it came from.
+- **Notebook runs are linked only when the kernel says so.** rat should set
+  `FUNCTAI_CALLER={"kind":"notebook","notebook":<path>}` for a document's
+  kernel (a change in rat, not here).
+- Chattering's own 26 model calls are not ported yet (phase 2): that waits for
+  FunctAI TypeScript and lmcc on npm, and for the subscription-login check.
+
+### Verified
+
+- `test/programs.test.js`: every `rated` contract case; the folder rule;
+  reading every writer and day, skipping non-records, waiting for a partial
+  line; ratings written as lines and read back; disputes, withdrawals,
+  wrong-with-no-answer; random draws and the measured share; versions and
+  comparison; rebuild after deleting the index; `log_content` off.
+- `test/programs-app.test.js`: the real app in Chromium, from the list to a
+  judged row, a correction, a random draw, the comparison, the data rows and
+  CSV, the right panel, and a phone width.
+- A real log (Python `evaluate` on FunctAI's 80 support tickets, before and
+  after the house rules; a module with a tool; a TypeScript program on Claude,
+  with one failed call) read and rated in a separate Chattering instance.
+
+---
 
 ## The idea in one line
 
@@ -208,6 +319,9 @@ design 46 deferred and that the project status still lists as open. Hosting
 comes last.
 
 ## Storage
+
+*Superseded by "As built": FunctAI's call log keeps the ratings, so the
+index below is a cache and lives in `~/.cache`.*
 
 `node:sqlite`, like `files.db`, `search.db` and `usage.db`, but in
 `~/.local/share/chattering/programs.db` plus a `programs-blobs/` folder, **not

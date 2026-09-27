@@ -2345,7 +2345,7 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <button id="filesToggle" type="button" aria-label="Open files" title="Open files" aria-expanded="false" aria-controls="rightFilePanel">▤</button>
 <aside id="rightFiles" hidden aria-label="Files">
   <section id="rightFilePanel" hidden aria-labelledby="rightFileTitle">
-    <div class="right-file-head"><span id="rightFileTitle" class="right-file-views" role="group" aria-label="Show"><button type="button" data-right-view="files" aria-pressed="true" title="Files people and agents opened, wrote or edited">Files</button><button type="button" data-right-view="artifacts" aria-pressed="false" title="Pages, apps, slides and documents agents made">Artifacts</button></span><button id="rightFileClose" type="button" title="Close file panel" aria-label="Close file panel">✕</button></div>
+    <div class="right-file-head"><span id="rightFileTitle" class="right-file-views" role="group" aria-label="Show"><button type="button" data-right-view="files" aria-pressed="true" title="Files people and agents opened, wrote or edited">Files</button><button type="button" data-right-view="artifacts" aria-pressed="false" title="Pages, apps, slides and documents agents made">Artifacts</button><button type="button" data-right-view="programs" aria-pressed="false" title="AI programs: functions whose body is a model call, every call logged, judged right or wrong">Programs</button></span><button id="rightFileClose" type="button" title="Close file panel" aria-label="Close file panel">✕</button></div>
     <div class="file-scope-switch" role="group" aria-label="File scope">
       <button type="button" data-file-scope="recent-files" aria-pressed="true" title="File activity across all projects">All</button>
       <button type="button" data-file-scope="files" aria-pressed="false" title="File activity in the selected project">Project</button>
@@ -2438,6 +2438,8 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <script src="/conversation-tree.js"></script>
 <script src="/conversation-reader.js"></script>
 <script src="/artifacts.js"></script>
+<link rel="stylesheet" href="/programs.css">
+<script src="/programs-ui.js"></script>
 <script src="/navigation.js"></script>
 <script src="/timeline-chart.js"></script>
 <script src="/context-panel.js"></script>
@@ -2683,6 +2685,7 @@ function describeRoute(h) {
   if (!h) return { kind: 'home', title: 'Gantt' };
   if (h === 'settings' || h.startsWith('settings=')) return { kind: 'settings', title: 'settings' };
   if (h === 'usage') return { kind: 'usage', title: 'usage' };
+  if (h === 'programs' || h.startsWith('program=')) return window.Programs ? Programs.describe(h) : { kind: 'programs', title: 'AI programs' };
   if (h.startsWith('q=')) return { kind: 'home', title: 'search “' + dec(h.slice(2)) + '”' };
   if (h.startsWith('note=')) return { kind: 'note', title: 'note · ' + base(dec(h.slice(5))) };
   if (h === 'new' || h.startsWith('new=')) return { kind: 'draft', title: 'new conversation' };
@@ -2734,6 +2737,8 @@ function dispatchHash(h, { restore = false } = {}) {
   if (!h) return goHome();
   if (h === 'settings' || h.startsWith('settings=')) return showSettings(settingsPaneOf(h));
   if (h === 'usage') return showUsageDashboard();
+  // AI programs (design/74): the list, and one program's page.
+  if ((h === 'programs' || h.startsWith('program=')) && window.Programs) return Programs.dispatch(h);
   // Saved search links use the current dialog, not the removed list view.
   if (h.startsWith('q=')) {
     markSettingsClosed();
@@ -3922,7 +3927,7 @@ function renderSidebarProjects() {
 // in the picker; old per-browser panel choices must not resurrect the rail.
 const SIDE_PANELS = ['inbox'];
 let rightFilesMode = agentSecState.filePanel === 'files' ? 'files' : 'recent-files';
-let rightFilesView = agentSecState.fileView === 'artifacts' ? 'artifacts' : 'files';
+let rightFilesView = ['artifacts', 'programs'].includes(agentSecState.fileView) ? agentSecState.fileView : 'files';
 let rightFilesOpen = agentSecState.filePanelOpen === true;
 if (['files', 'recent-files'].includes(agentSecState.panel)) {
   rightFilesMode = agentSecState.panel;
@@ -4009,12 +4014,16 @@ function renderRightFiles() {
   });
   $('rightFileScope').textContent = rightFilesMode === 'recent-files' ? 'All projects' : project ? ProjectScope.label(project) : 'No project selected';
   // Files or Artifacts (design/67): one panel, one scope switch.
+  // Or Programs (design/74): the AI programs of this project, or all of them.
   const artifactsView = rightFilesView === 'artifacts' && !!window.Artifacts;
-  document.querySelectorAll('[data-right-view]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.rightView === (artifactsView ? 'artifacts' : 'files'))));
-  $('rightFilePanel').setAttribute('aria-label', artifactsView ? 'Artifacts' : 'Files');
+  const programsView = rightFilesView === 'programs' && !!window.Programs;
+  const shownView = artifactsView ? 'artifacts' : programsView ? 'programs' : 'files';
+  document.querySelectorAll('[data-right-view]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.rightView === shownView)));
+  $('rightFilePanel').setAttribute('aria-label', shownView === 'artifacts' ? 'Artifacts' : shownView === 'programs' ? 'Programs' : 'Files');
   if (window.Artifacts) Artifacts.library.wireHost(host, renderRightFiles);
+  if (window.Programs) Programs.wireHost(host, renderRightFiles);
   host.innerHTML = rightFilesMode === 'files' && !hasProject
-    ? '<div class="ag-empty">Choose a project on the left, or switch to All.</div>' : artifactsView ? Artifacts.library.panelHtml(project) : fileActivityHtml(project);
+    ? '<div class="ag-empty">Choose a project on the left, or switch to All.</div>' : artifactsView ? Artifacts.library.panelHtml(project) : programsView ? Programs.panelHtml(project) : fileActivityHtml(project);
   host.scrollTop = scroll;
   const target = actor ? [...host.querySelectorAll('[data-files-actor]')].find(b => b.dataset.filesActor === actor)
     : forget ? [...host.querySelectorAll('[data-forget]')].find(b => b.dataset.forget === forget)
@@ -16496,7 +16505,7 @@ document.querySelectorAll('[data-file-scope]').forEach(button => button.onclick 
   setRightFiles(button.dataset.fileScope, true);
 });
 function setRightView(view) {
-  rightFilesView = view === 'artifacts' ? 'artifacts' : 'files';
+  rightFilesView = ['artifacts', 'programs'].includes(view) ? view : 'files';
   agentSecState.fileView = rightFilesView; saveAgentSecState();
   $('rightFileList').scrollTop = 0;
   setRightFiles(rightFilesMode, true);

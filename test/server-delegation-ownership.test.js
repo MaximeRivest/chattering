@@ -43,7 +43,7 @@ function runSetup(t) {
     normalizeContextItems: x => x, conversationContextOf: () => [], contextSig: () => '',
     appliedContextBySession: new Map(), agentRunJobs: new Map(), jobChanged() {},
     reindexIfChanged: async () => {}, endLiveRunTail() {}, broadcastRunFinal() {}, maybeSettleFanout() {}, settlePendingFanouts: async () => {}, speakRunDone() {},
-    piProviderExtraArgs: () => [], pirpc: { stopWarmSession() {} }, agentEnv: () => ({}), agentCallerEnv: () => ({}),
+    piProviderExtraArgs: () => [], pirpc: { stopWarmSession() {} }, agentEnv: () => ({}), agentCallerEnv: () => ({}), programCallerEnv: () => ({}),
     refreshUsageForKey() {}, runEventForwarder: () => () => {}, inspectDeliverySession: async () => ({ deliveries: new Set(), branch: new Set(['launch']) }),
     pisdk: { stopWarmSession() {}, piHeadlessRun(target) { b.targets.push(target); return { done: Promise.resolve() }; } }, targets: [],
     stopRunningAgent: async () => { b.stops++; }, waitFileQuiet: async () => {}, stops: 0,

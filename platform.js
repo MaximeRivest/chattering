@@ -149,6 +149,21 @@ function appDirs(env = process.env, home = os.homedir(), exists = fs.existsSync)
   };
 }
 
+// The FunctAI call log (design/74): the folder every FunctAI, in any
+// language, writes its calls and ratings to, by FunctAI's own rule
+// (functai contract/calls.md, "Where"). $FUNCTAI_LOG_CALLS naming a folder
+// wins; on/off words there only switch logging and leave the default.
+const FUNCTAI_SWITCH_WORDS = new Set(['', '0', 'false', 'no', 'off', '1', 'true', 'yes', 'on']);
+function functaiCallsDir(env = process.env, home = os.homedir()) {
+  const raw = String(env.FUNCTAI_LOG_CALLS || '').trim();
+  if (!FUNCTAI_SWITCH_WORDS.has(raw.toLowerCase())) return path.resolve(raw === '~' || raw.startsWith('~/') ? home + raw.slice(1) : raw);
+  let base;
+  if (IS_MAC) base = path.join(home, 'Library', 'Application Support');
+  else if (IS_WIN) base = env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+  else base = (env.XDG_DATA_HOME && String(env.XDG_DATA_HOME).trim()) || path.join(home, '.local', 'share');
+  return path.join(base, 'functai', 'calls');
+}
+
 // ---- the desktop ------------------------------------------------------------
 
 // How to open a file with its default application, or show it in the file
@@ -260,5 +275,5 @@ module.exports = {
   PLATFORM, IS_WIN, IS_MAC, IS_LINUX, IS_WSL, hostKind,
   pathKey, pathEntries, withPath, findOnPath, isExecutable,
   CASE_INSENSITIVE, isInside, samePath, realFolder, toPortable, fromPortable, isAbsolutePath,
-  appDirs, openCommand,
+  appDirs, openCommand, functaiCallsDir,
 };

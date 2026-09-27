@@ -74,6 +74,10 @@ const DEFAULT_SETTINGS = {
   // site (https://{id}.preview.example.com); empty: this machine's ports.
   artifactNetwork: 'open',
   previewBase: '',
+  // AI programs (design/74): agents' processes log their FunctAI calls to
+  // the call log Chattering reads. Off: FunctAI's own rule (logging only
+  // where someone turned it on).
+  programsRecordAgents: false,
   // One same-model editing pass after a human-facing SDK reply.
   simplifyAnswers: true,
   simplifyPrompt: DEFAULT_SIMPLIFY_PROMPT,
@@ -375,6 +379,7 @@ function normalizeSettings(input) {
   const semanticNs = String(src.semanticNs || DEFAULT_SETTINGS.semanticNs).trim().replace(/[^\w.-]+/g, '-') || 'default';
   const piEngine = src.piEngine === 'rpc' ? 'rpc' : 'sdk';
   const artifactNetwork = src.artifactNetwork === 'libraries' ? 'libraries' : 'open';
+  const programsRecordAgents = src.programsRecordAgents === true;
   const previewBase = /^https:\/\/(?:\{id\}\.)?[a-z0-9.-]+(?::\d+)?$/i.test(String(src.previewBase || '').trim()) ? String(src.previewBase).trim() : '';
   const simplifyAnswers = src.simplifyAnswers !== false;
   const simplifyPrompt = typeof src.simplifyPrompt === 'string' && src.simplifyPrompt.trim() ? src.simplifyPrompt : DEFAULT_SIMPLIFY_PROMPT;
@@ -413,6 +418,7 @@ function normalizeSettings(input) {
     piEngine,
     artifactNetwork,
     previewBase,
+    programsRecordAgents,
     simplifyAnswers,
     simplifyPrompt,
     autoResumeNetwork,

@@ -47,6 +47,7 @@ const conversationFlow = require('./conversation-flow.js');
 const conversationTree = require('./conversation-tree.js');
 const fanoutMerge = require('./fanoutmerge.js');
 const usageLib = require('./usageanalytics.js');
+const programsLib = require('./programs.js');
 const responseSpeed = require('./responsespeed.js');
 const agentReadLib = require('./agentread.js');
 const { createModelHealth } = require('./modelhealth.js');
@@ -79,6 +80,7 @@ const NOTES_DIR = DIRS.notes;
 const SESS_DIR = path.join(CACHE_DIR, 'sessions');
 const INDEX_FILE = path.join(CACHE_DIR, 'index.json');
 const USAGE_DB_FILE = path.join(CACHE_DIR, 'usage.db');
+const PROGRAMS_DB_FILE = path.join(CACHE_DIR, 'programs.db');
 const INTERNAL_USAGE_FILE = path.join(CACHE_DIR, 'internal-usage.jsonl');
 const MODEL_HEALTH_FILE = path.join(CACHE_DIR, 'memory-model-health.json');
 const MODEL_ACTIVITY_TIMEOUT_MS = Math.max(30000, Number(process.env.CHATTERING_MODEL_ACTIVITY_TIMEOUT_MS) || 2 * 60 * 1000);
@@ -3271,7 +3273,7 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
       const engine = customMessage || principal.sandbox ? pisdk : piEng();
       if (author && engine !== pisdk) recordAuthorship(key, author, { via: 'rpc', chars: String(message || '').length, input, coauthors });
       if (modelNote) { job.statusText = modelNote; jobChanged(job); }
-      const handle = engine.piHeadlessRun({ sessionPath, cwd, env: { ...agentEnv(principal), ...agentCallerEnv(principal), ...sessionEnv }, sessionEnv, extraArgs, sandbox: principal.sandbox || undefined }, { provider, modelId, thinking: customMessage ? undefined : thinking || undefined, message, images, customMessage, author, simplifyAnswers: appSettings.simplifyAnswers && !owner && !customMessage, simplifyPrompt: appSettings.simplifyPrompt, onEvent: runEventForwarder(job) });
+      const handle = engine.piHeadlessRun({ sessionPath, cwd, env: { ...agentEnv(principal), ...agentCallerEnv(principal), ...programCallerEnv(key, principal), ...sessionEnv }, sessionEnv, extraArgs, sandbox: principal.sandbox || undefined }, { provider, modelId, thinking: customMessage ? undefined : thinking || undefined, message, images, customMessage, author, simplifyAnswers: appSettings.simplifyAnswers && !owner && !customMessage, simplifyPrompt: appSettings.simplifyPrompt, onEvent: runEventForwarder(job) });
       appliedContextBySession.set(path.resolve(sessionPath), { sig: nextCtxSig, hash: bundleHash });
       record.handle = handle;
       await handle.done;
@@ -5682,6 +5684,77 @@ function assertWithinBudget(user) {
   e.status = 402;
   throw e;
 }
+// ---- AI programs (design/74) ----
+// The FunctAI call log (the folder FunctAI in any language writes its calls
+// and ratings to), indexed in the cache. The log is the truth; the index is
+// rebuilt from it when deleted.
+let programIndex = null;
+function programLog() {
+  if (!programIndex) programIndex = programsLib.createProgramIndex({ folder: platform.functaiCallsDir(), dbFile: PROGRAMS_DB_FILE, projectOfPath, host: HOST_NAME });
+  return programIndex;
+}
+// Who a rating is by: a person, not an account (the contract). The owner is
+// this account's own person and is named as FunctAI names them in their own
+// notebooks and scripts (the system user), so their ratings from Python,
+// TypeScript and this page are one person's. Anyone else: their name here.
+function programPerson(user) {
+  if (!user || user.role === 'owner') { try { return os.userInfo().username; } catch { return 'owner'; } }
+  return String(user.name || user.id);
+}
+const programRater = identity => programPerson(identity && identity.tier === 'console' ? null : identity && identity.user);
+// What an agent's processes tell FunctAI: who is calling (this conversation,
+// this person), and where to log when the owner turned recording on. A
+// walled person's sandbox keeps its own environment.
+function programCallerEnv(key, principal) {
+  if (principal && principal.sandbox) return {};
+  const caller = { kind: 'agent', conversation: key, user: programPerson(principal && principal.user) };
+  return { FUNCTAI_CALLER: JSON.stringify(caller), ...(appSettings.programsRecordAgents ? { FUNCTAI_LOG_CALLS: platform.functaiCallsDir() } : {}) };
+}
+async function programBody(req, max = 1024 * 1024) {
+  let body = '';
+  for await (const chunk of req) { body += chunk; if (body.length > max) throw Object.assign(new Error('too large'), { status: 413 }); }
+  try { return JSON.parse(body || '{}'); } catch { throw Object.assign(new Error('bad json'), { status: 400 }); }
+}
+// A table of rows as CSV (RFC 4180): a value that is not text is its JSON.
+function rowsCsv(rows) {
+  const cols = [...new Set(rows.flatMap(r => Object.keys(r)))];
+  const cell = v => { const s = v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  return [cols.map(cell).join(','), ...rows.map(r => cols.map(c => cell(r[c])).join(','))].join('\r\n') + '\r\n';
+}
+function programRoute(u, req, res, identity) {
+  const log = programLog(), at = u.pathname;
+  const q = Object.fromEntries(u.searchParams);
+  log.refresh();
+  const name = String(q.name || ''), module = String(q.module ?? '');
+  if (at === '/api/programs') {
+    return json(res, 200, { folder: log.folder, exists: fs.existsSync(log.folder), seq: log.seq, recordAgents: appSettings.programsRecordAgents === true,
+      you: programRater(identity), programs: log.programs() });
+  }
+  if (at === '/api/programs/program') {
+    const p = log.program(name, module);
+    if (!p) return json(res, 404, { error: 'No calls of this program in the log.' });
+    return json(res, 200, { program: p, versions: log.versions(name, module), seq: log.seq, you: programRater(identity) });
+  }
+  if (at === '/api/programs/runs') return json(res, 200, log.runs(name, module, q));
+  if (at === '/api/programs/run') {
+    const r = log.run(String(q.id || ''));
+    return r ? json(res, 200, { ...r, you: programRater(identity) }) : json(res, 404, { error: 'No such call in the log.' });
+  }
+  if (at === '/api/programs/compare') return json(res, 200, log.compare(name, module, String(q.a || ''), String(q.b || '')));
+  if (at === '/api/programs/rated') {
+    const out = log.rated(name, module, { signature: q.signature || null, by: q.by || null });
+    const file = (name || 'program').replace(/[^\w.-]+/g, '-') + '-rated';
+    if (q.format === 'jsonl' || q.format === 'csv') {
+      const body = q.format === 'csv' ? rowsCsv(out.rows) : out.rows.map(r => JSON.stringify(r)).join('\n') + (out.rows.length ? '\n' : '');
+      res.writeHead(200, { 'Content-Type': (q.format === 'csv' ? 'text/csv' : 'application/x-ndjson') + '; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${file}.${q.format}"`, 'Cache-Control': 'no-store' });
+      return res.end(body);
+    }
+    return json(res, 200, out);
+  }
+  return json(res, 404, { error: 'not found' });
+}
+
 function usageDashboardResponse(searchParams) {
   if (!usageIdx) return { error: 'Token analytics needs node:sqlite, which is unavailable.' };
   const catalog = pricingCatalog();
@@ -15374,6 +15447,8 @@ async function handleRequest(req, res) {
       '/conversation-flow.js': { file: 'conversation-flow.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/conversation-tree.js': { file: 'conversation-tree.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/artifacts.js': { file: 'artifacts.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/programs-ui.js': { file: 'programs-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/programs.css': { file: 'programs.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/artifacts.css': { file: 'artifacts.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/streaming-tool.js': { file: 'streaming-tool.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/conversation-reader.js': { file: 'conversation-reader.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
@@ -16560,6 +16635,29 @@ async function handleRequest(req, res) {
       // or project is not listed.
       const receiver = receiverFor(identity);
       json(res, 200, receiver.all ? allJobs() : allJobs().filter(job => policy.eventView({ type: 'job', job }, receiver)));
+    } else if ((u.pathname === '/api/programs' || u.pathname === '/api/programs/program' || u.pathname === '/api/programs/runs' || u.pathname === '/api/programs/run' || u.pathname === '/api/programs/compare' || u.pathname === '/api/programs/rated') && req.method === 'GET') {
+      // AI programs (design/74): the FunctAI call log.
+      try { programRoute(u, req, res, identity); } catch (e) { json(res, e.status || 500, { error: e.message }); }
+    } else if (u.pathname === '/api/programs/sample' && req.method === 'POST') {
+      try {
+        const p = await programBody(req, 16384), log = programLog();
+        log.refresh();
+        json(res, 200, log.sample(String(p.name || ''), String(p.module ?? ''), { n: p.n, version: p.version || null, unrated: p.unrated !== false }));
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/programs/rate' && req.method === 'POST') {
+      try {
+        const p = await programBody(req), log = programLog();
+        log.refresh();
+        json(res, 200, log.rate({ call: p.call, verdict: p.verdict, ...('answer' in p ? { answer: p.answer } : {}), outputs: p.outputs, reasons: p.reasons,
+          note: p.note, origin: p.origin, sample: p.sample, by: programRater(identity) }));
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/programs/recording' && req.method === 'PUT') {
+      try {
+        const p = await programBody(req, 4096);
+        appSettings = settingsLib.normalizeSettings({ ...appSettings, programsRecordAgents: p.recordAgents === true });
+        saveAppSettings();
+        json(res, 200, { recordAgents: appSettings.programsRecordAgents });
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/usage' && req.method === 'GET') {
       const data = usageDashboardResponse(u.searchParams);
       json(res, data.error ? 503 : 200, data);

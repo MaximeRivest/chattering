@@ -242,6 +242,19 @@ const ROUTES = {
   'GET /api/usage': 'member',
   '/api/usage/billing': 'owner',
 
+  // ---- AI programs (design/74): this account's FunctAI call log. It holds
+  // what people typed into programs, like the transcripts: the household's,
+  // never a guest's or a walled person's. Rating writes to the log.
+  'GET /api/programs': 'member',
+  'GET /api/programs/program': 'member',
+  'GET /api/programs/runs': 'member',
+  'GET /api/programs/run': 'member',
+  'GET /api/programs/compare': 'member',
+  'GET /api/programs/rated': 'member',
+  'POST /api/programs/sample': 'member',
+  'POST /api/programs/rate': 'member',
+  'PUT /api/programs/recording': 'owner', // what agents' processes record: a machine setting
+
   // ---- voice and speech: this machine's speaker and microphone ----
   '/api/voice/state': 'member',
   '/api/voice/pause': 'member',
