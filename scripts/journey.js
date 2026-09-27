@@ -29,8 +29,9 @@ async function firstConversation({ base, token, home, step = () => {} }) {
     const text = JSON.stringify(p.messages);
     const last = (p.messages || []).at(-1) || {};
     if (last.role === 'tool') return 'The check ran.';
-    const said = typeof last.content === 'string' ? last.content : JSON.stringify(last.content || '');
-    if (last.role === 'user' && /^\W*Run the check\.\W*$/.test(said)) return { tool: { name: 'bash', arguments: { command } } };
+    // The person's words, not the reply-rewrite helper quoting them.
+    const said = typeof last.content === 'string' ? last.content : (last.content || []).map(c => c.text || '').join('');
+    if (last.role === 'user' && /Run the check\./.test(said) && !/Re-explain/.test(said)) return { tool: { name: 'bash', arguments: { command } } };
     return /ready to help/.test(text) ? 'Hello! I am ready to help.' : 'The tomatoes want the sunny fence.';
   } });
   const call = async (route, body) => {
