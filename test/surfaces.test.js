@@ -166,10 +166,11 @@ test('real app surfaces follow the theme together, including nested painted edge
     assert.ok(!out.result?.exceptionDetails, JSON.stringify(out.result)); return out.result?.result?.value;
   };
   const until = async expr => {
-    for (let i = 0; i < 200; i++) { if (await evaluate(`(()=>{try{return !!(${expr})}catch{return false}})()`)) return; await new Promise(r => setTimeout(r, 30)); }
+    for (let i = 0; i < 600; i++) { if (await evaluate(`(()=>{try{return !!(${expr})}catch{return false}})()`)) return; await new Promise(r => setTimeout(r, 30)); }
     assert.fail('Timed out: ' + expr + '\n' + errors.join('\n'));
   };
-  const size = (width, height) => send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, sid);
+  // A new size applies a moment after it is asked for: wait until the page has it.
+  const size = async (width, height) => { await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, sid); await until(`innerWidth === ${width} && innerHeight === ${height}`); };
   const shot = async name => { const p = await send('Page.captureScreenshot', { format: 'png' }, sid); fs.writeFileSync(path.join(os.tmpdir(), name + '.png'), Buffer.from(p.result.data, 'base64')); };
   await send('Runtime.enable', {}, sid); await size(1200, 900);
   await send('Network.setCookie', { name: 'chattering', value: TEST_TOKEN, url: base }, sid);

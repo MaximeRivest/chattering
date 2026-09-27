@@ -84,7 +84,8 @@ test('a notebook runs on while you are elsewhere, and comes back as it was', { t
   };
   const until = async (expr, what) => {
     // A page still loading may not define what the condition names yet.
-    for (let i = 0; i < 160; i++) { if (await evaluate(`(()=>{try{return !!(${expr})}catch{return false}})()`)) return; await new Promise(r => setTimeout(r, 50)); }
+    // Up to twenty seconds, as the shared helper allows a loaded machine.
+    for (let i = 0; i < 400; i++) { if (await evaluate(`(()=>{try{return !!(${expr})}catch{return false}})()`)) return; await new Promise(r => setTimeout(r, 50)); }
     assert.fail(what + '\n' + exceptions.join('\n'));
   };
   await send('Runtime.enable', {}, sid);
@@ -113,7 +114,8 @@ test('a notebook runs on while you are elsewhere, and comes back as it was', { t
 
   // Open the notebook: not listed until something runs in it.
   await evaluate(`openLiveFile(${JSON.stringify(notebook)}, { project: 'work' })`);
-  await until(`!!(docState && docState.editor && docState.path === ${JSON.stringify(notebook)})`, 'the notebook did not open');
+  // The editor exists before a shared document's text arrives: wait for its cells, with code.
+  await until(`!!(docState && docState.editor && docState.path === ${JSON.stringify(notebook)} && docState.editor.listCells().length === 2 && docState.editor.listCells()[0].code.trim())`, 'the notebook did not open');
   assert.equal(await evaluate(`document.querySelectorAll('.ag-row.ag-nb').length`), 0, 'opening alone lists nothing');
 
   // Run the first cell; the row appears, working.

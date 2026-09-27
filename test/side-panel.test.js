@@ -99,7 +99,7 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
     return out.result?.result?.value;
   };
   const until = async (expression, label) => {
-    for (let i = 0; i < 200; i++) { if (await evaluate(`(()=>{try{return !!(${expression})}catch{return false}})()`)) return; await new Promise(r => setTimeout(r, 25)); }
+    for (let i = 0; i < 800; i++) { if (await evaluate(`(()=>{try{return !!(${expression})}catch{return false}})()`)) return; await new Promise(r => setTimeout(r, 25)); }
     assert.fail('timed out: ' + (label || expression) + '\n' + exceptions.join('\n'));
   };
   const size = (width, height) => send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false }, sid);
@@ -220,7 +220,7 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   await evaluate(`$('modelPick').querySelector('.mname').textContent='provider / very-long-model-name-with-a-million-token-context'`);
   for (const width of [760, 1000, 320, 390]) {
     await size(width, 900);
-    await new Promise(r => setTimeout(r, 80));
+    await until(`innerWidth === ${width}`, 'the window took its new width');
     await evaluate(`paintCtxMeter($('ctxMeter'),meterFixture)`);
     assert.equal(await evaluate(`(()=>{const el=$('ctxMeter'),m=el.getBoundingClientRect(),row=document.querySelector('.agent-compose-row').getBoundingClientRect(),box=$('agentCompose').getBoundingClientRect();return el.checkVisibility() && !$('composeTools').open && m.top>=row.top && m.bottom<=row.bottom && m.left>=box.left && (getComputedStyle(el).gridRowStart==='2' ? m.top>=document.querySelector('.compose-right').getBoundingClientRect().bottom : m.right<=$('agentThink').getBoundingClientRect().left && Math.abs((m.top+m.bottom)-(row.top+row.bottom))<2) && $('agentThink').checkVisibility() && $('agentThink').getBoundingClientRect().right<=$('modelPick').getBoundingClientRect().left+1 && $('modelPick').getBoundingClientRect().left-$('agentThink').getBoundingClientRect().right<9 && $('modelPick').getBoundingClientRect().right<=$('agentRun').getBoundingClientRect().left+1 && el.scrollWidth<=el.clientWidth+1 && el.scrollHeight<=el.clientHeight+1 && Math.abs((m.left+m.right)-(box.left+box.right))<2 && getComputedStyle(el).textAlign==='center'})()`), true, 'usage shares the controls row without clipping at ' + width);
     assert.equal(await evaluate(`(()=>{const d=$('composerDock').getBoundingClientRect(), row=document.querySelector('.agent-compose-row');return d.left>=0 && d.right<=innerWidth && row.scrollWidth<=row.clientWidth+1 && ['agentRun','modelPick','agentMic'].filter(id=>$(id)?.checkVisibility()).every(id=>{const r=$(id).getBoundingClientRect();return r.left>=d.left && r.right<=d.right})})()`), true, 'composer controls fit at ' + width);

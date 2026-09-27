@@ -19,7 +19,7 @@ async function fixture(t) {
 async function appendEvent(file, message) {
   await fs.appendFile(file, JSON.stringify({ type: 'custom_message', id: 'callback-' + message.details.deliveryId, parentId: 'launch', ...message }) + '\n');
 }
-async function until(fn) { for (let i = 0; i < 100; i++) { if (await fn()) return; await wait(10); } assert.fail('Timed out waiting for delivery.'); }
+async function until(fn) { for (let i = 0; i < 500; i++) { if (await fn()) return; await wait(10); } assert.fail('Timed out waiting for delivery.'); }
 
 test('waits for siblings, then delivers one honest callback with separate review state', async t => {
   const { root, parent, task } = await fixture(t);

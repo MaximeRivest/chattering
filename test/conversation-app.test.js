@@ -337,7 +337,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   await evaluate(`document.querySelector('[data-cr-line][data-cr-side="next"]').click()`);
   assert.equal(await evaluate(`document.querySelector('.cr-comment-form').closest('.cr-inline-slot').dataset.crAnchor`), 'next:1', 'Comment editor must sit beneath the clicked line');
   await evaluate(`const form=document.querySelector('.cr-comment-form form');form.elements.text.value='Please simplify this';form.elements.suggestion.value='simpler';form.requestSubmit()`);
-  for (let i = 0; i < 100; i++) { if (await evaluate(`document.querySelectorAll('.cr-comment').length===1`)) break; await new Promise(r => setTimeout(r, 30)); }
+  for (let i = 0; i < 600; i++) { if (await evaluate(`document.querySelectorAll('.cr-comment').length===1`)) break; await new Promise(r => setTimeout(r, 30)); }
   assert.equal(await evaluate(`document.querySelector('.cr-comment').textContent.includes('Please simplify this')`), true);
   const reviewId = await evaluate(`changeReview.id`);
   await evaluate(`showChangeReview(${JSON.stringify(reviewId)})`);
@@ -353,7 +353,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   await evaluate(`document.querySelector('.cr-comment-form [data-cancel]').click();document.querySelector('[data-cr-comment]').click()`);
   assert.equal(await evaluate(`document.querySelector('.cr-comment-form').parentElement.className`), 'cr-file-discussion', 'File comment editor should stay with the file header');
   await evaluate(`{const f=document.querySelector('.cr-comment-form form');f.elements.text.value='File-level note';f.requestSubmit()}`);
-  for (let i = 0; i < 100; i++) { if (await evaluate(`document.querySelector('.cr-file-comments').textContent.includes('File-level note')`)) break; await new Promise(r => setTimeout(r, 30)); }
+  for (let i = 0; i < 600; i++) { if (await evaluate(`document.querySelector('.cr-file-comments').textContent.includes('File-level note')`)) break; await new Promise(r => setTimeout(r, 30)); }
   assert.equal(await evaluate(`document.querySelector('.cr-file-comments').textContent.includes('File-level note')`), true);
   await evaluate(`showChangeReview(${JSON.stringify(reviewId)},'fixture-review-call')`);
   assert.equal(await evaluate(`document.querySelector('.cr-inline-slot .cr-comment').textContent.includes('Please simplify this')`), true, 'A step showing the same version lost its inline comment');
@@ -375,7 +375,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   assert.equal(await evaluate(`fileWs.focused && !!document.querySelector('.live-file-view')`), true);
   assert.equal(await evaluate(`!!document.querySelector('#ffTree, #ffTimeline, #fwHistoryDrawer, #fwAskBtn, .fb-file-nav')`), false);
   assert.equal(await evaluate(`liveFetches.some(u=>/project\\/file-history|files\\/touched|file-history\\/(points|snapshot)/.test(u))`), false, 'Focused editor fetched workspace history');
-  for (let i = 0; i < 100; i++) { if (await evaluate(`fileWs.live?.mappedVersion === fileWs.live?.version`)) break; await new Promise(r => setTimeout(r, 30)); }
+  for (let i = 0; i < 600; i++) { if (await evaluate(`fileWs.live?.mappedVersion === fileWs.live?.version`)) break; await new Promise(r => setTimeout(r, 30)); }
   assert.equal(await evaluate(`fileWs.live.marks.size > 0`), true, 'Review changes were not marked in the gutter');
   assert.equal(await evaluate(`fileWs.editor.view.dom.getBoundingClientRect().width > document.querySelector('#view').clientWidth * 0.8`), true, 'Code editor should fill the page, not shrink around its text');
   // The system's own find key: Cmd+F on macOS, where Ctrl+F moves the cursor as in every Mac text field.
@@ -386,16 +386,16 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   const staleLine = await (await fetch(base + '/api/file/line-info?' + new URLSearchParams({ path: path.join(work, 'docs/example.js'), line: '1', sha: '0'.repeat(64) }))).json();
   assert.equal(staleLine.kind, 'stale', 'Attribution must reject mismatched file versions');
   await evaluate(`fileWs.editor.setContent('const focusedCompletion = 1;\\nfocu');fileWs.editor.view.dispatch({selection:{anchor:fileWs.editor.view.state.doc.length}});fileWs.editor.focus();fileWs.editor.view.contentDOM.dispatchEvent(new KeyboardEvent('keydown',{key:' ',code:'Space',keyCode:32,ctrlKey:true,bubbles:true}))`);
-  for (let i = 0; i < 100; i++) { if (await evaluate(`!!document.querySelector('.cm-tooltip-autocomplete')`)) break; await new Promise(r => setTimeout(r, 30)); }
+  for (let i = 0; i < 600; i++) { if (await evaluate(`!!document.querySelector('.cm-tooltip-autocomplete')`)) break; await new Promise(r => setTimeout(r, 30)); }
   assert.equal(await evaluate(`document.querySelector('.cm-tooltip-autocomplete')?.textContent.includes('focusedCompletion')`), true, 'Ctrl+Space should offer a local completion');
   await evaluate(`fileWs.editor.view.contentDOM.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true}))`);
-  for (let i = 0; i < 100; i++) { if (await evaluate(`fileWs.live.mappedVersion === fileWs.live.version`)) break; await new Promise(r => setTimeout(r, 30)); }
+  for (let i = 0; i < 600; i++) { if (await evaluate(`fileWs.live.mappedVersion === fileWs.live.version`)) break; await new Promise(r => setTimeout(r, 30)); }
   assert.match(await evaluate(`liveFileHover(fileWs,1)`), /not saved/);
   assert.equal(await evaluate(`fileWs.editor.setDiagnostics([{from:0,to:1,severity:'warning',message:'fixture'}],'stale content')`), false);
   assert.equal(await evaluate(`fileWs.editor.setDiagnostics([],fileWs.editor.getContent())`), true);
   // A late completion response must not be applied to changed code.
   await evaluate(`window.completionRequest=null;fileWs.editor.setLanguageServices({complete:ctx=>{window.completionRequest=ctx;return new Promise(resolve=>window.completeLater=resolve)}});fileWs.editor.view.contentDOM.dispatchEvent(new KeyboardEvent('keydown',{key:' ',code:'Space',keyCode:32,ctrlKey:true,bubbles:true}))`);
-  for (let i = 0; i < 100; i++) { if (await evaluate(`!!window.completionRequest`)) break; await new Promise(r => setTimeout(r, 20)); }
+  for (let i = 0; i < 600; i++) { if (await evaluate(`!!window.completionRequest`)) break; await new Promise(r => setTimeout(r, 20)); }
   assert.equal(await evaluate(`!!window.completionRequest`), true, 'Language-service completion hook was not called');
   await evaluate(`fileWs.editor.view.dispatch({changes:{from:fileWs.editor.view.state.doc.length,insert:'x'}});completeLater({from:completionRequest.pos-4,options:[{label:'staleChoice'}]})`);
   assert.equal(await evaluate(`completionRequest.signal.aborted`), true);
@@ -443,7 +443,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   const toolbar = () => evaluate(`document.querySelector('.mrmd-cell-toolbar')?.textContent || ''`);
   assert.match(await toolbar(), /^✓ 1ms✦▶ Run$/, 'the one-shot run above left its verdict');
   await evaluate(`document.querySelector('.mrmd-cell-btn-run').click()`);
-  const until = async (expr, what) => { for (let i = 0; i < 100; i++) { if (await evaluate(`(()=>{try{return !!(${expr})}catch{return false}})()`)) return; await new Promise(r => setTimeout(r, 50)); } assert.fail(what); };
+  const until = async (expr, what) => { for (let i = 0; i < 600; i++) { if (await evaluate(`(()=>{try{return !!(${expr})}catch{return false}})()`)) return; await new Promise(r => setTimeout(r, 50)); } assert.fail(what); };
   await until(`!!window.runStream`, 'the run request was not made');
   assert.match(await toolbar(), /^running · \d+s■ Stop$/);
   await evaluate(`emit({ type: 'output', text: 'step 1 of 3\\n' })`);

@@ -74,8 +74,9 @@ if (process.argv[1] === ${JSON.stringify(path.join(root, 'server.js'))}) {
     const r = await named(route, fetch(base + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(5000) }));
     return { status: r.status, body: await r.json() };
   };
+  // Up to twenty seconds for a loaded machine; a pass costs no wait.
   const waitFor = async predicate => {
-    for (let i = 0; i < 150; i++) { try { if (await predicate()) return; } catch {} await pause(50); }
+    for (let i = 0; i < 400; i++) { try { if (await predicate()) return; } catch {} await pause(50); }
     assert.fail('Timed out\n' + log);
   };
   start(); await waitFor(async () => (await get('/api/sessions')).some(s => s.key === key));

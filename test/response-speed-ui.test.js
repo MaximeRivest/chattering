@@ -28,7 +28,8 @@ test('browser: estimated speed in picker, accessible reply details and dashboard
   await evaluate(`document.querySelector('#speedHost .msg').classList.add('actions-open'); document.querySelector('#speedHost .msg-speed summary').click()`);
   assert.equal(await evaluate(`getComputedStyle(document.querySelector('#speedHost .msg-actions')).visibility`), 'visible');
   assert.equal(await evaluate(`document.querySelector('#speedHost .msg-speed').open`), true, 'timing details can be opened on touch screens');
-  assert.equal(await evaluate(`(()=>{const r=document.querySelector('#speedHost .msg-speed-detail').getBoundingClientRect();return r.width>0 && r.right <= innerWidth})()`), true, 'details fit the phone screen');
+  // The phone size applies a moment after it is asked for: wait for it and the settled details.
+  await until(`innerWidth === 390 && (()=>{const r=document.querySelector('#speedHost .msg-speed-detail').getBoundingClientRect();return r.width>0 && r.right <= innerWidth})()`, 'details fit the phone screen');
   await evaluate(`viewKind = 'usage'; renderUsageDashboard({ summary:{}, speed:{models:[{id:'fixture/fast',...speedFixture}],defaultCharsPerToken:4,minCalibrationSamples:10} });`);
   await until(`document.querySelector('.usage-view')`);
   const text = await evaluate(`document.querySelector('.usage-view').textContent`);

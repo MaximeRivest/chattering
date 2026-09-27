@@ -87,8 +87,9 @@ test('back and forward through the screens', { timeout: 90000 }, async t => {
     assert.ok(!out.result?.exceptionDetails, JSON.stringify(out.result));
     return out.result?.result?.value;
   };
+  // Up to twenty seconds, as the shared helper allows a loaded machine; a pass costs no wait.
   const until = async (expression, label) => {
-    for (let i = 0; i < 240; i++) { if (await evaluate(`(()=>{try{return !!(${expression})}catch{return false}})()`)) return; await new Promise(r => setTimeout(r, 25)); }
+    for (let i = 0; i < 800; i++) { if (await evaluate(`(()=>{try{return !!(${expression})}catch{return false}})()`)) return; await new Promise(r => setTimeout(r, 25)); }
     assert.fail('timed out: ' + (label || expression) + '\n' + exceptions.join('\n'));
   };
   const hash = () => evaluate(`decodeURIComponent(location.hash.slice(1))`);

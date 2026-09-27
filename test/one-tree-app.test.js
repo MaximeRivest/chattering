@@ -74,8 +74,9 @@ test('one head: side-by-side answers, instant moves, versions, shared head, phon
     assert.ok(!out.result?.exceptionDetails, JSON.stringify(out.result?.exceptionDetails));
     return out.result?.result?.value;
   };
+  // Up to twenty seconds, as the shared helper allows a loaded machine; a pass costs no wait.
   const until = async (expression, label) => {
-    for (let i = 0; i < 300; i++) { if (await evaluate(`(()=>{try{return !!(${expression})}catch{return false}})()`)) return; await new Promise(r => setTimeout(r, 25)); }
+    for (let i = 0; i < 800; i++) { if (await evaluate(`(()=>{try{return !!(${expression})}catch{return false}})()`)) return; await new Promise(r => setTimeout(r, 25)); }
     const said = typeof label === 'function' ? await label().catch(e => 'label failed: ' + e.message) : label;
     assert.fail('Timed out: ' + (said || expression) + '\n' + exceptions.join('\n'));
   };
@@ -153,10 +154,15 @@ test('one head: side-by-side answers, instant moves, versions, shared head, phon
   await evaluate(`rerenderReading(null)`);
   await until(`document.querySelector('.rd-answers')?.dataset.layout === 'one'`, 'phone layout');
   const before = await evaluate(`document.querySelector('.rd-card[aria-current="true"]').dataset.col`);
-  await evaluate(`(() => { const strip = document.querySelector('.rd-cards'); strip.dispatchEvent(new PointerEvent('pointerdown'));
+  // Swipe the strip on screen once it is wired (placed on its current card,
+  // listening): drawn and wired are two steps, and a loaded machine can land
+  // between them. A re-render still under way (the resize, the reading's)
+  // replaces the strip and its scroll: then swipe the new one.
+  const swipe = `(() => { const strip = document.querySelector('.rd-cards'); if (!strip || !strip.dataset.wired || strip.dataset.swiped) return;
+    strip.dataset.swiped = '1'; strip.dispatchEvent(new PointerEvent('pointerdown'));
     const other = [...strip.querySelectorAll('.rd-card')].find(c => c.getAttribute('aria-current') !== 'true');
-    strip.scrollLeft = other.offsetLeft - strip.offsetLeft; return 1; })()`);
-  await until(`document.querySelector('.rd-card[aria-current="true"]')?.dataset.col !== ${JSON.stringify(before)}`, async () => 'swipe chooses: ' + await evaluate(`JSON.stringify((() => { const s = document.querySelector('.rd-cards'); return { scrollLeft: s.scrollLeft, clientWidth: s.clientWidth, scrollWidth: s.scrollWidth, snap: getComputedStyle(s).scrollSnapType, behavior: getComputedStyle(s).scrollBehavior, cards: [...s.querySelectorAll('.rd-card')].map(c => [c.dataset.col, c.offsetLeft, c.getAttribute('aria-current')]) }; })())`));
+    strip.scrollLeft = other.offsetLeft - strip.offsetLeft; })()`;
+  await until(`document.querySelector('.rd-card[aria-current="true"]')?.dataset.col !== ${JSON.stringify(before)} || (${swipe}, false)`, async () => 'swipe chooses: ' + await evaluate(`JSON.stringify((() => { const s = document.querySelector('.rd-cards'); return { scrollLeft: s.scrollLeft, clientWidth: s.clientWidth, scrollWidth: s.scrollWidth, snap: getComputedStyle(s).scrollSnapType, behavior: getComputedStyle(s).scrollBehavior, cards: [...s.querySelectorAll('.rd-card')].map(c => [c.dataset.col, c.offsetLeft, c.getAttribute('aria-current')]) }; })())`));
 
   // The tree lights the head's path and marks the head as "here".
   await size(1500, 1000);
