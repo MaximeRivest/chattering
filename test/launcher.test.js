@@ -52,7 +52,7 @@ test('update from a release, keep the old version, roll back; a bad checksum cha
   // A minimal program folder of a given version: the launcher and what it needs.
   const program = (dir, version) => {
     fs.mkdirSync(path.join(dir, 'runtime'), { recursive: true });
-    for (const f of ['launcher.js', 'platform.js', 'runtime.js', 'processes.js']) fs.copyFileSync(path.join(root, f), path.join(dir, f));
+    for (const f of ['launcher.js', 'platform.js', 'runtime.js', 'processes.js', 'win-hide.js']) fs.copyFileSync(path.join(root, f), path.join(dir, f));
     fs.copyFileSync(path.join(root, 'runtime', 'package.json'), path.join(dir, 'runtime', 'package.json'));
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'chattering', version }));
   };
