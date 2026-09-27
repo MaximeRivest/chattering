@@ -21,7 +21,7 @@ function extract(source, start, end) {
 const textOf = content => typeof content === 'string' ? content : (content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
 
 async function parseAll(t, lines) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'context-fill-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'context-fill-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'session.jsonl');
   fs.writeFileSync(file, lines.map(l => JSON.stringify(l)).join('\n'));
@@ -31,7 +31,7 @@ async function parseAll(t, lines) {
   return JSON.parse(JSON.stringify(await box.parseFile(file)));
 }
 async function parse(t, lines) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'context-fill-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'context-fill-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'session.jsonl');
   fs.writeFileSync(file, lines.map(l => JSON.stringify(l)).join('\n'));

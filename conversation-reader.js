@@ -658,7 +658,7 @@ function renderLiveInGroups() {
         if (col) col.after(card); else strip.appendChild(card);
         section.style.setProperty('--cols', String(strip.children.length));
       }
-      setLiveText(card.querySelector('b'), L.intent.kind === 'merge' ? 'Merged' : (typeof shortModelName === 'function' && L.model ? shortModelName(L.model.split('/').pop()) : 'New version'));
+      setLiveText(card.querySelector('b'), L.intent.kind === 'merge' ? 'Merged' : (typeof shortModelName === 'function' && L.model ? shortModelName(L.model.split(/[\\/]/).pop()) : 'New version'));
       setLiveText(card.querySelector('.rd-sub'), L.statusText && !/^(running|starting)$/.test(L.statusText) ? L.statusText : 'writing…');
       renderLiveReplyLedger(card.querySelector('.rd-card-body'), jobId, L);
     }
@@ -772,7 +772,7 @@ function transcriptFragmentHtml(d, messages, { after = new Map(), before = new M
       for (const path of (isFileWriteTool(m) ? [m.path] : m.writes || [])) files.set(path, m);
     }
     const tally = [...names].map(([n, count]) => n + (count > 1 ? ' ×' + count : '')).join(' · ');
-    const links = [...files].map(([path, m]) => `<button class="tg-file" data-file-diff="${esc(path)}" data-file-ts="${esc(m.ts || '')}" data-file-anchor="${esc(m.ts || '')}" data-file-call="${esc(m.id || '')}">${esc(path.split('/').pop())}</button>`).join(' ');
+    const links = [...files].map(([path, m]) => `<button class="tg-file" data-file-diff="${esc(path)}" data-file-ts="${esc(m.ts || '')}" data-file-anchor="${esc(m.ts || '')}" data-file-call="${esc(m.id || '')}">${esc(path.split(/[\\/]/).pop())}</button>`).join(' ');
     const opened = toolGroupOpen.get(d.key + '|' + key) ?? readerState(d.key).work?.[key];
     const count = [...names.values()].reduce((a, b) => a + b, 0);
     out.push(`<details class="toolgroup" data-msg-key="${esc(d.key)}" data-gkey="${esc(key)}"${opened ? ' open' : ''}><summary><span class="tg-label"><span class="tg-count">${count} ${count === 1 ? 'step' : 'steps'}</span><span class="tg-detail" title="${esc(tally)}">${esc(tally)}</span></span>${files.size <= 3 ? links : ''}</summary>${work.map(m => msgBlock(m, hl, m.eid === exact, q, indexes.get(m._source), d.key)).join('')}</details>`);
@@ -1058,7 +1058,7 @@ function renderReaderParallel(stage, entries) {
         if (sel && !sel.isCollapsed && card.contains(sel.anchorNode)) return;
         parallelChoices.set(runId, i);
         const p = pendingFollows.get(activeRel);
-        if (p) p.prefer = L.model ? L.model.split('/').pop() : null;
+        if (p) p.prefer = L.model ? L.model.split(/[\\/]/).pop() : null;
         renderParallelStage();
       };
       card.querySelector('.rd-stop').onclick = async e => {
@@ -1069,7 +1069,7 @@ function renderReaderParallel(stage, entries) {
       };
     }
     card.setAttribute('aria-current', String(i === chosen));
-    setLiveText(card.querySelector('b'), typeof shortModelName === 'function' && L.model ? shortModelName(L.model.split('/').pop()) : L.model || 'model');
+    setLiveText(card.querySelector('b'), typeof shortModelName === 'function' && L.model ? shortModelName(L.model.split(/[\\/]/).pop()) : L.model || 'model');
     setLiveText(card.querySelector('.rd-sub'), L.done ? (L.status === 'error' ? 'failed · ' + (L.error || L.statusText || '') : 'done') : (L.statusText && !/^(running|starting)$/.test(L.statusText) ? L.statusText : 'writing…'));
     card.querySelector('.rd-stop').hidden = !!L.done;
     renderLiveReplyLedger(card.querySelector('.rd-card-body'), jobId, L);

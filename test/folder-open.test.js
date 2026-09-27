@@ -15,7 +15,7 @@ const source = fs.readFileSync(require.resolve('../server.js'), 'utf8');
 function extract(start, end) { const a = source.indexOf(start), b = source.indexOf(end, a); assert.ok(a >= 0 && b > a, start); return source.slice(a, b); }
 
 async function fixture(t) {
-  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'folder-open-'));
+  const home = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'folder-open-')));
   t.after(() => fsp.rm(home, { recursive: true, force: true }));
   const repo = path.join(home, 'Projects', 'repo');
   await fsp.mkdir(path.join(repo, 'docs', 'adr'), { recursive: true });
@@ -25,7 +25,7 @@ async function fixture(t) {
   const real = await fsp.realpath(repo);
   const nested = path.join(real, 'vendor', 'nested');
   const ctx = vm.createContext({
-    path, fsp,
+    path, fsp, platform: require('../platform.js'),
     projectOfPath: abs => (abs.startsWith(real) ? 'repo' : null),
     projectMetaFor: project => (project === 'repo' ? { project, cwd: real, entries: [] } : null),
     projectGitRepositories: async () => [nested],

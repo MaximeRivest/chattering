@@ -8,13 +8,13 @@ const path = require('path');
 const L = require('../fileledger.js');
 
 function tmpDb() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-ledger-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-ledger-')));
   return path.join(dir, 'files.db');
 }
 
 const T0 = Date.parse('2026-09-01T10:00:00Z');
 const MIN = 60000;
-const FILE = '/home/u/Projects/demo/src/app.js';
+const FILE = path.resolve('/home/u/Projects/demo/src/app.js'); // resolved as the ledger stores it (a drive letter on Windows)
 const DOC = '/home/u/Projects/demo/README.md';
 
 const ai = (i, ts, extra = {}) => ({ id: 'ai:' + i, ts, path: FILE, project: 'demo', repo_root: '/home/u/Projects/demo', producer: 'ai-edit', actor: 'ai', outcome: 'applied', added: 3, removed: 1, chars: 120, conv_key: 'pi:one', ...extra });

@@ -14,7 +14,7 @@ const { chromiumBinary } = require('./helpers/chromium.js');
 const pause = ms => new Promise(r => setTimeout(r, ms));
 
 test('real host and panel recover saved failures without duplicate launches or stale writes', { timeout: 60000 }, async t => {
-  const root = path.join(__dirname, '..'), home = fs.mkdtempSync(path.join(os.tmpdir(), 'recovery-api-'));
+  const root = path.join(__dirname, '..'), home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'recovery-api-')));
   let server, browser, ws;
   const stop = async child => {
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
@@ -88,7 +88,7 @@ if (process.argv[1] === ${JSON.stringify(path.join(root, 'server.js'))}) {
   assert.equal((await get('/api/agents/recovery')).interrupted[0].id, record.id, 'restart lost interruption');
 
   if (!spawnSync(chromiumBinary(), ['--version']).error) {
-    browser = spawn(chromiumBinary(), ['--headless', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--disable-sync', '--no-first-run', '--user-data-dir=' + path.join(home, 'browser'), '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    browser = spawn(chromiumBinary(), [...require('./helpers/chromium.js').CHROMIUM_TEST_FLAGS, '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--disable-sync', '--no-first-run', '--user-data-dir=' + path.join(home, 'browser'), '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
     const endpoint = await new Promise((resolve, reject) => {
       let text = ''; const timer = setTimeout(() => reject(Error(text)), 10000);
       browser.stderr.on('data', b => { text += b; const m = text.match(/DevTools listening on (ws:\/\/[^\s]+)/); if (m) { clearTimeout(timer); resolve(m[1]); } }); browser.on('error', reject);

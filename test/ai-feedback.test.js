@@ -35,7 +35,7 @@ test('a report that is not one is refused', () => {
 });
 
 test('the log appends one line per record and reads the newest back', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-feedback-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ai-feedback-')));
   try {
     const log = new FeedbackLog(path.join(dir, 'sub', 'ai-feedback.jsonl'));
     for (let i = 0; i < 5; i++) log.append({ i });

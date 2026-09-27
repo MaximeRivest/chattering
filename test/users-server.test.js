@@ -33,7 +33,7 @@ function sessionFile(dir, id, cwd, text, extra = '') {
 }
 
 async function boot(t) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'users-server-'));
+  const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'users-server-')));
   const agent = path.join(home, '.pi', 'agent');
   const sessions = path.join(agent, 'sessions');
   sessionFile(path.join(sessions, '--home-x-Projects-secret--'), '01a0secret000000000000000000000000', '/home/x/Projects/secret', 'the secret plan');

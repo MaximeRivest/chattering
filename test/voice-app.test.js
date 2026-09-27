@@ -57,7 +57,7 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
   head.write('RIFF', 0); head.writeUInt32LE(36 + pcm.length, 4); head.write('WAVE', 8); head.write('fmt ', 12);
   head.writeUInt32LE(16, 16); head.writeUInt16LE(1, 20); head.writeUInt16LE(1, 22); head.writeUInt32LE(rate, 24); head.writeUInt32LE(rate * 2, 28); head.writeUInt16LE(2, 32); head.writeUInt16LE(16, 34);
   head.write('data', 36); head.writeUInt32LE(pcm.length, 40);
-  const microphone = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'voice-mic-')), 'microphone.wav');
+  const microphone = path.join(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'voice-mic-'))), 'microphone.wav');
   fs.writeFileSync(microphone, Buffer.concat([head, pcm]));
   t.after(() => fs.rmSync(path.dirname(microphone), { recursive: true, force: true }));
   const b = await viewerBrowser(t, {

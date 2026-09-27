@@ -8,7 +8,7 @@ const path = require('path');
 const { openSearchIndex, SearchIndex, parseQuery, matchExpr, mdSections, mdKind } = require('../searchindex.js');
 
 function tmpDb() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-search-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-search-')));
   return path.join(dir, 'search.db');
 }
 

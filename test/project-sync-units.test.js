@@ -16,7 +16,7 @@ const sync = require('../sync.js');
 const line = o => JSON.stringify(o);
 
 test('project ids: minted once, the marker in a checkout wins, clones carry it', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pid-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'pid-')));
   const reg = projectId.normalizeRegistry(null);
   const a = projectId.ensureId(reg, { name: 'chattering', cwd: dir });
   assert.match(a.id, /^p_[0-9a-f]{16}$/);
@@ -25,7 +25,7 @@ test('project ids: minted once, the marker in a checkout wins, clones carry it',
   assert.equal(projectId.ensureId(reg, { name: 'chattering', cwd: dir }).id, a.id, 'stable');
   // An invite writes the marker; a clone (another folder with the same marker) resolves to the same id under another name.
   assert.equal(projectId.ensureId(reg, { name: 'chattering', cwd: dir, marker: true }).markerWritten, true);
-  const clone = fs.mkdtempSync(path.join(os.tmpdir(), 'pid-clone-'));
+  const clone = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'pid-clone-')));
   fs.mkdirSync(path.join(clone, '.chattering'));
   fs.copyFileSync(path.join(dir, '.chattering', 'project.json'), path.join(clone, '.chattering', 'project.json'));
   const reg2 = projectId.normalizeRegistry(null);
@@ -137,7 +137,7 @@ test('redaction: tool steps outside the project folder or smelling of secrets ar
 });
 
 test('engine: the feed pages by cursor, honours visibility, and imports into the mirror source', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sync-engine-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'sync-engine-')));
   const sessions = path.join(dir, 'sessions');
   fs.mkdirSync(sessions);
   const write = (name, cwd, mtime) => { const f = path.join(sessions, name); fs.writeFileSync(f, line({ type: 'session', id: name, cwd }) + '\n' + line({ type: 'message', id: 'm', message: { role: 'user', content: 'hi ' + name } })); fs.utimesSync(f, mtime / 1000, mtime / 1000); return f; };

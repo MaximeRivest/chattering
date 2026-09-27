@@ -42,7 +42,7 @@ out({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text
 }
 
 async function boot(t) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'doc-ai-'));
+  const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'doc-ai-')));
   const agent = path.join(home, '.pi', 'agent');
   fs.mkdirSync(path.join(agent, 'sessions'), { recursive: true });
   const pi = fakePi(home);

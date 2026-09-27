@@ -45,7 +45,7 @@ test('start, status, url and stop, from a checkout', { timeout: 180000 }, async 
 });
 
 test('update from a release, keep the old version, roll back; a bad checksum changes nothing', { timeout: 180000 }, async t => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-update-'));
+  const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-update-')));
   t.after(() => fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
   const home = path.join(tmp, 'home'), installHome = path.join(tmp, 'program');
   fs.mkdirSync(home);

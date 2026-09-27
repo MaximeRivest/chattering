@@ -288,7 +288,7 @@
     const full = String(path || report?.notebook || '');
     // Commands are written as the agent will run them: from the project root.
     const project = report && report.project ? String(report.project).replace(/\/+$/, '') : '';
-    const name = project && full.startsWith(project + '/') ? full.slice(project.length + 1) : full.split('/').pop();
+    const name = project && full.startsWith(project + '/') ? full.slice(project.length + 1) : full.split(/[\\/]/).pop();
     const lines = ['Make this notebook run, end to end, on a fresh kernel: `' + (path || report?.notebook || '') + '`.', ''];
     if (report && !report.ratMissing) {
       lines.push('rat\u0027s doctor report right now:');
@@ -296,7 +296,7 @@
         lines.push((c.ok ? '✓' : '✗') + ' ' + c.label + (c.detail ? ' — ' + c.detail : ''));
         if (!c.ok && c.hint) lines.push('   → ' + c.hint);
       }
-      for (const a of report.after || []) lines.push('   prerequisite ' + String(a.path).split('/').pop() + (a.played ? ' (already ran in this kernel)' : ' (not yet run in this kernel)'));
+      for (const a of report.after || []) lines.push('   prerequisite ' + String(a.path).split(/[\\/]/).pop() + (a.played ? ' (already ran in this kernel)' : ' (not yet run in this kernel)'));
       if ((report.actions || []).length) lines.push('planned by `rat ensure`: ' + report.actions.map(a => a.label + (a.effect ? ' [' + a.effect + ']' : '')).join('; '));
       if (report.python && (report.python.editable || []).length) lines.push('this project\u0027s own packages, as installed in its environment: ' + report.python.editable.map(e => '`' + e.line + '` (' + e.name + ')').join(', '));
       lines.push('');

@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { FileArchive, MAX_FILE_BYTES } = require('../file-archive');
 function fixture(t, options) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'file-archive-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'file-archive-')));
   const filename = path.join(dir, 'history', 'versions.sqlite');
   const archive = new FileArchive(filename, options);
   t.after(() => { try { archive.close(); } catch {} fs.rmSync(dir, { recursive: true, force: true }); });
@@ -28,8 +28,8 @@ test('saved versions persist, deduplicate blobs, and do not depend on the activi
     assert.deepEqual(reopened.reference('event', file), { fromVersion: 'saved:' + a.id, toVersion: 'saved:' + b.id });
     assert.deepEqual(reopened.reference('event', file + '.copy'), {});
     assert.throws(() => reopened.snapshot(file + '.copy', a.id), /not found/);
-    assert.equal(fs.statSync(filename).mode & 0o777, 0o600);
-    assert.equal(fs.statSync(path.dirname(filename)).mode & 0o777, 0o700);
+    if (process.platform !== 'win32') assert.equal(fs.statSync(filename).mode & 0o777, 0o600); // Unix permission bits; Windows keeps it private by the folder's access list
+    if (process.platform !== 'win32') assert.equal(fs.statSync(path.dirname(filename)).mode & 0o777, 0o700); // Unix permission bits; Windows keeps it private by the folder's access list
   } finally { reopened.close(); }
 });
 test('deletion, recreation and uncaptured contents are distinct states', t => {

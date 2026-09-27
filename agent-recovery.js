@@ -72,7 +72,7 @@ class AgentRecovery {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     const tmp = this.file + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify([...this.records.values()]) + '\n', { mode: 0o600 });
-    fs.renameSync(tmp, this.file);
+    require('./platform.js').renameSyncRetry(tmp, this.file);
     this.changed(this.snapshot());
   }
   observe({ id, key, title, model, reason, version, eligible = false, historical = false, attempts = 0 }) {

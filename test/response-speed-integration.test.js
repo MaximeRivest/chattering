@@ -20,7 +20,7 @@ const sample = { entryId: 'reply', at: 1700000000000, provider: 'test', model: '
   waitMs: 8000, startMs: 200, text: part(1000, 800, 4000, 8), thinking: part(), tool: part(), usage: { output: 250, reasoning: 0 } };
 
 test('transcript attaches speed to the saved reply, hides metadata, and preserves ancestry', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'response-speed-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'response-speed-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'session.jsonl');
   const lines = [

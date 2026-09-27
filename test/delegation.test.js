@@ -76,7 +76,7 @@ else {
 }
 `;
 async function fixture(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'delegation-test-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'delegation-test-')));
   const root = path.join(dir, 'store'), parent = path.join(dir, 'parent.jsonl'), fake = path.join(dir, 'fake-pi.cjs');
   fs.writeFileSync(parent, JSON.stringify({ type: 'session', version: 3, id: randomUUID(), cwd: dir }) + '\n');
   fs.writeFileSync(fake, FAKE);
@@ -320,7 +320,7 @@ test('review requires terminal state, exact parent identity and evidence; attemp
 });
 
 test('listing bounds old terminal records, retains live tasks, and distrusts reused supervisor PIDs', async t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'delegation-list-'));
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'delegation-list-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const owner = S.identity(process.pid);
   const ids = [];

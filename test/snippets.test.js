@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const S = require('../snippets.js');
 
-function tmpdir() { return fs.mkdtempSync(path.join(os.tmpdir(), 'snip-')); }
+function tmpdir() { return fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'snip-'))); }
 
 test('frontmatter: flat keys, quoted values, body without leading blank lines', () => {
   const { meta, body } = S.parseFrontmatter('---\ndescription: "Say: hi"\nkind: snippet\nargument-hint: \'<x>\'\n---\n\nHello $1\n');
@@ -103,7 +103,7 @@ test('project trust follows pi: nearest ancestor entry in trust.json', () => {
   const trust = path.join(root, 'trust.json');
   const proj = path.join(root, 'proj'), sub = path.join(proj, 'area'), other = path.join(root, 'other');
   fs.mkdirSync(sub, { recursive: true }); fs.mkdirSync(other);
-  fs.writeFileSync(trust, JSON.stringify({ [fs.realpathSync(proj)]: true, [fs.realpathSync(root)]: false }));
+  fs.writeFileSync(trust, JSON.stringify({ [fs.realpathSync.native(proj)]: true, [fs.realpathSync.native(root)]: false }));
   assert.equal(S.projectTrusted(proj, trust), true);
   assert.equal(S.projectTrusted(sub, trust), true);
   assert.equal(S.projectTrusted(other, trust), false);

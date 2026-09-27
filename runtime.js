@@ -36,7 +36,7 @@ function isPiPackage(dir) {
 // From a file inside the package (the bin target), up to the package.
 function packageRootFrom(file) {
   let dir;
-  try { dir = path.dirname(fs.realpathSync(file)); } catch { return null; }
+  try { dir = path.dirname(fs.realpathSync.native(file)); } catch { return null; }
   for (let i = 0; i < 6; i++) {
     if (isPiPackage(dir)) return dir;
     const up = path.dirname(dir);

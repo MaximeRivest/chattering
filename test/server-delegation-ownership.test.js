@@ -15,7 +15,7 @@ function load(box, start, end) {
   vm.runInContext(source.slice(from, to), box);
 }
 function setup(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ownership-'));
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ownership-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const id = crypto.randomUUID(), file = path.join(root, 'child_' + id + '.jsonl');
   const dir = S.taskDir(root, id); fs.mkdirSync(dir, { recursive: true });

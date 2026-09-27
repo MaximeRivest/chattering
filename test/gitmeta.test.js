@@ -11,7 +11,7 @@ const { execFileSync } = require('child_process');
 const gm = require('../gitmeta.js');
 
 const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-const tmp = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gitmeta-')));
+const tmp = () => fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'gitmeta-')));
 
 function makeRepo() {
   const root = tmp();
@@ -95,6 +95,6 @@ test('findGitRoot resolves symlinks like git (physical path)', async () => {
   fs.symlinkSync(root, link);
   assert.strictEqual(await gm.findGitRoot(path.join(link, 'x')), '');
   fs.mkdirSync(path.join(root, 'x'));
-  assert.strictEqual(await gm.findGitRoot(path.join(link, 'x')), fs.realpathSync(root));
-  assert.strictEqual(await gm.findGitRoot(link), fs.realpathSync(root));
+  assert.strictEqual(await gm.findGitRoot(path.join(link, 'x')), fs.realpathSync.native(root));
+  assert.strictEqual(await gm.findGitRoot(link), fs.realpathSync.native(root));
 });

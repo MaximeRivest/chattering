@@ -8,9 +8,9 @@ const vm = require('node:vm');
 const crypto = require('node:crypto');
 const source = fs.readFileSync(path.join(__dirname, '../server.js'), 'utf8');
 function setup(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'project-create-'));
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'project-create-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const b = vm.createContext({ fs, fsp: fs.promises, path, crypto, process, LOOSE_PROJECT: 'Loose conversations', createdProjects: {},
+  const b = vm.createContext({ fs, fsp: fs.promises, path, crypto, process, platform: require('../platform.js'), LOOSE_PROJECT: 'Loose conversations', createdProjects: {},
     expandHomePath: x => x, foldsLib: { rawProjectOf: x => x }, canonicalProjectName: x => x,
     saveCreatedProjects() {}, gitCalls: 0, agents: 0, vouches: [],
     projectMemoryPaths: x => ({ dir: path.join(root, 'memory'), intent: path.join(root, 'memory', 'intent.md') }),

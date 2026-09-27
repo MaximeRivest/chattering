@@ -107,7 +107,7 @@ function folderHarness(home, projectNameOf) {
 }
 
 test('describeStartFolder: existence, implied project, AGENTS.md files; the folder does not pick the model', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'draft-home-'));
+  const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'draft-home-')));
   try {
     fs.mkdirSync(path.join(home, '.pi', 'agent'), { recursive: true });
     fs.writeFileSync(path.join(home, '.pi', 'agent', 'AGENTS.md'), '# global\n');
@@ -124,7 +124,7 @@ test('describeStartFolder: existence, implied project, AGENTS.md files; the fold
     assert.deepEqual(plain(atHome.contextFiles), [path.join(home, '.pi', 'agent', 'AGENTS.md')]);
     assert.equal('defaultModel' in atHome, false, 'models follow the person, not the folder');
     const inProject = h.describeStartFolder('~/Projects/demo/sub');
-    assert.equal(inProject.display, '~/Projects/demo/sub');
+    assert.equal(inProject.display, ['~', 'Projects', 'demo', 'sub'].join(path.sep), 'the home as ~, the rest as this system writes paths');
     assert.equal(inProject.loose, false);
     assert.equal(inProject.project, 'demo');
     assert.equal(inProject.known, true);

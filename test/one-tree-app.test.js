@@ -15,7 +15,7 @@ const browserBin = chromiumBinary();
 
 test('one head: side-by-side answers, instant moves, versions, shared head, phone swipe, sends from the head', { timeout: 90000 }, async t => {
   if (spawnSync(browserBin, ['--version']).error) return t.skip('chromium is not installed');
-  const root = path.join(__dirname, '..'), home = fs.mkdtempSync(path.join(os.tmpdir(), 'one-tree-'));
+  const root = path.join(__dirname, '..'), home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'one-tree-')));
   const agent = path.join(home, '.pi/agent'), dir = path.join(agent, 'sessions/fixture');
   fs.mkdirSync(dir, { recursive: true }); fs.mkdirSync(path.join(home, 'work'));
   let server, browser, ws;
@@ -57,7 +57,7 @@ test('one head: side-by-side answers, instant moves, versions, shared head, phon
   }
   assert.ok(ready, log);
 
-  browser = spawn(browserBin, ['--headless', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--disable-sync', '--no-first-run', '--user-data-dir=' + path.join(home, 'browser'), '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  browser = spawn(browserBin, [...require('./helpers/chromium.js').CHROMIUM_TEST_FLAGS, '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--disable-sync', '--no-first-run', '--user-data-dir=' + path.join(home, 'browser'), '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   const endpoint = await new Promise((resolve, reject) => {
     let out = ''; const timer = setTimeout(() => reject(Error(out)), 10000);
     browser.stderr.on('data', b => { out += b; const m = out.match(/DevTools listening on (ws:\/\/[^\s]+)/); if (m) { clearTimeout(timer); resolve(m[1]); } });

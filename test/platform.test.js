@@ -49,7 +49,9 @@ test('Pi: found, started as node + its cli.js, sessions named as Pi names them',
   if (!found) return; // no Pi here: the tests needing it say so themselves
   const cmd = R.piCommand(['--version']);
   assert.ok(fs.existsSync(cmd.args[0]) && /cli\.js$/.test(cmd.args[0]), 'Pi\'s own entry, not a shim');
-  assert.equal(R.piSessionDirName('/home/x/Projects/p'), '--home-x-Projects-p--');
+  // Pi's own rule, on this system's paths.
+  if (process.platform === 'win32') assert.equal(R.piSessionDirName('C:\\Users\\x\\p'), '--C--Users-x-p--');
+  else assert.equal(R.piSessionDirName('/home/x/Projects/p'), '--home-x-Projects-p--');
   assert.equal(R.piSessionDirName('C:\\Users\\x\\p').includes(':'), false, 'no colon in a folder name on any system');
   assert.equal(R.PI_TESTED_VERSION, require('../runtime/package.json').dependencies['@earendil-works/pi-coding-agent']);
 });

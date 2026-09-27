@@ -7,7 +7,7 @@ const path = require('node:path');
 const { completeFiles } = require('../file-completion');
 const { piPackageDir } = require('../pisdk-runtime');
 test('installed Pi completion returns insertion paths relative to the session, including spaces', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'completion-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'completion-')));
   try {
     await fs.mkdir(path.join(root, 'src'));
     await fs.writeFile(path.join(root, 'sample file.js'), 'example');

@@ -10,7 +10,7 @@ const { parseUsageFile, PricingCatalog } = require('../usageanalytics');
 const { CUSTOM_TYPE, PROMPT } = require('../pisdk-rewrite');
 
 test('saved history hides the request, links both answers, and counts successful and failed rewriting costs', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'answer-rewrite-records-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'answer-rewrite-records-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'session.jsonl');
   const response = text => ({ role: 'assistant', provider: 'test', model: 'one', content: [{ type: 'text', text }], usage: { input: 5, cacheRead: 100, output: 10, cost: { total: 0.1 } } });

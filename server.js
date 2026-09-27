@@ -54,7 +54,8 @@ const { createDelegationCoordinator, inspectDeliverySession, TERMINAL: DELEGATIO
 // Where Chattering keeps its own files (platform.appDirs: the folders this
 // install always used, or the system's own for a new install) and where Pi
 // keeps its (runtime.piAgentDir: Pi's own rule).
-const DIRS = require('./platform.js').appDirs();
+const platform = require('./platform.js');
+const DIRS = platform.appDirs();
 const PI_AGENT_DIR = require('./runtime.js').piAgentDir();
 const DATA_DIR = DIRS.data, CONFIG_DIR = DIRS.config;
 const DELEGATION_ROOT = process.env.CHATTERING_DELEGATION_ROOT || path.join(DATA_DIR, 'delegations');
@@ -112,7 +113,6 @@ let LAN_TOKEN = loadLanToken();
 // (design/56): a limiter on failed proofs, a log of every outcome, and the
 // headers every answer carries.
 const authGuard = require('./authguard.js');
-const platform = require('./platform.js');
 const runtimeLib = require('./runtime.js');
 const processesLib = require('./processes.js');
 const frontDoor = require('./frontdoor.js');
@@ -272,7 +272,7 @@ function guestRulesPage({ walls }) {
 // forward from windows/lan-forward.ps1). Ask Windows for its addresses so
 // the links people copy are ones that work. One PowerShell call, cached;
 // refreshed when the reach switch flips.
-const ON_WSL = require('./platform.js').IS_WSL;
+const ON_WSL = platform.IS_WSL;
 let windowsHostAddresses = [];
 function refreshWindowsHostAddresses() {
   if (!ON_WSL) return Promise.resolve([]);
@@ -507,7 +507,7 @@ async function writeFileAtomic(p, data, { sync = false } = {}) {
     } else {
       await fsp.writeFile(tmp, data);
     }
-    await fsp.rename(tmp, p);
+    await platform.renameRetry(tmp, p);
   } catch (e) {
     await fsp.unlink(tmp).catch(() => {});
     throw e;
@@ -3564,7 +3564,7 @@ async function reintegrateFanout(rootKey, fanoutId) {
     if (merged.changed) {
       const tmp = rootPath + '.tmp-' + process.pid;
       await fsp.writeFile(tmp, merged.content);
-      await fsp.rename(tmp, rootPath);
+      await platform.renameRetry(tmp, rootPath);
     }
     const bothId = merged.bothId;
     // Root is durable — NOW retire the scaffolding. Bytes stay on disk as
@@ -3970,7 +3970,7 @@ function saveModelPrefs() {
   fs.mkdirSync(path.dirname(MODEL_PREFS_FILE), { recursive: true });
   const tmp = MODEL_PREFS_FILE + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(modelPrefs, null, 2) + '\n', { mode: 0o600 });
-  fs.renameSync(tmp, MODEL_PREFS_FILE);
+  platform.renameSyncRetry(tmp, MODEL_PREFS_FILE);
 }
 // Whose pick: a principal, an identity's user, or a bare user id. Without
 // one, the install owner (requests that predate people, internal starts).
@@ -4449,7 +4449,7 @@ function saveCreatedProjects() {
   const temp = CREATED_PROJECTS_FILE + '.tmp-' + crypto.randomUUID();
   try {
     fs.writeFileSync(temp, JSON.stringify(createdProjects, null, 2) + '\n', { flag: 'wx' });
-    fs.renameSync(temp, CREATED_PROJECTS_FILE);
+    platform.renameSyncRetry(temp, CREATED_PROJECTS_FILE);
   } finally { try { fs.unlinkSync(temp); } catch {} }
 }
 function createdRecordFor(project) {
@@ -11364,7 +11364,7 @@ function pathInside(abs, root) {
   if (!root) return false;
   let realRoot = pathRealRootCache.get(root);
   if (!realRoot) {
-    try { realRoot = fs.realpathSync(root); } catch { realRoot = path.resolve(root); }
+    try { realRoot = fs.realpathSync.native(root); } catch { realRoot = path.resolve(root); }
     pathRealRootCache.set(root, realRoot);
     if (pathRealRootCache.size > 2000) pathRealRootCache.clear();
   }
@@ -11433,7 +11433,7 @@ async function folderBrowseLocation(abs) {
   // The deepest root wins: a nested repository browses as itself.
   const root = roots.filter(r => real === r || real.startsWith(r + path.sep)).sort((a, b) => b.length - a.length)[0];
   if (!root) return null;
-  return { project, root, dir: path.relative(root, real) };
+  return { project, root, dir: platform.toPortable(path.relative(root, real)) }; // the Files browser speaks /
 }
 
 async function pathInfoResponse(key, pathValue, local = false) {
@@ -11790,9 +11790,11 @@ async function docCommitResponse(body, user = null) {
   }
   const dir = path.dirname(abs);
   let root;
-  try { root = (await gitText(dir, ['rev-parse', '--show-toplevel'])).trim(); }
+  try { root = await fsp.realpath((await gitText(dir, ['rev-parse', '--show-toplevel'])).trim()); }
   catch { throw new Error('this document is not inside a Git repository'); }
-  const rel = path.relative(root, abs).replace(/\\/g, '/');
+  // Both by their real names: git answers the long one (Windows may hand
+  // the file over by its short 8.3 name; macOS /var is /private/var).
+  const rel = path.relative(root, await fsp.realpath(abs)).replace(/\\/g, '/');
   await gitText(root, ['add', '--', rel]);
   const staged = String(await gitText(root, ['diff', '--cached', '--numstat', '--', rel]).catch(() => '')).trim();
   if (!staged) return { ok: true, unchanged: true, path: abs, sha };
@@ -13610,7 +13612,7 @@ function ratSpeaksEvents() {
   const rat = ratBinary();
   if (!rat.path) return false;
   let key;
-  try { key = fs.realpathSync(rat.path); } catch { return false; }
+  try { key = fs.realpathSync.native(rat.path); } catch { return false; }
   if (ratEventsProbe.key !== key) {
     const help = spawnSync(key, ['run', '--help'], { encoding: 'utf8', timeout: 10000 });
     const follow = spawnSync(key, ['events', '--help'], { encoding: 'utf8', timeout: 10000 });
@@ -13880,7 +13882,7 @@ async function deriveNotebookFromAnswer(key, entryId) {
         const check = await ratExec(['doctor', draft, '--json'], { cwd: notebooksDir, timeoutMs: 60000 });
         if (!check.missing && !ratJson(check.out)) throw new Error('The model wrote a header rat cannot read: ' + check.out.trim().split('\n').at(-1));
       }
-      await fsp.rename(draft, abs);
+      await platform.renameRetry(draft, abs);
     } finally {
       await fsp.rm(draft, { force: true }).catch(() => {});
     }
@@ -13940,19 +13942,25 @@ function hostCapabilities() {
     notebooks: on(notebookRuntimeReady(), 'code cells need rat (https://runanything.dev), new enough to run notebooks'),
   };
 }
-// rat present and new enough for notebook-addressed runs; asked once, then
-// again when a check failed a minute ago (the person may install it).
-let notebookRuntimeCheck = { at: 0, ok: false };
-function notebookRuntimeReady() {
-  if (notebookRuntimeCheck.ok || Date.now() - notebookRuntimeCheck.at < 60000) return notebookRuntimeCheck.ok;
-  let ok = false;
+// rat present and new enough for notebook-addressed runs. Asked in the
+// background (never inside a request: a slow `rat --help` would stall the
+// server), at start and then every minute until it says yes.
+let notebookRuntimeCheck = { at: 0, ok: false, running: false };
+function checkNotebookRuntime() {
+  if (notebookRuntimeCheck.running || notebookRuntimeCheck.ok) return;
+  const found = ratBinary();
+  const rat = found && (typeof found === 'string' ? found : found.path);
+  if (!rat) { notebookRuntimeCheck = { at: Date.now(), ok: false, running: false }; return; }
+  notebookRuntimeCheck.running = true;
   try {
-    const rat = ratBinary();
-    if (rat) ok = /--doc\b/.test(String(require('child_process').spawnSync(rat, ['run', '--help'], { encoding: 'utf8', timeout: 5000 }).stdout || ''));
-  } catch {}
-  notebookRuntimeCheck = { at: Date.now(), ok };
-  return ok;
+    require('child_process').execFile(rat, ['run', '--help'], { encoding: 'utf8', timeout: 10000, windowsHide: true }, (err, stdout) => {
+      notebookRuntimeCheck = { at: Date.now(), ok: !err && /--doc\b/.test(String(stdout || '')), running: false };
+    });
+  } catch { notebookRuntimeCheck = { at: Date.now(), ok: false, running: false }; }
 }
+setTimeout(checkNotebookRuntime, 2000).unref();
+setInterval(checkNotebookRuntime, 60000).unref();
+function notebookRuntimeReady() { return notebookRuntimeCheck.ok; }
 function voiceCapabilities() {
   const one = (keys, reason) => {
     const configured = keys.every(k => !!voiceSetting(k));
@@ -14729,7 +14737,7 @@ function voiceClearHistory(identity) {
   }
   const tmp = VOICE_LOG_FILE + '.' + process.pid + '.tmp';
   fs.writeFileSync(tmp, keep.map(l => l + '\n').join(''), { mode: 0o600 });
-  fs.renameSync(tmp, VOICE_LOG_FILE);
+  platform.renameSyncRetry(tmp, VOICE_LOG_FILE);
   for (const id of mine) voiceDecisions.delete(id);
   return mine.size;
 }
@@ -16089,7 +16097,7 @@ async function handleRequest(req, res) {
           catch (e) { if (e.code !== 'ENOENT') throw e; }
           if (current !== body.baseText) throw new Error('Purpose changed since you opened it. Keep your text, then reopen to review the latest version.');
           const temp = paths.intent + '.purpose-' + process.pid + '-' + crypto.randomUUID();
-          try { fs.writeFileSync(temp, text, { flag: 'wx' }); fs.renameSync(temp, paths.intent); }
+          try { fs.writeFileSync(temp, text, { flag: 'wx' }); platform.renameSyncRetry(temp, paths.intent); }
           finally { try { fs.unlinkSync(temp); } catch {} }
           let warning = null;
           if (text) {

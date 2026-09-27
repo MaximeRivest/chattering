@@ -18,7 +18,7 @@ function lanIp() { for (const list of Object.values(os.networkInterfaces())) for
 const until = async (fn, ms = 20000) => { const t0 = Date.now(); for (;;) { const v = await fn(); if (v) return v; if (Date.now() - t0 > ms) throw new Error('timed out'); await new Promise(r => setTimeout(r, 100)); } };
 
 test('sign-in guard: lockout after ten distinct wrong tokens, a stale cookie counts once, headers, doors are the owner\'s', { skip: !lanIp() && 'no LAN address' }, async t => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'frontdoor-'));
+  const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'frontdoor-')));
   const agent = path.join(home, '.pi', 'agent');
   fs.mkdirSync(path.join(agent, 'sessions'), { recursive: true });
   const port = await freePort(), tlsPort = await freePort();

@@ -1,5 +1,6 @@
 'use strict';
 const test = require('node:test');
+const path = require('node:path');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { createPiSdkProxy, workerEnv } = require('../pisdk.js');
@@ -17,7 +18,8 @@ async function until(check) {
   for (let i = 0; i < 100; i++) { if (check()) return; await tick(); }
   assert.fail('condition did not become true');
 }
-const target = name => ({ sessionPath: '/virtual/' + name + '.jsonl', cwd: '/virtual/project' });
+// Absolute on this system (a drive letter on Windows), as the proxy keys them.
+const target = name => ({ sessionPath: path.resolve('/virtual/' + name + '.jsonl'), cwd: path.resolve('/virtual/project') });
 
 // No SDK import, subprocess, network, credentials, or persistent files. The
 // production host, IPC controller, runtime, and TUI bridge run against this SDK.

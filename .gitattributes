@@ -1,0 +1,9 @@
+# One text form on every system (design/70): LF, whatever the checkout's
+# platform. Windows checkouts would otherwise turn files to CRLF, and code
+# that reads its own sources or its fixtures line by line would differ.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.apk binary
+*.wasm binary
+*.pdf binary

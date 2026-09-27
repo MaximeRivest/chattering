@@ -8,7 +8,7 @@ const { AgentRecovery, failureKind, probeOrigin, probe, fileVersion } = require(
 const { normalizeSettings } = require('../settings');
 
 function fixture(t, options = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-recovery-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'agent-recovery-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   let clock = 100000, enabled = true;
   const launches = [], checks = [];

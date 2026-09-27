@@ -65,7 +65,7 @@ async function standIns(t) {
 
 async function boot(t, { key = 'test-key-0123456789abcdef', setup = null } = {}) {
   const stand = await standIns(t);
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'voice-api-'));
+  const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'voice-api-')));
   fs.mkdirSync(path.join(home, '.config', 'chattering'), { recursive: true });
   fs.mkdirSync(path.join(home, '.pi', 'agent', 'sessions'), { recursive: true });
   fs.writeFileSync(path.join(home, '.config', 'chattering', 'settings.json'), JSON.stringify({ speechUrl: stand.speechUrl }));
@@ -132,7 +132,7 @@ test('deciding: one request to Jev with the key; a decision and its outcome are 
   const salt = log.at(-1);
   assert.deepEqual([salt.said, salt.screen, salt.asrMs, salt.offered.sort()], ['pass the salt', 'home', 210, ['none', 'settings']]);
   assert.deepEqual(salt.answers.action, { choice: 'none', confidence: 0.97, top: [['none', 0.97]] }, 'Jev\u2019s answer (the stand-in reports the chosen option only)');
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600); // Unix permission bits; Windows keeps it private by the folder's access list
 
   // The history: newest first, with outcomes; a note on what was meant.
   const hist = await (await fetch(s.base + '/api/voice/history')).json();
@@ -164,7 +164,7 @@ test('the key: saved by the owner only to a private file, never sent back; witho
   assert.match((await (await post(s.base, '/api/voice/key', { key: 'short' })).json()).error, /does not look like/);
   assert.equal((await (await post(s.base, '/api/voice/key', { key: 'apikey_0123456789abcdef0123' })).json()).key, true);
   const file = path.join(require('./helpers/home-env.js').appDir(s.home, 'config'), 'typesafe-api-key');
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600); // Unix permission bits; Windows keeps it private by the folder's access list
   const status = await (await fetch(s.base + '/api/voice/status')).text();
   assert.doesNotMatch(status, /apikey_/, 'the key never goes back to a page');
   await post(s.base, '/api/voice/key', { key: '' });

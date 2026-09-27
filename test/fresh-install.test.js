@@ -47,7 +47,7 @@ function seedClaudeConversation(home) {
 }
 
 async function boot(t, { prepare } = {}) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fresh-install-'));
+  const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'fresh-install-')));
   const agent = path.join(home, '.pi', 'agent');
   fs.mkdirSync(path.join(agent, 'sessions'), { recursive: true });
   const pi = fakePi(home);

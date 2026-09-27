@@ -111,7 +111,7 @@ function projectTrusted(cwd, trustFile = TRUST_FILE) {
   let data;
   try { data = JSON.parse(fs.readFileSync(trustFile, 'utf8')) || {}; } catch { return false; }
   let dir = path.resolve(cwd);
-  try { dir = fs.realpathSync(dir); } catch {}
+  try { dir = fs.realpathSync.native(dir); } catch {}
   for (;;) {
     if (data[dir] === true || data[dir] === false) return data[dir] === true;
     const parent = path.dirname(dir);
@@ -180,7 +180,7 @@ async function createSnippet({ dir, name, body, description, kind, argumentHint,
   const out = serializeSnippet({ description: description || '', kind, argumentHint, body: text });
   const tmp = abs + '.tmp-' + process.pid + '-' + Math.random().toString(36).slice(2, 8);
   await fsp.writeFile(tmp, out);
-  await fsp.rename(tmp, abs);
+  await require('./platform.js').renameRetry(tmp, abs);
   return { path: abs, name: clean };
 }
 
@@ -202,8 +202,7 @@ async function bumpUse(file, absPath) {
 function isSnippetPath(abs, globalDir = GLOBAL_DIR) {
   const p = path.resolve(abs);
   if (!p.endsWith('.md')) return false;
-  const inside = root => p.startsWith(root.endsWith(path.sep) ? root : root + path.sep);
-  if (inside(globalDir)) return true;
+  if (p !== path.resolve(globalDir) && require('./platform.js').isInside(p, globalDir)) return true;
   return path.basename(path.dirname(p)) === 'prompts' && path.basename(path.dirname(path.dirname(p))) === '.pi';
 }
 

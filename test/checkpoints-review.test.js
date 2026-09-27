@@ -8,7 +8,7 @@ const { CheckpointStore, git } = require('../checkpoint-store');
 const { ChangeReviews } = require('../change-reviews');
 const { checkpointExtension } = require('../checkpoint-extension');
 async function fixture(t) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'checkpoints-'));
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'checkpoints-')));
   const root = path.join(dir, 'work'); await fs.mkdir(root);
   await git(['init'], { cwd: root });
   await fs.writeFile(path.join(root, 'a & b.txt'), 'one\ntwo\n');

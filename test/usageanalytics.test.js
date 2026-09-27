@@ -43,7 +43,7 @@ test('billing rules override safe provider and credential inferences', () => {
 });
 
 test('parses assistant, compaction, and Claude sidechain usage', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-usage-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-usage-')));
   const piFile = path.join(dir, 'pi.jsonl');
   fs.writeFileSync(piFile, [
     { type: 'model_change', id: 'm', timestamp: '2026-01-01T00:00:00Z', provider: 'openai', modelId: 'gpt-x' },
@@ -66,7 +66,7 @@ test('parses assistant, compaction, and Claude sidechain usage', async () => {
 });
 
 test('SQLite index deduplicates copied fork entries and aggregates by project', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-usage-db-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-usage-db-')));
   const transcript = path.join(dir, 'one.jsonl');
   fs.writeFileSync(transcript, JSON.stringify({
     type: 'message', id: 'shared', timestamp: '2026-01-01T00:00:00Z',
@@ -98,7 +98,7 @@ const speedSample = (overrides = {}) => ({
 });
 
 test('reply-speed entries are read from transcripts and deduplicated across forks', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-usage-speed-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-usage-speed-')));
   const transcript = path.join(dir, 'one.jsonl');
   fs.writeFileSync(transcript, [
     { type: 'model_change', id: 'm', timestamp: '2026-01-01T00:00:00Z', provider: 'acme', modelId: 'fast-1' },
@@ -200,7 +200,7 @@ test('failed and aborted replies remain recorded but never enter comparison dist
 });
 
 test('measurement UUIDs keep identical short Pi entry ids from unrelated sessions separate', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-speed-identities-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-speed-identities-')));
   const idx = new UsageIndex(path.join(dir, 'usage.db'));
   t.after(() => { idx.db.close(); fs.rmSync(dir, { recursive: true, force: true }); });
   for (const measurementId of ['record-one', 'record-two']) {
@@ -213,7 +213,7 @@ test('measurement UUIDs keep identical short Pi entry ids from unrelated session
 });
 
 test('each call belongs to the person whose message it answers; a terminal message to nobody known', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'usage-people-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'usage-people-')));
   try {
     const f = path.join(dir, 's.jsonl');
     const usage = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { total: 0.01 } };

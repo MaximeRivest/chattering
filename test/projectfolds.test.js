@@ -52,22 +52,26 @@ test('isLooseCwd: the macOS scratch folder is temporary on every host, in both o
 
 test('isLooseCwd: the platform temporary directory is temporary wherever TMPDIR puts it', () => {
   const os = require('node:os');
-  const saved = process.env.TMPDIR;
+  // The variable this system reads for its temp folder: TMPDIR on Unix,
+  // TEMP and TMP on Windows.
+  const vars = process.platform === 'win32' ? ['TEMP', 'TMP'] : ['TMPDIR'];
+  const saved = vars.map(v => process.env[v]);
+  const setTmp = value => { for (const v of vars) process.env[v] = value; };
   try {
-    process.env.TMPDIR = '/var/folders/ab/xyz/T';
+    setTmp('/var/folders/ab/xyz/T');
     assert.strictEqual(isLooseCwd('/var/folders/ab/xyz/T/pi-run/session'), true, 'macOS scratch');
     assert.strictEqual(isLooseCwd('/var/folders/ab/xyz/T'), true);
     assert.strictEqual(isLooseCwd('/var/folders/ab/xyz/Tools/real'), false, 'a sibling that merely shares the prefix');
-    process.env.TMPDIR = '/home/u/.local/state/scratch/';
+    setTmp('/home/u/.local/state/scratch/');
     assert.strictEqual(isLooseCwd('/home/u/.local/state/scratch/agent'), true, 'trailing slash ignored');
     assert.strictEqual(isLooseCwd('/home/u/work/real'), false);
     // A TMPDIR at or above the home folder must not make every project loose.
-    process.env.TMPDIR = os.homedir();
+    setTmp(os.homedir());
     assert.strictEqual(isLooseCwd(os.homedir() + '/work/real'), false);
-    process.env.TMPDIR = '/';
+    setTmp('/');
     assert.strictEqual(isLooseCwd('/home/u/work/real'), false);
   } finally {
-    if (saved === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saved;
+    vars.forEach((v, i) => { if (saved[i] === undefined) delete process.env[v]; else process.env[v] = saved[i]; });
   }
 });
 

@@ -10,7 +10,7 @@ const { FileArchive } = require('../file-archive');
 const L = require('../task-locations');
 const repair = require('../review-repair');
 async function fixture(t) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'task-review-'));
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'task-review-')));
   const root = path.join(dir, 'work'); await fs.mkdir(root); await fs.mkdir(path.join(root, 'scratch'));
   await fs.writeFile(path.join(root, '.gitignore'), 'scratch/\n');
   await fs.writeFile(path.join(root, 'core.py'), 'core before');

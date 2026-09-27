@@ -61,7 +61,7 @@ const NotebookTabs = (() => {
     if (typeof renderAgentsPopSoon === 'function') renderAgentsPopSoon();
   }
 
-  const titleOf = path => String(path).split('/').pop().replace(/\.(md|markdown|qmd|rmd|mdx)$/i, '') || path;
+  const titleOf = path => String(path).split(/[\\/]/).pop().replace(/\.(md|markdown|qmd|rmd|mdx)$/i, '') || path;
   const onScreen = st => typeof docState !== 'undefined' && docState === st;
   const busy = e => !!(e.st && !e.st.closed && (e.startedAt || e.runAll));
   const live = e => !!(e.st && !e.st.closed);

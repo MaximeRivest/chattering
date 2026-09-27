@@ -8,7 +8,7 @@ const { readSessionSnapshot, publishSession, forkPiSnapshot } = require('../sess
 const { loadSdk, piPackageDir } = require('../pisdk-runtime');
 
 async function fixture(t, version = 3) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'fork-snapshot-test-'));
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'fork-snapshot-test-')));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const source = path.join(dir, 'source.jsonl');
   const rows = [
@@ -41,7 +41,7 @@ test('publication is complete, private, and cannot overwrite another session', a
   const { dir } = await fixture(t), file = path.join(dir, 'fork.jsonl');
   await publishSession(file, 'complete\n');
   assert.equal(await fs.readFile(file, 'utf8'), 'complete\n');
-  assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal((await fs.stat(file)).mode & 0o777, 0o600); // Unix permission bits; Windows keeps it private by the folder's access list
   await assert.rejects(publishSession(file, 'replacement\n'), { code: 'EEXIST' });
   assert.equal(await fs.readFile(file, 'utf8'), 'complete\n');
   assert.deepEqual((await fs.readdir(dir)).filter(n => n.endsWith('.tmp')), []);

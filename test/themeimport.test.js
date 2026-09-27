@@ -12,7 +12,7 @@ const {
   ensureContrast, parseHex,
 } = require('../themeimport.js');
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-import-'));
+const tmp = () => fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-import-')));
 
 const CANDLE = {
   bg: parseHex('#120d08'), fg: parseHex('#d8c49a'),

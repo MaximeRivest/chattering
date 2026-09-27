@@ -15,7 +15,7 @@ async function atomicJson(file, data) {
     const handle = await fs.open(tmp, 'wx', 0o600);
     try { await handle.writeFile(JSON.stringify(data) + '\n'); await handle.sync(); }
     finally { await handle.close(); }
-    await fs.rename(tmp, file);
+    await require('./platform.js').renameRetry(tmp, file);
   } finally { await fs.unlink(tmp).catch(() => {}); }
 }
 

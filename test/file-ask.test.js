@@ -59,7 +59,7 @@ test('ago reads in the unit a person would say', () => {
 });
 
 test('the ask log keeps the recent asks per file, bounded, across restarts', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ask-log-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ask-log-')));
   try {
     const file = path.join(dir, 'asks.json');
     const log = new AskLog(file);

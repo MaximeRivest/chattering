@@ -28,7 +28,7 @@ test('project setup works in a real browser without starting agents', async t =>
   const binary = chromiumBinary();
   const probe = spawnSync(binary, ['--version'], {encoding: 'utf8'});
   if (probe.error) { t.skip('chromium is not installed (or set CHATTERING_TEST_CHROMIUM)'); return; }
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'project-setup-ui-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'project-setup-ui-')));
   t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
   const checks = `
 const check = (value, message) => { if (!value) throw new Error(message); };
@@ -93,7 +93,7 @@ async function fetch() { return {json: async () => ({version:setupVersion,path:'
   const file = path.join(dir, 'test.html'); fs.writeFileSync(file, html);
   // Driven over the DevTools protocol, as the other browser tests are: the
   // one-shot --dump-dom mode can wait out its time budget on current Chrome.
-  const browser = require('node:child_process').spawn(binary, ['--headless', '--window-size=390,844', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--no-first-run',
+  const browser = require('node:child_process').spawn(binary, [...require('./helpers/chromium.js').CHROMIUM_TEST_FLAGS, '--window-size=390,844', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--no-first-run',
     '--user-data-dir=' + path.join(dir, 'profile'), '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   t.after(() => { try { browser.kill(); } catch {} });
   const endpoint = await new Promise((resolve, reject) => {

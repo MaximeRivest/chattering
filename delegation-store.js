@@ -22,16 +22,13 @@ function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
   catch (error) { if (error.code === 'ENOENT' && arguments.length > 1) return fallback; throw error; }
 }
-function syncDir(dir) {
-  const fd = fs.openSync(dir, 'r');
-  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-}
+function syncDir(dir) { require('./platform.js').syncDirSync(dir); }
 function atomic(file, value) {
   const temp = `${file}.${randomUUID()}.tmp`;
   const fd = fs.openSync(temp, 'wx', 0o600);
   try { fs.writeFileSync(fd, typeof value === 'string' ? value : JSON.stringify(value) + '\n'); fs.fsyncSync(fd); }
   finally { fs.closeSync(fd); }
-  try { fs.renameSync(temp, file); syncDir(path.dirname(file)); }
+  try { require('./platform.js').renameSyncRetry(temp, file); syncDir(path.dirname(file)); }
   finally { try { fs.unlinkSync(temp); } catch (e) { if (e.code !== 'ENOENT') throw e; } }
 }
 function appendEvent(dir, type, data = {}) {

@@ -55,7 +55,7 @@ test('Git attribution keeps uncommitted authors unknown', () => {
   assert.equal(parseBlame('invalid').kind, 'unknown');
 });
 test('line attribution uses supplied disk text, never reconstructed transcript line numbers', async t => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'live-file-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'live-file-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'code.js'); await fs.writeFile(file, 'const original = 1;\n');
   const git = args => execFileSync('git', args, { cwd: root, stdio: 'pipe' });

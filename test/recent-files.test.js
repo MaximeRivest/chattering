@@ -69,7 +69,8 @@ test('only confirmed named tool operations count, including empty successful res
   add('pending', 'write', 'pending.js', null);
   add('shell', 'bash', 'not-proof.js', false);
   const out = R.fromMessages(messages, { key: 'pi:test', project: 'work', resolvePath: p => path.resolve('/work', p) });
-  assert.deepEqual(out.map(f => [f.path, f.kind]), [['/work/read.md', 'read'], ['/work/new.md', 'written'], ['/work/edit.js', 'edited']]);
+  // Resolved as this system resolves (a drive letter on Windows).
+  assert.deepEqual(out.map(f => [f.path, f.kind]), [[path.resolve('/work/read.md'), 'read'], [path.resolve('/work/new.md'), 'written'], [path.resolve('/work/edit.js'), 'edited']]);
   assert.ok(out.every(f => f.actor === 'agent' && f.key === 'pi:test' && f.at === Date.parse('2026-01-01T00:00:00Z')));
   assert.deepEqual(R.fromMessages(messages, { resolvePath: () => null }), []);
 });

@@ -3955,7 +3955,7 @@ function fileActivityHtml(project) {
   const fileProject = f => ProjectScope.fileProject(f, directory, projectFolds.map);
   const files = RecentFiles.select(recentFilesList, { actor: fileActor, project, projectOf: fileProject, limit: Infinity });
   const rows = panelListRows('files', files).map(f => {
-    const name = f.path.split('/').pop(), attributed = fileProject(f);
+    const name = f.path.split(/[\\/]/).pop(), attributed = fileProject(f);
     const dir = project ? '' : ProjectScope.label(attributed);
     const verb = f.kind === 'written' ? 'wrote' : f.kind;
     const actor = f.actor === 'agent' ? 'agent' : 'human';
@@ -4341,7 +4341,7 @@ async function renderAgentsPop(refetch) {
   const others = agentsProcs.filter(p => !DelegationUI.trackedProcess(delegationIndex, p) && !shownPids.has(p.pid));
   const processRows = procs => procs.map(p => `<div class="ag-row${p.busy === true ? ' working' : ''}" data-key="${esc(p.key || '')}">` +
     `<span class="ag-main"><span class="ag-title"><span>${esc(p.title || (p.kind + (p.rpc ? ' · rpc' : '') + ' · no conversation'))}</span>${p.busy === true ? typingHtml : ''}</span>` +
-    `<span class="ag-sub"><span class="ag-dir">${projectLink(byKey(p.key)) ? projectLink(byKey(p.key)) + ' · ' : ''}${esc(p.owner)}${p.busy != null ? (p.busy ? ' · busy' : ' · idle') : ''}${p.model ? ' · ' + esc(String(p.model).split('/').pop()) : ''}${p.ageMs != null ? ' · up ' + esc(tinyAge(p.ageMs)) : ''}</span>` +
+    `<span class="ag-sub"><span class="ag-dir">${projectLink(byKey(p.key)) ? projectLink(byKey(p.key)) + ' · ' : ''}${esc(p.owner)}${p.busy != null ? (p.busy ? ' · busy' : ' · idle') : ''}${p.model ? ' · ' + esc(String(p.model).split(/[\\/]/).pop()) : ''}${p.ageMs != null ? ' · up ' + esc(tinyAge(p.ageMs)) : ''}</span>` +
     `<span class="ag-age">pid ${p.pid}</span></span></span>` +
     `<span class="ag-acts">${kill(p.pid, p.title || p.kind + ' pid ' + p.pid)}</span></div>`).join('');
   const orphanDelegated = [...orchestrations.keys()].filter(k => orchProgress.get(k).live && !listedKeys.has(k)).map(k => {
@@ -5453,7 +5453,7 @@ function renderTimeline() {
       const t = s.notedAt || Date.parse(s.lastTs || '') || 0;
       if (!t) continue;
       const y = LABEL_H + (row.baseLane + row.laneCount) * PROJECT_LANE_H - 6;
-      const file = String(s.notePath).split('/').pop();
+      const file = String(s.notePath).split(/[\\/]/).pop();
       marks.push({ id: 'note:' + s.key, attributes: { 'data-note': file },
         className: 'tl-glyph tmark', glyph: 'square', start: t, end: t, y,
         color: { fill: 'var(--green)' }, title: `✓ note · ${file}\nfrom: ${s.title || '(untitled)'}\nclick to read` });
@@ -5819,7 +5819,7 @@ function fenceLang(spec) {
   return alias[raw] || 'txt';
 }
 function fileHighlightLang(pathValue) {
-  const name = String(pathValue || '').split('/').pop().toLowerCase();
+  const name = String(pathValue || '').split(/[\\/]/).pop().toLowerCase();
   const ext = name.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : name;
   if (name === 'chattering') return 'sh';
   const lang = fenceLang(ext);
@@ -6785,7 +6785,7 @@ async function docSaveIfDirty(st, { text = null } = {}) {
   } catch { out = { error: 'network failure' }; }
   st.saving = false;
   if (st.closed) {
-    if (out.error) errToast('could not save ' + st.path.split('/').pop() + ': ' + out.error + ' · the text is kept as a draft for the next time it opens');
+    if (out.error) errToast('could not save ' + st.path.split(/[\\/]/).pop() + ': ' + out.error + ' · the text is kept as a draft for the next time it opens');
     else try { sessionStorage.removeItem('chattering.draft:' + st.path); } catch {}
     return;
   }
@@ -7135,7 +7135,7 @@ function createDocRunner(st, bundle) {
 // (each once per kernel lifetime) — the declared chain, never a guess.
 async function docPlayPrerequisites(st, say) {
   if (!st.doctor || !(st.doctor.after || []).some(a => !a.played)) return { ok: true };
-  const pending = st.doctor.after.filter(a => !a.played).map(a => a.path.split('/').pop());
+  const pending = st.doctor.after.filter(a => !a.played).map(a => a.path.split(/[\\/]/).pop());
   say('● running prerequisites: ' + pending.join(', '));
   let pr;
   try { pr = await postJson('/api/doc/play-prerequisites', { doc: st.path }); }
@@ -7145,8 +7145,8 @@ async function docPlayPrerequisites(st, say) {
   if (pr.error || !pr.ok) {
     const failedRun = (pr.runs || []).find(x => !x.ok && !x.skipped);
     const failedCell = failedRun && failedRun.cells.find(c => !c.ok);
-    const msg = 'prerequisite ' + (failedRun ? failedRun.notebook.split('/').pop() + (failedCell ? ' failed at line ' + failedCell.line : '') : 'failed') + (pr.error ? ' · ' + pr.error : '');
-    if (failedCell) toast('✗ ' + failedRun.notebook.split('/').pop() + ': ' + (failedCell.output || '').trim().split('\n').at(-1), null, 'err');
+    const msg = 'prerequisite ' + (failedRun ? failedRun.notebook.split(/[\\/]/).pop() + (failedCell ? ' failed at line ' + failedCell.line : '') : 'failed') + (pr.error ? ' · ' + pr.error : '');
+    if (failedCell) toast('✗ ' + failedRun.notebook.split(/[\\/]/).pop() + ': ' + (failedCell.output || '').trim().split('\n').at(-1), null, 'err');
     if (docState === st) refreshDocDoctor();
     return { ok: false, error: msg, label: 'prerequisite failed' };
   }
@@ -8796,7 +8796,7 @@ function buildFolderPicker(project, opts = {}) {
     }
     const now = Date.now();
     list.innerHTML = vis.map((f, idx) => {
-      const name = f.rel.split('/').pop();
+      const name = f.rel.split(/[\\/]/).pop();
       const parent = f.rel.slice(0, -name.length);
       const off = f.declared && !opts.allowDeclared;
       const meta = f.conversations
@@ -8928,7 +8928,7 @@ function openNewAreaForm(project, opts = {}) {
     go.disabled = !ok;
     const base = cur && cur.valid && !cur.exists ? 'create + declare' : 'declare area';
     go.textContent = q('.na-first').value.trim() ? base + ' + start' : base;
-    q('.na-title').placeholder = cur && cur.rel ? cur.rel.split('/').pop() : '';
+    q('.na-title').placeholder = cur && cur.rel ? cur.rel.split(/[\\/]/).pop() : '';
     q('.na-err').textContent = '';
   };
   const picker = buildFolderPicker(project, {
@@ -9585,7 +9585,7 @@ async function loadConversationNotebooks(key, { force = false } = {}) {
 }
 
 function notebookCardHtml(nb, record) {
-  const name = nb.path.split('/').pop();
+  const name = nb.path.split(/[\\/]/).pop();
   const open = encodeURIComponent(JSON.stringify({ path: nb.path, project: record.project, root: record.root }));
   const after = nb.after && nb.after.length ? `<span class="dim" title="Declared prerequisites (rat.after): ${esc(nb.after.join(', '))}"> · after ${esc(nb.after.map(a => a.replace(/^\.\//, '')).join(', '))}</span>` : '';
   return `<div class="msg-notebook" data-notebook-path="${esc(nb.path)}">📓 <button type="button" data-open-notebook="${open}" title="${esc(nb.title || name)}\n${esc(nb.path)}">${esc(name)}</button><span class="dim"> · notebook from this answer</span>${after}</div>`;
@@ -9626,7 +9626,7 @@ async function deriveNotebookFromMessage(button) {
   button.textContent = label;
   button.closest('.msg')?.classList.remove('actions-open');
   if (out.error) return errToast(out.error);
-  const name = out.path.split('/').pop();
+  const name = out.path.split(/[\\/]/).pop();
   const notes = [];
   if (out.fixed && out.fixed.length) notes.push('corrected ' + out.fixed.join(', '));
   if (out.dropped && out.dropped.length) notes.push('dropped an invented prerequisite: ' + out.dropped.join(', '));
@@ -10192,7 +10192,7 @@ const modelNameOrder = new Intl.Collator('en', { numeric: true, sensitivity: 'ba
 function modelOrderKey(model) {
   // Routing prefixes and billing variants must not change family or generation.
   const [base, ...variant] = String(model).toLowerCase().split(':');
-  const name = base.split('/').pop();
+  const name = base.split(/[\\/]/).pop();
   let family = name, version = [], rest = name;
   const claude = name.match(/^claude-(?:(fable|opus|sonnet|haiku)-)?(\d+(?:[.-]\d{1,2})*)(?=-|$)/);
   // Explicit family patterns avoid mistaking parameter counts, context sizes,
@@ -10462,7 +10462,7 @@ async function openModelPicker(anchor, opts, onPick) {
 
 // The visible model name: the last path segment, without a variant suffix.
 function shortModelName(id) {
-  return String(id || '').split(':')[0].split('/').pop();
+  return String(id || '').split(':')[0].split(/[\\/]/).pop();
 }
 
 // Header zones (design/08-conversation-header.md):
@@ -11704,7 +11704,7 @@ function contextChipParts(c) {
   if (c.type === 'file') {
     // A file attached from the file workspace (files mode): its name, and
     // the lines when a selection went along.
-    const name = String(c.path || '').split('/').pop();
+    const name = String(c.path || '').split(/[\\/]/).pop();
     return ['file', name + (c.range ? ` · ${c.range[0]}–${c.range[1]}` : c.line ? ` · line ${c.line}` : '')];
   }
   if (c.type === 'note') {
@@ -13977,7 +13977,7 @@ function relPathCandidate(text) {
   const clean = s.replace(/:\d+(?::\d+)?$/, '');
   if (!/^(?:[\w.@+-]+\/)*[\w.@+-]+\/?$/.test(clean)) return '';
   if (/(^|\/)\.\.?(\/|$)/.test(clean)) return '';
-  const leaf = clean.replace(/\/$/, '').split('/').pop();
+  const leaf = clean.replace(/\/$/, '').split(/[\\/]/).pop();
   const hasDir = clean.includes('/');
   const hasExt = /^[\w@+-]+\.[A-Za-z0-9]{1,10}$/.test(leaf) || /^\.[\w-]+$/.test(leaf);
   const known = /^(README|LICENSE|CHANGELOG|CONTRIBUTING|Makefile|Dockerfile|Justfile|AGENTS|CLAUDE|TODO)$/i.test(leaf);
@@ -14250,7 +14250,7 @@ async function editNoteFile(notePath, line) {
 const TREE_COLW = 300, TREE_ROWH = 96;
 
 function shortModelName(m) {
-  return String(m || 'model').split('/').pop();
+  return String(m || 'model').split(/[\\/]/).pop();
 }
 // The server's typed groups own answer identity in both the tree and reader.
 // Unknown older history remains ordinary paths rather than guessed fan-out.
@@ -16291,7 +16291,7 @@ async function refreshSemanticStatus() {
     if (s.error) { el.textContent = '● on, but the server is unreachable: ' + s.error; return; }
     const sync = s.sync ? ` · pushed ${s.sync.synced}/${s.sync.total} sources` : '';
     const units = (s.health.spaces && s.ns in s.health.spaces) ? s.health.spaces[s.ns] : s.health.units;
-    el.textContent = `● reachable · ${s.health.model.split('/').pop()} on ${s.health.device} · ${units} units in “${s.ns}”${sync}`;
+    el.textContent = `● reachable · ${s.health.model.split(/[\\/]/).pop()} on ${s.health.device} · ${units} units in “${s.ns}”${sync}`;
   } catch { el.textContent = 'status check failed.'; }
 }
 

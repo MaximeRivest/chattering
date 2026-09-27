@@ -21,7 +21,7 @@ const post = (base, p, body) => fetch(base + p, { method: 'POST', headers: { 'Co
 const NOTEBOOK = '---\nrat:\n  python:\n    dependencies: [numpy]\n---\n\n# Analysis\n\nThe mean is computed below.\n\n```python\nimport numpy as np\nx = np.arange(10)\n```\n';
 
 async function boot(t) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'file-ask-'));
+  const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'file-ask-')));
   const agent = path.join(home, '.pi', 'agent');
   fs.mkdirSync(path.join(agent, 'sessions'), { recursive: true });
   const repo = path.join(home, 'Projects', 'analysis');

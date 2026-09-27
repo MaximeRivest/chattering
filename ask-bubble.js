@@ -321,7 +321,7 @@ function askBubbleSelection(ws) {
 function askBubblePaintWhere() {
   const b = askBox;
   if (!b) return;
-  const name = b.ws.path.split('/').pop();
+  const name = b.ws.path.split(/[\\/]/).pop();
   b.root.querySelector('.ask-where').textContent = askBubbleSelection(b.ws).label + ' · ' + name;
   askBubblePaintChips();
 }

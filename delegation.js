@@ -31,7 +31,7 @@ function absoluteFile(value, field) {
 }
 function validateSpec(spec) {
   if (!spec || typeof spec !== 'object') throw new Error('Delegation spec is required');
-  const cwd = fs.realpathSync(absoluteFile(spec.cwd, 'cwd'));
+  const cwd = fs.realpathSync.native(absoluteFile(spec.cwd, 'cwd'));
   if (!fs.statSync(cwd).isDirectory()) throw new Error('cwd must be a directory');
   fs.accessSync(cwd, fs.constants.R_OK | fs.constants.X_OK);
   const parentSessionPath = absoluteFile(spec.parentSessionPath, 'parentSessionPath');

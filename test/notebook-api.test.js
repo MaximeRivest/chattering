@@ -30,7 +30,7 @@ function writeFixtureSession(agent, cwd) {
 }
 
 async function bootServer(t, extraEnv = {}, { sessionCwd = null } = {}) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'notebook-api-'));
+  const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'notebook-api-')));
   const agent = path.join(home, '.pi', 'agent');
   fs.mkdirSync(path.join(agent, 'sessions'), { recursive: true });
   const fixtureKey = sessionCwd ? writeFixtureSession(agent, sessionCwd) : null;
@@ -67,7 +67,7 @@ async function bootServer(t, extraEnv = {}, { sessionCwd = null } = {}) {
 }
 
 function makeProject() {
-  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'notebook-proj-'));
+  const repo = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'notebook-proj-')));
   spawnSync('git', ['init', '-q'], { cwd: repo });
   fs.writeFileSync(path.join(repo, 'pyproject.toml'), '[project]\nname = "thing"\nversion = "0"\n');
   fs.mkdirSync(path.join(repo, 'docs'), { recursive: true });
@@ -136,7 +136,7 @@ test('cancel-run interrupts the kernel through the same notebook resolution', { 
 
 test('a missing rat is reported once, plainly, not as a per-cell mystery', async t => {
   const { post, base } = await bootServer(t, { RAT_BIN: '/definitely/not/rat', PATH: '/nonexistent' });
-  const nb = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'nb-')), 'a.md');
+  const nb = path.join(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'nb-'))), 'a.md');
   fs.writeFileSync(nb, '```python\n1\n```\n');
   const doctor = await (await fetch(base + '/api/doc/doctor?doc=' + encodeURIComponent(nb))).json();
   assert.equal(doctor.ratMissing, true);

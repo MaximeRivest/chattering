@@ -82,7 +82,13 @@ class PreviewAssets {
     this.prune();
     if (this.grants.size >= this.limit) throw Error('Too many open previews. Close another preview and try again.');
     const token = crypto.randomBytes(32).toString('hex');
-    this.grants.set(token, { root: path.dirname(found.abs), expires: this.now() + this.ttl, authorize });
+    // The folder by its given name and by its real one: a resolved asset is
+    // compared with the real one (macOS /var is /private/var; Windows may
+    // hand out a short 8.3 name).
+    const root = path.dirname(found.abs);
+    let realRoot = root;
+    try { realRoot = require('fs').realpathSync.native(root); } catch {}
+    this.grants.set(token, { root, realRoot, expires: this.now() + this.ttl, authorize });
     return { token, base: `/api/file/preview-assets/${token}/`, expiresIn: this.ttl };
   }
   prune() { for (const [token, grant] of this.grants) if (grant.expires <= this.now()) this.grants.delete(token); }
@@ -91,11 +97,11 @@ class PreviewAssets {
     const grant = this.grants.get(token);
     if (!grant || grant.expires <= this.now()) { this.grants.delete(token); throw Error('Preview expired. Refresh the preview.'); }
     if (!relative || relative.includes('\0') || relative.includes('\\') || path.isAbsolute(relative)) throw Error('Invalid preview asset path');
-    const inside = abs => abs.startsWith(grant.root + path.sep);
+    const inside = (abs, root) => abs.startsWith(root + path.sep);
     const wanted = path.resolve(grant.root, relative);
-    if (!inside(wanted)) throw Error('Asset is outside the preview folder');
+    if (!inside(wanted, grant.root)) throw Error('Asset is outside the preview folder');
     const abs = await fsp.realpath(wanted);
-    if (!inside(abs)) throw Error('Asset is outside the preview folder');
+    if (!inside(abs, grant.realRoot || grant.root)) throw Error('Asset is outside the preview folder');
     // Recheck the initiating person's current rights on each resolved asset,
     // including nested projects; a revoked login must invalidate its previews.
     if (grant.authorize) await grant.authorize(abs);

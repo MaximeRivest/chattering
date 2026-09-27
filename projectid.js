@@ -53,7 +53,7 @@ function saveRegistry(file, registry) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = file + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(normalizeRegistry(registry), null, 2) + '\n');
-  fs.renameSync(tmp, file);
+  require('./platform.js').renameSyncRetry(tmp, file);
 }
 
 // The marker inside a checkout. Missing or malformed reads as null; the
@@ -136,11 +136,11 @@ function adopt(registry, { id, name, cwd = null, now = new Date().toISOString() 
 function projectOfCwd(registry, cwd) {
   const m = readMarker(cwd);
   if (m && registry.projects[m.id]) return { id: m.id, ...registry.projects[m.id] };
-  const p = String(cwd || '').replace(/\/+$/, '');
+  // The deepest project folder containing cwd, by this system's rules.
+  const { isInside } = require('./platform.js');
   let best = null;
   for (const [id, rec] of Object.entries(registry.projects)) {
-    const root = rec.cwd && rec.cwd.replace(/\/+$/, '');
-    if (root && (p === root || p.startsWith(root + '/')) && (!best || root.length > best.cwd.length)) best = { id, ...rec };
+    if (rec.cwd && cwd && isInside(String(cwd), rec.cwd) && (!best || rec.cwd.length > best.cwd.length)) best = { id, ...rec };
   }
   return best;
 }

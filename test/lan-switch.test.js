@@ -26,7 +26,7 @@ function lanIp() {
 }
 
 async function boot(t, extraEnv) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'lan-switch-'));
+  const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'lan-switch-')));
   const agent = path.join(home, '.pi', 'agent');
   fs.mkdirSync(path.join(agent, 'sessions'), { recursive: true });
   const port = await freePort(), tlsPort = await freePort();

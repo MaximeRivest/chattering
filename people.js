@@ -285,7 +285,7 @@ function peopleVisiblePresence(rows) {
 function peopleOthersHere() { return peopleVisiblePresence(peopleState.people); }
 function peopleRouteLabel(route) {
   if (route.startsWith('conversation:')) { const key = route.slice(13); const s = (typeof sessions !== 'undefined' ? sessions : []).find(x => x.key === key); return s ? 'in “' + (s.timelineTitle?.title || s.title || 'a conversation').slice(0, 60) + '”' : 'in a conversation'; }
-  if (route.startsWith('file:')) return 'editing ' + route.slice(5).split('/').pop();
+  if (route.startsWith('file:')) return 'editing ' + route.slice(5).split(/[\\/]/).pop();
   if (route.startsWith('project:')) return 'in project ' + route.slice(8);
   if (route.startsWith('draft:')) return 'writing a new conversation';
   if (route === 'settings') return 'in settings';

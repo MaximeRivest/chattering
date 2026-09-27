@@ -3,7 +3,7 @@
 // repository trees and agent composers are deliberately not mounted here.
 const liveLanguageFactories = new Map();
 function liveLanguage(path) {
-  const name = String(path).split('/').pop().toLowerCase(), ext = name.split('.').pop();
+  const name = String(path).split(/[\\/]/).pop().toLowerCase(), ext = name.split('.').pop();
   return ({ __proto__: null, js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript', ts: 'typescript', tsx: 'typescript', mts: 'typescript', cts: 'typescript',
     py: 'python', pyi: 'python', rs: 'rust', go: 'go', md: 'markdown', markdown: 'markdown', mdx: 'markdown', qmd: 'markdown', rmd: 'markdown',
     html: 'html', htm: 'html', vue: 'vue', svelte: 'svelte', css: 'css', scss: 'scss', less: 'less', json: 'json', jsonc: 'json', webmanifest: 'json',
@@ -248,7 +248,7 @@ async function liveFileMountImage(ws) {
       <a href="${fgAttr(fileViewerURL(ws, true))}" download>Download</a>
     </header>
     <div id="imageStage" class="lf-image-stage" tabindex="0" aria-label="Image preview; scroll in actual size mode">
-      <img id="fileImage" alt="${fgAttr(ws.path.split('/').pop())}" hidden>
+      <img id="fileImage" alt="${fgAttr(ws.path.split(/[\\/]/).pop())}" hidden>
       <p id="imageMessage" role="status">Opening image…</p>
     </div>
   </div>`;

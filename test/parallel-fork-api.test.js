@@ -18,7 +18,7 @@ const { piPackageDir } = require('../pisdk-runtime');
 test('HTTP fork opens an independent runnable session while its parent keeps writing', { timeout: 30000 }, async t => {
   try { piPackageDir(); } catch { return t.skip('Native Pi package is not installed'); }
   const root = path.join(__dirname, '..');
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'parallel-fork-api-'));
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'parallel-fork-api-')));
   let child;
   t.after(async () => {
     if (child && child.exitCode === null && child.signalCode === null) {

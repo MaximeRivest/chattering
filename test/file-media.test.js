@@ -8,7 +8,7 @@ const http = require('node:http');
 const { byteRange, mediaKind, mediaType, serveFile, PreviewAssets } = require('../file-media');
 
 async function fixture(t) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'media-test-'));
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'media-test-')));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const abs = path.join(dir, 'picture & résumé.pdf');
   await fs.writeFile(abs, '0123456789');

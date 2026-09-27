@@ -156,7 +156,7 @@ function savePeers(file, peers) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = file + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(normalizePeers(peers), null, 2) + '\n', { mode: 0o600 });
-  fs.renameSync(tmp, file);
+  require('./platform.js').renameSyncRetry(tmp, file);
 }
 const publicPeer = p => p && { id: p.id, name: p.name, url: p.url, reachable: !!p.url, role: p.role, me: p.me, them: p.them, projects: p.projects.map(x => ({ id: x.id, name: x.name, right: x.right })), createdAt: p.createdAt, lastPullAt: p.lastPullAt, lastPushAt: p.lastPushAt, lastError: p.lastError, paused: p.paused };
 
@@ -299,7 +299,7 @@ function createSyncEngine(deps) {
       await fsp.mkdir(path.dirname(file), { recursive: true });
       const tmp = file + '.tmp-' + process.pid;
       await fsp.writeFile(tmp, it.transcript);
-      await fsp.rename(tmp, file);
+      await require('./platform.js').renameRetry(tmp, file);
       if (it.leaf && typeof it.leaf === 'object') {
         await deps.writeLeaf(key, { ...it.leaf, key, mirrored: { peer: peer.id, originKey: it.key, host: it.leaf.host || null } });
       }

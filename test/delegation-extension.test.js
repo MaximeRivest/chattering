@@ -14,7 +14,7 @@ const loaderPath = path.join(packageDir, 'dist/core/extensions/loader.js');
 const available = fs.existsSync(loaderPath);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function setup(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'delegation-extension-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'delegation-extension-')));
   const root = path.join(dir, 'store'), file = path.join(dir, 'parent.jsonl');
   fs.writeFileSync(file, JSON.stringify({ type: 'session', version: 3, id: randomUUID(), cwd: dir }) + '\n');
   const saved = {};

@@ -15,7 +15,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 test('real Pi runner persists a valid mode contract and blocks a changed snapshot before provider work', {
   skip: !pi && 'Pi is not installed; real runner validation is blocked', timeout: 45000,
 }, async t => {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'delegation-real-'));
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'delegation-real-')));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const agent = path.join(home, '.pi', 'agent'); await fs.mkdir(agent, { recursive: true });
   await fs.writeFile(path.join(agent, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: 'one', defaultThinkingLevel: 'off', retry: { enabled: true, maxRetries: 2, baseDelayMs: 50 } }));
@@ -64,7 +64,7 @@ test('real Pi runner persists a valid mode contract and blocks a changed snapsho
 test('real Pi worker stopped by a usage limit continues on the same session with another model', {
   skip: !pi && 'Pi is not installed; real runner validation is blocked', timeout: 60000,
 }, async t => {
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'delegation-resume-'));
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'delegation-resume-')));
   t.after(() => fs.rm(home, { recursive: true, force: true }));
   const agent = path.join(home, '.pi', 'agent'); await fs.mkdir(agent, { recursive: true });
   await fs.writeFile(path.join(agent, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: 'one', defaultThinkingLevel: 'off', retry: { enabled: true, maxRetries: 1, baseDelayMs: 20 } }));

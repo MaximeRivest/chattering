@@ -181,7 +181,7 @@ function saveRoster(file, roster) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = file + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(roster, null, 2) + '\n', { mode: 0o600 });
-  fs.renameSync(tmp, file);
+  require('./platform.js').renameSyncRetry(tmp, file);
 }
 
 const ownerOf = roster => roster.users.find(u => u.role === 'owner');

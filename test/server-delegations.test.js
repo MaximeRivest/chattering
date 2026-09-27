@@ -8,7 +8,7 @@ const { createDelegationCoordinator, inspectDeliverySession, completionMessage }
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'chattering-delivery-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'chattering-delivery-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const parent = path.join(root, 'parent.jsonl');
   await fs.writeFile(parent, JSON.stringify({ type: 'session', id: 'session' }) + '\n' + JSON.stringify({ type: 'message', id: 'launch', parentId: null }) + '\n');

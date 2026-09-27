@@ -9,7 +9,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function until(fn) { for (let i = 0; i < 100; i++) { if (await fn()) return; await sleep(10); } assert.fail('Callback timed out'); }
 
 test('nested callbacks finish before a parent reports its result upward, regardless of task order or UI limits', async t => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'delegation-recursion-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'delegation-recursion-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const parent = path.join(root, 'root.jsonl'), child = path.join(root, 'a.jsonl');
   for (const file of [parent, child]) await fs.writeFile(file, JSON.stringify({ type: 'message', id: 'launch', parentId: null }) + '\n');

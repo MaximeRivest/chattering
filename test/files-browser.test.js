@@ -9,7 +9,7 @@ const { browse, safePath, activityQuery } = require('../files-browser-server');
 const { FileLedger } = require('../fileledger');
 
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'files-browser-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'files-browser-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'docs'));
   await fs.mkdir(path.join(root, 'node_modules'));

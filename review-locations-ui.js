@@ -63,7 +63,7 @@ async function crPreviewArtifact(s, file) {
       } else host.textContent = 'Binary file; download it to use an appropriate viewer.';
     } catch (e) { host.textContent = e.message; }
   }
-  const download = document.createElement('a'); download.href = url; download.download = file.livePath.split('/').pop(); download.textContent = 'Download current file'; host.append(download);
+  const download = document.createElement('a'); download.href = url; download.download = file.livePath.split(/[\\/]/).pop(); download.textContent = 'Download current file'; host.append(download);
 }
 async function crRepairReview(s, proposal = null) {
   if (!confirm('Create a corrected task review? The original review and its comments will be kept unchanged.')) return;

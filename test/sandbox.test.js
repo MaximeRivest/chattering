@@ -11,8 +11,8 @@ const { spawnSync } = require('node:child_process');
 const sandbox = require('../sandbox.js');
 const bwrap = sandbox.findBwrap();
 
-test('session folders of a project: the exact folder, subfolders by header cwd, never a sibling', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sess-'));
+test('session folders of a project: the exact folder, subfolders by header cwd, never a sibling', { skip: process.platform === 'win32' && 'guest walls are Linux (bubblewrap); these are its paths' }, () => {
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'sess-')));
   const mk = (name, cwd) => { const d = path.join(root, name); fs.mkdirSync(d); if (cwd) fs.writeFileSync(path.join(d, 'a.jsonl'), JSON.stringify({ type: 'session', cwd }) + '\n'); };
   mk('--home-x-Projects-app--', '/home/x/Projects/app');
   mk('--home-x-Projects-app-test--', '/home/x/Projects/app/test');
@@ -24,13 +24,13 @@ test('session folders of a project: the exact folder, subfolders by header cwd, 
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test('the guest agent directory: placeholder keys, proxied providers, no secrets, owner extensions read-only', () => {
-  const owner = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-agent-'));
+test('the guest agent directory: placeholder keys, proxied providers, no secrets, owner extensions read-only', { skip: process.platform === 'win32' && 'guest walls are Linux (bubblewrap); these are its paths' }, () => {
+  const owner = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'owner-agent-')));
   fs.writeFileSync(path.join(owner, 'settings.json'), JSON.stringify({ defaultProvider: 'claude-code', defaultModel: 'x', defaultThinkingLevel: 'high', packages: ['npm:secret-thing'], theme: 't' }));
   fs.writeFileSync(path.join(owner, 'auth.json'), JSON.stringify({ anthropic: { type: 'oauth', refresh: 'R', access: 'A' } }));
   fs.mkdirSync(path.join(owner, 'extensions'));
   fs.writeFileSync(path.join(owner, 'AGENTS.md'), '# guidance');
-  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'guest-')), 'agent');
+  const dir = path.join(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'guest-'))), 'agent');
   const out = sandbox.prepareGuestAgentDir({ dir, insideDir: '/home/x/.pi/agent', ownerAgentDir: owner,
     proxy: { url: 'http://127.0.0.1:5000', token: 'T0K' }, allowedProviders: [{ id: 'anthropic', api: 'anthropic-messages', models: [] }, { id: 'homelab', api: 'openai-completions', models: [{ id: 'm' }] }], defaults: { provider: 'anthropic', model: 'claude-opus-4-7' } });
   const auth = JSON.parse(fs.readFileSync(path.join(dir, 'auth.json'), 'utf8'));

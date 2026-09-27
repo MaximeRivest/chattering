@@ -175,6 +175,55 @@ function bashPath(env = process.env) {
   return onPath && !/[\\/]system32[\\/]bash\.exe$/i.test(onPath) ? onPath : null;
 }
 
+// ---- replacing a file ----------------------------------------------------------
+
+// Rename over an existing file. Windows refuses while another process has
+// the target open (a reader, an antivirus scan): EPERM, EACCES or EBUSY
+// for a moment. Retry for about two seconds there; Unix renames at once.
+const RENAME_RETRY = new Set(['EPERM', 'EACCES', 'EBUSY']);
+function renameSyncRetry(from, to) {
+  for (let i = 0; ; i++) {
+    try { return fs.renameSync(from, to); }
+    catch (e) {
+      if (!IS_WIN || !RENAME_RETRY.has(e.code) || i >= 40) throw e;
+      const until = Date.now() + 50; while (Date.now() < until) { /* a short, bounded wait */ }
+    }
+  }
+}
+async function renameRetry(from, to) {
+  for (let i = 0; ; i++) {
+    try { return await fs.promises.rename(from, to); }
+    catch (e) {
+      if (!IS_WIN || !RENAME_RETRY.has(e.code) || i >= 40) throw e;
+      await new Promise(r => setTimeout(r, 50));
+    }
+  }
+}
+// Make a directory's entries durable after a rename. Windows journals the
+// rename itself and refuses fsync on a directory: nothing to do there.
+function syncDirSync(dir) {
+  if (IS_WIN) return;
+  const fd = fs.openSync(dir, 'r');
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+
+// ---- git without the person's configuration ------------------------------------
+
+// A git run that ignores the person's global config and hooks (checkpoints,
+// file history) points both at nothing. /dev/null on Unix; on Windows git
+// cannot open the NUL device as a file, so an empty config file and an
+// empty hooks folder stand in.
+let gitNothing = null;
+function gitNothingPaths() {
+  if (!IS_WIN) return { config: '/dev/null', hooks: '/dev/null' };
+  if (gitNothing) return gitNothing;
+  const base = path.join(os.tmpdir(), 'chattering-git-nothing');
+  const config = path.join(base, 'empty.gitconfig'), hooks = path.join(base, 'no-hooks');
+  fs.mkdirSync(hooks, { recursive: true });
+  if (!fs.existsSync(config)) fs.writeFileSync(config, '');
+  return (gitNothing = { config, hooks });
+}
+
 // ---- sound on this machine ----------------------------------------------------
 
 // How to play a WAV file on this machine's speakers: { file, args } or null.
@@ -197,7 +246,7 @@ function audioRecordCommand(env = process.env) {
 }
 
 module.exports = {
-  bashPath, audioPlayCommand, audioRecordCommand,
+  renameSyncRetry, renameRetry, syncDirSync, gitNothingPaths, bashPath, audioPlayCommand, audioRecordCommand,
   PLATFORM, IS_WIN, IS_MAC, IS_LINUX, IS_WSL, hostKind,
   pathKey, pathEntries, withPath, findOnPath, isExecutable,
   CASE_INSENSITIVE, isInside, samePath, toPortable, fromPortable, isAbsolutePath,

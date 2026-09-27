@@ -19,7 +19,7 @@ const KEY_C = 'claude:-home-me-Projects-beta/5e5e5e5e-3333-4000-8000-00000000000
 const SESSIONS_BASE = '/home/me/.pi/agent/sessions';
 
 function build(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-records-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-records-')));
   const notesDir = path.join(dir, 'notes');
   const sessDir = path.join(dir, 'sessions');
   fs.mkdirSync(path.join(notesDir, 'projects', 'alpha-1234'), { recursive: true });
@@ -74,7 +74,8 @@ function build(t) {
   const records = R.createRecords({
     fsp,
     index: () => entries, epics: () => epics, cachePathFor,
-    keyForSessionPath: p => { const rel = path.relative(SESSIONS_BASE, p); return entries['pi:' + rel] ? 'pi:' + rel : null; },
+    // As the server's: keys use / on every system (platform.toPortable).
+    keyForSessionPath: p => { const rel = require('../platform.js').toPortable(path.relative(SESSIONS_BASE, p)); return entries['pi:' + rel] ? 'pi:' + rel : null; },
     projectNameOf: cwd => projectOf(cwd || ''),
     projectMetaFor: name => ['alpha', 'beta'].includes(name) ? { cwd: '/home/me/Projects/' + name, entries: Object.entries(entries).filter(([, e]) => projectOf(e.cwd) === name).map(([key, entry]) => ({ key, entry })), epics: [] } : null,
     projectMemoryIndex: () => [

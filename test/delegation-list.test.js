@@ -9,7 +9,7 @@ const D = require('../delegation');
 const S = require('../delegation-store');
 
 test('bounded lists retain old surviving workers and active web continuations', async t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'delegation-list-'));
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'delegation-list-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const save = (createdAt, patch = {}) => {
     const id = randomUUID(), dir = path.join(root, id); fs.mkdirSync(dir);

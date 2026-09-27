@@ -167,7 +167,7 @@ class AskLog {
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
       fs.writeFileSync(tmp, JSON.stringify({ v: 1, files: Object.fromEntries(this.byPath) }));
-      fs.renameSync(tmp, this.file);
+      require('./platform.js').renameSyncRetry(tmp, this.file);
     } catch (e) {
       try { fs.rmSync(tmp, { force: true }); } catch {}
       console.error('ask log:', e.message);

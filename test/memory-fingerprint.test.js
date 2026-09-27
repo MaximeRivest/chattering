@@ -42,7 +42,7 @@ test('origin changes, delegated sessions and incomplete evidence are never migra
 test('repair command is dry-run by default, backs up, and is idempotent', () => {
   const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
   const { execFileSync } = require('node:child_process');
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memory-repair-'));
+  const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'memory-repair-')));
   try {
     const cache = path.join(home, 'cache');
     const source = path.join(home, '.pi/agent/sessions/test.jsonl');
@@ -61,7 +61,7 @@ test('repair command is dry-run by default, backs up, and is idempotent', () => 
     fs.writeFileSync(path.join(cache, 'index.json'), JSON.stringify({[f.leaf.key]:f.entry}));
     const run = (...args) => JSON.parse(execFileSync(process.execPath,
       [path.resolve(__dirname, '../scripts/repair-memory-fingerprints.js'), ...args],
-      {env:{...process.env, HOME:home, CHATTERING_CACHE_DIR:cache}, encoding:'utf8'}));
+      {env:{...process.env, ...require('./helpers/home-env.js').homeEnv(home), CHATTERING_CACHE_DIR:cache}, encoding:'utf8'}));
     assert.equal(run().eligible, 1);
     assert.equal(fs.readFileSync(leafPath, 'utf8'), original);
     const result = run('--apply');

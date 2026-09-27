@@ -58,7 +58,7 @@ test('validator rejects values that escape the token rule', () => {
 });
 
 test('theme catalog serves only valid theme files', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-themes-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-themes-')));
   fs.writeFileSync(path.join(dir, 'theme-template.css'), template);
   fs.writeFileSync(path.join(dir, 'broken.css'), 'not css');
   const catalog = readCustomThemes(dir);
@@ -71,7 +71,7 @@ test('theme catalog serves only valid theme files', () => {
 });
 
 test('manifest colors follow built-in and custom theme backgrounds', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-manifest-themes-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-manifest-themes-')));
   fs.writeFileSync(path.join(dir, 'theme-template.css'), template);
   const tokens = fs.readFileSync(path.join(ROOT, 'design', 'tokens.css'), 'utf8');
   assert.deepStrictEqual(manifestThemeColors('dark', tokens, dir), { backgroundColor: '#101412', themeColor: '#101412' });

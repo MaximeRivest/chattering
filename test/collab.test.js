@@ -219,7 +219,7 @@ test('an outside write lands as its own delta, not as a replace over what people
 });
 
 test('compose boxes survive a restart through the persisted update', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'collab-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'collab-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const first = createCollab({ ...yjs, persistDir: dir });
   first.setText('compose:pi:keep', 'half a thought');

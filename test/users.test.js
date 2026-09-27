@@ -84,13 +84,13 @@ test('normalize repairs a damaged roster: no owner, two owners, junk entries', (
 });
 
 test('load creates the roster on first run and round-trips through the file', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'users-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'users-')));
   const file = path.join(dir, 'users.json');
   const first = users.loadRoster(file, { ownerName: 'Maxime' });
   assert.equal(first.created, true);
   users.addUser(first.roster, { name: 'Lilly' });
   users.saveRoster(file, first.roster);
-  assert.equal((fs.statSync(file).mode & 0o777), 0o600);
+  if (process.platform !== 'win32') assert.equal((fs.statSync(file).mode & 0o777), 0o600); // Unix bits; Windows: the folder's access list
   const second = users.loadRoster(file, { ownerName: 'ignored' });
   assert.equal(second.created, false);
   assert.deepEqual(second.roster.users.map(u => u.name), ['Maxime', 'Lilly']);
@@ -114,7 +114,7 @@ test('merge keeps one id and the union of groups and credentials', () => {
 });
 
 test('handoff: a paired install can assert who is arriving, for thirty seconds, and no one else can', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'users-key-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'users-key-')));
   const lambda = users.loadInstallKey(path.join(dir, 'lambda.json'));
   const same = users.loadInstallKey(path.join(dir, 'lambda.json'));
   assert.equal(same.publicKey, lambda.publicKey, 'the key persists');

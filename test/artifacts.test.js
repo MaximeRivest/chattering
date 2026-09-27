@@ -14,7 +14,7 @@ const { chromiumBinary } = require('./helpers/chromium.js');
 const freePort = async () => { const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); const p = s.address().port; await new Promise(r => s.close(r)); return p; };
 
 test('capabilities are signed, expire, and survive a restart through their secret file', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'caps-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'caps-')));
   try {
     const file = path.join(dir, 'secret');
     const a = new preview.Capabilities(file);
@@ -46,7 +46,7 @@ test('policies: open by default, libraries on request, never plugins, framed onl
 });
 
 test('a real server: versions follow the head, the preview origin serves them, widgets and hardening', { timeout: 90000 }, async t => {
-  const root = path.join(__dirname, '..'), home = fs.mkdtempSync(path.join(os.tmpdir(), 'artifacts-'));
+  const root = path.join(__dirname, '..'), home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'artifacts-')));
   const agent = path.join(home, '.pi/agent'), sessions = path.join(agent, 'sessions/fixture'), work = path.join(home, 'work');
   const site = path.join(work, 'site');
   fs.mkdirSync(sessions, { recursive: true }); fs.mkdirSync(site, { recursive: true });
@@ -160,7 +160,7 @@ test('a real server: versions follow the head, the preview origin serves them, w
   // ---- the browser --------------------------------------------------------
   const bin = chromiumBinary();
   if (spawnSync(bin, ['--version']).error) return t.skip('chromium is not installed');
-  browser = spawn(bin, ['--headless', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--disable-sync', '--no-first-run', '--user-data-dir=' + path.join(home, 'browser'), '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  browser = spawn(bin, [...require('./helpers/chromium.js').CHROMIUM_TEST_FLAGS, '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--disable-sync', '--no-first-run', '--user-data-dir=' + path.join(home, 'browser'), '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   const endpoint = await new Promise((resolve, reject) => {
     let out = ''; const timer = setTimeout(() => reject(Error(out)), 10000);
     browser.stderr.on('data', b => { out += b; const m = out.match(/DevTools listening on (ws:\/\/[^\s]+)/); if (m) { clearTimeout(timer); resolve(m[1]); } });

@@ -10,7 +10,7 @@ const { chromiumBinary } = require('./chromium.js');
 // opts: setup(home) before the server starts (settings files…), env for
 // the server, flags for the browser.
 async function viewerBrowser(t, opts = {}) {
-  const root = path.join(__dirname, '../..'), home = fs.mkdtempSync(path.join(os.tmpdir(), 'file-viewers-'));
+  const root = path.join(__dirname, '../..'), home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'file-viewers-')));
   const work = path.join(home, 'work'); fs.mkdirSync(work);
   const agent = path.join(home, '.pi/agent'), sessions = path.join(agent, 'sessions/fixture'); fs.mkdirSync(sessions, { recursive: true });
   fs.writeFileSync(path.join(sessions, 'media.jsonl'), [
@@ -51,7 +51,7 @@ async function viewerBrowser(t, opts = {}) {
     await new Promise(r => setTimeout(r, 100));
   }
   assert.ok(ready, log);
-  browser = spawn(chromiumBinary(), ['--headless', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--disable-sync', '--no-first-run', '--user-data-dir=' + path.join(home, 'browser'), '--remote-debugging-port=0', ...(opts.flags || []), 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  browser = spawn(chromiumBinary(), [...require('./chromium.js').CHROMIUM_TEST_FLAGS, '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--disable-sync', '--no-first-run', '--user-data-dir=' + path.join(home, 'browser'), '--remote-debugging-port=0', ...(opts.flags || []), 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   const endpoint = await new Promise((resolve, reject) => {
     let output = ''; const timer = setTimeout(() => reject(Error(output)), 10000);
     browser.stderr.on('data', b => { output += b; const m = output.match(/DevTools listening on (ws:\/\/[^\s]+)/); if (m) { clearTimeout(timer); resolve(m[1]); } });

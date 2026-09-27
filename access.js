@@ -62,7 +62,7 @@ function saveRules(file, rules) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = file + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(normalizeRules(rules), null, 2) + '\n');
-  fs.renameSync(tmp, file);
+  require('./platform.js').renameSyncRetry(tmp, file);
 }
 
 const projectObject = name => name ? 'project:' + name : null;

@@ -366,12 +366,12 @@ function voiceResolvePick({ number, place, list, name }) {
 async function voiceOpenKey(key) {
   const [kind, ...rest] = key.split(':'), id = rest.join(':');
   if (kind === 'conv') { await open(id, 'bottom'); return 'opened ' + ((sessions.find(x => x.key === id) || {}).title || 'the conversation'); }
-  if (kind === 'file') { await openLiveFile(id, { project: voiceProject() || null, back: currentHash }); return 'opened ' + id.split('/').pop(); }
+  if (kind === 'file') { await openLiveFile(id, { project: voiceProject() || null, back: currentHash }); return 'opened ' + id.split(/[\\/]/).pop(); }
   // A file of another project (named in the sentence): opened in its project.
   if (kind === 'pfile') {
     const at = id.indexOf(':'), project = decodeURIComponent(id.slice(0, at)), file = id.slice(at + 1);
     await openLiveFile(file, { project, back: currentHash });
-    return 'opened ' + file.split('/').pop() + ' in ' + project;
+    return 'opened ' + file.split(/[\\/]/).pop() + ' in ' + project;
   }
   if (kind === 'proj') { await showProjectOverview(id); return 'opened the project ' + id; }
   throw new Error('that is no longer on screen');
@@ -1103,7 +1103,7 @@ function voiceFollowDelegate(d, hash, said) {
   };
   setTimeout(tick, VOICE_DELEGATE_POLL_MS);
 }
-const voiceFoundLabel = show => show.kind === 'file' ? show.path.split('/').pop() + (show.line ? ':' + show.line : '') : show.kind === 'conversation' ? '\u201c' + (show.title || 'a conversation') + '\u201d' : 'the project ' + show.project;
+const voiceFoundLabel = show => show.kind === 'file' ? show.path.split(/[\\/]/).pop() + (show.line ? ':' + show.line : '') : show.kind === 'conversation' ? '\u201c' + (show.title || 'a conversation') + '\u201d' : 'the project ' + show.project;
 async function voiceShowFound(show) {
   if (show.kind === 'file') return openLiveFile(show.path, { project: show.project || null, line: show.line || null, back: currentHash });
   if (show.kind === 'conversation') return open(show.key);
@@ -1362,7 +1362,7 @@ function voiceWrite(text) {
 
 function voiceScreen() {
   if (settingsOpen) return 'the settings';
-  if (viewKind === 'file' && typeof fileWs !== 'undefined' && fileWs) return 'a file open in the editor: ' + fileWs.path.split('/').pop() + (voiceAskOpen() ? ', with the ask box open' : '');
+  if (viewKind === 'file' && typeof fileWs !== 'undefined' && fileWs) return 'a file open in the editor: ' + fileWs.path.split(/[\\/]/).pop() + (voiceAskOpen() ? ', with the ask box open' : '');
   if (viewKind === 'conversation' && current) return 'a conversation: ' + (current.title || 'untitled') + ', with its message box';
   return viewKind === 'home' ? 'the home page (the timeline of conversations)' : viewKind || 'the app';
 }
@@ -1584,7 +1584,7 @@ function voiceDescribe(d) {
     const where = list ? (voicePicks().groups.find(g => g.id === list) || {}).label : '';
     const what = number ? 'number ' + number
       : place ? (ChatteringVoiceActions.PLACES[place] || place).replace(/ \(.*\)$/, '') + (where ? ' in the ' + where : '')
-      : name ? name.replace(/^[a-z]+:/, '').split('/').pop() : '';
+      : name ? name.replace(/^[a-z]+:/, '').split(/[\\/]/).pop() : '';
     return 'open' + (what ? ': ' + what : '');
   }
   if (d.action === 'press') {
@@ -1592,7 +1592,7 @@ function voiceDescribe(d) {
     return 'press' + (c ? ' \u201c' + c.label + '\u201d ' + c.where : '');
   }
   const a = ChatteringVoiceActions.ACTIONS[d.action];
-  const args = Object.entries(d.args || {}).map(([k, v]) => (v && typeof v === 'object' ? 'the selection' : String(v).split('/').pop())).filter(Boolean);
+  const args = Object.entries(d.args || {}).map(([k, v]) => (v && typeof v === 'object' ? 'the selection' : String(v).split(/[\\/]/).pop())).filter(Boolean);
   return (a ? a.label : d.action) + (args.length ? ': ' + args.join(' → ') : '');
 }
 
@@ -1891,7 +1891,7 @@ async function voiceShowHistory(host, which) {
   if (!rows.length) { host.innerHTML = `<div class="hint">${which === 'missed' ? 'Everything was understood.' : 'Nothing said yet.'}</div>`; return; }
   const decided = r => r.error ? '✗ ' + r.error
     : r.action === 'none' ? 'not a command' + (r.alternatives && r.alternatives[1] ? ' (next: ' + r.alternatives[1].action + ' ' + Math.round(r.alternatives[1].probability * 100) + '%)' : '')
-    : r.action + (r.args && Object.keys(r.args).length ? ' ' + Object.entries(r.args).map(([k, v]) => (r.argLabels && r.argLabels[k]) || (v && typeof v === 'object' ? 'selection' : String(v).split('/').pop())).join(' → ') : '') + (r.missing ? ' — which ' + r.missing + '?' : '');
+    : r.action + (r.args && Object.keys(r.args).length ? ' ' + Object.entries(r.args).map(([k, v]) => (r.argLabels && r.argLabels[k]) || (v && typeof v === 'object' ? 'selection' : String(v).split(/[\\/]/).pop())).join(' → ') : '') + (r.missing ? ' — which ' + r.missing + '?' : '');
   host.innerHTML = `<div class="hint">${rows.length} of ${data.rows.length} · newest first · a note says what you meant</div><ol class="voice-history">` + rows.map(r => `<li data-id="${esc(r.id)}">
       <div class="vhist-head"><span class="vhist-time">${esc(new Date(r.ts).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }))}</span>${r.mode === 'dictation' ? '<span class="vhist-mode">dictating</span>' : ''}<span class="vhist-said">\u201c${esc(r.said || '')}\u201d</span></div>
       <div class="vhist-what">→ ${esc(decided(r))}${r.confidence != null && !r.error ? ' · ' + Math.round(r.confidence * 100) + '%' : ''}${r.outcomes.length ? ' · ' + esc(r.outcomes.join(', ')) : ''}<span class="vhist-screen"> · on ${esc(r.screen || '?')}</span></div>
@@ -1969,4 +1969,10 @@ document.addEventListener('keydown', e => {
 
 if (voicePrefs().on) setTimeout(() => voiceSetOn(true), 0);
 // The corner button once the server says voice is for this person.
-else fetch('/api/voice/status').then(r => r.json()).then(st => { voice.refused = !!st.refused; voicePaint(); }).catch(() => {});
+// Asked again when the answer does not come (a busy or restarting server):
+// one lost request must not leave the page without its button until reload.
+else (function askVoiceStatus(attempt = 0) {
+  fetch('/api/voice/status').then(r => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
+    .then(st => { voice.refused = !!st.refused; voicePaint(); })
+    .catch(() => { if (attempt < 8) setTimeout(() => askVoiceStatus(attempt + 1), Math.min(30000, 500 * 2 ** attempt)); });
+})();

@@ -178,7 +178,8 @@ test('a real server: company sign-in makes and links the person; walls per perso
   assert.deepEqual(await sessionsAs(cookie), ['shared']);
   assert.equal((await fetch(base + '/api/records/search?q=plan', { headers: { Cookie: cookie } })).status, 403, 'machine-wide records are not for walled people');
   // A spending limit: at zero, a run is refused before any model is asked.
-  assert.equal((await put({ isolation: 'per-person', budgets: { monthlyPerPerson: 0, people: {} } })).status, 200);
+  // (In household mode: walled runs need bubblewrap, which only Linux has.)
+  assert.equal((await put({ isolation: 'household', budgets: { monthlyPerPerson: 0, people: {} } })).status, 200);
   const key = list.find(e => e.project === 'shared').key;
   const run = await fetch(base + '/api/node/send', { method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/json' }, body: JSON.stringify({ id: key, prompt: 'hello' }) });
   assert.match(await run.text(), /this month's AI budget/);

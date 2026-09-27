@@ -30,7 +30,7 @@ test('slugFor and freshPath give dated, collision-free names', () => {
   assert.equal(ND.slugFor('Heredoc tools: “markers” & probes!', day), '2026-09-18-heredoc-tools-markers-probes');
   assert.equal(ND.slugFor('', day), '2026-09-18-notebook');
   assert.equal(ND.slugFor('Éléphant à Pâques', day), '2026-09-18-elephant-a-paques');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'slug-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'slug-')));
   fs.writeFileSync(path.join(dir, 'a.md'), '');
   fs.writeFileSync(path.join(dir, 'a-2.md'), '');
   assert.equal(ND.freshPath(dir, 'a'), path.join(dir, 'a-3.md'));
@@ -47,7 +47,7 @@ test('checkAfter keeps only prerequisites that exist in this conversation', () =
 });
 
 test('listNotebooks reads provenance, titles, headings and dependencies; buildPrompt names them', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nbroot-'));
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'nbroot-')));
   const dir = path.join(root, ND.NOTEBOOKS_DIR);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, '2026-09-17-load.md'), '---\ntitle: Load the data\nrat:\n  project: ../..\n  python:\n    dependencies:\n      - pandas\nsource:\n  conversation: "pi:a/b.jsonl"\n  entry: "e1"\n---\n# Load the data\n\n## Read the CSV\n\n```python\n# not a heading\nimport pandas\n```\n');

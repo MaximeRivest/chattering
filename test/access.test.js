@@ -67,7 +67,7 @@ test('a conversation rule overrides its project rule, both ways', () => {
 });
 
 test('rules that only restate the default are dropped; the file round-trips; merged users are rewritten', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'access-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'access-')));
   const file = path.join(dir, 'access.json');
   const rules = access.loadRules(file);
   assert.deepEqual(rules.rules, {});

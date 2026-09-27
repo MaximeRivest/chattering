@@ -91,7 +91,7 @@ test('addresses and doors: proxied loopback is the forwarded hop; the door is na
 });
 
 test('the sign-in log: appended to disk, bounded in memory, newest first', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'authlog-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'authlog-')));
   const file = path.join(dir, 'auth-log.jsonl');
   const log = ag.createAuthLog(file, { tail: 3 });
   for (let i = 0; i < 5; i++) log.record({ ip: '1.1.1.' + i, outcome: 'fail' });

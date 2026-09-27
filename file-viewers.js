@@ -49,7 +49,7 @@ async function liveFileMountVideo(ws) {
     if (!state.current()) return;
     const video = document.createElement('video');
     video.id = 'fileVideo'; video.controls = true; video.playsInline = true; video.preload = 'metadata';
-    video.setAttribute('aria-label', ws.path.split('/').pop());
+    video.setAttribute('aria-label', ws.path.split(/[\\/]/).pop());
     state.host.classList.add('lf-video-host'); state.host.prepend(video);
     video.onloadedmetadata = () => {
       if (!state.current()) return;
@@ -71,7 +71,7 @@ async function liveFileMountPDF(ws) {
     await fileViewerJSON('/api/path/info?' + fileViewerQuery(ws), { signal: state.controller.signal });
     if (!state.current()) return;
     const frame = document.createElement('iframe');
-    frame.id = 'filePDF'; frame.className = 'lf-preview-frame'; frame.title = 'PDF reader: ' + ws.path.split('/').pop();
+    frame.id = 'filePDF'; frame.className = 'lf-preview-frame'; frame.title = 'PDF reader: ' + ws.path.split(/[\\/]/).pop();
     frame.referrerPolicy = 'no-referrer';
     const onMessage = event => {
       if (!state.current() || event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.type !== 'chattering:pdf') return;
@@ -128,7 +128,7 @@ async function liveFileShowHTML(ws, preview) {
     state.token = grant.token;
     if (!current()) { fetch('/api/file/preview?token=' + grant.token, { method: 'DELETE', keepalive: true }).catch(() => {}); return; }
     const frame = document.createElement('iframe'); frame.id = 'fileHTML'; frame.className = 'lf-preview-frame';
-    frame.title = 'HTML preview: ' + ws.path.split('/').pop();
+    frame.title = 'HTML preview: ' + ws.path.split(/[\\/]/).pop();
     frame.setAttribute('sandbox', ''); frame.referrerPolicy = 'no-referrer';
     frame.onload = () => { if (current()) { message.hidden = true; liveFileRememberOpen(ws); } };
     frame.srcdoc = module.prepareHTML(source, new URL(grant.base, location.origin).href);

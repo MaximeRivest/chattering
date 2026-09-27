@@ -38,4 +38,10 @@ function chromiumBinary() {
   return (cached = inner && fs.existsSync(inner[2]) ? inner[2] : found);
 }
 
-module.exports = { chromiumBinary };
+// Flags every test's browser needs on every system, whatever else the test
+// adds. On macOS a fresh profile asks the Keychain for its storage key and
+// waits for a person to allow it: the mock keychain and basic password
+// store make it ask nobody. The rest keep a headless run quiet and alone.
+const CHROMIUM_TEST_FLAGS = ['--headless', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--use-mock-keychain', '--password-store=basic',
+  '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--disable-sync', '--disable-component-update'];
+module.exports = { chromiumBinary, CHROMIUM_TEST_FLAGS };

@@ -9,7 +9,7 @@ const { execFileSync, spawn } = require('node:child_process');
 const { createIgnoreOracle, isIgnoreRulesPath } = require('../watch-ignore');
 
 function repo(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-ignore-'));
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'watch-ignore-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   execFileSync('git', ['init', '-q', root]);
   fs.writeFileSync(path.join(root, '.gitignore'), '/outputs/\n*.log\n');
@@ -52,7 +52,7 @@ test('a burst costs one git process; answers are cached until the rules change',
 });
 
 test('outside a repository nothing is ignored and git is asked once', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-ignore-plain-'));
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'watch-ignore-plain-')));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const { calls, spawnImpl } = countingSpawn();
   const oracle = createIgnoreOracle(dir, { spawnImpl });

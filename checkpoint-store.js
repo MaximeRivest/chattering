@@ -16,11 +16,11 @@ const blobId = b => crypto.createHash('sha1').update(Buffer.from(`blob ${b.lengt
 const inside = (root, p) => p === root || p.startsWith(root + path.sep);
 function cleanGitEnv(extra = {}) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')));
-  return { ...env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: os.devNull, GIT_TERMINAL_PROMPT: '0', ...extra };
+  return { ...env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: require('./platform.js').gitNothingPaths().config, GIT_TERMINAL_PROMPT: '0', ...extra };
 }
 function git(args, { cwd, input, env, timeout = 15000, max = 32 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', ['-c', 'core.hooksPath=' + os.devNull, '-c', 'core.fsmonitor=false', '-c', 'core.fsync=committed', ...args], { cwd, env: cleanGitEnv(env), stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn('git', ['-c', 'core.hooksPath=' + require('./platform.js').gitNothingPaths().hooks, '-c', 'core.fsmonitor=false', '-c', 'core.fsync=committed', ...args], { cwd, env: cleanGitEnv(env), stdio: ['pipe', 'pipe', 'pipe'] });
     const out = [], err = []; let bytes = 0, failure;
     const timer = setTimeout(() => { failure = Error('Checkpoint Git operation timed out'); child.kill('SIGKILL'); }, timeout);
     child.on('error', e => { clearTimeout(timer); reject(e); });
@@ -32,7 +32,7 @@ function git(args, { cwd, input, env, timeout = 15000, max = 32 * 1024 * 1024 } 
 }
 class CheckpointStore {
   constructor(dir = process.env.CHATTERING_CHECKPOINT_DIR || path.join(require('./platform.js').appDirs().data, 'checkpoints')) {
-    this.dir = path.resolve(dir); fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 }); this.dir = fs.realpathSync(this.dir); fs.chmodSync(this.dir, 0o700);
+    this.dir = path.resolve(dir); fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 }); this.dir = fs.realpathSync.native(this.dir); fs.chmodSync(this.dir, 0o700);
     this.db = new DatabaseSync(path.join(this.dir, 'metadata.sqlite'));
     fs.chmodSync(path.join(this.dir, 'metadata.sqlite'), 0o600);
     this.db.exec(`PRAGMA busy_timeout=10000; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
@@ -65,7 +65,7 @@ class CheckpointStore {
         const temp = repo + '.init-' + crypto.randomUUID();
         try {
           await git(['init', '--bare', '--object-format=sha1', temp]);
-          try { await fsp.rename(temp, repo); } catch (e) { if (!['EEXIST', 'ENOTEMPTY'].includes(e.code)) throw e; }
+          try { await require('./platform.js').renameRetry(temp, repo); } catch (e) { if (!['EEXIST', 'ENOTEMPTY'].includes(e.code)) throw e; }
         } finally { await fsp.rm(temp, { recursive: true, force: true }); }
       }
       return repo;

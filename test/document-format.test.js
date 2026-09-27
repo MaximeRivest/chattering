@@ -16,7 +16,7 @@ const sha256Hex = text => crypto.createHash('sha256').update(text).digest('hex')
 const mdx = `---\ntitle: Make your first request\n---\n\nimport DocsExample from '../../../components/DocsExample.astro';\n\nexport const settings = {\n  label: 'example',\n};\n\n# Hello\n\n<DocsExample recipe="first-request" />\n\n{settings.label}\n\n\`\`\`js\nconsole.log('hello');\n\`\`\`\n`;
 
 async function harness(t) {
-  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'document-format-'));
+  const root = await fsp.realpath(await fsp.mkdtemp(path.join(os.tmpdir(), 'document-format-')));
   t.after(() => fsp.rm(root, { recursive: true, force: true }));
   const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: 'pipe' });
   git(['init']); git(['config', 'user.name', 'Fixture']); git(['config', 'user.email', 'fixture@example.test']);
