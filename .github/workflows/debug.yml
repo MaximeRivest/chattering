@@ -2,15 +2,31 @@
 # for finding where a test waits on a system nobody here sits at.
 name: debug
 
+# Push to a branch debug/<anything>; .github/debug-run says what to run:
+#   first line: runner labels (JSON list), second line: test files.
 on:
-  workflow_dispatch:
-    inputs:
-      os: { description: 'runner', required: true, default: macos-latest }
-      files: { description: 'test files, space separated', required: true, default: test/file-view.test.js }
+  push:
+    branches: ['debug/**']
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      runners: ${{ steps.p.outputs.runners }}
+      files: ${{ steps.p.outputs.files }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: p
+        run: |
+          echo "runners=$(sed -n 1p .github/debug-run)" >> "$GITHUB_OUTPUT"
+          echo "files=$(sed -n 2p .github/debug-run)" >> "$GITHUB_OUTPUT"
   debug:
-    runs-on: ${{ inputs.os }}
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(needs.plan.outputs.runners) }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     defaults:
       run:
@@ -30,4 +46,4 @@ jobs:
         env:
           CHATTERING_TEST_CHROMIUM: ${{ steps.chrome.outputs.chrome-path }}
           CHATTERING_TEST_TRACE: '1'
-        run: node scripts/test-each.js ${{ inputs.files }}
+        run: node scripts/test-each.js ${{ needs.plan.outputs.files }}
