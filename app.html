@@ -5888,6 +5888,8 @@ function rowsFromScript(script, oldLines, newLines) {
 const SX_CACHE = new Map();
 const SX_JS = new Set('async await break case catch class const continue debugger default delete do else export extends false finally for function if import in instanceof let new null of return static super switch this throw true try typeof undefined var void while with yield from as get set'.split(' '));
 const SX_PY = new Set('False None True and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield'.split(' '));
+const SX_R = new Set('if else repeat while function for in next break return TRUE FALSE NULL Inf NaN NA NA_integer_ NA_real_ NA_character_ library require'.split(' '));
+const SX_JL = new Set('baremodule begin break catch const continue do else elseif end export false finally for function global if import let local macro module quote return struct true try using while abstract mutable primitive type where in isa nothing missing'.split(' '));
 const SX_SH = new Set('case do done elif else esac export fi for function if in local return set shift then until while echo exit false test true unset'.split(' '));
 
 function fenceLang(spec) {
@@ -5896,6 +5898,7 @@ function fenceLang(spec) {
     js: 'js', javascript: 'js', mjs: 'js', cjs: 'js', node: 'js',
     ts: 'js', typescript: 'js', jsx: 'js', tsx: 'js',
     py: 'py', python: 'py', python3: 'py',
+    r: 'r', rscript: 'r', jl: 'jl', julia: 'jl',
     sh: 'sh', bash: 'sh', zsh: 'sh', shell: 'sh', console: 'sh',
     html: 'html', htm: 'html', xml: 'html', svg: 'html',
     css: 'css', json: 'json', jsonc: 'json',
@@ -5929,7 +5932,7 @@ function highlightPlainWords(chunk, lang) {
   return chunk.replace(/[A-Za-z_$][\w$]*|\d[\w.]*|[^\w\s]+|\s+/g, tok => {
     if (/^\s+$/.test(tok)) return tok;
     if (/^\d/.test(tok)) return sxTok('sx-n', tok);
-    const words = lang === 'js' ? SX_JS : lang === 'py' ? SX_PY : lang === 'sh' ? SX_SH : null;
+    const words = lang === 'js' ? SX_JS : lang === 'py' ? SX_PY : lang === 'sh' ? SX_SH : lang === 'r' ? SX_R : lang === 'jl' ? SX_JL : null;
     if (words && words.has(tok)) return sxTok('sx-k', tok);
     if (lang === 'json' && (tok === 'true' || tok === 'false' || tok === 'null')) return sxTok('sx-k', tok);
     if (lang === 'css' && /^-?[a-z][\w-]*$/.test(tok)) return sxTok('sx-t', tok);
@@ -5940,7 +5943,7 @@ function highlightPlainWords(chunk, lang) {
 function highlightCodeLine(line, lang, state) {
   const parts = [];
   let i = 0;
-  const hashComment = lang === 'py' || lang === 'sh';
+  const hashComment = lang === 'py' || lang === 'sh' || lang === 'r' || lang === 'jl';
   if (state.block === '*/' || state.block === '-->') {
     const end = line.indexOf(state.block);
     if (end < 0) return sxTok('sx-c', line);
@@ -7008,7 +7011,20 @@ function renderDocDoctor(st, strip, report) {
   }
   if (report.error) { chip.textContent = ''; docStatusLine('⚠ ' + report.error); return; }
   const py = report.python;
-  if (py) {
+  const shownLang = docKernelLang(st);
+  const rs = report.r;
+  if (shownLang === 'r' && rs && rs.kernel) {
+    chip.textContent = '⚙ ' + rs.kernel + (rs.version ? ' · R ' + rs.version : '');
+    chip.title = 'Kernel: ' + rs.kernel + '\nProject: ' + report.project + ' (' + report.project_source + ')'
+      + '\nR packages go into: ' + (rs.library || '?') + (rs.renv ? ' (renv)' : '')
+      + ((rs.requirements || []).length ? '\nDeclared: ' + rs.requirements.join(', ') : '')
+      + '\n(front matter rat.r.dependencies; packages installed elsewhere stay visible)'
+      + (report.ratNote ? '\n' + report.ratNote : '');
+  } else if (shownLang !== 'py' && !(shownLang === 'r' && rs)) {
+    const name = DOC_LANG_NAMES[shownLang] || shownLang;
+    chip.textContent = '⚙ ' + name + ' · ' + shortDir(report.project);
+    chip.title = name + ' cells run in a ' + name + ' kernel of ' + report.project + (report.ratNote ? '\n' + report.ratNote : '');
+  } else if (py) {
     const env = py.venv_exists ? shortDir(py.venv) + (py.version ? ' · Python ' + py.version : '') : 'no environment yet';
     chip.textContent = '⚙ ' + py.kernel + ' · ' + env;
     chip.title = 'Kernel: ' + py.kernel + '\nProject: ' + report.project + ' (' + report.project_source + ')'
@@ -7145,7 +7161,7 @@ function createDocRunner(st, bundle) {
       run: ({ lang, code, runId }, onEvent) => docRunRequest({ lang, code, doc: st.path, runId }, onEvent),
       answer: (runId, text) => postJson('/api/doc/run-input', { runId, text }),
       cancel: runId => { st.cancelling = true; st.paintRun(); return postJson('/api/doc/cancel-run', { runId }); },
-      interrupt: cell => postJson('/api/doc/kernel', { doc: st.path, lang: cell && cell.lang || DOC_KERNEL_LANG, op: 'cancel' }),
+      interrupt: cell => postJson('/api/doc/kernel', { doc: st.path, lang: cell && cell.lang || docKernelLang(st), op: 'cancel' }),
       plotUrl: p => '/api/doc/plot?' + new URLSearchParams({ path: p }),
       savePlots: async paths => {
         const r = await postJson('/api/doc/plots', { doc: st.path, paths });
@@ -7157,6 +7173,9 @@ function createDocRunner(st, bundle) {
     hooks: {
       onRunStart({ cell, runId, cancel }) {
         current = cell; waiting = false; t0 = Date.now();
+        const runtime = docCellRuntime(cell);
+        if (runtime && shown()) docShowKernel(st, runtime);
+        else if (runtime) st.kernelLang = runtime;
         st.running = runId;
         st.cancelRun = cancel;
         st.cancelling = false;
@@ -7192,7 +7211,8 @@ function createDocRunner(st, bundle) {
         if (result.missing) refreshDocDoctor(); // rat vanished: say so in the strip, not per cell
         // The cell's code changed while it ran: its result would describe other code.
         if (!wrote) toast('the cell changed while it ran — output not written');
-        if (!st.doctor || !st.doctor.python || !st.doctor.python.kernel_running) refreshDocDoctor(); // the first run started the kernel
+        const ran = st.doctor && (docCellRuntime(cell) === 'r' ? st.doctor.r : st.doctor.python);
+        if (!ran || !ran.kernel_running) refreshDocDoctor(); // the first run started the kernel
         if (el) offerDeclareDependency(el, result, cell);
       },
       // Other clients' runs on this notebook's kernels (followed below).
@@ -7247,7 +7267,7 @@ async function docPlayPrerequisites(st, say) {
 // narrows locally as typing goes on. A kernel that is not running, or is
 // busy with a cell, answers nothing (the server never starts one).
 const DOC_COMPLETE_KIND = { function: 'function', method: 'method', class: 'class', module: 'namespace', keyword: 'keyword',
-  instance: 'variable', statement: 'variable', param: 'variable', property: 'property', path: 'text' };
+  instance: 'variable', statement: 'variable', param: 'variable', property: 'property', path: 'text', argument: 'variable', file: 'text' };
 function docCompletionService(st) {
   return {
     name: 'kernel',
@@ -7259,8 +7279,13 @@ function docCompletionService(st) {
       const cursor = pos - codeFrom;
       if (codeFrom <= 0 || cursor < 0 || cursor > cell.code.length) return null; // on a fence line
       const before = cell.code.slice(0, cursor);
+      const runtime = docCellRuntime(cell);
       const word = (before.match(/[A-Za-z_][A-Za-z0-9_]*$/) || [''])[0];
-      if (!explicit && !word && !before.endsWith('.')) return null;
+      // When to ask without Ctrl+Space: after a name or what opens a member
+      // (Python's and Julia's `.`, R's `$`, `@` and `::`). R names may start
+      // with a dot; any language's may hold non-ASCII letters.
+      const typing = (runtime === 'r' ? /[\p{L}.][\p{L}\p{N}_.]*$|(\$|@|::)$/u : /[\p{L}_][\p{L}\p{N}_]*$|\.$/u).test(before);
+      if (!explicit && !typing) return null;
       if (!explicit) {
         await new Promise(r => setTimeout(r, 120));
         if (signal.aborted) return null;
@@ -7270,6 +7295,15 @@ function docCompletionService(st) {
         r = await (await fetch('/api/doc/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ doc: st.path, lang: cell.lang, code: cell.code, cursor }), signal })).json();
       } catch { return null; }
       if (!r.items || !r.items.length) return null;
+      if (Number.isInteger(r.start) && r.start <= cursor) {
+        // The kernel said where the replaced text starts (R's data.fr,
+        // df$co, pkg::fu): each label replaces it whole.
+        return {
+          from: codeFrom + r.start,
+          options: r.items.map(i => ({ label: i.label, type: DOC_COMPLETE_KIND[i.kind] || 'variable', detail: i.kind, boost: 1 })),
+          validFor: /^[^\s()[\]{},;"'`=<>+*\/-]*$/u,
+        };
+      }
       return {
         from: pos - word.length,
         options: r.items.map(i => ({ label: i.label, type: DOC_COMPLETE_KIND[i.kind] || 'variable', detail: i.kind, boost: 1 })),
@@ -7440,10 +7474,36 @@ async function docRunRequest(body, onLive) {
 }
 
 // ---- the notebook's kernel: its menu, and the variables drawer ----
-// Python cells' kernel (the doctor report is Python's too). Everything goes
+// A notebook has one kernel per language its cells use (Python cells share
+// one, R cells another). The chip, the menu and the variables drawer show
+// one of them: the language of the cell that ran last, else of the first
+// runnable cell; the menu switches when there are several. Everything goes
 // through rat: state and variables are read without starting a kernel;
 // restart, clear and shut down act on the one kernel every client shares.
-const DOC_KERNEL_LANG = 'py';
+const DOC_LANG_NAMES = { py: 'Python', r: 'R', jl: 'Julia', sh: 'shell', js: 'JavaScript' };
+function docCellRuntime(cell) {
+  const lang = String(cell && cell.lang || '').toLowerCase();
+  return Object.hasOwn(NotebookEnv.RUN_LANGS, lang) ? NotebookEnv.RUN_LANGS[lang] : null;
+}
+function docKernelLangs(st) {
+  if (!st || !st.editor || !st.editor.listCells) return [];
+  return [...new Set(st.editor.listCells().map(docCellRuntime).filter(Boolean))];
+}
+function docKernelLang(st) {
+  const langs = docKernelLangs(st);
+  if (st && st.kernelLang && langs.includes(st.kernelLang)) return st.kernelLang;
+  return langs[0] || 'py';
+}
+// Show another language's kernel: the chip and an open drawer follow.
+function docShowKernel(st, lang) {
+  if (!st || docState !== st) return;
+  const before = docKernelLang(st);
+  st.kernelLang = lang;
+  if (docKernelLang(st) === before) return;
+  const strip = document.querySelector('.doc-run-strip');
+  if (strip && st.doctor) renderDocDoctor(st, strip, st.doctor);
+  refreshDocVars(st);
+}
 async function docGetJson(url) {
   try { return await (await fetch(url)).json(); } catch { return { error: 'network failure' }; }
 }
@@ -7463,7 +7523,8 @@ async function openDocKernelMenu(x, y, { above = false } = {}) {
     menu.style.top = Math.max(8, Math.min(above ? y - h : y, innerHeight - h - 8)) + 'px';
   };
   place();
-  const k = await docGetJson('/api/doc/kernel?' + new URLSearchParams({ doc: st.path, lang: DOC_KERNEL_LANG }));
+  const lang = docKernelLang(st);
+  const k = await docGetJson('/api/doc/kernel?' + new URLSearchParams({ doc: st.path, lang }));
   if (!menu.isConnected || docState !== st) return;
   if (k.error) { menu.querySelector('.file-action-head').textContent = k.error; return place(); }
   const running = !!k.running, cellRunning = !!st.running;
@@ -7474,6 +7535,7 @@ async function openDocKernelMenu(x, y, { above = false } = {}) {
     [running ? 'Restart kernel…' : 'Start kernel', true, () => docKernelOp(st, 'restart', k, running)],
     ['Clear variables…', running && !cellRunning, () => docKernelOp(st, 'reset', k, running)],
     ['Shut down kernel…', running, () => docKernelOp(st, 'stop', k, running)],
+    ...docKernelLangs(st).filter(l => l !== lang).map(l => ['Show the ' + (DOC_LANG_NAMES[l] || l) + ' kernel', true, () => docShowKernel(st, l)]),
   ];
   menu.innerHTML = `<div class="file-action-head" title="${esc(facts.join(' · '))}">${esc(facts.join(' · '))}</div>` +
     items.map((it, i) => `<button type="button" role="menuitem" data-kernel-item="${i}" ${it[1] ? '' : 'disabled'}>${esc(it[0])}</button>`).join('') +
@@ -7491,7 +7553,7 @@ async function docKernelOp(st, op, k, running) {
   if (op === 'stop' && !confirm('Shut down ' + name + '? Its variables are lost' + (st.running ? ' and the running cell stops' : '') + '; the next run starts it again.' + shared)) return;
   const verb = { restart: running ? 'restarting' : 'starting', reset: 'clearing', stop: 'shutting down' }[op];
   toast(verb + ' ' + name + '…');
-  const r = await postJson('/api/doc/kernel', { doc: st.path, lang: DOC_KERNEL_LANG, op });
+  const r = await postJson('/api/doc/kernel', { doc: st.path, lang: docKernelLang(st), op });
   if (docState !== st) return;
   if (r.error || !r.ok) { toast((r.error || r.out || 'rat could not do it').split('\n').at(-1), null, 'err'); }
   else toast({ restart: running ? '✓ restarted — a fresh, empty kernel' : '✓ kernel started', reset: '✓ variables cleared', stop: '✓ kernel shut down' }[op]);
@@ -7533,7 +7595,7 @@ async function refreshDocVars(st) {
   if (!panel) return;
   const seq = ++docVarsSeq;
   panel.querySelector('.doc-vars-list').classList.add('is-stale');
-  const r = await docGetJson('/api/doc/variables?' + new URLSearchParams({ doc: st.path, lang: DOC_KERNEL_LANG }));
+  const r = await docGetJson('/api/doc/variables?' + new URLSearchParams({ doc: st.path, lang: docKernelLang(st) }));
   if (seq !== docVarsSeq || docState !== st || !panel.isConnected) return;
   // A cell running: keep the last list, dimmed, and say why it waits.
   if (r.busy) { st.varsNote = 'a cell is running — the list refreshes when it ends'; return renderDocVars(st, { stale: true }); }
@@ -7573,7 +7635,7 @@ async function showDocVar(st, name, toggle = false) {
   detail.className = 'doc-var-detail';
   detail.textContent = 'asking the kernel…';
   row.after(detail);
-  const r = await docGetJson('/api/doc/variables?' + new URLSearchParams({ doc: st.path, lang: DOC_KERNEL_LANG, at: name }));
+  const r = await docGetJson('/api/doc/variables?' + new URLSearchParams({ doc: st.path, lang: docKernelLang(st), at: name }));
   if (!detail.isConnected) return;
   detail.textContent = r.busy ? 'a cell is running — inspect again when it ends' : r.text || r.error || 'nothing to show';
 }
@@ -7600,9 +7662,11 @@ async function runAllDocCells() {
   if (r.failedAt != null) return toast('run all stopped at cell ' + (r.failedAt + 1) + ' of ' + r.total);
   toast('✓ ran all ' + r.total + ' cells');
 }
-// A failed python cell with ModuleNotFoundError gets a one-click repair
-// that leaves a trace: the requirement is added to the notebook's own
-// front matter, then `rat ensure` installs it, then the cell reruns. The
+// A failed cell whose package is missing (Python's ModuleNotFoundError,
+// R's "there is no package called 'x'") gets a one-click repair that
+// leaves a trace: the requirement is added to the notebook's own front
+// matter (rat.python or rat.r dependencies), then `rat ensure` installs
+// it, then the cell reruns. The
 // next machine (or the next person) gets the same environment from the
 // declaration — an install that only happened here would be invisible.
 // The module name is only a guess for the requirement (cv2 ≠
@@ -7610,8 +7674,10 @@ async function runAllDocCells() {
 // installs on its own.
 async function offerDeclareDependency(strip, r, cell) {
   document.querySelector('.doc-run-fix')?.remove();
-  if (r.code === 0 || r.runtime !== 'py') return;
-  const moduleName = NotebookEnv.missingModule(r.out);
+  if (r.code === 0) return;
+  const missing = NotebookEnv.missingPackage(r.out, r.runtime);
+  const moduleName = missing && missing.name;
+  const section = missing ? missing.section : 'python';
   if (!moduleName) {
     // Any other failure: the agent gets the report plus this output.
     const st = docState;
@@ -7628,16 +7694,18 @@ async function offerDeclareDependency(strip, r, cell) {
   if (st && !st.doctor) await refreshDocDoctor();
   if (docState !== st) return;
   const report = (st && st.doctor) || {};
-  const proposed = NotebookEnv.proposeRequirement(moduleName, report.project_package);
+  // Python: the import name is a guess at the distribution (cv2 ≠
+  // opencv-python). R: the package is what library() names.
+  const proposed = section === 'python' ? NotebookEnv.proposeRequirement(moduleName, report.project_package) : moduleName;
   const isSelf = proposed === '-e .';
-  const already = NotebookEnv.dependencies(st.editor.getContent()).includes(proposed);
+  const already = NotebookEnv.dependencies(st.editor.getContent(), section).includes(proposed);
   const fix = document.createElement('div');
   fix.className = 'doc-run-fix';
   fix.innerHTML = isSelf
     ? `<span class="dim">⚙ <b>${esc(moduleName)}</b> is this project's own package (${esc(report.project_package)}). Declare it in the notebook and install it editable:</span>
        <button class="doc-fix-go">＋ -e . → rat ensure → rerun</button>
        <span class="doc-fix-note dim" hidden></span>`
-    : `<span class="dim">module <b>${esc(moduleName)}</b> is missing · add to this notebook's dependencies (edit if the package name differs):</span>
+    : `<span class="dim">${section === 'r' ? 'R package' : 'module'} <b>${esc(moduleName)}</b> is missing · add to this notebook's ${section === 'r' ? 'R packages (a pak reference: name, owner/repo, bioc::name)' : 'dependencies (edit if the package name differs)'}:</span>
        <input class="doc-fix-pkg" spellcheck="false">
        <button class="doc-fix-go">＋ declare → rat ensure → rerun</button>
        <span class="doc-fix-note dim" hidden></span>`;
@@ -7654,9 +7722,9 @@ async function offerDeclareDependency(strip, r, cell) {
     // 1. Declare it in the document (one undo step), then save so that
     //    rat reads the same text the editor shows.
     const before = st.editor.getContent();
-    const after = NotebookEnv.addDependency(before, req);
+    const after = NotebookEnv.addDependency(before, req, section);
     if (after === null) {
-      note.textContent = '✗ this front matter has a shape I will not edit blindly — add `' + req + '` under rat.python.dependencies by hand, then use "make it run"';
+      note.textContent = '✗ this front matter has a shape I will not edit blindly — add `' + req + '` under rat.' + section + '.dependencies by hand, then use "make it run"';
       btn.disabled = false; if (input) input.disabled = false;
       return;
     }
@@ -7673,7 +7741,8 @@ async function offerDeclareDependency(strip, r, cell) {
     fix.remove();
     const report = await ensureDocEnvironment(st, {});
     if (docState !== st || !report) return;
-    const stillMissing = report.python && (report.python.missing || []).length;
+    const env = section === 'r' ? report.r : report.python;
+    const stillMissing = env && (env.missing || []).length;
     if (stillMissing || (report.steps || []).some(s => !s.ok)) return;
     // The declaration moved the document: find the same cell at its new
     // position so the rerun's output lands under it (the stale guard would

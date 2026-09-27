@@ -11,6 +11,9 @@
 //       dependencies:
 //         - -e .
 //         - websockets
+//     r:
+//       dependencies:        # pak package references
+//         - dplyr
 //   ---
 //
 // This file knows how to add a requirement to that declaration without
@@ -60,12 +63,13 @@
   // A requirement that starts with "-" or "@" must be quoted in YAML; JSON
   // strings are valid YAML double-quoted scalars.
 
-  // Add `requirement` to rat.python.dependencies. Returns the new text, the
-  // same text when the requirement is already declared, or null when the
-  // front matter has a shape this editor does not understand (flow mappings,
-  // tabs) — the caller then asks the person to edit it by hand rather than
-  // guessing.
-  function addDependency(text, requirement) {
+  // Add `requirement` to rat.<section>.dependencies (section: "python" or
+  // "r"). Returns the new text, the same text when the requirement is
+  // already declared, or null when the front matter has a shape this
+  // editor does not understand (flow mappings, tabs) — the caller then asks
+  // the person to edit it by hand rather than guessing.
+  function addDependency(text, requirement, section = 'python') {
+    if (!/^[a-z]+$/.test(section)) return null;
     requirement = String(requirement || '').trim();
     if (!requirement || /[\r\n]/.test(requirement)) return null;
     const nl = text.includes('\r\n') ? '\r\n' : '\n';
@@ -73,25 +77,25 @@
     const item = quoteIfNeeded(requirement);
     const fm = frontMatter(lines);
     if (!fm) {
-      const block = ['---', 'rat:', '  python:', '    dependencies:', '      - ' + item, '---'];
+      const block = ['---', 'rat:', '  ' + section + ':', '    dependencies:', '      - ' + item, '---'];
       return block.join(nl) + nl + text;
     }
     const inner = lines.slice(fm.open + 1, fm.close);
     if (inner.some(l => /^\t/.test(l))) return null;
     const rat = findKey(inner, 0, inner.length, 0, 'rat');
     if (!rat) {
-      inner.push('rat:', '  python:', '    dependencies:', '      - ' + item);
+      inner.push('rat:', '  ' + section + ':', '    dependencies:', '      - ' + item);
       return join(lines, fm, inner, nl);
     }
     if (/^rat\s*:\s*\S/.test(inner[rat.line])) return null; // rat: {flow}
     const childIndent = firstChildIndent(inner, rat) ?? rat.indent + 2;
-    const python = findKey(inner, rat.line + 1, rat.end, childIndent, 'python');
+    const python = findKey(inner, rat.line + 1, rat.end, childIndent, section);
     if (!python) {
       const pad = ' '.repeat(childIndent);
-      inner.splice(rat.end, 0, pad + 'python:', pad + '  dependencies:', pad + '    - ' + item);
+      inner.splice(rat.end, 0, pad + section + ':', pad + '  dependencies:', pad + '    - ' + item);
       return join(lines, fm, inner, nl);
     }
-    if (/^ *python\s*:\s*\S/.test(inner[python.line])) return null;
+    if (new RegExp('^ *' + section + '\\s*:\\s*\\S').test(inner[python.line])) return null;
     const pyChild = firstChildIndent(inner, python) ?? python.indent + 2;
     const deps = findKey(inner, python.line + 1, python.end, pyChild, 'dependencies');
     if (!deps) {
@@ -133,7 +137,7 @@
 
   // Declared dependencies (block or flow list), or [] — used to show what
   // the notebook already asks for.
-  function dependencies(text) {
+  function dependencies(text, section = 'python') {
     const lines = text.split(/\r?\n/);
     const fm = frontMatter(lines);
     if (!fm) return [];
@@ -142,7 +146,7 @@
     if (!rat) return [];
     const ci = firstChildIndent(inner, rat);
     if (ci === null) return [];
-    const python = findKey(inner, rat.line + 1, rat.end, ci, 'python');
+    const python = findKey(inner, rat.line + 1, rat.end, ci, section);
     if (!python) return [];
     const pi = firstChildIndent(inner, python);
     if (pi === null) return [];
@@ -268,6 +272,22 @@
     return m ? m[1].split('.')[0] : null;
   }
 
+  // A package a failed cell could not load, by the kernel's runtime:
+  // Python's ModuleNotFoundError, R's "there is no package called 'x'"
+  // (curly quotes in a UTF-8 locale). Returns { name, section } or null.
+  function missingPackage(output, runtime) {
+    const text = String(output || '');
+    if (runtime === 'py') {
+      const name = missingModule(text);
+      return name ? { name, section: 'python' } : null;
+    }
+    if (runtime === 'r') {
+      const m = text.match(/there is no package called [‘'‘`]([A-Za-z][A-Za-z0-9.]*)[’'’`]/);
+      return m ? { name: m[1], section: 'r' } : null;
+    }
+    return null;
+  }
+
   // The requirement line to propose for a missing import. When the module
   // is the project's own package the right line is an editable install of
   // the project, not a PyPI download of something with the same name.
@@ -298,17 +318,20 @@
       }
       for (const a of report.after || []) lines.push('   prerequisite ' + String(a.path).split(/[\\/]/).pop() + (a.played ? ' (already ran in this kernel)' : ' (not yet run in this kernel)'));
       if ((report.actions || []).length) lines.push('planned by `rat ensure`: ' + report.actions.map(a => a.label + (a.effect ? ' [' + a.effect + ']' : '')).join('; '));
+      if (report.r && report.r.library) lines.push('R packages go into ' + report.r.library + (report.r.renv ? ' (the project uses renv)' : ' (the project\u0027s own library, first on the R kernel\u0027s .libPaths())'));
       if (report.python && (report.python.editable || []).length) lines.push('this project\u0027s own packages, as installed in its environment: ' + report.python.editable.map(e => '`' + e.line + '` (' + e.name + ')').join(', '));
       lines.push('');
     } else if (report && report.ratMissing) {
       lines.push('rat is not installed on this machine (or not on PATH). Install it first — https://runanything.dev — then continue.', '');
     }
     if (lastOutput) lines.push('Last failing cell' + (focus ? ' (' + focus + ')' : '') + ' printed:', '```', String(lastOutput).trim().split('\n').slice(-25).join('\n'), '```', '');
+    const hasR = !!(report && report.r);
     lines.push(
       'Please:',
-      '1. Read the front matter (`rat.python.dependencies`, `rat.python.requires`, `rat.after`) and the report above. The header is the declaration: fix problems there, never with a pip install inside a cell.',
+      '1. Read the front matter (`rat.python.dependencies`, `rat.python.requires`, ' + (hasR ? '`rat.r.dependencies`, ' : '') + '`rat.after`) and the report above. The header is the declaration: fix problems there, never with a pip install inside a cell.'
+        + (hasR ? ' The same holds for R: never install.packages() in a cell; R packages are pak references in `rat.r.dependencies` (dplyr, ggplot2@3.5.1, owner/repo@ref, bioc::X, local::.).' : ''),
       '2. Work with rat: `rat doctor ' + name + ' --json` to see the plan, `rat ensure ' + name + '` to carry it out. Do not reinstall or replace what is already installed; editable checkouts stay editable (use the `-e` lines listed above for this project\u0027s own packages).',
-      '3. Prove it: `rat restart py` for this project, then `rat play ' + name + '` — every cell must run top to bottom. If a cell fails for a code reason, change the notebook minimally and say exactly what you changed and why.',
+      '3. Prove it: `rat restart py`' + (hasR ? ' (and `rat restart r`)' : '') + ' for this project, then `rat play ' + name + '` — every cell must run top to bottom. If a cell fails for a code reason, change the notebook minimally and say exactly what you changed and why.',
       '4. Report: what was wrong, what you changed (header, environment, or code), and the final `rat doctor` result. Do not claim it works unless `rat play` passed.',
     );
     return lines.join('\n');
@@ -359,5 +382,5 @@
     return { language: head ? head[1] : null, state: head ? head[2] : null, count: head ? Number(head[3]) : vars.length, vars };
   }
 
-  return { addDependency, dependencies, setProject, setMapping, readScalar, afterList, missingModule, proposeRequirement, agentBrief, findRat, IMPORT_TO_DIST, RUN_LANGS, parseLookOverview };
+  return { addDependency, dependencies, setProject, setMapping, readScalar, afterList, missingModule, missingPackage, proposeRequirement, agentBrief, findRat, IMPORT_TO_DIST, RUN_LANGS, parseLookOverview };
 });

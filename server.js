@@ -17440,8 +17440,23 @@ async function handleRequest(req, res) {
         if (docHasActiveRun(doc)) return json(res, 200, { items: [], reason: 'busy' });
         const k = await docKernelRunningIdle(doc, runtime);
         if (!k.ok) return json(res, 200, { items: [], reason: k.reason });
-        const r = await ratExec(['look', '--doc', doc, runtime, '--code=' + code.slice(0, cursor), '--cursor=' + String(cursor)], { cwd: path.dirname(doc), timeoutMs: 5000 });
+        // --json: the kernel's exact answer — where the replaced text
+        // starts (R's data.frame, df$col) and labels that may hold spaces.
+        // A rat without --json answers "unknown flag": ask again in text.
+        const args = ['look', '--doc', doc, runtime, '--code=' + code.slice(0, cursor), '--cursor=' + String(cursor)];
+        let r = await ratExec([...args, '--json'], { cwd: path.dirname(doc), timeoutMs: 5000 });
+        if (r.code !== 0 && /unknown flag/.test(r.out)) r = await ratExec(args, { cwd: path.dirname(doc), timeoutMs: 5000 });
         if (r.code !== 0) return json(res, 200, { items: [], reason: 'rat look failed' });
+        let exact = null;
+        try { exact = JSON.parse(r.out); } catch {}
+        if (exact && Array.isArray(exact.matches)) {
+          const items = exact.matches.filter(m => m && typeof m.label === 'string' && m.label).slice(0, 200).map(m => ({ label: m.label, kind: String(m.kind || '') }));
+          // rat counts characters; the page counts UTF-16 units.
+          const chars = [...code.slice(0, cursor)];
+          if (Number.isInteger(exact.start) && exact.start >= 0 && exact.start <= chars.length) return json(res, 200, { items, start: chars.slice(0, exact.start).join('').length });
+          // No start: the kernel only listed names; guess as before.
+          return json(res, 200, { items: parseCompletions(items.map(i => i.label + ' ' + (i.kind || 'value')).join('\n')) });
+        }
         json(res, 200, { items: parseCompletions(r.out) });
       } catch (e) { json(res, e.status || 403, { error: e.message }); }
     } else if (u.pathname === '/api/doc/plot' && req.method === 'GET') {

@@ -121,3 +121,20 @@ test('parseLookOverview reads rat look: header, then name / type / preview colum
   assert.deepEqual(NE.parseLookOverview('python idle | 0 vars\n').vars, []);
   assert.deepEqual(NE.parseLookOverview('something odd').vars, [{ name: 'something odd', type: '', preview: '' }]);
 });
+
+test('R: addDependency writes rat.r.dependencies, missingPackage reads R\u2019s error, the brief speaks R only for R notebooks', () => {
+  const text = '---\nrat:\n  python:\n    dependencies:\n      - x\n---\nbody\n';
+  const out = NE.addDependency(text, 'dplyr', 'r');
+  assert.equal(out, '---\nrat:\n  python:\n    dependencies:\n      - x\n  r:\n    dependencies:\n      - dplyr\n---\nbody\n');
+  assert.equal(NE.addDependency(out, 'dplyr', 'r'), out, 'idempotent');
+  assert.deepEqual(NE.dependencies(out, 'r'), ['dplyr']);
+  assert.deepEqual(NE.dependencies(out), ['x']);
+  assert.equal(NE.addDependency(text, 'x', 'r; rm'), null, 'a section is a plain word');
+  assert.deepEqual(NE.missingPackage('Error in library(praise) : there is no package called \u2018praise\u2019', 'r'), { name: 'praise', section: 'r' });
+  assert.deepEqual(NE.missingPackage("Error in library(data.table) : there is no package called 'data.table'", 'r'), { name: 'data.table', section: 'r' });
+  assert.deepEqual(NE.missingPackage("ModuleNotFoundError: No module named 'cv2'", 'py'), { name: 'cv2', section: 'python' });
+  assert.equal(NE.missingPackage("ModuleNotFoundError: No module named 'cv2'", 'r'), null);
+  const report = { notebook: '/p/n.md', project: '/p', checks: [], r: { library: '/p/.rat/r-library/x/R-4.6', renv: false } };
+  assert.match(NE.agentBrief(report, { path: '/p/n.md' }), /rat\.r\.dependencies/);
+  assert.doesNotMatch(NE.agentBrief({ ...report, r: undefined }, { path: '/p/n.md' }), /rat\.r\.|install\.packages/);
+});

@@ -447,3 +447,36 @@ test('completion comes from the running kernel, never starts one, never waits be
   assert.ok(Date.now() - t0 < 1000, 'completion waited behind the running cell');
   await slow;
 });
+
+// R cells: the kernel, the variables drawer and completion for R, through
+// the same endpoints as Python. Needs R with jsonlite and a rat whose look
+// answers --json (the exact completion, with where it starts).
+const haveR = haveRat && /--json\b/.test(ratHelp(['look'])) && spawnSync('Rscript', ['-e', 'library(jsonlite)'], { stdio: 'ignore' }).status === 0;
+test('R cells: run, variables, completion that says what it replaces, a missing package', { skip: !haveR && (haveRat ? 'R with jsonlite, or a rat with look --json, is missing' : ratSkip) }, async t => {
+  const { post, base } = await bootServer(t, { RAT_NOTEBOOK_REQUIREMENTS: '' });
+  const { repo, nb } = makeProject();
+  t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
+  const get = (p, q) => fetch(base + p + '?' + new URLSearchParams({ doc: nb, lang: 'r', ...q })).then(r => r.json());
+
+  const run = await post('/api/doc/run-cell', { lang: 'r', code: 'df <- data.frame(col1 = 1:3)\nnrow(df)', doc: nb, runId: 'r1' });
+  assert.equal(run.code, 0, run.out);
+  assert.match(run.out, /\[1\] 3/);
+  const kernel = await get('/api/doc/kernel');
+  assert.equal(kernel.running, true);
+  assert.equal(kernel.runtime, 'r');
+  const vars = await get('/api/doc/variables');
+  assert.deepEqual(vars.vars.map(v => [v.name, v.type]), [['df', 'data.frame']], JSON.stringify(vars));
+  assert.equal((await fetch(base + '/api/doc/kernel?doc=' + encodeURIComponent(nb) + '&lang=py').then(r => r.json())).running, false, 'the R run left the Python kernel alone');
+
+  const code = 'x <- 1\ny <- df$co';
+  const done = await post('/api/doc/complete', { doc: nb, lang: 'r', code, cursor: code.length });
+  assert.equal(done.start, 'x <- 1\ny <- '.length, JSON.stringify(done));
+  assert.deepEqual(done.items.map(i => i.label), ['df$col1']);
+  const dotted = await post('/api/doc/complete', { doc: nb, lang: 'r', code: 'data.fr', cursor: 7 });
+  assert.equal(dotted.start, 0);
+  assert.ok(dotted.items.some(i => i.label === 'data.frame' && i.kind === 'function'), JSON.stringify(dotted));
+
+  const failed = await post('/api/doc/run-cell', { lang: 'r', code: 'library(surelynotapackage)', doc: nb, runId: 'r2' });
+  assert.notEqual(failed.code, 0);
+  assert.deepEqual(require('../notebook-env.js').missingPackage(failed.out, failed.runtime), { name: 'surelynotapackage', section: 'r' });
+});
