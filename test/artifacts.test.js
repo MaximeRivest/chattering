@@ -274,7 +274,10 @@ test('a real server: versions follow the head, the preview origin serves them, w
   await shot('float-phone.png');
   await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 1000, deviceScaleFactor: 1, mobile: false }, sid);
   await until('innerWidth === 1500');
-  assert.deepEqual(await rect(), edge, 'the chosen place comes back');
+  // The pane moves on the frame after the resize: wait for it to settle (up to 5 s), then compare.
+  let back = await rect();
+  for (let i = 0; i < 100 && JSON.stringify(back) !== JSON.stringify(edge); i++) { await new Promise(r => setTimeout(r, 50)); back = await rect(); }
+  assert.deepEqual(back, edge, 'the chosen place comes back');
   // Docked, it goes beside the conversation; floating again, same place.
   await evaluate(`document.querySelector('#artifactPane [data-art-act="float"]').click(); 1`);
   await until(`document.body.classList.contains('artifact-open') && !document.body.classList.contains('artifact-float')`, 'docked');

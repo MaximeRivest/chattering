@@ -258,8 +258,9 @@ const VOICE_PICKABLE = [
     title: el => voiceText(el.querySelector('.ag-title span:not(.ag-nb-glyph)') || el.querySelector('.ag-title')) },
   { sel: '.ag-row[data-open-project]', kind: 'project', key: el => 'proj:' + el.dataset.openProject,
     title: el => voiceText(el.querySelector('.ag-title span') || el) },
+  // A file's name and folder, split on either separator (C:\a\b.md on Windows).
   { sel: '.ag-row.ag-file[data-path]', kind: 'file', key: el => 'file:' + el.dataset.path,
-    title: el => el.dataset.path.split('/').slice(-2).join('/'), target: el => el.querySelector('.ag-file-open') || el },
+    title: el => el.dataset.path.split(/[\\/]/).slice(-2).join('/'), target: el => el.querySelector('.ag-file-open') || el },
   { sel: '#view .item[data-rel]', kind: 'conversation', key: el => 'conv:' + el.dataset.rel,
     title: el => voiceText(el.querySelector('.sr-title, .mobile-work-title, .title, .t') || el) },
   { sel: '#fbList button[data-fb-entry]:not([disabled])', kind: el => (/^▸/.test(voiceText(el)) ? 'folder' : 'file'),
@@ -1023,11 +1024,13 @@ function voiceKeyInField(el, key) {
 function voiceUndo({ how = 'undo' }) {
   const ed = voiceEditor();
   // The editor's own keys, by CodeMirror's own rule (navigator.platform):
-  // Cmd+Z and Cmd+Shift+Z on a Mac, Ctrl+Z and Ctrl+Y elsewhere.
+  // Cmd+Z and Cmd+Shift+Z on a Mac, Ctrl+Z and Ctrl+Y elsewhere. Built as a
+  // real key press is: with Shift the key is 'Z', and CodeMirror finds the
+  // letter through keyCode (without it, Cmd+Shift+z reads as Cmd+z: undo).
   const mac = /Mac/.test(navigator.platform);
   const key = how === 'redo'
-    ? (mac ? { key: 'z', code: 'KeyZ', metaKey: true, shiftKey: true } : { key: 'y', code: 'KeyY', ctrlKey: true })
-    : { key: 'z', code: 'KeyZ', [mac ? 'metaKey' : 'ctrlKey']: true };
+    ? (mac ? { key: 'Z', code: 'KeyZ', keyCode: 90, metaKey: true, shiftKey: true } : { key: 'y', code: 'KeyY', keyCode: 89, ctrlKey: true })
+    : { key: 'z', code: 'KeyZ', keyCode: 90, [mac ? 'metaKey' : 'ctrlKey']: true };
   const before = ed.view.state.doc.toString();
   ed.view.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { ...key, bubbles: true, cancelable: true }));
   if (ed.view.state.doc.toString() === before) throw new Error('nothing to ' + how);

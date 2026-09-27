@@ -306,10 +306,10 @@ test('dead supervisor becomes lost and never fabricates success or kills an orph
   const f = await fixture(t);
   // A worker that outlives every check here, however slow the machine, until released.
   const task = await f.launch({ prompt: 'hold' });
-  const running = await until(async () => { const r = await D.getDelegation(task.id, f.options); return r.status === 'running' && fs.existsSync(path.join(f.root, task.id, 'observed.json')) ? r : null; });
+  const running = await until(async () => { const r = await D.getDelegation(task.id, f.options); return r.status === 'running' && fs.existsSync(path.join(f.root, task.id, 'observed.json')) ? r : null; }, 8000, () => 'the worker to run\n' + account(f.root, task.id));
   assert.ok(S.sameProcess(running.supervisorIdentity));
   process.kill(running.supervisorPid, 'SIGKILL');
-  await until(() => !S.sameProcess(running.supervisorIdentity));
+  await until(() => !S.sameProcess(running.supervisorIdentity), 8000, () => 'the supervisor to end\n' + account(f.root, task.id));
   const lost = await D.getDelegation(task.id, f.options);
   assert.equal(lost.status, 'lost');
   assert.ok(S.sameProcess(running.processIdentity), 'reconciliation does not kill orphan worker');
@@ -318,7 +318,7 @@ test('dead supervisor becomes lost and never fabricates success or kills an orph
   // Nothing signals a saved PID, not even a cancel: the orphan ends by itself.
   assert.ok(S.sameProcess(running.processIdentity), 'cancelling lost work does not kill the orphan by saved PID');
   fs.writeFileSync(path.join(f.root, task.id, 'release'), '');
-  await until(() => !S.sameProcess(running.processIdentity));
+  await until(() => !S.sameProcess(running.processIdentity), 8000, () => 'the released worker to end\n' + account(f.root, task.id));
   assert.equal((await D.getDelegation(task.id, f.options)).status, 'lost');
 });
 

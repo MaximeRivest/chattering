@@ -41,3 +41,19 @@ test('Windows command lines split as the C runtime splits them', () => {
   assert.deepEqual(s('  x   ""  y '), ['x', '', 'y'], 'an empty quoted argument is kept');
   assert.deepEqual(P.parseWinList('12\t4\tnode.exe cli.js --mode rpc\r\n13\t4\t\r\nbad line\n'), [{ pid: 12, ppid: 4, argv: ['node.exe', 'cli.js', '--mode', 'rpc'] }]);
 });
+
+test('descendantsOf walks children before parents and stops at a spared unit', () => {
+  const table = [
+    { pid: 10, ppid: 1, argv: ['node', 'worker.js'] },
+    { pid: 11, ppid: 10, argv: ['bash', '-c', 'make'] },
+    { pid: 12, ppid: 11, argv: ['cc', 'a.c'] },
+    { pid: 20, ppid: 10, argv: ['node', 'C:\\app\\delegation-supervisor.js', 'root', 'id'] },
+    { pid: 21, ppid: 20, argv: ['node', 'nested-worker.js'] },
+    { pid: 30, ppid: 99, argv: ['unrelated'] },
+  ];
+  assert.deepEqual(P.descendantsOf(table, 10), [12, 11, 21, 20, 10]);
+  const spare = argv => argv.some(a => /delegation-supervisor\.js$/i.test(a));
+  assert.deepEqual(P.descendantsOf(table, 10, spare), [12, 11, 10], 'a nested supervisor and its worker are left to stop themselves');
+  assert.deepEqual(P.descendantsOf(table, 12), [12]);
+  assert.deepEqual(P.descendantsOf([{ pid: 5, ppid: 5, argv: ['self'] }], 5), [5], 'a process listed as its own parent does not loop');
+});

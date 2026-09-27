@@ -95,8 +95,11 @@ async function supervise(root, id) {
     if (!child || exited || child.exitCode !== null || child.signalCode !== null || !S.sameProcess(childIdentity)) return false;
     const current = S.identity(child.pid);
     if (!current || current.pgrp !== child.pid || childIdentity.pgrp !== child.pid) return false;
-    // Windows has no signals or process groups: the worker's tree ends.
-    if (process.platform === 'win32') return require('./processes.js').stopTree(child.pid, signal);
+    // Windows has no signals or process groups: the worker's tree ends, but
+    // not a nested delegation's supervisor or what it runs. Like a separate
+    // process group on Unix, it sees the cancel in its records and ends as
+    // cancelled, not as lost.
+    if (process.platform === 'win32') return require('./processes.js').stopTree(child.pid, signal, { spare: argv => argv.some(a => /delegation-supervisor\.js$/i.test(a)) });
     try { process.kill(-child.pid, signal); return true; }
     catch (e) { if (e.code === 'ESRCH') return false; throw e; }
   }

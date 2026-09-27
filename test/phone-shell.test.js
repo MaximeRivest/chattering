@@ -134,7 +134,8 @@ test('phone shell: bottom bar, sheets, one-row head, back hook, desktop untouche
   assert.equal(await ev(`window.chatteringBack()`), false, 'with nothing open, back is the page history');
   await ev(`document.querySelector('[data-phone-tab=files]').click()`);
   await until(`rightFilesOpen`);
-  await ev(`document.querySelector('.ag-file[data-path=${JSON.stringify(doc)}] .ag-file-open').click()`);
+  // Matched by value, not a CSS selector: a backslash in C:\… is an escape in CSS.
+  await ev(`[...document.querySelectorAll('.ag-file[data-path]')].find(r => r.dataset.path === ${JSON.stringify(doc)}).querySelector('.ag-file-open').click()`);
   await until(`viewKind==='file' && fileWs?.path===${JSON.stringify(doc)} && !rightFilesOpen`, 'a file opens and the sheet closes');
 
   // Gantt and New from the bar; leaving for a page closes the sheet.

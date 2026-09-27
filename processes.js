@@ -205,15 +205,40 @@ function cwd(pid) {
   }
   return null; // Windows does not tell another process's working folder
 }
+// The processes under `root` in a table of { pid, ppid, argv }, children
+// before their parents, root last. The walk does not enter a process that
+// spare(argv) names, nor anything under it.
+function descendantsOf(table, root, spare = () => false) {
+  const kids = new Map();
+  for (const p of table) { if (!kids.has(p.ppid)) kids.set(p.ppid, []); kids.get(p.ppid).push(p); }
+  const out = [], seen = new Set();
+  const walk = pid => {
+    if (seen.has(pid)) return;
+    seen.add(pid);
+    for (const child of kids.get(pid) || []) if (child.pid !== pid && !spare(child.argv)) walk(child.pid);
+    out.push(pid);
+  };
+  walk(root);
+  return out;
+}
+
 // Stop a process and what it started. Unix: the process group led by pid
-// (children started detached lead their own), falling back to the pid.
-// Windows: taskkill /T, which follows parent links; always forceful, as
-// console programs have no window to receive a polite close.
-function stopTree(pid, signal = 'SIGTERM') {
+// (children started detached lead their own, and are spared), falling back
+// to the pid. Windows: taskkill /T, which follows parent links into
+// everything; always forceful, as console programs have no window to
+// receive a polite close. There, `spare(argv)` names what Unix spares by its
+// own group (a separately supervised unit, which stops itself and records
+// how): the walk stops at it, and each other process is ended one by one.
+function stopTree(pid, signal = 'SIGTERM', { spare = null } = {}) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   if (PLATFORM === 'win32') {
-    const r = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 15000 });
-    return r.status === 0;
+    const end = (p, tree) => spawnSync('taskkill', ['/PID', String(p), ...(tree ? ['/T'] : []), '/F'], { windowsHide: true, timeout: 15000 }).status === 0;
+    if (!spare) return end(pid, true);
+    let table = [];
+    try { table = parseWinList(execFileSync(POWERSHELL, psArgs(WIN_LIST_SCRIPT), { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 20000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch {}
+    let stopped = false;
+    for (const p of descendantsOf(table, pid, spare)) { const ok = end(p, false); if (p === pid) stopped = ok; }
+    return stopped;
   }
   try { process.kill(-pid, signal); return true; }
   catch (e) {
@@ -223,4 +248,4 @@ function stopTree(pid, signal = 'SIGTERM') {
 }
 
 function identityProblem() { return lastIdentityProblem; }
-module.exports = { reliable, list, warm, identity, identityProblem, cwd, stopTree, splitWindowsCommandLine, parseWinList };
+module.exports = { reliable, list, warm, identity, identityProblem, cwd, stopTree, descendantsOf, splitWindowsCommandLine, parseWinList };

@@ -52,7 +52,8 @@ test('media and HTML viewers: real server, desktop, phone, tablet and security b
   await open('reader & notes.pdf');
   const pdf = `$('filePDF').contentWindow.PDFViewerApplication`;
   await until(`${pdf}?.pdfDocument?.numPages===3 && ${pdf}.pdfViewer.getPageView(0)?.renderingState===3`, 'PDF renders on phone');
-  assert.equal(await run(`${pdf}.appConfig.viewerContainer.querySelectorAll('.textLayer span').length>0`), true, 'text layer is selectable');
+  // The text layer follows the drawn page: wait for it rather than read once.
+  await until(`${pdf}.appConfig.viewerContainer.querySelectorAll('.textLayer span').length>0`, 'text layer is selectable');
   assert.equal(await run(`$('filePDF').contentDocument.documentElement.dataset.toolbarDensity`), 'touch');
   assert.match(await run(`$('docStatus').textContent`), /3 pages/);
   assert.equal(await run(`$('filePDF').contentWindow.PDFViewerApplicationOptions.get('enableScripting')`), false);

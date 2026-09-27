@@ -1453,7 +1453,9 @@ async function indexFile(source, relPath, stat) {
       const activity = recentFilesLib.fromMessages(messages, {
         project: projectOfEntry(entry, key), key,
         resolvePath: p => {
-          if (typeof p !== 'string' || !p || p.includes('\0') || /^[a-zA-Z][\w+.-]*:/.test(p) || p.startsWith('//')) return null;
+          // A scheme (https:, file:) is not a local file; a Windows drive (C:\ or C:/) is.
+          if (typeof p !== 'string' || !p || p.includes('\0') || p.startsWith('//')) return null;
+          if (/^[a-zA-Z][\w+.-]*:/.test(p) && !(platform.IS_WIN && /^[a-zA-Z]:[\\/]/.test(p))) return null;
           const expanded = expandHomePath(p);
           if (!path.isAbsolute(expanded) && !meta.cwd) return null;
           return path.resolve(meta.cwd || '/', expanded);

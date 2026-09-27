@@ -43,6 +43,12 @@ test('on a Mac: ⌘ opens the ask box, Ctrl+K stays the editor’s own, labels s
   assert.match(await ev(`docState.editor.view.state.doc.toString()`), /\nFirst \n/);
   assert.equal(await ev(`!!document.querySelector('.ask-text')`), false, 'Ctrl+K opened the ask box as well');
 
+  // Voice undo and redo press the editor's own keys: ⌘Z, then ⌘⇧Z.
+  assert.equal(await ev(`voiceUndo({ how: 'undo' })`), 'undone');
+  assert.equal(await ev(`docState.editor.view.state.doc.toString().includes('First line of text.')`), true, 'voice undo brought the text back');
+  assert.equal(await ev(`voiceUndo({ how: 'redo' })`), 'redone');
+  assert.equal(await ev(`docState.editor.view.state.doc.toString().includes('line of text')`), false, 'voice redo deleted it again');
+
   // ⌘K (modifier 4): the ask box, focused.
   await key('k', 'KeyK', 75, 4);
   await until(`document.activeElement?.classList.contains('ask-text')`, '⌘K did not open the ask box');

@@ -108,8 +108,11 @@ if (process.argv[1] === ${JSON.stringify(path.join(root, 'server.js'))}) {
   assert.match(await fs.readFile(fork.path, 'utf8'), /test-heartbeat/);
   await post('/api/run/abort', { jobId: second.job.id });
   assert.equal((await get('/api/jobs')).find(j => j.id === parent.job.id).status, 'running');
+  // The original keeps writing: wait for its next heartbeat (every 30 ms), up
+  // to five seconds for a slow machine, rather than a fixed 100 ms.
   const size = (await fs.stat(source)).size;
-  await new Promise(resolve => setTimeout(resolve, 100));
-  assert.ok((await fs.stat(source)).size > size, 'aborting fork stopped original');
+  let grew = false;
+  for (let i = 0; i < 100 && !grew; i++) { await new Promise(resolve => setTimeout(resolve, 50)); grew = (await fs.stat(source)).size > size; }
+  assert.ok(grew, 'aborting fork stopped original');
   await post('/api/run/abort', { jobId: parent.job.id });
 });

@@ -239,9 +239,10 @@ test('voice commands on the page: cursor, buttons, folds, scrolling, zen, tree, 
   await dictate('stop', 'stop');
   const beforeUndo = await ev(docText);
   await done('undo', { how: 'undo' });
-  assert.notEqual(await ev(docText), beforeUndo, 'undo undoes');
+  const afterUndo = await ev(docText);
+  assert.notEqual(afterUndo, beforeUndo, 'undo undoes');
   await done('undo', { how: 'redo' });
-  assert.equal(await ev(docText), beforeUndo, 'redo redoes');
+  assert.equal(await ev(docText), beforeUndo, 'redo redoes; after the undo the text was: ' + JSON.stringify(afterUndo));
 
   // Keys: to the editor (its own keymap: Ctrl+Z undoes), to a text field
   // (typed by hand), Escape to the page (closes the voice help).
