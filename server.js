@@ -11820,7 +11820,7 @@ async function docAssetResponse(docPath, src) {
   const abs = path.resolve(path.dirname(doc), clean);
   const inside = root => root && (abs === root || abs.startsWith(root.endsWith(path.sep) ? root : root + path.sep));
   if (!inside(os.homedir())) throw new Error('asset is outside home');
-  const mime = imageMimeForPath(abs) || ({ '.svg': 'image/svg+xml' })[path.extname(abs).toLowerCase()];
+  const mime = imageMimeForPath(abs) || ({ '.svg': 'image/svg+xml', '.html': 'text/html; charset=utf-8' })[path.extname(abs).toLowerCase()];
   if (!mime) throw new Error('not an image asset');
   const bytes = await fsp.readFile(abs);
   if (bytes.length > 24 * 1024 * 1024) throw new Error('asset too large');
@@ -13687,6 +13687,48 @@ async function ratPlotFile(p) {
 }
 const GENERATED_ASSETS_DIR = '_assets/generated';
 
+// ---- rich displays made by rat kernels ----
+// A kernel prints "__RAT_DISPLAY__:<bundle.json>" (Jupyter's display_data:
+// {data: {mime: content}, metadata}) in rat's plot folder. What a display
+// becomes, for the page and for the document:
+//   · an interactive page (HTML with scripts: plotly, widgets), or HTML
+//     with no useful text form → a page, always served with CSP sandbox
+//     (its scripts run in an origin of their own: no cookies, no API);
+//   · an image (PNG, JPEG, SVG) → the image;
+//   · anything else → its text.
+async function ratDisplayBundle(p) {
+  const abs = await fsp.realpath(String(p || '')).catch(() => null);
+  const dir = await fsp.realpath(ratPlotDir()).catch(() => null);
+  if (!abs || !dir || !abs.startsWith(dir + path.sep) || path.extname(abs).toLowerCase() !== '.json') {
+    const e = new Error('not a display made by a rat kernel on this machine'); e.status = 404; throw e;
+  }
+  const bundle = JSON.parse(await fsp.readFile(abs, 'utf8'));
+  if (!bundle || typeof bundle.data !== 'object') { const e = new Error('not a display bundle'); e.status = 400; throw e; }
+  return bundle;
+}
+const DEFAULT_REPR = /^<[\w.]+(?: object)?(?: at 0x[0-9a-fA-F]+)?>$/;
+function displayText(v) { return Array.isArray(v) ? v.join('') : typeof v === 'string' ? v : ''; }
+function displayChoice(bundle) {
+  const data = bundle.data || {};
+  const html = displayText(data['text/html']);
+  const text = displayText(data['text/plain']);
+  const md = (bundle.metadata && (bundle.metadata['text/html'] || bundle.metadata)) || {};
+  if (html && (/<script/i.test(html) || !text.trim() || DEFAULT_REPR.test(text.trim()))) {
+    const page = /<html[\s>]/i.test(html) ? html
+      : '<!DOCTYPE html>\n<html><head><meta charset="utf-8"><style>body{margin:0;font-family:system-ui,sans-serif}</style></head><body>\n' + html + '\n</body></html>\n';
+    return { kind: 'page', bytes: Buffer.from(page, 'utf8'), ext: '.html', mime: 'text/html; charset=utf-8', height: Number(md.height) || 440 };
+  }
+  for (const [mime, ext] of [['image/png', '.png'], ['image/jpeg', '.jpg'], ['image/gif', '.gif']]) {
+    const b64 = displayText(data[mime]);
+    if (b64) return { kind: 'image', bytes: Buffer.from(b64.replace(/\s+/g, ''), 'base64'), ext, mime };
+  }
+  const svg = displayText(data['image/svg+xml']);
+  if (svg) return { kind: 'image', bytes: Buffer.from(svg, 'utf8'), ext: '.svg', mime: 'image/svg+xml' };
+  return { kind: 'text', text: text || displayText(data['text/markdown']) || displayText(data['text/latex']) };
+}
+// Headers for anything a kernel produced that a browser may execute.
+const SANDBOXED = { 'Content-Security-Policy': 'sandbox allow-scripts', 'X-Content-Type-Options': 'nosniff' };
+
 // ---- completion in notebook cells ----
 // rat completes from the live kernel (Jedi over the namespace: `auth.sta`
 // → status). Two guards: asking must never start a kernel (`rat look`
@@ -15311,6 +15353,7 @@ async function handleRequest(req, res) {
       '/vendor/mrmd-document/0.21.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.21.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
       '/vendor/mrmd-document/0.22.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.22.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
       '/vendor/mrmd-document/0.23.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.23.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+      '/vendor/mrmd-document/0.24.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.24.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
       '/vendor/mrmd-document/0.10.1/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.10.1/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
       '/chattering.apk': { file: 'chattering.apk', type: 'application/vnd.android.package-archive', cache: 'no-store', compress: false },
     }[u.pathname];
@@ -15850,7 +15893,8 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/doc/asset' && req.method === 'GET') {
       try {
         const out = await docAssetResponse(u.searchParams.get('doc') || '', u.searchParams.get('src') || '');
-        res.writeHead(200, { 'Content-Type': out.mime, 'Cache-Control': 'no-store' });
+        // A saved display page (or an SVG) may carry scripts: sandboxed.
+        res.writeHead(200, { 'Content-Type': out.mime, 'Cache-Control': 'no-store', ...(/html|svg/.test(out.mime) ? SANDBOXED : {}) });
         return res.end(out.bytes);
       } catch (e) { json(res, 404, { error: e.message }); }
     } else if (u.pathname === '/api/vouch' && req.method === 'POST') {
@@ -17473,6 +17517,58 @@ async function handleRequest(req, res) {
         res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=3600' });
         return res.end(await fsp.readFile(abs));
       } catch (e) { return json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/doc/display' && req.method === 'GET') {
+      // A display a kernel just made, shown while its cell runs: the page,
+      // the image or the text it becomes — sandboxed.
+      try {
+        const choice = displayChoice(await ratDisplayBundle(u.searchParams.get('path')));
+        if (choice.kind === 'text') {
+          res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'private, max-age=3600', ...SANDBOXED });
+          return res.end(choice.text);
+        }
+        res.writeHead(200, { 'Content-Type': choice.mime, 'Cache-Control': 'private, max-age=3600', ...SANDBOXED });
+        return res.end(choice.bytes);
+      } catch (e) { return json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/doc/outputs' && req.method === 'POST') {
+      // Keep a run's plots and displays with the project, in the order
+      // they came: each becomes an image, an embedded page or text
+      // (mrmd's rat-notebook formatParts), saved in
+      // <project>/_assets/generated/<sha256 12><ext> (same content, same file).
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      let parsed;
+      try { parsed = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
+      const doc = notebookPath(parsed.doc);
+      if (!doc) return json(res, 400, { error: 'doc (the notebook path) is required' });
+      const runtime = RAT_LANGS[String(parsed.lang || 'py').toLowerCase()] || 'py';
+      const items = Array.isArray(parsed.items) ? parsed.items.slice(0, 100) : [];
+      try {
+        assertPathAccess(identity, doc, 'act');
+        const resolved = ratJson((await ratExec(['resolve', '--doc', doc, runtime, '--json'], { cwd: path.dirname(doc), timeoutMs: 20000 })).out);
+        const root = resolved && resolved.cwd ? resolved.cwd : path.dirname(doc);
+        const dir = path.join(root, GENERATED_ASSETS_DIR);
+        if (!(dir + path.sep).startsWith(os.homedir() + path.sep)) throw Object.assign(new Error('the project is outside home'), { status: 403 });
+        assertPathAccess(identity, dir, 'act');
+        await fsp.mkdir(dir, { recursive: true });
+        const save = async (bytes, ext) => {
+          const name = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 12) + ext;
+          const dest = path.join(dir, name);
+          if (!fs.existsSync(dest)) await fsp.writeFile(dest, bytes);
+          return path.relative(path.dirname(doc), dest).split(path.sep).join('/');
+        };
+        const parts = [];
+        for (const item of items) {
+          if (item && item.kind === 'plot') {
+            parts.push({ kind: 'image', src: await save(await fsp.readFile(await ratPlotFile(item.path)), '.png'), alt: 'plot' });
+            continue;
+          }
+          const choice = displayChoice(await ratDisplayBundle(item && item.path));
+          if (choice.kind === 'page') parts.push({ kind: 'embed', src: await save(choice.bytes, choice.ext), height: choice.height });
+          else if (choice.kind === 'image') parts.push({ kind: 'image', src: await save(choice.bytes, choice.ext), alt: 'plot' });
+          else parts.push({ kind: 'text', text: choice.text });
+        }
+        json(res, 200, { parts });
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/doc/plots' && req.method === 'POST') {
       // Keep a run's plots with the project: copy each into
       // <project>/_assets/generated/<sha256 12>.png (same plot, same file)

@@ -136,6 +136,33 @@ test('an R cell: the chip, the menu and the drawer show R; completion replaces w
   })()`);
   assert.deepEqual(got, { replaced: 'df$sc', labels: ['df$score'] });
 
+  // A widget: a sandboxed embed in the document, in its place, rendered.
+  const haveDT = spawnSync('Rscript', ['-e', 'library(DT)'], { stdio: 'ignore' }).status === 0;
+  if (haveDT) {
+    await evaluate(`(() => { const t = docState.editor.getContent(); docState.editor.setContent(t + '\\n\x60\x60\x60r\\ncat(\\"table:\\\\n\\")\\nDT::datatable(head(iris, 3))\\n\x60\x60\x60\\n'); })(); 0`);
+    await until(`docState.editor.listCells().length === 3`, 'the widget cell was not added');
+    await evaluate(`runDocCell(docState.editor.listCells()[2]).then(r => { window.widgetRun = r; }); 0`);
+    await until(`window.widgetRun && !docState.running`, 'the widget cell did not finish');
+    const content = await evaluate(`docState.editor.getContent()`);
+    const embed = content.match(/\x60\x60\x60output\ntable:\n\x60\x60\x60\n\n<iframe class="rat-output" src="([^"]+\.html)" sandbox="allow-scripts"[^>]*><\/iframe>/);
+    assert.ok(embed, 'the widget is not embedded after its text:\n' + content);
+    const saved = path.join(path.dirname(notebook), embed[1]);
+    assert.match(fs.readFileSync(saved, 'utf8'), /datatables/i, 'the saved page carries the widget');
+    const asset = await fetch(base + '/api/doc/asset?' + new URLSearchParams({ doc: notebook, src: embed[1] }));
+    assert.equal(asset.headers.get('content-security-policy'), 'sandbox allow-scripts', 'a saved page is served sandboxed');
+    await evaluate(`docState.editor.view.dispatch({ selection: { anchor: 0 } }); 0`);
+    await until(`!!document.querySelector('iframe.cm-md-embed[sandbox="allow-scripts"]')`, 'the embed is not rendered as a sandboxed frame');
+    await new Promise(r => setTimeout(r, 1500));
+    await shot('notebook-r-widget.png');
+    // The cell ran again: the result is replaced, not doubled.
+    await evaluate(`runDocCell(docState.editor.listCells()[2]).then(r => { window.widgetRun2 = r; }); 0`);
+    await until(`window.widgetRun2 && !docState.running`, 'the rerun did not finish');
+    assert.equal((await evaluate(`docState.editor.getContent()`)).split('class="rat-output"').length, 2, 'a rerun doubled the embed');
+    // Leave the document as the next part expects: three cells, the widget removed.
+    await evaluate(`(() => { const t = docState.editor.getContent(); docState.editor.setContent(t.slice(0, t.indexOf('\x60\x60\x60r\\ncat(\\"table'))); })(); 0`);
+    await until(`docState.editor.listCells().length === 2`, 'the widget cell was not removed');
+  }
+
   // Code that ignores the interrupt: the first cancel interrupts, the
   // button then offers to stop the kernel, and the second click does.
   await evaluate(`(() => { const t = docState.editor.getContent(); docState.editor.setContent(t + '\\n\x60\x60\x60r\\nrepeat tryCatch(Sys.sleep(0.05), interrupt = function(e) NULL)\\n\x60\x60\x60\\n'); })(); 0`);

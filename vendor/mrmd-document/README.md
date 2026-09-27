@@ -11,7 +11,12 @@ owns the editing surface.
 
 ## Current artifact
 
-- Version: 0.23.0 (entry `src/document-entry.js`, global `mrmdDocument`)
+- Version: 0.24.0 (entry `src/document-entry.js`, global `mrmdDocument`)
+- 0.24.0: rich displays. A run's result is an ordered series of output
+  blocks, images and embeds (`<iframe class="rat-output" … sandbox>` for
+  interactive pages: plotly, htmlwidgets); `setCellOutput(cell, text,
+  {parts})`, the runner's `transport.displayUrl` and `saveOutputs`, the
+  run panel's `appendFrame`, and owned embeds rendered as sandboxed frames.
 - 0.23.0: Julia code blocks (```julia, ```jl) and .jl files are coloured,
   as R and Python blocks already were.
 - 0.22.0: `review.accept(pos)` / `review.reject(pos)` — the change at a place

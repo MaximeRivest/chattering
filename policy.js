@@ -184,6 +184,7 @@ const ROUTES = {
   '/api/exec': 'guest', // runs behind the guest's walls
   '/api/doc/complete': 'guest',
   '/api/doc/plots': 'guest',
+  '/api/doc/outputs': 'guest',
   '/api/doc/follow': 'guest',
   '/api/files/stats': 'member',
   '/api/files/timeline': 'member',
@@ -227,6 +228,7 @@ const ROUTES = {
   '/api/doc/ai': 'member',
   '/api/doc/ai-accept': 'member',
   '/api/doc/plot': 'member',
+  '/api/doc/display': 'member', // reads rat's plot folder, shared by everyone on the machine, as /api/doc/plot
   '/api/doc/ensure': 'member',
   '/api/doc/notebook-from-answer': 'member',
   '/api/doc/notebooks': 'member',

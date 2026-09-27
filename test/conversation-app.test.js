@@ -476,7 +476,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
     window.runStream = null; window.plotSaves = [];
     window.fetch = (url, opts) => {
       const u = String(url);
-      if (u.includes('/api/doc/plots')) { plotSaves.push(JSON.parse(opts.body)); return Promise.resolve(new Response(JSON.stringify({ images: [{ src: '../_assets/generated/abc123def456.png', alt: 'plot' }] }))); }
+      if (u.includes('/api/doc/outputs')) { plotSaves.push(JSON.parse(opts.body)); return Promise.resolve(new Response(JSON.stringify({ parts: [{ kind: 'image', src: '../_assets/generated/abc123def456.png', alt: 'plot' }] }))); }
       if (u.includes('/api/doc/run-cell')) return Promise.resolve(new Response(new ReadableStream({ start(c) { window.runStream = c; } }), { headers: { 'Content-Type': 'application/x-ndjson' } }));
       return liveOriginalFetch(url, opts);
     };
@@ -487,7 +487,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   await until(`(document.querySelector('.mrmd-cell-run-images img')?.getAttribute('src') || '').startsWith('/api/doc/plot?path=')`, 'the plot did not show while running');
   await evaluate(`(() => { emit({ type: 'done', code: 0, out: 'drawing\\n__RAT_PLOT__:/c/rat/plots/fig-9-0.png\\n\\n\u2713 0.2s | 3 vars', runtime: 'py', ms: 200 }); runStream.close(); })()`);
   await until(`!docState.running && docState.editor.getContent().includes('abc123def456.png')`, 'the plot was not linked in the document');
-  assert.deepEqual(await evaluate(`plotSaves.map(p => p.paths)`), [['/c/rat/plots/fig-9-0.png']]);
+  assert.deepEqual(await evaluate(`plotSaves.map(p => p.items)`), [[{ kind: 'plot', path: '/c/rat/plots/fig-9-0.png' }]]);
   assert.match(await evaluate(`docState.editor.getContent()`), /\x60\x60\x60output\ndrawing\n\x60\x60\x60\n\n!\[plot\]\(\.\.\/_assets\/generated\/abc123def456\.png\)/);
   // Another client's run, followed on this tab's event stream: drawn on its
   // cell, with a Stop that interrupts the kernel; not written.
