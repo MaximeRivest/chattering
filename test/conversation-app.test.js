@@ -12,7 +12,8 @@ const net = require('node:net');
 const { spawn, spawnSync } = require('node:child_process');
 const { chromiumBinary, chromiumAvailable } = require('./helpers/chromium.js');
 
-test('complete app and server: conversation reading, Files browsing, MRMD, diffs, and mobile layout', { timeout: 60000 }, async t => {
+// The longest browser test: two minutes, for a loaded three-core CI machine (35 s alone).
+test('complete app and server: conversation reading, Files browsing, MRMD, diffs, and mobile layout', { timeout: 120000 }, async t => {
   if (!chromiumAvailable()) return t.skip('chromium is not installed');
   const root = path.join(__dirname, '..'), home = fs.mkdtempSync(path.join(os.homedir(), '.conversation-app-test-'));
   let server, browser, ws;
