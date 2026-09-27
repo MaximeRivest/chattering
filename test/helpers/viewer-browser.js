@@ -65,7 +65,15 @@ async function viewerBrowser(t, opts = {}) {
     if (m.method === 'Network.requestWillBeSent') requests.push(m.params.request);
     if (pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
   };
-  const send = (method, params = {}, sessionId) => new Promise(r => { pending.set(++id, r); ws.send(JSON.stringify({ id, method, params, sessionId })); });
+  // CHATTERING_TEST_TRACE=1 logs every step with its time: where a test
+  // waits is then visible on a system one cannot sit at (CI's debug run).
+  const trace = process.env.CHATTERING_TEST_TRACE === '1' ? (m => process.stderr.write(`[trace ${((Date.now() - traceStart) / 1000).toFixed(1)}s] ${m}\n`)) : () => {};
+  const traceStart = Date.now();
+  const send = (method, params = {}, sessionId) => new Promise(r => {
+    pending.set(++id, m => { if (m.error) trace(method + ' → error ' + JSON.stringify(m.error).slice(0, 200)); r(m); });
+    trace(method + ' ' + (params.expression ? String(params.expression).replace(/\s+/g, ' ').slice(0, 140) : params.url || ''));
+    ws.send(JSON.stringify({ id, method, params, sessionId }));
+  });
   const target = await send('Target.createTarget', { url: 'about:blank' });
   const attached = await send('Target.attachToTarget', { targetId: target.result.targetId, flatten: true }), sid = attached.result.sessionId;
   const command = (method, params) => send(method, params, sid);

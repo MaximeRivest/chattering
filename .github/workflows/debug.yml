@@ -1,0 +1,33 @@
+# Run chosen test files on a chosen system, with each browser step logged:
+# for finding where a test waits on a system nobody here sits at.
+name: debug
+
+on:
+  workflow_dispatch:
+    inputs:
+      os: { description: 'runner', required: true, default: macos-latest }
+      files: { description: 'test files, space separated', required: true, default: test/file-view.test.js }
+
+jobs:
+  debug:
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+      - run: npm ci --prefix runtime --no-audit --no-fund
+      - id: chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          chrome-version: stable
+      - run: git config --global user.name "Chattering tests" && git config --global user.email "tests@chattering.invalid"
+      - name: Tests, traced
+        env:
+          CHATTERING_TEST_CHROMIUM: ${{ steps.chrome.outputs.chrome-path }}
+          CHATTERING_TEST_TRACE: '1'
+        run: node scripts/test-each.js ${{ inputs.files }}
