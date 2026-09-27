@@ -7020,6 +7020,14 @@ function renderDocDoctor(st, strip, report) {
       + ((rs.requirements || []).length ? '\nDeclared: ' + rs.requirements.join(', ') : '')
       + '\n(front matter rat.r.dependencies; packages installed elsewhere stay visible)'
       + (report.ratNote ? '\n' + report.ratNote : '');
+  } else if (shownLang === 'jl' && report.julia && report.julia.kernel) {
+    const js = report.julia;
+    chip.textContent = '⚙ ' + js.kernel + (js.version ? ' · Julia ' + js.version : '');
+    chip.title = 'Kernel: ' + js.kernel + '\nProject: ' + report.project + ' (' + report.project_source + ')'
+      + (js.project_environment ? '\nActive environment: ' + js.project_environment : '')
+      + '\nNotebook packages go into: ' + js.environment + ' (stacked on LOAD_PATH)'
+      + ((js.requirements || []).length ? '\nDeclared: ' + js.requirements.join(', ') : '\n(front matter rat.julia.dependencies)')
+      + (report.ratNote ? '\n' + report.ratNote : '');
   } else if (shownLang !== 'py' && !(shownLang === 'r' && rs)) {
     const name = DOC_LANG_NAMES[shownLang] || shownLang;
     chip.textContent = '⚙ ' + name + ' · ' + shortDir(report.project);
@@ -7150,9 +7158,14 @@ function createDocRunner(st, bundle) {
     // notebook): fill the chip from the doctor report already in hand.
     if (st.doctor && !el.querySelector('.doc-run-chip').textContent) renderDocDoctor(st, el, st.doctor);
     if (!current) { state.textContent = st.lastRunText; cancelBtn.hidden = true; return; }
-    state.textContent = st.cancelling ? '■ interrupting the kernel…' : label();
+    // Cancel interrupts; code that ignores the interrupt is still running
+    // 3 s later, and the button then offers to stop its kernel.
+    const force = st.cancelling === 'force';
+    state.textContent = force ? '■ the code did not stop' : st.cancelling === 'stopping' ? '■ stopping the kernel…' : st.cancelling ? '■ interrupting the kernel…' : label();
     cancelBtn.hidden = false;
-    cancelBtn.disabled = !!st.cancelling;
+    cancelBtn.disabled = st.cancelling === true || st.cancelling === 'stopping';
+    cancelBtn.textContent = force ? '■ stop the kernel' : '■ cancel';
+    cancelBtn.title = force ? 'The code ignores the interrupt. Stop its kernel: every variable in it is lost, and the next run starts a fresh one.' : 'Interrupt the kernel (variables survive)';
     cancelBtn.onclick = () => st.cancelRun && st.cancelRun();
   };
   const runner = bundle.createNotebookRunner(st.editor, {
@@ -7160,7 +7173,13 @@ function createDocRunner(st, bundle) {
     transport: {
       run: ({ lang, code, runId }, onEvent) => docRunRequest({ lang, code, doc: st.path, runId }, onEvent),
       answer: (runId, text) => postJson('/api/doc/run-input', { runId, text }),
-      cancel: runId => { st.cancelling = true; st.paintRun(); return postJson('/api/doc/cancel-run', { runId }); },
+      cancel: runId => {
+        const again = st.cancelling === 'force';
+        st.cancelling = again ? 'stopping' : true;
+        st.paintRun();
+        if (!again) setTimeout(() => { if (st.running === runId && st.cancelling === true) { st.cancelling = 'force'; st.paintRun(); } }, 3500);
+        return postJson('/api/doc/cancel-run', { runId });
+      },
       interrupt: cell => postJson('/api/doc/kernel', { doc: st.path, lang: cell && cell.lang || docKernelLang(st), op: 'cancel' }),
       plotUrl: p => '/api/doc/plot?' + new URLSearchParams({ path: p }),
       savePlots: async paths => {
@@ -7211,7 +7230,7 @@ function createDocRunner(st, bundle) {
         if (result.missing) refreshDocDoctor(); // rat vanished: say so in the strip, not per cell
         // The cell's code changed while it ran: its result would describe other code.
         if (!wrote) toast('the cell changed while it ran — output not written');
-        const ran = st.doctor && (docCellRuntime(cell) === 'r' ? st.doctor.r : st.doctor.python);
+        const ran = st.doctor && ({ r: st.doctor.r, jl: st.doctor.julia }[docCellRuntime(cell)] || st.doctor.python);
         if (!ran || !ran.kernel_running) refreshDocDoctor(); // the first run started the kernel
         if (el) offerDeclareDependency(el, result, cell);
       },
@@ -7705,7 +7724,7 @@ async function offerDeclareDependency(strip, r, cell) {
     ? `<span class="dim">⚙ <b>${esc(moduleName)}</b> is this project's own package (${esc(report.project_package)}). Declare it in the notebook and install it editable:</span>
        <button class="doc-fix-go">＋ -e . → rat ensure → rerun</button>
        <span class="doc-fix-note dim" hidden></span>`
-    : `<span class="dim">${section === 'r' ? 'R package' : 'module'} <b>${esc(moduleName)}</b> is missing · add to this notebook's ${section === 'r' ? 'R packages (a pak reference: name, owner/repo, bioc::name)' : 'dependencies (edit if the package name differs)'}:</span>
+    : `<span class="dim">${{ r: 'R package', julia: 'Julia package' }[section] || 'module'} <b>${esc(moduleName)}</b> is missing · add to this notebook's ${{ r: 'R packages (a pak reference: name, owner/repo, bioc::name)', julia: 'Julia packages (a name, a Git URL, or ./path)' }[section] || 'dependencies (edit if the package name differs)'}:</span>
        <input class="doc-fix-pkg" spellcheck="false">
        <button class="doc-fix-go">＋ declare → rat ensure → rerun</button>
        <span class="doc-fix-note dim" hidden></span>`;
@@ -7741,7 +7760,7 @@ async function offerDeclareDependency(strip, r, cell) {
     fix.remove();
     const report = await ensureDocEnvironment(st, {});
     if (docState !== st || !report) return;
-    const env = section === 'r' ? report.r : report.python;
+    const env = { r: report.r, julia: report.julia }[section] || report.python;
     const stillMissing = env && (env.missing || []).length;
     if (stillMissing || (report.steps || []).some(s => !s.ok)) return;
     // The declaration moved the document: find the same cell at its new

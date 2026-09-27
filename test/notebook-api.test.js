@@ -480,3 +480,29 @@ test('R cells: run, variables, completion that says what it replaces, a missing 
   assert.notEqual(failed.code, 0);
   assert.deepEqual(require('../notebook-env.js').missingPackage(failed.out, failed.runtime), { name: 'surelynotapackage', section: 'r' });
 });
+
+// Julia cells, through the same endpoints. Needs julia and a rat with the
+// Julia kernel.
+const haveJulia = haveRat && /--json\b/.test(ratHelp(['look'])) && !spawnSync('julia', ['--version']).error; // look --json and the Julia kernel ship together
+test('Julia cells: run, variables, completion that says what it replaces, a missing package', { skip: !haveJulia && 'julia, or a rat with the Julia kernel, is missing', timeout: 120000 }, async t => {
+  const { post, base } = await bootServer(t, { RAT_NOTEBOOK_REQUIREMENTS: '' });
+  const { repo, nb } = makeProject();
+  t.after(() => fs.rmSync(repo, { recursive: true, force: true }));
+  const get = (p, q) => fetch(base + p + '?' + new URLSearchParams({ doc: nb, lang: 'julia', ...q })).then(r => r.json());
+
+  const run = await post('/api/doc/run-cell', { lang: 'julia', code: 'my_values = [1.5, 2.5]\nsum(my_values)', doc: nb, runId: 'j1' });
+  assert.equal(run.code, 0, run.out);
+  assert.match(run.out, /^4\.0$/m);
+  assert.equal((await get('/api/doc/kernel')).runtime, 'jl');
+  const vars = await get('/api/doc/variables');
+  assert.deepEqual(vars.vars.map(v => [v.name, v.type]), [['my_values', 'Vector{Float64}']], JSON.stringify(vars));
+
+  const code = 'x = 1\ny = my_va';
+  const done = await post('/api/doc/complete', { doc: nb, lang: 'julia', code, cursor: code.length });
+  assert.equal(done.start, 'x = 1\ny = '.length, JSON.stringify(done));
+  assert.deepEqual(done.items.map(i => i.label), ['my_values']);
+
+  const failed = await post('/api/doc/run-cell', { lang: 'julia', code: 'using SurelyNotAPackage', doc: nb, runId: 'j2' });
+  assert.notEqual(failed.code, 0);
+  assert.deepEqual(require('../notebook-env.js').missingPackage(failed.out, failed.runtime), { name: 'SurelyNotAPackage', section: 'julia' });
+});

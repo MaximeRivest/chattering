@@ -26,11 +26,14 @@ rat:
   r:
     dependencies:
       - <ONLY if the answer is in R: one pak reference per package the cells load with library() (a CRAN name such as dplyr, owner/repo for GitHub, bioc::name for Bioconductor); omit the whole "r" key otherwise, and omit "python" when there is no Python>
+  julia:
+    dependencies:
+      - <ONLY if the answer is in Julia: one line per package the cells load with using/import (the registered name such as DataFrames, or a Git URL); omit the whole "julia" key otherwise>
   after:
     - <the relative path of an existing notebook listed below, ONLY if this notebook truly continues from the state that notebook builds; omit the whole "after" key otherwise>
 ---
 
-Then the document itself: prose written as a document, not as a reply (no "you asked", no "as I said"), and code cells in the answer's language as \`\`\`python, \`\`\`r or \`\`\`bash fences that run in order. Every import and every variable a cell uses must be defined earlier in this notebook, or in a notebook you declared under "after". Do not include output fences or invented results; the reader runs the cells and sees real ones. Keep the explanations from the answer that help a reader understand what the code does and why. Leave out dead ends, apologies, and anything that was only about this conversation. Do not use tools.`;
+Then the document itself: prose written as a document, not as a reply (no "you asked", no "as I said"), and code cells in the answer's language as \`\`\`python, \`\`\`r, \`\`\`julia or \`\`\`bash fences that run in order. Every import and every variable a cell uses must be defined earlier in this notebook, or in a notebook you declared under "after". Do not include output fences or invented results; the reader runs the cells and sees real ones. Keep the explanations from the answer that help a reader understand what the code does and why. Leave out dead ends, apologies, and anything that was only about this conversation. Do not use tools.`;
 
 // The fixed prompt plus the facts only the server knows.
 function buildPrompt({ projectRoot, notebooksDir, existing = [], editable = [], projectPackage = null }) {

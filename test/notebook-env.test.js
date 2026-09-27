@@ -138,3 +138,15 @@ test('R: addDependency writes rat.r.dependencies, missingPackage reads R\u2019s 
   assert.match(NE.agentBrief(report, { path: '/p/n.md' }), /rat\.r\.dependencies/);
   assert.doesNotMatch(NE.agentBrief({ ...report, r: undefined }, { path: '/p/n.md' }), /rat\.r\.|install\.packages/);
 });
+
+test('Julia: the package error, the header section, the brief', () => {
+  const err = 'ERROR: ArgumentError: Package Example not found in current path.\n- Run `import Pkg; Pkg.add("Example")` to install the Example package.';
+  assert.deepEqual(NE.missingPackage(err, 'jl'), { name: 'Example', section: 'julia' });
+  assert.equal(NE.missingPackage(err, 'py'), null);
+  assert.equal(NE.addDependency('# t\n', 'Example', 'julia'), '---\nrat:\n  julia:\n    dependencies:\n      - Example\n---\n# t\n');
+  const report = { notebook: '/p/n.md', project: '/p', checks: [], julia: { environment: '/p/.rat/julia' } };
+  const brief = NE.agentBrief(report, { path: '/p/n.md' });
+  assert.match(brief, /rat\.julia\.dependencies/);
+  assert.match(brief, /rat restart jl/);
+  assert.doesNotMatch(brief, /rat\.r\./);
+});

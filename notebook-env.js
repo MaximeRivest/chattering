@@ -274,7 +274,8 @@
 
   // A package a failed cell could not load, by the kernel's runtime:
   // Python's ModuleNotFoundError, R's "there is no package called 'x'"
-  // (curly quotes in a UTF-8 locale). Returns { name, section } or null.
+  // (curly quotes in a UTF-8 locale), Julia's "Package X not found in
+  // current path". Returns { name, section } or null.
   function missingPackage(output, runtime) {
     const text = String(output || '');
     if (runtime === 'py') {
@@ -282,8 +283,12 @@
       return name ? { name, section: 'python' } : null;
     }
     if (runtime === 'r') {
-      const m = text.match(/there is no package called [‘'‘`]([A-Za-z][A-Za-z0-9.]*)[’'’`]/);
+      const m = text.match(/there is no package called [\u2018'`]([A-Za-z][A-Za-z0-9.]*)[\u2019'`]/);
       return m ? { name: m[1], section: 'r' } : null;
+    }
+    if (runtime === 'jl') {
+      const m = text.match(/Package ([A-Za-z_][A-Za-z0-9_]*) not found in current path/);
+      return m ? { name: m[1], section: 'julia' } : null;
     }
     return null;
   }
@@ -318,6 +323,7 @@
       }
       for (const a of report.after || []) lines.push('   prerequisite ' + String(a.path).split(/[\\/]/).pop() + (a.played ? ' (already ran in this kernel)' : ' (not yet run in this kernel)'));
       if ((report.actions || []).length) lines.push('planned by `rat ensure`: ' + report.actions.map(a => a.label + (a.effect ? ' [' + a.effect + ']' : '')).join('; '));
+      if (report.julia && report.julia.environment) lines.push('Julia packages go into ' + report.julia.environment + ' (stacked on the Julia kernel\u0027s LOAD_PATH; the project\u0027s own Project.toml is not changed)');
       if (report.r && report.r.library) lines.push('R packages go into ' + report.r.library + (report.r.renv ? ' (the project uses renv)' : ' (the project\u0027s own library, first on the R kernel\u0027s .libPaths())'));
       if (report.python && (report.python.editable || []).length) lines.push('this project\u0027s own packages, as installed in its environment: ' + report.python.editable.map(e => '`' + e.line + '` (' + e.name + ')').join(', '));
       lines.push('');
@@ -326,12 +332,14 @@
     }
     if (lastOutput) lines.push('Last failing cell' + (focus ? ' (' + focus + ')' : '') + ' printed:', '```', String(lastOutput).trim().split('\n').slice(-25).join('\n'), '```', '');
     const hasR = !!(report && report.r);
+    const hasJulia = !!(report && report.julia);
     lines.push(
       'Please:',
-      '1. Read the front matter (`rat.python.dependencies`, `rat.python.requires`, ' + (hasR ? '`rat.r.dependencies`, ' : '') + '`rat.after`) and the report above. The header is the declaration: fix problems there, never with a pip install inside a cell.'
-        + (hasR ? ' The same holds for R: never install.packages() in a cell; R packages are pak references in `rat.r.dependencies` (dplyr, ggplot2@3.5.1, owner/repo@ref, bioc::X, local::.).' : ''),
+      '1. Read the front matter (`rat.python.dependencies`, `rat.python.requires`, ' + (hasR ? '`rat.r.dependencies`, ' : '') + (hasJulia ? '`rat.julia.dependencies`, ' : '') + '`rat.after`) and the report above. The header is the declaration: fix problems there, never with a pip install inside a cell.'
+        + (hasR ? ' The same holds for R: never install.packages() in a cell; R packages are pak references in `rat.r.dependencies` (dplyr, ggplot2@3.5.1, owner/repo@ref, bioc::X, local::.).' : '')
+        + (hasJulia ? ' The same holds for Julia: never Pkg.add in a cell; Julia packages go in `rat.julia.dependencies` (DataFrames, Plots@1.40, a Git URL#rev, ./LocalPkg).' : ''),
       '2. Work with rat: `rat doctor ' + name + ' --json` to see the plan, `rat ensure ' + name + '` to carry it out. Do not reinstall or replace what is already installed; editable checkouts stay editable (use the `-e` lines listed above for this project\u0027s own packages).',
-      '3. Prove it: `rat restart py`' + (hasR ? ' (and `rat restart r`)' : '') + ' for this project, then `rat play ' + name + '` — every cell must run top to bottom. If a cell fails for a code reason, change the notebook minimally and say exactly what you changed and why.',
+      '3. Prove it: `rat restart py`' + (hasR ? ' (and `rat restart r`)' : '') + (hasJulia ? ' (and `rat restart jl`)' : '') + ' for this project, then `rat play ' + name + '` — every cell must run top to bottom. If a cell fails for a code reason, change the notebook minimally and say exactly what you changed and why.',
       '4. Report: what was wrong, what you changed (header, environment, or code), and the final `rat doctor` result. Do not claim it works unless `rat play` passed.',
     );
     return lines.join('\n');

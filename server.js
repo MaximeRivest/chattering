@@ -17248,11 +17248,17 @@ async function handleRequest(req, res) {
       const entry = activeDocRuns.get(String(parsed.runId || ''));
       if (!entry) return json(res, 404, { error: 'no such run (it may have finished already)' });
       entry.cancelled = true;
+      entry.cancels = (entry.cancels || 0) + 1;
       const out = await ratExec(['cancel', '--doc', entry.doc, entry.runtime], { cwd: path.dirname(entry.doc), timeoutMs: 15000 });
-      // The interrupt normally makes `rat run` return on its own; the kill
-      // is a fallback for a wedged pipe.
-      setTimeout(() => { try { entry.child.kill('SIGKILL'); } catch {} }, 3000);
-      json(res, 200, { ok: out.code === 0, ratCancel: { out: out.out.trim(), code: out.code } });
+      // The interrupt normally makes `rat run` return on its own. Code that
+      // ignores it (a Julia loop that never allocates, C code) keeps the
+      // run going: the page then offers to cancel again, and rat stops the
+      // kernel. Only then is the run's process killed if it still hangs
+      // (a wedged pipe) — earlier, the page would call the cell stopped
+      // while its kernel still computed.
+      const stopped = /kernel stopped/.test(out.out);
+      if (stopped || entry.cancels >= 2) setTimeout(() => { try { entry.child.kill('SIGKILL'); } catch {} }, 3000);
+      json(res, 200, { ok: out.code === 0, stopped, ratCancel: { out: out.out.trim(), code: out.code } });
     } else if (u.pathname === '/api/doc/doctor' && req.method === 'GET') {
       // Can this notebook run as it is? Pure passthrough of `rat doctor
       // <notebook> --json`: project, environment, declared requirements,

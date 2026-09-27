@@ -136,6 +136,25 @@ test('an R cell: the chip, the menu and the drawer show R; completion replaces w
   })()`);
   assert.deepEqual(got, { replaced: 'df$sc', labels: ['df$score'] });
 
+  // Code that ignores the interrupt: the first cancel interrupts, the
+  // button then offers to stop the kernel, and the second click does.
+  await evaluate(`(() => { const t = docState.editor.getContent(); docState.editor.setContent(t + '\\n\x60\x60\x60r\\nrepeat tryCatch(Sys.sleep(0.05), interrupt = function(e) NULL)\\n\x60\x60\x60\\n'); })(); 0`);
+  await until(`docState.editor.listCells().length === 3`, 'the stubborn cell was not added');
+  await evaluate(`runDocCell(docState.editor.listCells()[2]).then(r => { window.stubborn = r; }); 0`);
+  await until(`!!docState.running && !document.querySelector('.doc-run-cancel').hidden`, 'the stubborn cell did not start');
+  await new Promise(r => setTimeout(r, 800));
+  await evaluate(`document.querySelector('.doc-run-cancel').click(); 0`);
+  assert.match(await evaluate(`document.querySelector('.doc-run-state').textContent`), /interrupting/);
+  assert.equal(await evaluate(`document.querySelector('.doc-run-cancel').disabled`), true);
+  await until(`document.querySelector('.doc-run-cancel').textContent === '■ stop the kernel' && !document.querySelector('.doc-run-cancel').disabled`, 'the button did not offer to stop the kernel');
+  assert.equal(await evaluate(`!!docState.running`), true, 'the cell was called stopped while its kernel still ran');
+  await shot('notebook-r-stop-kernel.png');
+  await evaluate(`document.querySelector('.doc-run-cancel').click(); 0`);
+  await until(`!docState.running`, 'stopping the kernel did not end the run');
+  const after = await fetch(base + '/api/doc/variables?' + new URLSearchParams({ doc: notebook, lang: 'r' })).then(r => r.json());
+  // A fresh R session: the stopped one's variables are gone.
+  assert.deepEqual(after.vars || [], [], 'the R kernel was not stopped: ' + JSON.stringify(after));
+
   // Back to Python from the menu: the chip follows.
   await evaluate(`docShowKernel(docState, 'py'); 0`);
   assert.equal(await evaluate(`docKernelLang(docState)`), 'py');
