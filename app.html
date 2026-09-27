@@ -2433,6 +2433,7 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <link rel="stylesheet" href="/conversation-reader.css">
 <link rel="stylesheet" href="/artifacts.css">
 <link rel="stylesheet" href="/conversation-draft.css">
+<link rel="stylesheet" href="/ai-connect.css">
 <script src="/conversation-flow.js"></script>
 <script src="/conversation-tree.js"></script>
 <script src="/conversation-reader.js"></script>
@@ -2441,6 +2442,8 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <script src="/timeline-chart.js"></script>
 <script src="/context-panel.js"></script>
 <script src="/conversation-draft.js"></script>
+<script src="/ai-connect.js"></script>
+<script src="/welcome.js"></script>
 <script src="/file-completion-ui.js"></script>
 <script src="/linediff.js"></script>
 <script src="/notebook-env.js"></script>
@@ -5361,9 +5364,24 @@ function mobileConversationCard(s) {
       <div class="snip">${esc(shortDir(s.cwd || ''))}</div></div></div>`;
 }
 
+// A home with nothing in it yet is the welcome (welcome.js): connect an AI,
+// decide the background helpers, start. A home with conversations but no
+// AI gets one line above them. True when the welcome took the list.
+function homeWelcome(list) {
+  if (viewKind !== 'home' || !window.Welcome) return false;
+  // After the timeline is drawn (this render is synchronous).
+  if (sessions.some(s => s.key)) { queueMicrotask(() => Welcome.banner(list)); return false; }
+  disposeHomeTimeline();
+  Welcome.banner(list);
+  Welcome.paint(list);
+  $('projSort').hidden = true;
+  return true;
+}
+
 function renderMobileConversations() {
   disposeHomeTimeline();
   const list = $('list');
+  if (homeWelcome(list)) return;
   const rows0 = shown.filter(s => s.key);
   const rows = (showBranchRows() ? rows0 : collapseFamilies(rows0)).slice().sort((a, b) =>
     Date.parse(b.lastTs || b.firstTs || 0) - Date.parse(a.lastTs || a.firstTs || 0));
@@ -5416,6 +5434,7 @@ function renderTimeline() {
   // Other squat layouts keep the card list in portrait.
   if (phoneLayout() && !phoneDevice() && !window.matchMedia('(orientation: landscape)').matches) return renderMobileConversations();
   const list = $('list');
+  if (homeWelcome(list)) return;
   let convRows = shown.filter(s => s.key && s.firstTs);
   // The magnifier next to the sort buttons narrows the home rows by project.
   if (viewKind === 'home' && projFilterActive()) convRows = convRows.filter(s => projFuzzyMatch(projectOf(s)));
@@ -15557,6 +15576,7 @@ let voiceMuteTimer = null;
 
 const SETTINGS_PANES = [
   ['profile', 'your profile', 'Your name, initials and picture.'],
+  ['ai', 'AI accounts', 'Sign in with a Claude or ChatGPT plan, add a key, or use a model on your computer.'],
   ['model', 'model', 'Which model writes notes, titles, epics, and memory.'],
   ['sound', 'sound', 'What the speakers do when a run finishes; voice commands.'],
   ['search', 'search', 'Meaning-based search on the GPU server.'],
@@ -15615,6 +15635,18 @@ function bindOptions(root, name, onPick) {
 
 function modelLabelOf(provider, model) {
   return provider && model ? provider + ' / ' + model : 'not set';
+}
+
+// Connecting this machine to an AI (ai-connect.js, design/73).
+function paneAi() {
+  if (settingsState && settingsState.canEditSettings === false) return `<h2>AI accounts</h2><p class="hint">The owner of this computer connects the AI everyone here uses.</p>`;
+  return `<h2>AI accounts</h2>
+    <p class="hint">Which AI Chattering talks to on this computer: a plan you already pay for, a key, or a model you run yourself. New conversations use the model chosen here; each conversation can pick another.</p>
+    <div id="aiAccountsHost"></div>`;
+}
+function bindPaneAi(root) {
+  const host = root.querySelector('#aiAccountsHost');
+  if (host && window.AiConnect) { AiConnect.mount(host); AiConnect.refresh().catch(() => {}); }
 }
 
 function paneModel() {
@@ -16102,6 +16134,7 @@ const SETTINGS_PANE_RENDER = {
   sound: [paneSound, bindPaneSound],
   search: [paneSearch, bindPaneSearch],
   snippets: [paneSnippets, bindPaneSnippets],
+  ai: [paneAi, bindPaneAi],
   machines: [paneMachines, bindPaneMachines],
   people: [panePeople, bindPanePeople],
   appearance: [paneAppearance, bindPaneAppearance],
@@ -16167,6 +16200,14 @@ function maybeAskBackgroundAi() {
   const s = settingsOf();
   if (bgAskShown || !settingsState || !settingsState.canEditSettings) return;
   if (!s.backgroundAi || s.backgroundAi.decidedAt) return;
+  // Asked once an AI exists to do the work (design/73): before that nothing
+  // can run anyway, and the question would be about nothing. The welcome
+  // asks it in its own steps; this dialog is for a home that has history.
+  if (window.Welcome && Welcome.showing()) return;
+  if (window.AiConnect) {
+    if (!AiConnect.summary) { (AiConnect.loading || AiConnect.refresh()).then(() => maybeAskBackgroundAi(), () => {}); return; }
+    if (!AiConnect.ready()) return;
+  }
   bgAskShown = true;
   const n = Number(settingsState.conversations) || 0;
   // Name the model plainly: a newcomer does not know what "pi default" is.
@@ -17927,6 +17968,13 @@ live.onmessage = ev => {
     if (current && activeRel === d.key) { current.project = d.project; convHead(current); }
     if (viewKind === 'home' && tab === 'conv') render();
     else if (projectOverviewName === LOOSE_PROJECT) showLooseConversations();
+    return;
+  }
+  if (d.type === 'ai-accounts') {
+    // An AI was connected or removed here or on another device (design/73).
+    if (window.AiConnect && settingsState && settingsState.canEditSettings) AiConnect.refresh().catch(() => {});
+    loadSettings().catch(() => {});
+    if (modelsState) loadModels(true).catch(() => {});
     return;
   }
   if (d.type === 'project-folds') {

@@ -8,12 +8,13 @@ const { spawn } = require('node:child_process');
 const { chromiumBinary } = require('./chromium.js');
 
 // opts: setup(home) before the server starts (settings files…), env for
-// the server, flags for the browser.
+// the server, flags for the browser; fixture: false for a home with no
+// conversation at all (a stranger's first start).
 async function viewerBrowser(t, opts = {}) {
   const root = path.join(__dirname, '../..'), home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'file-viewers-')));
   const work = path.join(home, 'work'); fs.mkdirSync(work);
   const agent = path.join(home, '.pi/agent'), sessions = path.join(agent, 'sessions/fixture'); fs.mkdirSync(sessions, { recursive: true });
-  fs.writeFileSync(path.join(sessions, 'media.jsonl'), [
+  if (opts.fixture !== false) fs.writeFileSync(path.join(sessions, 'media.jsonl'), [
     { type: 'session', version: 3, id: 'media', cwd: work },
     { type: 'message', id: 'u1', timestamp: '2026-09-01T12:00:00Z', message: { role: 'user', content: [{ type: 'text', text: 'File viewer fixture' }] } },
   ].map(JSON.stringify).join('\n') + '\n');
@@ -45,7 +46,7 @@ async function viewerBrowser(t, opts = {}) {
   server.stdout.on('data', b => log += b); server.stderr.on('data', b => log += b);
   let ready = false;
   for (let i = 0; i < 150; i++) {
-    try { const rows = await (await fetch(base + '/api/sessions', { headers: auth })).json(); if (rows.some(s => s.key === 'pi:fixture/media.jsonl')) { ready = true; break; } } catch {}
+    try { const rows = await (await fetch(base + '/api/sessions', { headers: auth })).json(); if (opts.fixture === false ? Array.isArray(rows) : rows.some(s => s.key === 'pi:fixture/media.jsonl')) { ready = true; break; } } catch {}
     if (server.exitCode !== null) break;
     await new Promise(r => setTimeout(r, 100));
   }

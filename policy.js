@@ -45,6 +45,10 @@ const ROUTES = {
   '/api/themes.css': 'guest',
   '/api/models': 'guest',
   '/api/models/last': 'member',
+  // Connecting this machine to an AI (design/73): accounts and keys are the
+  // machine's, so only its administrators sign in, add servers or test.
+  '/api/ai': 'owner',
+  '/api/ai/*': 'owner',
   'GET /api/modes': 'guest',
   'PUT /api/modes': 'member',
   'POST /api/modes': 'member',
@@ -393,6 +397,8 @@ const EVENTS = {
   index: () => () => true,
   'project-folds': () => () => true,
   users: () => () => true,
+  // The AI accounts changed (design/73): a ping, the browser refetches.
+  'ai-accounts': () => () => true,
   // This machine's agents, speaker and delegations: the household's.
   'agent-recovery': () => can => can.member,
   'delegation-update': () => can => can.member,

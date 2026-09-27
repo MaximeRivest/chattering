@@ -1,0 +1,97 @@
+/* "Connect your AI" and the welcome (ai-connect.js, welcome.js; design/73).
+   Built from the theme's tokens only, so every theme, e-ink included, draws it. */
+
+.aic-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--sp-3); margin: var(--sp-3) 0; }
+.aic-card { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; column-gap: 10px; row-gap: 2px; align-items: start; align-content: start;
+  text-align: left; padding: 14px; min-height: 76px; border: 1px solid var(--border-strong); border-radius: var(--r-dialog, var(--r)); background: var(--surface-1); cursor: pointer; }
+.aic-card:hover { background: var(--surface-2); border-color: var(--accent); }
+.aic-card .aic-glyph { grid-row: span 2; font-size: 20px; line-height: 1.2; color: var(--accent); width: 24px; text-align: center; }
+.aic-card b { font-size: 15px; }
+.aic-card span:not(.aic-glyph) { color: var(--text-dim); font-size: 13px; line-height: 1.4; }
+
+.aic-detected { display: grid; gap: var(--sp-2); margin: var(--sp-3) 0; }
+.aic-found { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 12px 14px; border: 1px solid var(--accent); border-radius: var(--r-dialog, var(--r)); background: color-mix(in oklab, var(--accent) 10%, var(--surface-1)); cursor: pointer; }
+.aic-found span { color: var(--text-dim); font-size: 13px; }
+
+.aic-connected { border: 1px solid var(--border-strong); border-radius: var(--r-dialog, var(--r)); padding: 12px 14px; background: var(--surface-1); margin: var(--sp-3) 0; }
+.aic-list { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 6px; }
+.aic-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 30px; }
+.aic-list .aic-how { color: var(--text-dim); font-size: 13px; }
+.aic-list button { margin-left: auto; }
+.aic-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success, var(--green)); flex: 0 0 auto; }
+.aic-model { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.aic-model > span { color: var(--text-dim); font-size: 13px; }
+.aic-model select { min-width: 220px; max-width: 100%; }
+.aic-hello { margin: 10px 0 0; padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--surface-2); border-radius: var(--r-sm, 4px); font-size: 14px; }
+.aic-hello small { display: block; color: var(--text-dim); font-size: 12px; margin-top: 4px; }
+.aic-more > summary { cursor: pointer; color: var(--text-dim); padding: 6px 0; min-height: 30px; }
+.aic-privacy, .aic-note { color: var(--text-dim); font-size: 13px; line-height: 1.5; }
+.aic-error { color: var(--danger); font-size: 14px; line-height: 1.5; }
+.aic-wait { color: var(--text-dim); font-size: 14px; }
+.aic-wait::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 8px; border-radius: 50%; border: 2px solid var(--accent); border-right-color: transparent; vertical-align: -1px; animation: aic-spin 0.9s linear infinite; }
+:root[data-theme-motion="none"] .aic-wait::before { animation: none; }
+@keyframes aic-spin { to { transform: rotate(360deg); } }
+
+/* The dialogs: a sign-in, a key picker, a model server. */
+.aic-dialog { width: min(560px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); overflow: auto; box-sizing: border-box; padding: 0;
+  border: 1px solid var(--border-strong); border-radius: var(--r-dialog, var(--r)); background: var(--bg); color: var(--text); box-shadow: var(--shadow); }
+.aic-dialog::backdrop { background: var(--overlay); }
+.aic-dialog > .aic-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px 22px 0; }
+.aic-dialog h2 { font-size: 19px; margin: 0; }
+.aic-dialog .aic-close { min-width: 44px; min-height: 44px; }
+.aic-body { padding: 8px 22px 22px; font-size: 14px; line-height: 1.55; }
+.aic-body > p { margin: 10px 0; }
+.aic-body footer { display: flex; justify-content: flex-end; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+.aic-go { display: inline-block; padding: 10px 16px; border-radius: var(--r); background: var(--accent-strong); color: var(--accent-ink); font-weight: 700; text-decoration: none; }
+.aic-go:hover { filter: brightness(1.05); }
+.aic-answer { display: grid; gap: 10px; margin: 12px 0; }
+.aic-answer label { display: grid; gap: 6px; font-size: 14px; }
+.aic-answer label small { color: var(--text-dim); }
+.aic-answer input { width: 100%; height: 38px; background: var(--surface-1); border: 1px solid var(--border-strong); border-radius: var(--r); padding: 0 10px; color: var(--text); font: 14px var(--font-mono); }
+.aic-answer button { justify-self: end; min-height: 36px; }
+.aic-fallback { margin-top: 12px; }
+.aic-fallback > summary { cursor: pointer; color: var(--text-dim); min-height: 30px; }
+.aic-steps { padding-left: 20px; display: grid; gap: 10px; }
+.aic-code { font: 700 22px var(--font-mono); letter-spacing: 0.12em; padding: 2px 8px; border: 1px dashed var(--border-strong); border-radius: var(--r-sm, 4px); }
+.aic-choices { display: flex; gap: 10px; flex-wrap: wrap; }
+.aic-choices button { min-height: 40px; }
+.aic-success { display: flex; gap: 12px; align-items: flex-start; margin-top: 12px; }
+.aic-success p { margin: 4px 0 0; }
+.aic-check { flex: 0 0 auto; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--success, var(--green)); color: var(--bg); font-weight: 700; }
+.aic-search { width: 100%; height: 38px; margin: 6px 0 10px; }
+.aic-rows { display: grid; gap: 6px; }
+.aic-row { display: flex; align-items: center; gap: 10px; text-align: left; min-height: 44px; padding: 8px 12px; }
+.aic-row span { color: var(--text-dim); font-size: 13px; }
+.aic-row em { margin-left: auto; color: var(--success, var(--green)); font-style: normal; font-size: 12px; }
+.aic-others > summary { cursor: pointer; color: var(--text-dim); padding: 8px 0; min-height: 30px; }
+.aic-others[open] { display: grid; gap: 6px; }
+
+/* The welcome: a new person's home (welcome.js). */
+.wel { max-width: 760px; margin: 0 auto; padding: 32px 24px 48px; box-sizing: border-box; }
+.wel h1 { font-size: 28px; line-height: 1.2; margin: 0 0 8px; }
+.wel-lead { color: var(--text-dim); font-size: 15px; line-height: 1.55; margin: 0 0 24px; }
+.wel-step { display: grid; grid-template-columns: 32px 1fr; gap: 0 14px; padding: 18px 0; border-top: 1px solid var(--border); }
+.wel-step > .wel-n { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; border: 1px solid var(--border-strong); color: var(--text-dim); font-weight: 700; font-size: 13px; }
+.wel-step.done > .wel-n { background: var(--success, var(--green)); border-color: transparent; color: var(--bg); }
+.wel-step.now > .wel-n { border-color: var(--accent); color: var(--accent); }
+.wel-step.later { opacity: 0.55; }
+.wel-step h2 { font-size: 17px; margin: 2px 0 4px; }
+.wel-step p { margin: 4px 0; font-size: 14px; line-height: 1.55; }
+.wel-step .wel-summary { color: var(--text-dim); font-size: 14px; }
+.wel-kind { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; cursor: pointer; font-size: 14px; line-height: 1.5; }
+.wel-kind small { display: block; color: var(--text-dim); font-size: 13px; }
+.wel-kind input { margin-top: 4px; }
+.wel-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.wel-actions button { min-height: 38px; }
+.wel-examples { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.wel-examples button { border-radius: var(--r-pill, 999px); font-size: 13px; color: var(--text-dim); }
+.wel-found { margin: 0 0 20px; padding: 12px 14px; border: 1px solid var(--border-strong); border-radius: var(--r-dialog, var(--r)); background: var(--surface-1); font-size: 14px; }
+/* A home with conversations but no AI: one line above the timeline. */
+.wel-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 12px; padding: 12px 14px; border: 1px solid var(--accent); border-radius: var(--r-dialog, var(--r)); background: color-mix(in oklab, var(--accent) 8%, var(--surface-1)); font-size: 14px; }
+.wel-banner b { font-size: 15px; }
+.wel-banner button { margin-left: auto; }
+@media (max-width: 700px) {
+  .wel { padding: 20px 16px 96px; }
+  .wel h1 { font-size: 24px; }
+  .aic-grid { grid-template-columns: 1fr; }
+}

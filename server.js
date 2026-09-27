@@ -5445,6 +5445,24 @@ function listPiModels(force = false) {
   });
   return modelsPending;
 }
+
+// Connecting this machine to an AI (design/73): Pi's sign-ins, keys, model
+// servers and default model, driven from the page. A change refreshes the
+// model list and tells every page to ask again.
+const aiAccounts = require('./ai-accounts.js').createAiAccounts({
+  agentDir: PI_AGENT_DIR, authPath: PI_AUTH_FILE, modelsPath: PI_MODELS_FILE, settingsPath: PI_SETTINGS_FILE,
+  nodePath: runtimeLib.nodePath(),
+  onChange: () => {
+    listPiModels(true).catch(() => {}).finally(() => broadcast({ type: 'ai-accounts' }));
+    broadcast({ type: 'ai-accounts' });
+  },
+});
+// The small JSON body of an AI-accounts request (a key fits; a file does not).
+async function aiBody(req) {
+  let body = '';
+  for await (const chunk of req) { body += chunk; if (body.length > 32 * 1024) throw Object.assign(new Error('too large'), { status: 413 }); }
+  try { return JSON.parse(body || '{}'); } catch { throw Object.assign(new Error('bad json'), { status: 400 }); }
+}
 // The flags for Chattering's own model calls. `overrides` adjusts one call
 // (a lower thinking level for a quick edit); settings stay as they are.
 function piArgs(overrides = null) {
@@ -15361,6 +15379,9 @@ async function handleRequest(req, res) {
       '/conversation-reader.css': { file: 'conversation-reader.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/conversation-draft.js': { file: 'conversation-draft.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/conversation-draft.css': { file: 'conversation-draft.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+      '/ai-connect.js': { file: 'ai-connect.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/ai-connect.css': { file: 'ai-connect.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+      '/welcome.js': { file: 'welcome.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/tokens.css': { file: 'design/tokens.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/surfaces.css': { file: 'design/surfaces.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/recent-files.js': { file: 'recent-files.js', type: 'application/javascript; charset=utf-8', cache: 'no-cache' },
@@ -16924,6 +16945,22 @@ async function handleRequest(req, res) {
       // in: from now on this machine's own requests need the install token.
       if (lanWanted() && !prevLan && LAN_TOKEN && isLocalRequest(req)) res.setHeader('Set-Cookie', `chattering=${encodeURIComponent(LAN_TOKEN)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
       json(res, 200, settingsResponse(identity));
+    } else if (u.pathname === '/api/ai' || u.pathname.startsWith('/api/ai/')) {
+      // Connecting this machine to an AI (design/73). Owner tier only (policy.js).
+      try {
+        const route = req.method + ' ' + u.pathname;
+        if (route === 'GET /api/ai') return json(res, 200, await aiAccounts.summary());
+        if (route === 'POST /api/ai/login') { const p = await aiBody(req); return json(res, 200, aiAccounts.loginState(aiAccounts.startLogin(String(p.provider || ''), String(p.method || '')))); }
+        if (route === 'GET /api/ai/login') return json(res, 200, aiAccounts.loginState(String(u.searchParams.get('id') || '')));
+        if (route === 'POST /api/ai/login/answer') { const p = await aiBody(req); return json(res, 200, aiAccounts.answer(String(p.id || ''), String(p.prompt || ''), p.value)); }
+        if (route === 'POST /api/ai/login/cancel') { const p = await aiBody(req); aiAccounts.cancel(String(p.id || '')); return json(res, 200, { ok: true }); }
+        if (route === 'POST /api/ai/logout') { const p = await aiBody(req); return json(res, 200, await aiAccounts.logout(String(p.provider || ''))); }
+        if (route === 'POST /api/ai/server') { const p = await aiBody(req); return json(res, 200, await aiAccounts.addServer({ baseUrl: p.baseUrl, apiKey: p.apiKey })); }
+        if (route === 'POST /api/ai/server/remove') { const p = await aiBody(req); return json(res, 200, aiAccounts.removeServer(String(p.name || ''))); }
+        if (route === 'POST /api/ai/default') { const p = await aiBody(req); return json(res, 200, aiAccounts.setDefault(String(p.provider || ''), String(p.model || ''))); }
+        if (route === 'POST /api/ai/test') { const p = await aiBody(req); return json(res, 200, await aiAccounts.test(p.provider ? String(p.provider) : '', p.model ? String(p.model) : '')); }
+        return json(res, 404, { error: 'not found' });
+      } catch (e) { return json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/models') {
       const listed = await listPiModels(u.searchParams.get('refresh') === '1');
       // Reply-speed figures come from the usage index; bring it up to date
