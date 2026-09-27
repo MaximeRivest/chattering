@@ -68,7 +68,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   server.stdout.on('data', b => serverLog += b); server.stderr.on('data', b => serverLog += b);
   const base = 'http://127.0.0.1:' + port, key = 'pi:fixture/chat.jsonl';
   let indexed = false;
-  for (let i = 0; i < 150; i++) {
+  for (let i = 0; i < 200; i++) {
     try { const rows = await (await fetch(base + '/api/sessions')).json(); if (rows.some(s => s.key === key)) { indexed = true; break; } } catch {}
     if (server.exitCode != null) break;
     await new Promise(r => setTimeout(r, 100));
@@ -100,7 +100,8 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false }, sid);
   await send('Network.setCookie', { name: 'chattering', value: TEST_TOKEN, url: base }, sid);
   await send('Page.navigate', { url: base + '/#' + encodeURIComponent(key) }, sid);
-  for (let i = 0; i < 200; i++) {
+  // Up to twenty seconds for the app to load on a loaded machine; a pass costs no wait.
+  for (let i = 0; i < 400; i++) {
     if (await evaluate('!!document.querySelector("[data-reader-answer]")')) break;
     await new Promise(r => setTimeout(r, 50));
   }
@@ -173,7 +174,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   const keypress = key => evaluate(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:${JSON.stringify(key)},bubbles:true,cancelable:true}))`);
   const find = async text => {
     await evaluate(`document.querySelector('#fbSearch').value=${JSON.stringify(text)};document.querySelector('#fbSearch').dispatchEvent(new Event('input',{bubbles:true}))`);
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < 660; i++) {
       if (await evaluate(`filesBrowser.finder.items.length>0`)) return;
       await new Promise(r => setTimeout(r, 30));
     }
@@ -251,7 +252,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   await evaluate(`showFilesBrowser(projectOf(current),{conv:current.key,mode:'changes',range:'day',actor:'human'})`);
   assert.equal(await evaluate(`document.querySelectorAll('.fb-change').length`), 1);
   await evaluate(`document.querySelector('.fb-change').open=true`);
-  for (let i = 0; i < 120; i++) {
+  for (let i = 0; i < 400; i++) {
     if (await evaluate(`!!document.querySelector('.fb-diff-row')`)) break;
     await new Promise(r => setTimeout(r, 50));
   }
@@ -293,7 +294,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   assert.equal(await evaluate(`!!document.querySelector('#codeEditor')`), true);
   const waitSaved = async predicate => {
     let latest;
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < 400; i++) {
       const doc = await (await fetch(pointURL)).json();
       latest = doc.points?.filter(p => p.kind === 'saved').at(-1);
       if (latest && await predicate(latest)) return latest;

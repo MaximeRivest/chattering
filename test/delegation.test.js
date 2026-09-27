@@ -119,9 +119,10 @@ test('preflight rejects invalid cwd, model, mode, tool mismatch, parent and deli
 
 test('detached supervisor persists exact argv, independent session, results and sanitized environment', async t => {
   const f = await fixture(t);
-  const started = Date.now(), task = await f.launch({ prompt: 'short-wait' });
-  assert.ok(Date.now() - started < 600, 'launch must not wait for worker completion');
-  assert.ok(['starting', 'running'].includes(task.status));
+  const task = await f.launch({ prompt: 'short-wait' });
+  // Launch does not wait for the worker: it answers while the work is still
+  // under way (this worker takes 0.7 s). Shown by the state, not a clock.
+  assert.ok(['starting', 'running'].includes(task.status), 'launch must not wait for worker completion: ' + task.status);
   assert.equal(task.parentTaskId, null);
   const done = await f.done(task.id);
   assert.equal(done.status, 'succeeded', done.error);

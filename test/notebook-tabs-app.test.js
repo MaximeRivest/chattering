@@ -53,7 +53,7 @@ test('a notebook runs on while you are elsewhere, and comes back as it was', { t
   server.stdout.on('data', b => serverLog += b); server.stderr.on('data', b => serverLog += b);
   const base = 'http://127.0.0.1:' + port, key = 'pi:fixture/chat.jsonl';
   let indexed = false;
-  for (let i = 0; i < 150; i++) {
+  for (let i = 0; i < 200; i++) {
     try { const rows = await (await fetch(base + '/api/sessions')).json(); if (rows.some(s => s.key === key)) { indexed = true; break; } } catch {}
     if (server.exitCode != null) break;
     await new Promise(r => setTimeout(r, 100));

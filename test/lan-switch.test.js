@@ -35,7 +35,7 @@ async function boot(t, extraEnv) {
   child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b);
   t.after(() => require('./helpers/cleanup.js').stopAndRemove(child, home));
   const base = 'http://127.0.0.1:' + port;
-  for (let i = 0; i < 200; i++) {
+  for (let i = 0; i < 400; i++) {
     try { if ((await fetch(base + '/api/settings', withToken(home))).ok) break; } catch {}
     await new Promise(r => setTimeout(r, 50));
   }

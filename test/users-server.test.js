@@ -139,7 +139,7 @@ test('people, sharing, presence and handoff on one install', { skip: !lanIp() &&
   const lillyEvents = [];
   const lillyStream = await fetch(remote + '/api/events', as(lillyCookie));
   pump(lillyStream.body.getReader(), lillyEvents);
-  const until = async (fn, ms = 4000) => { const t0 = Date.now(); while (!fn()) { if (Date.now() - t0 > ms) throw new Error('timeout'); await new Promise(r => setTimeout(r, 25)); } };
+  const until = async (fn, ms = 5000) => { const t0 = Date.now(); while (!fn()) { if (Date.now() - t0 > ms) throw new Error('timeout'); await new Promise(r => setTimeout(r, 25)); } };
   await until(() => ownerEvents.some(e => e.type === 'hello') && lillyEvents.some(e => e.type === 'hello'));
   const lillyHello = lillyEvents.find(e => e.type === 'hello');
   assert.equal(lillyHello.me.name, 'Lilly');

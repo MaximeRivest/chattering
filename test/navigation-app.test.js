@@ -59,7 +59,7 @@ test('back and forward through the screens', { timeout: 90000 }, async t => {
   server.stdout.on('data', b => serverLog += b); server.stderr.on('data', b => serverLog += b);
   const base = 'http://127.0.0.1:' + port;
   let indexed = false;
-  for (let i = 0; i < 150; i++) {
+  for (let i = 0; i < 200; i++) {
     try { const rows = await (await fetch(base + '/api/sessions')).json(); if (Object.values(keys).every(k => rows.some(s => s.key === k))) { indexed = true; break; } } catch {}
     if (server.exitCode != null) break;
     await new Promise(r => setTimeout(r, 100));

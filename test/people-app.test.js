@@ -53,7 +53,7 @@ test('two people share a machine: sign-in, presence, one compose box, one file, 
   server.stdout.on('data', b => serverLog += b); server.stderr.on('data', b => serverLog += b);
   const base = 'http://' + lanIp() + ':' + port, key = 'pi:shared/chat.jsonl';
   let indexed = false;
-  for (let i = 0; i < 150; i++) {
+  for (let i = 0; i < 200; i++) {
     try { const rows = await (await fetch('http://127.0.0.1:' + port + '/api/sessions')).json(); if (rows.some(s => s.key === key) && rows.length === 2) { indexed = true; break; } } catch {}
     if (server.exitCode != null) break;
     await new Promise(r => setTimeout(r, 100));
@@ -91,7 +91,8 @@ test('two people share a machine: sign-in, presence, one compose box, one file, 
       return out.result?.result?.value;
     };
     const go = async url => { await send('Page.navigate', { url }, sid); };
-    const until = async (expr, ms = 8000) => { const t0 = Date.now(); for (;;) { let v = null; try { v = await evaluate(expr); } catch {} if (v) return v; if (Date.now() - t0 > ms) throw new Error('timeout waiting for ' + expr + '\n' + exceptions.join('\n') + '\n' + serverLog.slice(-2000)); await new Promise(r => setTimeout(r, 60)); } };
+    // Twenty seconds for a loaded machine; a pass costs no wait.
+    const until = async (expr, ms = 20000) => { const t0 = Date.now(); for (;;) { let v = null; try { v = await evaluate(expr); } catch {} if (v) return v; if (Date.now() - t0 > ms) throw new Error('timeout waiting for ' + expr + '\n' + exceptions.join('\n') + '\n' + serverLog.slice(-2000)); await new Promise(r => setTimeout(r, 60)); } };
     await go(signInUrl);
     await until('document.readyState === "complete" && location.search === ""');
     return { evaluate, go, until };

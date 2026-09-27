@@ -121,7 +121,7 @@ test('phone shell: bottom bar, sheets, one-row head, back hook, desktop untouche
   // Files: the same file list as the desktop's right column, as a sheet.
   await ev(`document.querySelector('[data-phone-tab=files]').click()`);
   await until(`rightFilesOpen && document.body.classList.contains('phone-files') && !$('rightFilePanel').hidden`, 'Files opens as a sheet');
-  assert.equal(await ev(`document.querySelector('.ag-files-block').checkVisibility() && [...document.querySelectorAll('.ag-file')].some(r=>r.dataset.path===${JSON.stringify(doc)})`), true, 'the recent file is listed');
+  await until(`document.querySelector('.ag-files-block')?.checkVisibility() && [...document.querySelectorAll('.ag-file')].some(r=>r.dataset.path===${JSON.stringify(doc)})`, 'the recent file is listed');
   await ev(`document.querySelector('[data-phone-tab=agents]').click()`);
   await until(`!$('agentsPop').hidden && !rightFilesOpen`, 'one sheet at a time');
   await ev(`document.querySelector('[data-phone-tab=agents]').click()`);

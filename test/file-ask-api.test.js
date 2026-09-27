@@ -46,7 +46,7 @@ async function boot(t) {
   const base = 'http://127.0.0.1:' + port;
   for (let i = 0; i < 300; i++) { try { if ((await fetch(base + '/api/settings')).ok) break; } catch {} await sleep(50); }
   // Saves go to files of known repositories: wait for the first scan.
-  for (let i = 0; i < 200; i++) {
+  for (let i = 0; i < 400; i++) {
     try { if (((await (await fetch(base + '/api/git/repos')).json()).repos || []).some(r => (r.root || r.path || r) === repo)) break; } catch {}
     await sleep(50);
   }

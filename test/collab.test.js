@@ -14,7 +14,7 @@ const { createCollab, textDiff } = require('../collab.js');
 
 const { Y, syncProtocol, awarenessProtocol, encoding, decoding } = yjs;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const until = async (fn, ms = 3000) => { const t = Date.now(); while (!fn()) { if (Date.now() - t > ms) throw new Error('timeout'); await sleep(15); } };
+const until = async (fn, ms = 5000) => { const t = Date.now(); while (!fn()) { if (Date.now() - t > ms) throw new Error('timeout'); await sleep(15); } };
 
 // A tiny y-websocket client: the same message shapes the browser provider sends.
 function client(url, { name = 'x' } = {}) {

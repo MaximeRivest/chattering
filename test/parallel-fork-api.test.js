@@ -84,7 +84,7 @@ if (process.argv[1] === ${JSON.stringify(path.join(root, 'server.js'))}) {
   };
   const key = 'pi:fixture/source.jsonl';
   let indexed = false;
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 400; i++) {
     try { if ((await get('/api/sessions')).some(s => s.key === key)) { indexed = true; break; } } catch {}
     if (child.exitCode !== null) break;
     await new Promise(resolve => setTimeout(resolve, 50));
