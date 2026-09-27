@@ -10,9 +10,15 @@ const D = require('../delegation');
 const S = require('../delegation-store');
 const { resultParser } = require('../delegation-supervisor');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-async function until(fn, timeout = 8000) {
+// explain(): what to add to a timeout's message, so a slow system's failure names its cause.
+async function until(fn, timeout = 8000, explain = null) {
   const end = Date.now() + timeout;
-  for (;;) { const value = await fn(); if (value) return value; if (Date.now() > end) throw new Error('Timed out waiting for fixture'); await sleep(30); }
+  for (;;) { const value = await fn(); if (value) return value; if (Date.now() > end) throw new Error('Timed out waiting for fixture' + (explain ? '\n' + await explain() : '')); await sleep(30); }
+}
+// A task's own account: its state, events, and the tail of its supervisor and worker logs.
+function account(root, id) {
+  const tail = name => { try { return fs.readFileSync(path.join(root, id, name), 'utf8').slice(-2000) || '(empty)'; } catch { return '(none)'; } };
+  return ['state.json', 'events.jsonl', 'supervisor.log', 'stderr.log'].map(name => `--- ${name}\n${tail(name)}`).join('\n');
 }
 const FAKE = String.raw`
 const fs = require('node:fs'), path = require('node:path');
@@ -66,7 +72,9 @@ else {
     const D = require(process.env.FIXTURE_RUNNER);
     D.launchDelegation({title:'Nested child',role:'helper',prompt:'wait',model:'fake/test',tools:mode.tools,mode,cwd:process.cwd(),parentSessionPath:file,parentEntryId:'mode1',delivery:'nextTurn'}, {root:process.env.PI_DELEGATION_ROOT,piExecutable:process.execPath,piArgs:[__filename],supervision:'detached'}).then(t=>S.atomic(path.join(path.dirname(arg('--prompt-mode-file')),'nested.json'),JSON.stringify(t)));
   }
-  const delay = ['wait','stubborn','nested','process-tree'].includes(behavior) ? 20000 : behavior === 'short-wait' ? 700 : 30;
+  // hold: runs until the test writes 'release' in the task folder, then ends by itself.
+  if(behavior === 'hold') setInterval(()=>{ if(fs.existsSync(path.join(path.dirname(arg('--prompt-mode-file')),'release'))) process.exit(0); },50);
+  const delay = ['wait','stubborn','nested','process-tree'].includes(behavior) ? 20000 : behavior === 'hold' ? 600000 : behavior === 'short-wait' ? 700 : 30;
   setTimeout(()=>{
     const message={role:'assistant',provider:'fake',model:behavior === 'bad-model'?'other':'test',stopReason:behavior === 'length'?'length':'stop',content:[{type:'text',text:'fixture completed ☃'}]};
     append({type:'message',id:'answer',parentId:'mode1',message});
@@ -242,7 +250,7 @@ test('worker executable start errors become durable failed records', async t => 
 test('pause blocks descendants; resume does not undo durable subtree cancellation; recursive delivery uses exact parent', async t => {
   const f = await fixture(t);
   const parent = await f.launch({ prompt: 'nested', delivery: 'web' });
-  const nested = await until(() => S.readJson(path.join(f.root, parent.id, 'nested.json'), null));
+  const nested = await until(() => S.readJson(path.join(f.root, parent.id, 'nested.json'), null), 8000, () => account(f.root, parent.id));
   assert.equal(nested.parentTaskId, parent.id);
   assert.equal(nested.parentSessionPath, parent.sessionPath);
   assert.equal(nested.delivery, 'web', 'JSON child inherits parent web policy');
@@ -269,7 +277,10 @@ test('cancel concurrent with launch leaves no running subtree; stubborn owned pr
   const children = await Promise.all(launches);
   for (const task of [parent, ...children]) assert.equal((await f.done(task.id)).status, 'cancelled');
   const events = fs.readFileSync(parent.eventLogPath, 'utf8');
-  assert.match(events, /cancel-kill/);
+  // Unix asks first (SIGTERM, which this worker ignores), then kills. Windows
+  // has no polite stop for console programs: the first stop is already final.
+  if (process.platform === 'win32') assert.match(events, /"type":"cancel-signalled","signalled":true/);
+  else assert.match(events, /cancel-kill/);
 });
 
 test('cancellation signals the owned worker process group, including ordinary tool children', async t => {
@@ -293,7 +304,8 @@ test('caller process exit does not stop detached workers; new caller reads compl
 
 test('dead supervisor becomes lost and never fabricates success or kills an orphan', async t => {
   const f = await fixture(t);
-  const task = await f.launch({ prompt: 'short-wait' });
+  // A worker that outlives every check here, however slow the machine, until released.
+  const task = await f.launch({ prompt: 'hold' });
   const running = await until(async () => { const r = await D.getDelegation(task.id, f.options); return r.status === 'running' && fs.existsSync(path.join(f.root, task.id, 'observed.json')) ? r : null; });
   assert.ok(S.sameProcess(running.supervisorIdentity));
   process.kill(running.supervisorPid, 'SIGKILL');
@@ -303,6 +315,9 @@ test('dead supervisor becomes lost and never fabricates success or kills an orph
   assert.ok(S.sameProcess(running.processIdentity), 'reconciliation does not kill orphan worker');
   await D.controlDelegation(task.id, 'cancel', f.options);
   assert.equal((await D.getDelegation(task.id, f.options)).status, 'lost');
+  // Nothing signals a saved PID, not even a cancel: the orphan ends by itself.
+  assert.ok(S.sameProcess(running.processIdentity), 'cancelling lost work does not kill the orphan by saved PID');
+  fs.writeFileSync(path.join(f.root, task.id, 'release'), '');
   await until(() => !S.sameProcess(running.processIdentity));
   assert.equal((await D.getDelegation(task.id, f.options)).status, 'lost');
 });
@@ -409,13 +424,14 @@ test('continuing with another model or reasoning level changes only the next att
 
 test('lost work continues after its supervisor vanished; refusals name the reason', async t => {
   const f = await fixture(t);
-  const task = await f.launch({ prompt: 'short-wait' });
-  const running = await until(async () => { const r = await D.getDelegation(task.id, f.options); return r.status === 'running' ? r : null; });
+  const task = await f.launch({ prompt: 'hold' });
+  const running = await until(async () => { const r = await D.getDelegation(task.id, f.options); return r.status === 'running' && fs.existsSync(path.join(f.root, task.id, 'observed.json')) ? r : null; });
   process.kill(running.supervisorPid, 'SIGKILL');
   await until(() => !S.sameProcess(running.supervisorIdentity));
   const lost = await D.getDelegation(task.id, f.options);
   assert.equal(lost.status, 'lost'); assert.equal(lost.failure.kind, 'interrupted');
   await assert.rejects(D.resumeDelegation(task.id, {}, f.options), /still alive/);
+  fs.writeFileSync(path.join(f.root, task.id, 'release'), '');
   await until(() => !S.sameProcess(running.processIdentity));
   const resumed = await D.resumeDelegation(task.id, {}, f.options);
   assert.equal(resumed.attempt, 2);
