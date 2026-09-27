@@ -11,7 +11,9 @@ owns the editing surface.
 
 ## Current artifact
 
-- Version: 0.22.0 (entry `src/document-entry.js`, global `mrmdDocument`)
+- Version: 0.23.0 (entry `src/document-entry.js`, global `mrmdDocument`)
+- 0.23.0: Julia code blocks (```julia, ```jl) and .jl files are coloured,
+  as R and Python blocks already were.
 - 0.22.0: `review.accept(pos)` / `review.reject(pos)` — the change at a place
   (default: the cursor), for voice commands ("accept", "reject").
 - 0.21.0: `lineWrapping` option and `setLineWrapping(on)` in both editors.
