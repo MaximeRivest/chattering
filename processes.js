@@ -112,7 +112,14 @@ const POWERSHELL = (() => {
 const psError = e => String((e && e.stderr) || (e && e.message) || e || '').trim().split(/\r?\n/).filter(Boolean).slice(0, 3).join(' ').slice(0, 400);
 let lastIdentityProblem = '';
 const psArgs = script => ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script];
-const WIN_LIST_SCRIPT = "Get-CimInstance Win32_Process | ForEach-Object { '{0}\t{1}\t{2}' -f $_.ProcessId, $_.ParentProcessId, $_.CommandLine }";
+// .NET and WMI directly, never a cmdlet: a cmdlet's first use makes
+// PowerShell look it up across every installed module, which without the
+// per-user cache (in AppData) takes many seconds. Language syntax only
+// (::new, foreach, -f): New-Object, Add-Type and Select-Object are cmdlets too.
+const LOAD_WMI = "[void][System.Reflection.Assembly]::Load('System.Management, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'); ";
+const WIN_LIST_SCRIPT = LOAD_WMI + "foreach ($p in [System.Management.ManagementObjectSearcher]::new('SELECT ProcessId, ParentProcessId, CommandLine FROM Win32_Process').Get()) { '{0}\t{1}\t{2}' -f $p['ProcessId'], $p['ParentProcessId'], $p['CommandLine'] }";
+const winStartScript = pid => `[System.Diagnostics.Process]::GetProcessById(${Number(pid)}).StartTime.ToUniversalTime().ToString('o')`;
+const WIN_BOOT_SCRIPT = LOAD_WMI + "foreach ($o in [System.Management.ManagementObjectSearcher]::new('SELECT LastBootUpTime FROM Win32_OperatingSystem').Get()) { [System.Management.ManagementDateTimeConverter]::ToDateTime($o['LastBootUpTime']).ToUniversalTime().ToString('o'); break }";
 let winSnapshot = [], winSnapshotAt = 0, winRefreshing = false;
 function parseWinList(text) {
   const out = [];
@@ -158,14 +165,14 @@ function winIdentity(pid) {
   // now and then so a reuse between two looks is still noticed.
   if (!known || Date.now() - known.checkedAt > 30000) {
     let start = null;
-    try { start = execFileSync(POWERSHELL, psArgs(`(Get-Process -Id ${Number(pid)} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`), { encoding: 'utf8', timeout: 10000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim() || null; }
+    try { start = execFileSync(POWERSHELL, psArgs(winStartScript(pid)), { encoding: 'utf8', timeout: 10000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] }).trim() || null; }
     catch (e) { lastIdentityProblem = `PowerShell (${POWERSHELL}) could not give pid ${pid}'s start time: ${psError(e)}`; return null; }
     if (!start) { lastIdentityProblem = `PowerShell (${POWERSHELL}) gave no start time for pid ${pid}`; return null; }
     known = { start, checkedAt: Date.now() };
     winStarts.set(pid, known);
   }
   if (!winBoot) {
-    try { winBoot = execFileSync(POWERSHELL, psArgs("(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('o')"), { encoding: 'utf8', timeout: 10000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || 'unknown'; }
+    try { winBoot = execFileSync(POWERSHELL, psArgs(WIN_BOOT_SCRIPT), { encoding: 'utf8', timeout: 10000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || 'unknown'; }
     catch { winBoot = 'unknown'; }
   }
   // Windows has no process groups; a detached child is its own tree root.
