@@ -257,6 +257,7 @@ const ROUTES = {
   'GET /api/programs/rated': 'member',
   'POST /api/programs/sample': 'member',
   'POST /api/programs/rate': 'member',
+  'POST /api/programs/live': 'member', // follow the calls running now: 'program-live' events below
   'PUT /api/programs/recording': 'owner', // what agents' processes record: a machine setting
 
   // ---- voice and speech: this machine's speaker and microphone ----
@@ -416,6 +417,19 @@ const EVENTS = {
   users: () => () => true,
   // The AI accounts changed (design/73): a ping, the browser refetches.
   'ai-accounts': () => () => true,
+  // Chattering's AI programs as they run (design/74): the household's, like
+  // the Programs pages, and of each call only what the person may see of its
+  // conversation, project, and file or repository.
+  'program-live': ev => can => {
+    if (!can.member) return null;
+    const sees = s => !s || ((!s.key || can.key(s.key)) && (!s.project || can.project(s.project)) && (!s.path || can.path(s.path)));
+    const ops = [];
+    for (const op of ev.ops || []) {
+      if (op.op === 'snapshot') ops.push({ ...op, calls: (op.calls || []).filter(c => sees(c.scope)) });
+      else if (sees(op.scope)) ops.push(op);
+    }
+    return ops.length ? { ...ev, ops } : null;
+  },
   // This machine's agents, speaker and delegations: the household's.
   'agent-recovery': () => can => can.member,
   'delegation-update': () => can => can.member,

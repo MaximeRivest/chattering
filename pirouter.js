@@ -75,31 +75,44 @@ function toResponse(lib, request, message) {
   });
 }
 
-// A running call's text, as lm15 stream events: start, the text as it comes,
-// then any text the deltas did not carry, and the end with its usage.
+// A running call as lm15 stream events: start, the thinking and the text as
+// they come, then whatever of either the pieces did not carry, and the end
+// with its usage. The reply this makes is the one `complete` makes from the
+// final message (thinking included), so a watched call records the same.
+// `run(onText, onThinking)` starts the call and resolves with Pi's final
+// assistant message.
 async function* streamEvents(lib, request, run) {
   const queue = [];
   let wake = null, done = false, message = null, failure = null;
   const nudge = () => { if (wake) { const w = wake; wake = null; w(); } };
-  run(text => { queue.push(text); nudge(); }).then(m => { message = m; }, e => { failure = e; }).finally(() => { done = true; nudge(); });
+  const push = type => piece => { if (piece) { queue.push([type, String(piece)]); nudge(); } };
+  run(push('text'), push('thinking')).then(m => { message = m; }, e => { failure = e; }).finally(() => { done = true; nudge(); });
   yield lib.streamStart({ model: request.model });
-  let sent = '';
+  const sent = { text: '', thinking: '' };
   for (;;) {
-    while (queue.length) { const t = queue.shift(); sent += t; yield lib.streamDelta({ type: 'text', text: t }); }
+    while (queue.length) { const [type, t] = queue.shift(); sent[type] += t; yield lib.streamDelta({ type, text: t }); }
     if (done) break;
     await new Promise(r => { wake = r; });
   }
   if (failure) throw failure;
   if (!message || message.role !== 'assistant') throw new Error('the model gave no answer');
   if (message.stopReason === 'error' || message.stopReason === 'aborted') throw modelError(message);
-  const text = (message.content || []).filter(c => c.type === 'text').map(c => c.text || '').join('');
-  if (text.length > sent.length && text.startsWith(sent)) yield lib.streamDelta({ type: 'text', text: text.slice(sent.length) });
+  const whole = { text: '', thinking: '' };
+  for (const c of message.content || []) {
+    if (c.type === 'text') whole.text += c.text || '';
+    else if (c.type === 'thinking') whole.thinking += c.thinking || '';
+  }
+  for (const type of ['thinking', 'text']) {
+    if (whole[type].length > sent[type].length && whole[type].startsWith(sent[type])) yield lib.streamDelta({ type, text: whole[type].slice(sent[type].length) });
+  }
   yield lib.streamEnd({ finishReason: FINISH[message.stopReason] || 'stop', usage: usageOf(message.usage) });
 }
 
 /**
- * The Pi router. `exec({ system, input, folded, signal, onDelta })` runs one
- * `pi -p` call and resolves with Pi's final assistant message.
+ * The Pi router. `exec({ system, input, folded, signal, onDelta, onThinking })`
+ * runs one `pi -p` call and resolves with Pi's final assistant message;
+ * `onDelta` and `onThinking` receive the reply's text and thinking as Pi
+ * writes them (a streamed call only).
  */
 function createPiRouter({ lib, exec }) {
   return {
@@ -113,7 +126,7 @@ function createPiRouter({ lib, exec }) {
     },
     stream(request, opts = {}) {
       const m = piMessage(request);
-      return streamEvents(lib, request, onDelta => exec({ ...m, signal: opts.signal, onDelta }));
+      return streamEvents(lib, request, (onDelta, onThinking) => exec({ ...m, signal: opts.signal, onDelta, onThinking }));
     },
   };
 }

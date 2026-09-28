@@ -5744,6 +5744,115 @@ function programRoute(u, req, res, identity) {
   return json(res, 404, { error: 'not found' });
 }
 
+// ---- AI programs, live (design/74, "Live") ----
+// Chattering's own programs are watched while they run (programs-live.js);
+// what the rest of the log gains shows up as it is written. Both reach only
+// the browsers that follow: a tab on the Programs pages, or with the
+// Programs panel open, asks with its event stream's id (POST
+// /api/programs/live), receives a snapshot on that stream, then every change
+// in order. Each person's copy is narrowed by policy.js ('program-live').
+// Closing the page stops the watching, never the program.
+const programLiveFollowers = new Set(); // event stream ids
+let programLivePushedSeq = null;
+// One event to every follower, each narrowed to what that person may see;
+// written once as text for all who see it whole.
+function programLiveSend(ev, conns = [...programLiveFollowers]) {
+  let whole = null;
+  for (const conn of conns) {
+    const client = sseByConn.get(conn);
+    if (!client) { programLiveFollowers.delete(conn); continue; }
+    let view;
+    try { view = policy.eventView(ev, client.receiver || (client.receiver = receiverFor(client.identity))); }
+    catch (e) { console.error('[programs-live] ' + e.message); view = null; }
+    if (!view) continue;
+    const line = view === ev ? (whole ||= 'data: ' + JSON.stringify(ev) + '\n\n') : 'data: ' + JSON.stringify(view) + '\n\n';
+    try { client.res.write(line); } catch {}
+  }
+}
+function publishProgramLive(ops) {
+  if (!programLiveFollowers.size) return;
+  programLiveSend({ type: 'program-live', ops, now: Date.now() });
+  // A call that ended is in the log now (FunctAI writes it before saying so).
+  if (ops.some(o => o.op === 'end')) programLogChanged();
+}
+const programsLive = require('./programs-live.js').createLiveCalls({ publish: publishProgramLive });
+// The log changed, or may have: read what is new, and tell the followers
+// when the index moved (a call, a rating, from any writer).
+let programLogCheck = null;
+function programLogChanged() {
+  if (programLogCheck || !programLiveFollowers.size) return;
+  programLogCheck = setTimeout(() => {
+    programLogCheck = null;
+    if (!programLiveFollowers.size) return;
+    if (programLogWatch) programLogWatch.arm(); // a new day, or the folder just made
+    let seq, programs;
+    try { const log = programLog(); log.refresh({ force: true }); seq = log.seq; programs = log.takeChanged(); } catch (e) { console.error('[programs-live] ' + e.message); return; }
+    if (seq === programLivePushedSeq) return;
+    programLivePushedSeq = seq;
+    // Which programs moved, so a page on another one stays still (null: any).
+    programLiveSend({ type: 'program-live', ops: [{ op: 'log', seq, programs }], now: Date.now() });
+  }, 150);
+  programLogCheck.unref?.();
+}
+// Other writers (scripts, notebooks, agents, another Chattering) append to
+// the log's day files: watch the folder and its two newest days while
+// anyone follows, and look anyway every 15 s, for a file system whose
+// changes are not reported (a network folder) and for the folder appearing.
+let programLogWatch = null;
+function programLogWatchStart() {
+  if (programLogWatch) return;
+  const folder = platform.functaiCallsDir();
+  const w = { handles: new Map(), timer: null };
+  // The folder and its two newest days; before the folder exists, the
+  // nearest folder above it that does, to see it appear.
+  const arm = () => {
+    const want = new Set();
+    if (fs.existsSync(folder)) {
+      want.add(folder);
+      try { for (const d of fs.readdirSync(folder).filter(n => /^\d{4}-\d{2}-\d{2}$/.test(n)).sort().slice(-2)) want.add(path.join(folder, d)); } catch {}
+    } else {
+      let up = path.dirname(folder);
+      while (!fs.existsSync(up) && path.dirname(up) !== up) up = path.dirname(up);
+      want.add(up);
+    }
+    for (const [p, h] of w.handles) if (!want.has(p)) { try { h.close(); } catch {} w.handles.delete(p); }
+    for (const p of want) {
+      if (w.handles.has(p)) continue;
+      try {
+        const h = fs.watch(p, { persistent: false }, () => { if (p === folder || !p.startsWith(folder)) arm(); programLogChanged(); });
+        h.on('error', () => { try { h.close(); } catch {} w.handles.delete(p); });
+        w.handles.set(p, h);
+      } catch {}
+    }
+  };
+  w.arm = arm;
+  arm();
+  w.timer = setInterval(() => { arm(); programLogChanged(); }, 15000);
+  w.timer.unref?.();
+  programLogWatch = w;
+}
+function programLogWatchStop() {
+  const w = programLogWatch;
+  if (!w) return;
+  programLogWatch = null;
+  clearInterval(w.timer);
+  for (const h of w.handles.values()) { try { h.close(); } catch {} }
+}
+function programLiveFollow(conn) {
+  // What is still gathering goes out first, to those already following:
+  // the snapshot includes it, and the new follower must not get it twice.
+  programsLive.flush();
+  let seq = null;
+  try { const log = programLog(); log.refresh(); seq = log.seq; } catch {}
+  programLiveFollowers.add(conn);
+  programLiveSend({ type: 'program-live', ops: [{ op: 'snapshot', calls: programsLive.snapshot(), seq }], now: Date.now() }, [conn]);
+  programLogWatchStart();
+}
+function programLiveUnfollow(conn) {
+  programLiveFollowers.delete(conn);
+  if (!programLiveFollowers.size) programLogWatchStop();
+}
+
 function usageDashboardResponse(searchParams) {
   if (!usageIdx) return { error: 'Token analytics needs node:sqlite, which is unavailable.' };
   const catalog = pricingCatalog();
@@ -5824,9 +5933,10 @@ function splitTextToTokenBudget(text, tokenBudget) {
 // (modelCallContext: automatic or asked for, the background kind, the
 // thinking level, a time limit, a stop signal: a stopped call rejects with
 // code 'ABORTED' and leaves the model's health untouched, since a person's
-// stop is no failure). Resolves with Pi's final assistant message; its usage
-// joins the internal usage ledger under the program's name (purpose).
-async function piExec({ system, input, signal: ownSignal = null, onDelta = null }) {
+// stop is no failure). `onDelta` and `onThinking` receive the reply's text
+// and thinking as Pi writes them. Resolves with Pi's final assistant message;
+// its usage joins the internal usage ledger under the program's name (purpose).
+async function piExec({ system, input, signal: ownSignal = null, onDelta = null, onThinking = null }) {
   const ctx = modelCallContext.getStore() || {};
   const signal = ownSignal || ctx.signal || null;
   if (signal && signal.aborted) throw abortedModelCall();
@@ -5854,14 +5964,16 @@ async function piExec({ system, input, signal: ownSignal = null, onDelta = null 
         activityTimeoutMs: MODEL_ACTIVITY_TIMEOUT_MS,
         onChild: child => child.stdin.end(String(input || '')), // the user message
         onStdout: data => {
-          if (!onDelta) return;
+          if (!onDelta && !onThinking) return;
           carry += String(data);
           const lines = carry.split('\n');
           carry = lines.pop() || '';
           for (const line of lines) {
             let event; try { event = JSON.parse(line); } catch { continue; }
             const update = event.type === 'message_update' && event.assistantMessageEvent;
-            if (update && update.type === 'text_delta') onDelta(String(update.delta || ''));
+            if (!update) continue;
+            if (update.type === 'text_delta' && onDelta) onDelta(String(update.delta || ''));
+            else if (update.type === 'thinking_delta' && onThinking) onThinking(String(update.delta || ''));
           }
         },
       },
@@ -5923,6 +6035,7 @@ const aiPrograms = require('./ai-programs.js').createAiPrograms({
   },
   // $FUNCTAI_LOG_CALLS=0 (or off) keeps Chattering's programs out of the log too.
   logFolder: () => (OFF_WORDS.has(String(process.env.FUNCTAI_LOG_CALLS || '').trim().toLowerCase()) ? false : platform.functaiCallsDir()),
+  live: programsLive,
 });
 // Run one of them within this call's context. `caller` goes to the log
 // (a conversation key, a project, the person); the rest is the context
@@ -5935,7 +6048,9 @@ function aiProgram(name, inputs, { automatic, background, purpose, thinking, tim
   const who = { ...caller };
   for (const [k, v] of Object.entries(who)) if (v === undefined || v === null || v === '') delete who[k];
   if (ctx.automatic) who.automatic = true;
-  return modelCallContext.run(ctx, () => aiPrograms.run(name, inputs, { caller: who, onText, signal }));
+  // The stop signal, this call's or the context's: a program's call is a
+  // stream, and closing the stream is what stops it.
+  return modelCallContext.run(ctx, () => aiPrograms.run(name, inputs, { caller: who, onText, signal: ctx.signal || null }));
 }
 
 function abortedModelCall() {
@@ -16576,6 +16691,18 @@ async function handleRequest(req, res) {
         log.refresh();
         json(res, 200, log.rate({ call: p.call, verdict: p.verdict, ...('answer' in p ? { answer: p.answer } : {}), outputs: p.outputs, reasons: p.reasons,
           note: p.note, origin: p.origin, sample: p.sample, by: programRater(identity) }));
+        programLogChanged(); // others watching see the judgement
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/programs/live' && req.method === 'POST') {
+      // Follow the AI programs live on this tab's event stream ({conn,
+      // follow: true}), or stop ({follow: false}).
+      try {
+        const p = await programBody(req, 4096);
+        const conn = String(p.conn || '');
+        const client = sseByConn.get(conn);
+        if (!client || docRunOwner(client.identity) !== docRunOwner(identity)) return json(res, 404, { error: 'no such event stream for you' });
+        if (p.follow === false) programLiveUnfollow(conn); else programLiveFollow(conn);
+        json(res, 200, { ok: true, following: programLiveFollowers.has(conn) });
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/programs/recording' && req.method === 'PUT') {
       try {
@@ -17890,7 +18017,7 @@ async function handleRequest(req, res) {
       // and the page uses this beat to notice a stream that died quietly
       // (a phone that slept, a network that changed) and reconnect.
       const beat = setInterval(() => { try { res.write('event: ping\ndata: {}\n\n'); } catch {} }, 25000);
-      req.on('close', () => { clearInterval(beat); sseByConn.delete(conn); docFollowDetach(conn); if (presence.remove(conn)) broadcastPresence(); });
+      req.on('close', () => { clearInterval(beat); sseByConn.delete(conn); docFollowDetach(conn); programLiveUnfollow(conn); if (presence.remove(conn)) broadcastPresence(); });
     } else if (u.pathname.startsWith('/api/records/') && req.method === 'GET') {
       // The agent-facing read API: same text the CLI and the Pi tools print.
       // Failures are plain text too, so a shell or a tool call reads them as is.

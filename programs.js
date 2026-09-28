@@ -292,6 +292,10 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
   const getFile = db.prepare('SELECT offset, size FROM files WHERE path = ?');
   const hasRatings = db.prepare('SELECT 1 FROM ratings WHERE call = ? LIMIT 1');
   let seq = 0, lastRefresh = 0, lastFull = 0, knownDays = new Set();
+  // The programs whose calls or ratings changed since takeChanged() last
+  // asked ('*': a rating of a call not in the index, so any program).
+  let changedPrograms = new Set();
+  const programOfCall = db.prepare('SELECT name, module FROM calls WHERE id = ?');
   const projectMemo = new Map(), describeMemo = new Map();
   // Chattering's own file in the log: one per process, never shared.
   const writerName = `chattering-${String(host).replace(/[^\w.-]+/g, '-')}-${process.pid}-${crypto.randomBytes(3).toString('hex')}.jsonl`;
@@ -356,10 +360,13 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
               const row = callRow(rec, rel, offset, length);
               insertCall.run(Object.fromEntries(Object.entries(row).map(([k, v]) => ['$' + k, v])));
               if (hasRatings.get(rec.id)) touched.add(rec.id);
+              changedPrograms.add(JSON.stringify([row.name, row.module]));
               changed = true;
             } else if (rec.functai_rating === FORMAT && typeof rec.id === 'string' && typeof rec.call === 'string') {
               insertRating.run(rec.id, rec.call, String(rec.at || ''), String(rec.by || ''), rec.verdict ?? null, rec.sample ?? null, JSON.stringify(rec));
               touched.add(rec.call);
+              const of = programOfCall.get(rec.call);
+              changedPrograms.add(of ? JSON.stringify([of.name, of.module]) : '*');
               changed = true;
             }
           });
@@ -639,6 +646,12 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
 
   return {
     folder, refresh, programs, program, versions, runs, run, compare, rated, sample, rate,
+    /** The programs changed since the last call, as [name, module] pairs; null when any may have. */
+    takeChanged() {
+      const all = changedPrograms;
+      changedPrograms = new Set();
+      return all.has('*') ? null : [...all].map(k => JSON.parse(k));
+    },
     get seq() { return seq; }, writerName, close: () => db.close(),
   };
 }

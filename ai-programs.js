@@ -266,17 +266,22 @@ function definitions(t) {
  * @param {() => string} o.lm                     the model the Pi router uses, as "provider/model"
  * @param {() => string|false} o.logFolder        the FunctAI call log, or false
  * @param {number} [o.contentLimit]               inputs larger than this are logged as sizes only
+ * @param {object} [o.live]                       programs-live.js: who watches the calls as they run
  */
-function createAiPrograms({ piExec, chatPost, voiceEndpoint, lm, logFolder, contentLimit = 128 * 1024 }) {
+function createAiPrograms({ piExec, chatPost, voiceEndpoint, lm, logFolder, contentLimit = 128 * 1024, live = null }) {
   let built = null;
-  // A program whose whole reply is its answer (the document commands) shows
-  // the model's text as Pi streams it, untouched: FunctAI's reader sees that
-  // reply only whole. This carries the listener to the Pi call.
+  // A program whose whole reply is its answer (the document commands): its
+  // text as the model writes it, untouched, leading space and all. FunctAI's
+  // reader shows such a reply only whole, so this carries a listener to the
+  // Pi call instead.
   const rawText = new AsyncLocalStorage();
   async function load() {
     if (built) return built;
     const lib = await functai();
-    const pi = createPiRouter({ lib, exec: m => piExec({ ...m, onDelta: m.onDelta || (rawText.getStore() || null) }) });
+    const pi = createPiRouter({ lib, exec: m => {
+      const raw = rawText.getStore();
+      return piExec(raw ? { ...m, onDelta: piece => { if (m.onDelta) m.onDelta(piece); raw(piece); } } : m);
+    } });
     const voice = createChatRouter({ lib, post: chatPost, endpoint: voiceEndpoint, extra: { chat_template_kwargs: { enable_thinking: false } } });
     const defs = definitions(lib.t);
     const fns = {};
@@ -288,45 +293,73 @@ function createAiPrograms({ piExec, chatPost, voiceEndpoint, lm, logFolder, cont
     return built;
   }
   const sizeOf = v => { try { return Buffer.byteLength(JSON.stringify(v)); } catch { return Infinity; } };
+  const stopped = cause => Object.assign(new Error('the model call was stopped'), { code: 'ABORTED', cause });
 
   /**
    * Run one program. Resolves with its outputs ({name: value}) and the call's
-   * id in the log; rejects with its error. `onText(piece)` streams the
-   * answer's text as it is written. `caller` is added to the log's caller.
+   * id in the log; rejects with its error (code 'ABORTED' when `signal`
+   * stopped it). `onText(piece)` streams the answer's text as it is written.
+   * `caller` is added to the log's caller.
+   *
+   * Every call is a FunctAI stream: the same call, watched while it is made
+   * (functai contract/streaming.md). It asks, retries, logs and ends exactly
+   * as a plain call; the stream only lets `onText` and the live Programs
+   * pages see it. Closing it (the signal) stops the call.
    */
   async function run(name, inputs, { caller = {}, onText = null, signal = null } = {}) {
     const { lib, defs, fns } = await load();
     const fn = fns[name];
     if (!fn) throw new Error('no AI program named ' + name);
+    const def = defs[name];
     const folder = logFolder();
+    // A transcript-sized input is logged as its size only: the log keeps
+    // what can be read and judged, not every conversation twice.
+    const content = sizeOf(inputs) <= contentLimit;
+    // Chattering says who called; nothing is inherited from a
+    // $FUNCTAI_CALLER the server process itself may carry (a server started
+    // by an agent). Unset keys are left out of the record.
+    const who = { kind: 'chattering', user: undefined, conversation: undefined, notebook: undefined, cell: undefined, ...caller };
     const settings = {
-      lm: defs[name].voice ? (voiceEndpoint().model || 'voice') : lm(),
+      lm: def.voice ? (voiceEndpoint().model || 'voice') : lm(),
       logCalls: folder || false,
-      // A transcript-sized input is logged as its size only: the log keeps
-      // what can be read and judged, not every conversation twice.
-      logContent: sizeOf(inputs) <= contentLimit,
-      // Chattering says who called; nothing is inherited from a
-      // $FUNCTAI_CALLER the server process itself may carry (a server started
-      // by an agent). Unset keys are left out of the record.
-      caller: { kind: 'chattering', user: undefined, conversation: undefined, notebook: undefined, cell: undefined, ...caller },
+      logContent: content,
+      caller: who,
     };
+    const raw = !!def.template;
     return lib.withSettings(settings, async () => {
-      if (onText && defs[name].template) {
-        const p = await rawText.run(onText, () => fn.predict(inputs));
-        return { outputs: p.outputs, callId: p.callId, response: p.response };
+      let tracker = null;
+      const early = []; // raw text written before the tracker exists
+      const onRaw = raw ? piece => { if (onText) onText(piece); if (tracker) tracker.raw(piece); else if (live) early.push(piece); } : null;
+      const st = onRaw ? rawText.run(onRaw, () => fn.stream(inputs)) : fn.stream(inputs);
+      if (live) {
+        tracker = live.track({
+          name, module: fn.module, answer: fn.answerName, outputs: def.outputs ? Object.keys(def.outputs) : [fn.answerName],
+          inputs, content, raw, caller: Object.fromEntries(Object.entries(who).filter(([, v]) => v !== undefined)),
+        }, st.events());
+        for (const piece of early.splice(0)) tracker.raw(piece);
       }
-      if (!onText) {
-        const p = await fn.predict(inputs);
-        return { outputs: p.outputs, callId: p.callId, response: p.response };
-      }
-      const st = fn.stream(inputs);
-      const stop = () => { try { st.close(); } catch {} };
+      const stop = () => st.close();
       if (signal) { if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); }
+      // The answer's text for `onText`, when FunctAI's reader shows it in
+      // pieces (every program but the raw ones).
+      const reading = onText && !raw ? (async () => {
+        let outer = null;
+        for await (const e of st.events()) {
+          if (e.kind === 'started') outer ??= e.call;
+          else if (e.kind === 'text' && e.answer && e.call === outer) onText(e.text);
+        }
+      })() : null;
+      if (reading) reading.catch(() => {});
       try {
-        for await (const e of st.events()) if (e.kind === 'text' && e.answer) onText(e.text);
         const p = await st.prediction;
+        if (reading) await reading;
         return { outputs: p.outputs, callId: p.callId, response: p.response };
-      } finally { if (signal) signal.removeEventListener('abort', stop); }
+      } catch (e) {
+        if (signal && signal.aborted) throw stopped(e);
+        throw e;
+      } finally {
+        if (signal) signal.removeEventListener('abort', stop);
+      }
     });
   }
   // The raw text of a reply (for the document commands, whose reply is the

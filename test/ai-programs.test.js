@@ -13,7 +13,7 @@ const aiCommands = require('../ai-commands.js');
 const piReply = (text, extra = {}) => ({ role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop', provider: 'openai-codex', model: 'gpt-x',
   usage: { input: 120, output: 9, cacheRead: 3, cacheWrite: 0, totalTokens: 132 }, ...extra });
 
-function setup(t, reply, { contentLimit } = {}) {
+function setup(t, reply, { contentLimit, live } = {}) {
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-programs-'));
   t.after(() => fs.rmSync(folder, { recursive: true, force: true }));
   const sent = [];
@@ -21,12 +21,13 @@ function setup(t, reply, { contentLimit } = {}) {
     piExec: async m => {
       sent.push(m);
       const answer = typeof reply === 'function' ? reply(m, sent.length) : piReply(reply);
+      if (m.onThinking) for (const piece of (m.thinkingStream || [])) m.onThinking(piece);
       if (m.onDelta) for (const piece of (m.stream || [])) m.onDelta(piece);
       return answer;
     },
     chatPost: async (url, body) => { sent.push({ url, body }); return { status: 200, json: { model: 'qwen', choices: [{ message: { content: typeof reply === 'function' ? reply(body) : reply }, finish_reason: 'stop' }], usage: { prompt_tokens: 50, completion_tokens: 7, total_tokens: 57 } } }; },
     voiceEndpoint: () => ({ url: 'http://voice/v1/chat/completions', model: 'qwen', timeoutMs: 1000 }),
-    lm: () => 'openai-codex/gpt-x', logFolder: () => folder, ...(contentLimit ? { contentLimit } : {}),
+    lm: () => 'openai-codex/gpt-x', logFolder: () => folder, ...(contentLimit ? { contentLimit } : {}), ...(live ? { live } : {}),
   });
   const records = () => fs.readdirSync(folder).flatMap(d => fs.readdirSync(path.join(folder, d)).flatMap(f => fs.readFileSync(path.join(folder, d, f), 'utf8').trim().split('\n').map(JSON.parse)));
   return { programs, sent, records, folder };
@@ -129,4 +130,93 @@ test('memory lanes keep the keys the server reads', async t => {
   const { programs } = setup(t, reply);
   const out = await programs.run('project_status', { part: 'the whole project', evidence: 'PROJECT: x\n\nproblems…' });
   assert.deepEqual(out.outputs, { recentFocus: ['the pyramid'], unfinished: [], todos: ['tests'], openQuestions: [] });
+});
+
+// ---- watched while they run (design/74, "Live") ----
+const { createLiveCalls } = require('../programs-live.js');
+function watcher() {
+  const ops = [];
+  const live = createLiveCalls({ publish: batch => ops.push(...batch), flushMs: 1 });
+  const settle = async () => { await new Promise(r => setTimeout(r, 5)); live.flush(); };
+  return { live, ops, settle };
+}
+
+test('every call is watched: its outputs as the model writes them, then done, under its log id', async t => {
+  const w = watcher();
+  const reply = '<label>\nAuth loop\n</label>\n<title>\nFix login callback loop\n</title>';
+  const { programs, records } = setup(t, m => { m.stream = reply.match(/[\s\S]{1,6}/g); return piReply(reply); }, { live: w.live });
+  const out = await programs.run('conversation_title', { opening_user_messages: ['The login redirects forever.'] }, { caller: { conversation: 'pi:x.jsonl', user: 'maxime' } });
+  await w.settle();
+  const start = w.ops.find(o => o.op === 'start');
+  assert.equal(start.id, out.callId, 'the live id is the call log\u2019s id');
+  assert.deepEqual([start.call.name, start.call.module, start.call.answer, start.call.outputs], ['conversation_title', 'chattering', 'title', ['label', 'title']]);
+  assert.deepEqual(start.call.caller, { kind: 'chattering', conversation: 'pi:x.jsonl', user: 'maxime' });
+  const texts = w.ops.filter(o => o.op === 'text');
+  assert.ok(texts.length >= 2, 'text arrives as it is written');
+  const byField = f => texts.filter(o => o.field === f).map(o => o.text).join('');
+  assert.deepEqual([byField('label'), byField('title')], ['Auth loop', 'Fix login callback loop']);
+  assert.equal(w.ops.at(-1).op, 'end');
+  assert.equal(w.ops.at(-1).state, 'done');
+  // Watching changes nothing in the record, except that it says it was streamed.
+  const [rec] = records();
+  assert.deepEqual(rec.outputs, { label: 'Auth loop', title: 'Fix login callback loop' });
+  assert.equal(rec.exchanges[0].streamed, true);
+});
+
+test('the model\u2019s thinking is watched, and recorded as a plain call records it', async t => {
+  const w = watcher();
+  const reply = '<label>\nx\n</label>\n<title>\nFix it\n</title>';
+  const { programs, records } = setup(t, m => { m.thinkingStream = ['The user ', 'wants a title.']; m.stream = [reply]; return piReply(reply, { content: [{ type: 'thinking', thinking: 'The user wants a title.' }, { type: 'text', text: reply }] }); }, { live: w.live });
+  await programs.run('conversation_title', { opening_user_messages: ['x'] });
+  await w.settle();
+  assert.equal(w.ops.filter(o => o.op === 'thinking').map(o => o.text).join(''), 'The user wants a title.');
+  const parts = records()[0].exchanges[0].response.message.parts;
+  assert.deepEqual(parts.map(p => p.type), ['thinking', 'text']);
+  assert.equal(parts[0].text, 'The user wants a title.');
+});
+
+test('a thinking reply Pi never streamed is still recorded whole', async t => {
+  const reply = '<label>\nx\n</label>\n<title>\nFix it\n</title>';
+  const { programs, records } = setup(t, () => piReply(reply, { content: [{ type: 'thinking', thinking: 'Hmm.' }, { type: 'text', text: reply }] }));
+  await programs.run('conversation_title', { opening_user_messages: ['x'] });
+  const parts = records()[0].exchanges[0].response.message.parts;
+  assert.deepEqual(parts.map(p => [p.type, p.text]), [['thinking', 'Hmm.'], ['text', reply]]);
+});
+
+test('a stop signal stops the call: ABORTED to the caller, cancelled when watched, Cancelled in the log', async t => {
+  const w = watcher();
+  const stop = new AbortController();
+  const { records, folder } = setup(t, null);
+  // A Pi call that runs until it is stopped.
+  const piExec = m => new Promise((_, reject) => {
+    if (m.onDelta) m.onDelta('<label>\nhalf');
+    m.signal.addEventListener('abort', () => reject(Object.assign(new Error('the model call was stopped'), { code: 'ABORTED' })), { once: true });
+  });
+  const own = createAiPrograms({ piExec, chatPost: async () => ({}), voiceEndpoint: () => ({}), lm: () => 'openai-codex/gpt-x', logFolder: () => folder, live: w.live });
+  const running = own.run('conversation_title', { opening_user_messages: ['x'] }, { signal: stop.signal });
+  await new Promise(r => setTimeout(r, 20));
+  stop.abort();
+  await assert.rejects(running, e => e.code === 'ABORTED');
+  await w.settle();
+  const end = w.ops.find(o => o.op === 'end');
+  assert.equal(end.state, 'cancelled');
+  const [rec] = records();
+  assert.equal(rec.error.type, 'Cancelled');
+});
+
+test('a document command is watched as the model writes it, leading space and all', async t => {
+  const w = watcher();
+  const reply = ' and then it rained.';
+  const { programs } = setup(t, m => { m.stream = [' and then', ' it rained.']; return piReply(reply); }, { live: w.live });
+  const command = aiCommands.commandById('sentence');
+  const checked = aiCommands.validateRequest({ command: 'sentence', request: { scope: 'prose', target: { from: 11, to: 11, text: '' }, block: { type: 'prose', text: 'It was late' }, document: 'It was late' } }, 'document');
+  const all = aiCommands.programInputs(command, checked.request, { path: 'notes.md', nonce: 'abcdef123456' });
+  const inputs = Object.fromEntries((await programs.inputNames('doc_sentence')).map(k => [k, all[k]]));
+  const pieces = [];
+  await programs.run('doc_sentence', inputs, { onText: p => pieces.push(p), caller: { file: '/work/notes.md', user: 'maxime' } });
+  await w.settle();
+  assert.deepEqual(pieces, [' and then', ' it rained.']);
+  const texts = w.ops.filter(o => o.op === 'text');
+  assert.equal(texts.map(o => o.text).join(''), reply, 'the raw text, once: not again from FunctAI\u2019s reader');
+  assert.deepEqual(w.ops.find(o => o.op === 'start').scope, { path: '/work/notes.md' });
 });

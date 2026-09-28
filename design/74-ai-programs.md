@@ -1,8 +1,9 @@
 # 74 — AI programs in Chattering
 
 Status: the proposal (2026-09-26, below the line) and, first, what was built
-on 2026-09-27 (phase 1: see and judge). The proposal extends the Program
-Atlas mockup (`design/program-atlas.html`, fictional data).
+on 2026-09-27 (phase 1: see and judge) and 2026-09-28 (live). The proposal
+extends the Program Atlas mockup (`design/program-atlas.html`, fictional
+data).
 
 ## As built (2026-09-27)
 
@@ -95,10 +96,8 @@ writer.
   layouts write ("one of: a, b, c"), else from the answers seen, else a field
   shaped by the current value. A hand-written template loses the choices. Proposed contract addition: the signature's plain data (lmcc's
   shared form) on the call record, or one `functai_program` line per version.
-- **Polling, not pushing.** An open program page asks every five seconds
-  (one small request) whether the log changed; the index is read on demand.
-  A new event type on the live stream would need a policy rule; not worth it
-  yet.
+- **Pushed, not polled** (since 2026-09-28, see "Live" below). Before, an
+  open program page asked every five seconds whether the log changed.
 - **One folder per install.** Other machines' logs arrive only when that
   machine's Chattering reads them; bringing them home needs design/52's sync.
 - **Program identity is name + module** (the contract's). TypeScript's module
@@ -174,7 +173,109 @@ Found on the way, for upstream:
   Windows separators. The vendoring script patches both (one marked line);
   FunctAI should compare against its own module URL.
 
+### Live (2026-09-28)
+
+*Watch Chattering's AI programs while they run.* Every call of one of
+Chattering's own programs is now a FunctAI stream (functai
+`contract/streaming.md`: the same call, watched; it asks, retries, logs and
+ends exactly as a plain call). The Programs pages show it as it happens and
+say, unasked, when anything reaches the log.
+
+- **What a person sees.** On the list, *Running now*: each call running,
+  across all programs (the newest twelve, then a count), with what it is for
+  (its conversation, project or file), whether it runs in the background or
+  who asked, what it is doing (waiting for the model, thinking, writing,
+  asking again) with the time so far, and the newest words of its answer. On
+  a program's page, the same above its examples, in the table's columns; a
+  row opens in place: the whole input, each output filling in as it is
+  written (the ones not started yet shown as "…"), the model's thinking
+  (folded), and why it was asked again. When a call ends it moves into the
+  examples; if the person was watching it, it opens there, ready to judge.
+  A program whose first call is running has a page before it is in the log.
+  On other tabs, a word in the status line (`● running now`) leads back. The
+  right panel marks programs running now. Other writers' calls and other
+  people's judgements appear as they reach the log.
+- **Provisional, and says so.** Text shown while a call runs is the raw text
+  of each output (structured outputs as the JSON being written); the checked,
+  typed value is the finished example's. A retry (an unreadable reply, a
+  provider error) wipes what was written and says why, as the contract's
+  law 3 asks. A reply that arrives whole (the voice model, which does not
+  stream here; a cached reply) appears whole.
+- **The document commands** show the reply exactly as the model writes it
+  (their answer is the whole reply, which FunctAI's reader only sees whole),
+  through the same listener that streams it into the editor.
+- **Thinking.** The Pi router now passes the model's thinking through the
+  stream as well as the text (`thinking_delta`), so a streamed call's record
+  holds the thinking exactly as a plain call's did. Without this, streaming
+  every call would have dropped the thinking from the log.
+- **How it travels** (`programs-live.js`, server.js "AI programs, live").
+  The server keeps, per call running and for 30 s after it ends (at most 40
+  ended), what a watcher sees; changes leave as small ops (start, text,
+  thinking, reset, end, gone), text gathered for 60 ms, each with the call's
+  version. A tab on the Programs pages, or with the panel open, follows with
+  its existing event stream's id (`POST /api/programs/live`), gets a snapshot
+  on that stream and then every op in order, so nothing is missed or counted
+  twice; it stops following when it leaves or is hidden. No other tab
+  receives anything. When the log moves the followers get `{op: "log", seq,
+  programs}`: the programs that changed, so a page on another program stays
+  still (a person may be reading it). Other writers are seen by watching the
+  log folder and its two newest days (the nearest existing parent until the
+  folder exists), with a look every 15 s as a safety net for file systems
+  that do not report changes.
+- **Access.** `program-live` events follow the Programs pages' rule
+  (members, never guests or walled people), narrowed per call: a call about
+  a conversation, project, file or repository reaches only people who may
+  see it (policy.js). The follow route is `member`.
+- **Values follow the log's rule.** A call whose inputs are logged as sizes
+  only (over 128 KiB: whole transcripts) shows its inputs as sizes only, and
+  no error message.
+
+Trade-offs, stated:
+- **Outputs of size-only calls are shown while they run, and not kept.** The
+  notes, evidence and memory lanes read whole conversations, so the log keeps
+  only their sizes (a storage choice, not a privacy one: their outputs reach
+  the same people through the notes and memory pages). Their answers type
+  out live, then the finished example says "not recorded".
+- **Only the outer call.** A call inside the call (a module's step, a tool)
+  shows in the log as its own call, not live inside its parent. Chattering's
+  programs call none.
+- **The voice model does not stream** (one chat completion); its three
+  programs appear whole when done.
+- **Only Chattering's own calls are live.** Scripts, notebooks and agents
+  appear when their call ends: FunctAI writes a call to the log only then,
+  and its stream events stay inside the process that made the call. Making
+  those live needs a FunctAI contract change (a `started` line, or a live
+  events file), in all four languages.
+- **Watching cannot stop a call.** Closing the page stops the watching;
+  there is no stop button on a running call.
+- **The vendored FunctAI is 0.1.0 (2026-09-27).** FunctAI has moved on
+  since (API names, optional inputs, the reply cache); re-vendoring is a
+  separate change.
+
 ### Verified
+
+- `test/programs-live.test.js`: ops in order with versions, text gathered;
+  a retry and tool results void the text; a follower joining mid-call gets
+  a snapshot and then only what is new; failures, cancellation and a stream
+  that breaks off; sizes-only calls; limits; raw text; inner calls; ended
+  calls kept and dropped.
+- `test/ai-programs.test.js`: real FunctAI streams through the Pi router,
+  the live id is the log id, the record unchanged but `streamed`; thinking
+  watched and recorded whole (streamed or not); a stop signal gives
+  `ABORTED`, a cancelled call, `Cancelled` in the log; a document command's
+  raw text once.
+- `test/policy.test.js`: `program-live` narrowed per call, never to guests.
+- `test/programs-live-app.test.js`: the real app, server and a fake Pi that
+  writes slowly and waits at a gate: the list, the panel, the call's page
+  before its first call is logged, the text so far and the thinking, the
+  time ticking, landing opened in the examples; a reply that cannot be read,
+  asked again, its text replaced; another writer's call on another program
+  leaving the page still, on this program showing; the list updating
+  unasked; following stopping off the pages.
+- A real `problem_note` call on `openai-codex/gpt-6-astra` through the real
+  Pi: the note arrived in 36 pieces over 3 s, the first 1.7 s after the start.
+
+### Verified (phase 1)
 
 - `test/programs.test.js`: every `rated` contract case; the folder rule;
   reading every writer and day, skipping non-records, waiting for a partial

@@ -120,10 +120,19 @@
       return list.error ? `<div class="ag-empty">${h(list.error)}</div>` : '<div class="ag-empty">reading the call log…</div>';
     }
     if (Date.now() - list.at > 15000) loadList(true).then(() => panelRerender && panelRerender()).catch(() => {});
+    // Following starts once the panel is on screen.
+    setTimeout(syncLive, 0);
     const all = list.data.programs.filter(p => matches(p, project, list.query));
-    const rows = all.map(p => `<div class="ag-row pg-row" data-program="${h(JSON.stringify([p.name, p.module]))}">
+    // A program whose first call is running is not in the log yet.
+    const known = new Set(list.data.programs.map(p => JSON.stringify([p.name, p.module])));
+    const first = project ? [] : [...new Map([...live.calls.values()].filter(c => running(c) && !known.has(JSON.stringify([c.name, c.module])))
+      .filter(c => matches({ name: c.name, module: c.module }, '', list.query)).map(c => [JSON.stringify([c.name, c.module]), c])).values()];
+    const rows = first.map(c => `<div class="ag-row pg-row" data-program="${h(JSON.stringify([c.name, c.module]))}">
+      <button type="button" class="ag-main"><span class="ag-title"><span class="pg-glyph" aria-hidden="true">ƒ</span><span class="pg-row-name">${h(c.name)}</span></span>
+      <span class="pg-row-sub"><span class="pg-live-mark"><span class="pg-live-dot" aria-hidden="true"></span> its first call is running</span></span></button></div>`).join('')
+      + all.map(p => `<div class="ag-row pg-row" data-program="${h(JSON.stringify([p.name, p.module]))}">
       <button type="button" class="ag-main"><span class="ag-title"><span class="pg-glyph" aria-hidden="true">ƒ</span><span class="pg-row-name">${h(p.name)}</span><span class="ag-age">${h(ago(p.last))}</span></span>
-      <span class="pg-row-sig">${signatureHtml(p)}</span><span class="pg-row-sub">${statusWords(p)}</span></button></div>`).join('');
+      <span class="pg-row-sig">${signatureHtml(p)}</span><span class="pg-row-sub">${statusWords(p)}${liveMarkHtml(p.name, p.module)}</span></button></div>`).join('');
     const empty = list.query ? 'No program matches.' : project && list.data.programs.length ? 'No AI program has run in this project yet.' : '';
     return `<div class="pg-lib"><div class="ag-files-head"><input type="search" class="pg-search" placeholder="Find a program" aria-label="Find a program" value="${h(list.query)}">` +
       `<button type="button" class="ghost" data-programs-all>all</button></div>` + (rows || (empty ? `<div class="ag-empty">${h(empty)}</div>` : howToHtml(list.data.folder))) + '</div>';
@@ -148,25 +157,14 @@
     });
   }
 
-  let pollTimer = null;
-  const stopPolling = () => { clearTimeout(pollTimer); pollTimer = null; };
   const onPage = kind => typeof viewKind !== 'undefined' && viewKind === kind;
-  window.addEventListener('chattering:route', () => { if (!onPage('program') && !onPage('programs')) stopPolling(); });
 
   async function showList() {
     call('markSettingsClosed');
-    stopPolling();
     call('setRoute', 'programs', 'programs');
     view().innerHTML = '<div class="empty">reading the call log…</div>';
     try { await loadList(true); } catch (e) { view().innerHTML = `<div class="empty">${h(e.message)}</div>`; return; }
-    renderList();
-    const tick = async () => {
-      if (!onPage('programs')) return;
-      const before = list.data && list.data.seq;
-      if (!document.hidden) { try { await loadList(true); if (list.data.seq !== before) renderList(); } catch {} }
-      pollTimer = setTimeout(tick, 5000);
-    };
-    pollTimer = setTimeout(tick, 5000);
+    if (onPage('programs')) renderList();
   }
   function renderList() {
     const data = list.data;
@@ -182,12 +180,13 @@
         <span class="pg-card-name"><span class="pg-glyph" aria-hidden="true">ƒ</span> ${h(p.name)}</span>
         <span class="pg-card-sig">${signatureHtml(p)}</span>
         ${p.instruction ? `<span class="pg-card-what">${h(firstParagraph(p.instruction))}</span>` : ''}
-        <span class="pg-card-status">${statusWords(p)}</span>
+        <span class="pg-card-status">${statusWords(p)}<span data-live-mark>${liveMarkHtml(p.name, p.module)}</span></span>
       </button>`).join('')}</section>`).join('');
     const canEdit = typeof settingsState === 'undefined' || !settingsState || settingsState.canEditSettings !== false;
     view().innerHTML = `<div class="pg-view pg-list">
       <div class="pg-title"><h1>AI programs</h1>
         <p class="pg-lede">Functions whose body is a model call. See what each one really answers, and say when it is wrong.</p></div>
+      <div data-live-list>${liveListHtml()}</div>
       ${data.programs.length > 6 ? `<input type="search" id="pgListSearch" class="pg-list-search" placeholder="Find a program" value="${h(list.query)}">` : ''}
       ${data.programs.length ? cards || '<p class="pg-dim">No program matches.</p>' : howToHtml(data.folder)}
       <details class="pg-fine"><summary>Where this comes from</summary>
@@ -196,7 +195,9 @@
           Also record the programs that agents run from Chattering <span class="pg-dim">(new agent runs only)</span></label></details>
     </div>`;
     const root = view();
-    root.querySelectorAll('[data-program]').forEach(b => { b.onclick = () => { const [name, module] = JSON.parse(b.dataset.program); showProgram(name, module); }; });
+    root.querySelectorAll('.pg-card[data-program]').forEach(b => { b.onclick = () => { const [name, module] = JSON.parse(b.dataset.program); showProgram(name, module); }; });
+    wireLiveList(root);
+    tickerSync();
     const search = root.querySelector('#pgListSearch');
     if (search) search.oninput = () => { list.query = search.value; const at = search.selectionStart; renderList(); const s = view().querySelector('#pgListSearch'); s.focus(); s.setSelectionRange(at, at); };
     const box = root.querySelector('[data-pg-record]');
@@ -214,22 +215,30 @@
   const pq = () => ({ name: page.name, module: page.module });
   const vName = v => { const x = page.versions.find(y => y.version === v); return x ? 'v' + x.n : 'v?'; };
 
-  async function showProgram(name, module, { tab = 'examples', run = null } = {}) {
+  async function showProgram(name, module, { tab = 'examples', run = null, live: liveId = null } = {}) {
     call('markSettingsClosed');
-    stopPolling();
     if (page.name !== name || page.module !== module) Object.assign(page, { name, module, program: null, versions: [], runs: [], counts: null, answers: [], total: 0,
       open: null, detail: null, correcting: false, check: null, compare: null, key: null, filter: fresh(), limit: 50, seq: -1, showSame: false });
+    page.firstRun = false;
     page.tab = ['examples', 'compare', 'key', 'about'].includes(tab) ? tab : 'examples';
+    if (liveId) { live.open = liveId; page.tab = 'examples'; }
     call('setRoute', 'program', hashFor({ name, module, tab: page.tab, run }));
     view().innerHTML = '<div class="empty">reading the call log…</div>';
     try { await loadProgram(); }
-    catch (e) { view().innerHTML = `<div class="pg-view"><p class="empty">${h(e.message)}</p><p><button type="button" class="ghost" data-programs-all>← all AI programs</button></p></div>`; view().querySelector('[data-programs-all]').onclick = showList; return; }
+    catch (e) {
+      if (!samePage(name, module)) return;
+      // Its first call is running: it is in the log once it ends.
+      if (liveOf(name, module).length) { page.firstRun = true; return renderFirstRun(); }
+      view().innerHTML = `<div class="pg-view"><p class="empty">${h(e.message)}</p><p><button type="button" class="ghost" data-programs-all>← all AI programs</button></p></div>`; view().querySelector('[data-programs-all]').onclick = showList; return;
+    }
     await loadTab();
+    if (!samePage(name, module)) return;
     if (run) await openRun(run, { render: false });
     render();
     if (run) scrollToOpen();
-    schedulePoll();
+    else if (liveId) scrollToLive(liveId);
   }
+  const samePage = (name, module) => onPage('program') && page.name === name && page.module === module;
   async function loadProgram() {
     const d = await api('/api/programs/program?' + qs(pq()));
     page.program = d.program; page.versions = d.versions; page.you = d.you; page.seq = d.seq;
@@ -245,21 +254,6 @@
     else if (page.tab === 'compare' && !page.compare && page.versions.length > 1) await loadCompare(page.versions[1].version, page.versions[0].version);
   }
   async function loadCompare(a, b) { page.compare = await api('/api/programs/compare?' + qs({ ...pq(), a, b })); }
-  function schedulePoll() {
-    stopPolling();
-    const tick = async () => {
-      if (!onPage('program')) return;
-      const busy = page.correcting || page.check || (document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName));
-      if (!document.hidden && !busy) {
-        try {
-          const d = await api('/api/programs/runs?' + qs({ ...pq(), limit: 1 }));
-          if (d.seq !== page.seq) { await loadProgram(); await loadTab(); render(); }
-        } catch {}
-      }
-      pollTimer = setTimeout(tick, 5000);
-    };
-    pollTimer = setTimeout(tick, 5000);
-  }
   function setTab(tab) {
     page.tab = tab; page.check = null;
     call('replaceRoute', hashFor({ name: page.name, module: page.module, tab }));
@@ -275,7 +269,7 @@
       ? `<div class="pg-score"><span class="pg-score-n">${pct(s.score)}</span><span class="pg-score-words">right, on ${plural(s.n, 'random answer')} you checked<br><span class="pg-dim">the true rate is likely between ${pct(s.low)} and ${pct(s.high)}</span></span>
          <button type="button" class="ghost" data-pg-check>check ${s.n < 50 ? '20 more' : 'again'}</button></div>`
       : `<div class="pg-score pg-score-none"><span class="pg-score-words">How often is it right? Nobody knows yet.</span><button type="button" class="primary" data-pg-check>Check 20 random answers</button></div>`;
-    return `<div class="pg-status"><p class="pg-status-line">${week}${fails}</p>${measured}</div>`;
+    return `<div class="pg-status"><p class="pg-status-line">${week}${fails}<span data-live-note>${liveNoteHtml()}</span></p>${measured}</div>`;
   }
   function headHtml() {
     const p = page.program;
@@ -314,6 +308,7 @@
     const filtering = f.judged || f.answer || f.q || f.version;
     const rows = page.runs.map((r, i) => rowHtml(r, i)).join('');
     return `<div class="pg-examples">
+      <div data-live-section>${liveSectionHtml()}</div>
       <div class="pg-controls"><div class="pg-pills" role="group" aria-label="Show">${pills}</div>
         <div class="pg-tools"><input type="search" id="pgQuery" placeholder="Search the examples" aria-label="Search the examples" value="${h(f.q)}">${versions}
           ${tests ? `<label class="pg-switch" title="Calls made by FunctAI's evaluate, optimizers and tests: they answer known questions, so they are not counted as use"><input type="checkbox" data-pg-tests ${f.tests ? 'checked' : ''}> ${plural(tests, 'test run')}</label>` : ''}</div></div>
@@ -628,9 +623,405 @@ await evaluate(${h(p.name)}, rows);</pre></div>
     </div>`;
   }
 
+  // ---- Live: Chattering's own programs, watched while they run ----
+  // A tab on these pages (or with the Programs panel open) follows the calls
+  // running now on its event stream: first a snapshot, then every change in
+  // order, and a word whenever the call log moves (any writer: a call, a
+  // judgement). Nothing is asked every few seconds. What is shown while a
+  // call runs is provisional: a reply that cannot be read is asked again,
+  // and the typed, checked answer is the finished example's.
+  const live = { calls: new Map(), mode: 'off', conn: null, asking: false, again: false, seq: null, clock: 0, skew: 0,
+    open: null, thinkingOpen: new Set(), reload: null, moved: null, ticker: null, panelTimer: null };
+  const running = c => c.state === 'running';
+  const liveOf = (name, module) => [...live.calls.values()].filter(c => c.name === name && c.module === module);
+  const panelShown = () => { const el = document.querySelector('.pg-lib'); return !!(el && el.offsetParent); };
+  const liveWanted = () => !document.hidden && (onPage('programs') || onPage('program') || panelShown());
+  const connNow = () => (typeof peopleState !== 'undefined' && peopleState && peopleState.conn) || null;
+  async function syncLive() {
+    if (live.asking) { live.again = true; return; }
+    const want = liveWanted(), conn = connNow();
+    live.asking = true;
+    try {
+      if (want && conn && (live.mode === 'off' || live.conn !== conn)) {
+        live.mode = 'joining'; live.conn = conn;
+        await post('/api/programs/live', { conn, follow: true });
+        if (live.conn === conn && live.mode === 'joining') live.mode = 'on';
+      } else if (!want && live.mode !== 'off') {
+        const was = live.conn;
+        Object.assign(live, { mode: 'off', conn: null });
+        live.calls.clear();
+        if (was) await post('/api/programs/live', { conn: was, follow: false }).catch(() => {});
+      }
+    } catch { live.mode = 'off'; live.conn = null; }
+    finally { live.asking = false; }
+    if (live.again) { live.again = false; syncLive(); }
+  }
+  window.addEventListener('chattering:route', () => syncLive());
+  document.addEventListener('visibilitychange', () => syncLive());
+  // The panel can close without telling anyone; a follower that nobody
+  // looks at stops within a few seconds.
+  setInterval(() => { if (live.mode !== 'off' || liveWanted()) syncLive(); }, 8000);
+  // A new event stream (a reconnect, a restarted server): follow again on it.
+  function connected() { live.mode = 'off'; live.conn = null; live.calls.clear(); repaintLive(); syncLive(); }
+
+  function onLive(ev) {
+    if (live.mode === 'off') return;
+    if (typeof ev.now === 'number') live.skew = Date.now() - ev.now;
+    let shape = false;
+    const touched = new Map(); // call id → repaint its row (true) or add the new text (false)
+    const mark = (id, repaint = false) => touched.set(id, touched.get(id) || repaint);
+    for (const op of ev.ops || []) {
+      if (op.op === 'snapshot') {
+        live.calls = new Map((op.calls || []).map(c => [c.id, c]));
+        for (const c of live.calls.values()) if (!running(c)) c.endedAt = ++live.clock;
+        live.mode = 'on'; shape = true;
+        if (op.seq != null) logMoved(op.seq);
+        continue;
+      }
+      if (op.op === 'log') { logMoved(op.seq, op.programs); continue; }
+      if (op.op === 'start') { if (!live.calls.has(op.id)) { live.calls.set(op.id, op.call); shape = true; } continue; }
+      const c = live.calls.get(op.id);
+      if (!c) continue;
+      if (op.op === 'gone') { live.calls.delete(op.id); shape = true; continue; }
+      if (!(op.v > c.v)) continue; // already in the snapshot
+      c.v = op.v;
+      if (op.op === 'text') {
+        let f = c.fields.find(x => x.name === op.field);
+        if (!f) { f = { name: op.field, answer: op.answer, text: '', cut: false }; c.fields.push(f); }
+        f.text += op.text;
+        if (op.cut) f.cut = true;
+        mark(c.id, !!op.cut);
+      } else if (op.op === 'thinking') {
+        c.thinking += op.text;
+        if (op.cut) c.thinkingCut = true;
+        mark(c.id, !!op.cut);
+      } else if (op.op === 'reset') {
+        c.fields = []; c.thinking = ''; c.thinkingCut = false; c.attempt = op.attempt;
+        if (op.reason) c.retry = { reason: op.reason, wait: op.wait };
+        mark(c.id, true);
+      } else if (op.op === 'end') {
+        Object.assign(c, { state: op.state, ended: op.ended, seconds: op.seconds, error: op.error, endedAt: ++live.clock });
+        shape = true;
+      }
+    }
+    if (shape) repaintLive();
+    // After any repaint: the patch adds only what a row does not show yet.
+    for (const [id, repaint] of touched) { const c = live.calls.get(id); if (c) patchLive(c, repaint); }
+  }
+
+  // The log moved: read again what is on screen, unless the person is in
+  // the middle of something (a correction, a check, typing), then a moment
+  // later. Calls that had ended before the reading began are in the
+  // examples now: they leave "Running now".
+  function logMoved(seq, programs) {
+    live.seq = seq;
+    live.moved = mergeMoved(live.moved, Array.isArray(programs) ? new Set(programs.map(p => JSON.stringify(p))) : 'all');
+    clearTimeout(live.reload);
+    live.reload = setTimeout(reloadForLog, 120);
+  }
+  // Which programs moved since the last reading: a set of keys, or 'all'.
+  const mergeMoved = (a, b) => (a === 'all' || b === 'all' ? 'all' : !a ? b : !b ? a : new Set([...a, ...b]));
+  async function reloadForLog() {
+    const seq = live.seq, upTo = live.clock, moved = live.moved;
+    live.moved = null;
+    const later = () => { live.moved = mergeMoved(moved, live.moved); live.reload = setTimeout(reloadForLog, 1500); };
+    const typing = document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+    try {
+      if (onPage('program')) {
+        if (page.firstRun) {
+          try { await loadProgram(); } catch { return settle(upTo); }
+          page.firstRun = false;
+          await loadTab();
+          settle(upTo);
+          return render();
+        }
+        if (!page.program) return;
+        // A page on another program stays as it is.
+        const here = !moved || moved === 'all' || moved.has(JSON.stringify([page.name, page.module]));
+        if (page.seq !== seq && !here) page.seq = seq;
+        if (page.seq !== seq) {
+          if (page.correcting || page.check || busy || typing) return later();
+          await loadProgram(); await loadTab();
+          if (!onPage('program')) return;
+          settle(upTo);
+          render();
+          if (page.open) scrollToOpen();
+          return;
+        }
+      } else if (onPage('programs')) {
+        if (!list.data || list.data.seq !== seq) {
+          if (typing) return later();
+          await loadList(true);
+          if (onPage('programs')) renderList();
+        }
+      }
+      if (panelShown() && (!list.data || list.data.seq !== seq)) { await loadList(true); schedulePanel(); }
+    } catch {}
+    settle(upTo);
+  }
+  // Ended calls counted up to `upTo` are in the examples now.
+  function settle(upTo) {
+    let moved = false, landed = null;
+    for (const c of live.calls.values()) {
+      if (running(c) || c.settled || !(c.endedAt <= upTo)) continue;
+      c.settled = true; moved = true;
+      if (live.open === c.id) { live.open = null; landed = c; }
+    }
+    if (!moved) return;
+    // The person was watching it: open the finished example, ready to judge.
+    if (landed && onPage('program') && page.tab === 'examples' && !page.check && page.runs.some(r => r.id === landed.id)) {
+      page.open = null;
+      openRun(landed.id, { render: false }).then(() => { renderTable(); scrollToOpen(); });
+      return;
+    }
+    repaintLive();
+  }
+  // What "Running now" shows on a program's page: its calls, until they are in the examples.
+  const shownLive = () => liveOf(page.name, page.module).filter(c => !c.settled).reverse();
+
+  // ---- words for a call in progress ----
+  const serverNow = () => Date.now() - live.skew;
+  const since = c => Math.max(0, (serverNow() - Date.parse(c.started)) / 1000);
+  const elapsed = s => (s < 60 ? Math.floor(s) + ' s' : Math.floor(s / 60) + ' min ' + String(Math.floor(s % 60)).padStart(2, '0') + ' s');
+  const tail = (text, n) => (text.length > n ? '…' + text.slice(-n).replace(/^\S{0,20}\s/, '') : text);
+  const writing = c => c.fields.length ? c.fields[c.fields.length - 1] : null;
+  function liveState(c) {
+    if (c.state === 'done') return { cls: 'good', words: '✓ done', sub: `in ${secs(c.seconds)}` };
+    if (c.state === 'failed') return { cls: 'bad', words: '! failed', sub: c.error ? c.error.type : '' };
+    if (c.state === 'cancelled') return { cls: 'dim', words: 'stopped', sub: '' };
+    const doing = c.fields.length ? 'writing' : c.thinking ? 'thinking' : c.attempt > 1 ? 'asking again' : 'waiting for the model';
+    return { cls: 'run', words: doing, sub: c.attempt > 1 ? `attempt ${c.attempt}` : '', since: true };
+  }
+  function stateHtml(c) {
+    const st = liveState(c);
+    return `<span class="pg-live-state ${st.cls}">${h(st.words)}${st.since ? ` · <span data-live-since="${h(c.id)}">${elapsed(since(c))}</span>` : ''}</span>${st.sub ? `<span class="pg-v-sub">${h(st.sub)}</span>` : ''}`;
+  }
+  function liveInputs(c) {
+    if (!c.content) {
+      const total = Object.values(c.sizes || {}).reduce((a, b) => a + b, 0);
+      return `<span class="pg-dim">too large to keep: only its size is recorded (${plural(total, 'character')})</span>`;
+    }
+    const entries = Object.entries(c.inputs || {});
+    const line = v => v.line ?? v.text;
+    const text = entries.length === 1 ? line(entries[0][1]) : entries.map(([k, v]) => `${k}: ${line(v).slice(0, 280)}`).join('\n');
+    return h(text.slice(0, 600));
+  }
+  function tailHtml(c, n = 160) {
+    const f = writing(c);
+    const caret = running(c) ? '<span class="pg-caret" aria-hidden="true"></span>' : '';
+    if (f) return `<span class="pg-live-text">${(c.outputs || []).length > 1 ? `<span class="pg-dim">${h(f.name)}:</span> ` : ''}${h(tail(f.text, n))}${caret}</span>`;
+    if (c.thinking) return `<span class="pg-live-text pg-live-thought">${h(tail(c.thinking, n))}${caret}</span>`;
+    if (c.state === 'failed' && c.error) return `<span class="pg-bad">${h(c.error.message || c.error.type)}</span>`;
+    return running(c) ? `<span class="pg-live-text pg-dim">…${caret}</span>` : '';
+  }
+  // Who asked, in words: the conversation, project or file it is for.
+  function liveWho(c, { links = true } = {}) {
+    const k = c.caller || {};
+    const link = (attr, value, text) => links ? `<button type="button" class="linkish" ${attr}="${h(value)}">${h(text)}</button>` : `<b>${h(text)}</b>`;
+    const about = k.conversation ? 'for ' + link('data-open-conv', k.conversation, sessionTitle(k.conversation))
+      : k.project ? 'for the project ' + h(projectName(k.project) || k.project)
+      : k.file ? 'on ' + link('data-open-file', k.file, base(k.file))
+      : k.repository ? 'in ' + h(base(k.repository)) : '';
+    const who = k.automatic ? 'in the background' : k.user ? 'asked by ' + h(k.user) : '';
+    return [about, who].filter(Boolean).join(', ');
+  }
+
+  // ---- a program's page: "Running now", above the examples ----
+  function liveSectionHtml() {
+    if (page.check || page.tab !== 'examples') return '';
+    const calls = shownLive();
+    if (!calls.length) return '';
+    const now = calls.filter(running).length;
+    return `<section class="pg-live" aria-label="Running now">
+      <h3 class="pg-live-title">${now ? '<span class="pg-live-dot" aria-hidden="true"></span> Running now' : 'Just finished'}${calls.length > 1 ? ` <span class="pg-count">${num(calls.length)}</span>` : ''}</h3>
+      <div class="pg-table pg-live-table" role="table" aria-label="Calls running now">${calls.map(liveRowHtml).join('')}</div></section>`;
+  }
+  function liveRowHtml(c) {
+    const open = live.open === c.id;
+    return `<div class="pg-tr pg-live-tr is-${h(c.state)} ${open ? 'open' : ''}" role="row" data-live="${h(c.id)}" tabindex="0" aria-expanded="${open}" aria-busy="${running(c)}">
+      <div class="pg-row-line"><span role="cell" class="pg-td pg-td-in">${liveInputs(c)}</span>
+        <span role="cell" class="pg-td pg-td-out pg-live-out" data-live-tail>${tailHtml(c)}</span>
+        <span role="cell" class="pg-td pg-td-v" data-live-state>${stateHtml(c)}</span></div>
+      ${open ? liveOpenHtml(c) : ''}</div>`;
+  }
+  function liveOpenHtml(c) {
+    const names = [...new Set([...(c.outputs || []), ...c.fields.map(f => f.name)])];
+    const many = names.length > 1;
+    const outs = names.map(n => {
+      const f = c.fields.find(x => x.name === n);
+      const answer = n === c.answer && many;
+      return `<div class="pg-field${answer ? ' pg-answer' : ''}">${many ? `<div class="pg-field-name">${h(n)}</div>` : ''}<div class="pg-field-value${f ? '' : ' pg-dim'}" data-live-field="${h(n)}" data-len="${f ? f.text.length : 0}"${f ? '' : ' data-empty="1"'}>${f ? h(f.text) : running(c) ? '…' : '—'}</div>${f && f.cut ? '<div class="pg-dim pg-live-cut">… the rest is in the finished example</div>' : ''}</div>`;
+    }).join('');
+    const ins = c.content ? Object.entries(c.inputs || {}).map(([k, v]) => `<div class="pg-field">${Object.keys(c.inputs).length > 1 ? `<div class="pg-field-name">${h(k)}</div>` : ''}<div class="pg-field-value">${h(v.text)}${v.cut ? '<span class="pg-dim"> …</span>' : ''}</div></div>`).join('') || '<p class="pg-dim">—</p>'
+      : `<p class="pg-dim">Too large to keep: only sizes are recorded. ${Object.entries(c.sizes || {}).map(([k, n]) => `${h(k)}: ${plural(n, 'character')}`).join(', ')}.</p>`;
+    const st = liveState(c);
+    const retry = c.retry && c.attempt > 1 ? `<p class="pg-warn pg-live-retry">Asked again (attempt ${num(c.attempt)}): ${h(c.retry.reason)}</p>` : '';
+    const who = liveWho(c);
+    const thinking = c.thinking || running(c) && c.fields.length === 0 ? `<details class="pg-fold" data-live-thinking-fold ${live.thinkingOpen.has(c.id) ? 'open' : ''} ${c.thinking ? '' : 'hidden'}><summary>What the model is thinking</summary><pre class="pg-live-thinking" data-live-thinking data-len="${c.thinking.length}">${h(c.thinking)}</pre>${c.thinkingCut ? '<p class="pg-dim">… (the rest is not shown)</p>' : ''}</details>` : '';
+    const end = c.state === 'failed' && c.error ? `<p class="pg-bad pg-errline"><b>${h(c.error.type)}</b>${c.error.code ? ' · ' + h(c.error.code) : ''}${c.error.message ? ': ' + h(c.error.message) : ''}</p>`
+      : c.state === 'cancelled' ? '<p class="pg-dim">It was stopped before it finished.</p>'
+      : c.state === 'done' ? '<p class="pg-dim">Done. It moves into the examples below, where you can judge it.</p>'
+      : '<p class="pg-dim">Still being written. This text is provisional: a reply that cannot be read is asked again, and the checked answer arrives when it is done.</p>';
+    return `<div class="pg-open pg-live-open" aria-label="This call, as it runs">
+      <div class="pg-live-head"><button type="button" class="linkish" data-live-close>close</button><span class="pg-live-state ${st.cls}">${h(st.words)}${st.since ? ` · <span data-live-since="${h(c.id)}">${elapsed(since(c))}</span>` : ''}</span>${who ? `<span class="pg-dim">${who}</span>` : ''}</div>
+      <div class="pg-pair"><section><h3 class="pg-in-h">input</h3>${ins}</section><section><h3 class="pg-out-h">output${running(c) ? ' <span class="pg-dim">so far</span>' : ''}</h3>${outs}</section></div>
+      ${retry}${thinking}${end}</div>`;
+  }
+  // New text for one call: add what each place does not show yet, without
+  // painting the rest again (a selection or a scroll inside stays where it
+  // is). Each place knows how much it shows (data-len), so this can follow
+  // any repaint.
+  function patchLive(c, repaint = false) {
+    const rows = view().querySelectorAll(`[data-live="${CSS.escape(c.id)}"], [data-live-go="${CSS.escape(c.id)}"]`);
+    if (!rows.length) return;
+    if (repaint) return repaintRow(c);
+    const grow = (el, text) => {
+      const have = Number(el.dataset.len || 0);
+      if (text.length <= have) return;
+      if (el.dataset.empty) { el.textContent = ''; delete el.dataset.empty; el.classList.remove('pg-dim'); }
+      const more = text.slice(have), last = el.lastChild;
+      if (last && last.nodeType === 3) last.appendData(more); else el.append(more);
+      el.dataset.len = String(text.length);
+    };
+    for (const row of rows) {
+      if (row.matches('[data-live]') && live.open === c.id) {
+        for (const f of c.fields) {
+          const el = row.querySelector(`[data-live-field="${CSS.escape(f.name)}"]`);
+          if (!el) return repaintRow(c);
+          grow(el, f.text);
+        }
+        if (c.thinking) {
+          const el = row.querySelector('[data-live-thinking]');
+          if (!el) return repaintRow(c);
+          grow(el, c.thinking);
+          const fold = row.querySelector('[data-live-thinking-fold]');
+          if (fold) fold.hidden = false;
+        }
+      }
+      row.querySelectorAll('[data-live-tail]').forEach(el => { el.innerHTML = tailHtml(c, row.matches('[data-live-go]') ? 220 : 160); });
+      row.querySelectorAll('[data-live-state]').forEach(el => { el.innerHTML = stateHtml(c); });
+    }
+  }
+  function repaintRow(c) {
+    const row = view().querySelector(`[data-live="${CSS.escape(c.id)}"]`);
+    if (row) { const wrap = document.createElement('div'); wrap.innerHTML = liveRowHtml(c); const fresh = wrap.firstElementChild; row.replaceWith(fresh); wireLive(fresh.parentElement || view()); }
+    const item = view().querySelector(`[data-live-go="${CSS.escape(c.id)}"]`);
+    if (item) { const wrap = document.createElement('div'); wrap.innerHTML = liveItemHtml(c); item.replaceWith(wrap.firstElementChild); wireLiveList(view()); }
+  }
+  // Calls began, ended or went: paint the live parts again (the rest of the
+  // page stays), and only those whose content changed: a call of another
+  // program starting leaves an open one, and a selection in it, alone.
+  // Their shape, not their text: the text is patched in place as it comes.
+  const shapeOf = calls => JSON.stringify([page.tab, !!page.check, live.open, calls.map(c => [c.id, c.state, c.attempt, c.fields.map(f => f.name + (f.cut ? '…' : '')), !!c.thinking])]);
+  const paintSlot = (slot, shape, html, wireIt) => {
+    if (!slot || slot.dataset.shape === shape) return;
+    slot.innerHTML = html(); slot.dataset.shape = shape;
+    wireIt(slot);
+  };
+  function repaintLive() {
+    if (onPage('program')) {
+      if (page.firstRun) renderFirstRun();
+      else {
+        paintSlot(view().querySelector('[data-live-section]'), shapeOf(shownLive()), liveSectionHtml, wireLive);
+        paintSlot(view().querySelector('[data-live-note]'), shapeOf(liveOf(page.name, page.module).filter(running)), liveNoteHtml, wire);
+      }
+    } else if (onPage('programs')) {
+      paintSlot(view().querySelector('[data-live-list]'), shapeOf([...live.calls.values()].filter(running)), liveListHtml, wireLiveList);
+      view().querySelectorAll('.pg-card[data-program]').forEach(card => {
+        const [n, m] = JSON.parse(card.dataset.program);
+        const el = card.querySelector('[data-live-mark]');
+        if (el) el.innerHTML = liveMarkHtml(n, m);
+      });
+    }
+    schedulePanel();
+    tickerSync();
+  }
+  // On another tab than Examples: a word that calls are running, one click away.
+  function liveNoteHtml() {
+    const n = liveOf(page.name, page.module).filter(running).length;
+    if (!n || (page.tab === 'examples' && !page.check)) return '';
+    return ` · <button type="button" class="linkish pg-live-note" data-pg-tab="examples"><span class="pg-live-dot" aria-hidden="true"></span> ${n === 1 ? 'running now' : num(n) + ' running now'}</button>`;
+  }
+  function wireLive(root) {
+    root.querySelectorAll('[data-live]').forEach(tr => {
+      const toggle = () => { live.open = live.open === tr.dataset.live ? null : tr.dataset.live; const c = live.calls.get(tr.dataset.live); if (c) repaintRow(c); };
+      const line = tr.querySelector('.pg-row-line');
+      if (line) line.onclick = e => { if (!e.target.closest('button, a')) toggle(); };
+      tr.onkeydown = e => { if ((e.key === 'Enter' || e.key === ' ') && e.target === tr) { e.preventDefault(); toggle(); } };
+      const close = tr.querySelector('[data-live-close]');
+      if (close) close.onclick = e => { e.preventDefault(); toggle(); tr.focus({ preventScroll: true }); };
+      const fold = tr.querySelector('[data-live-thinking-fold]');
+      if (fold) fold.ontoggle = () => { if (fold.open) live.thinkingOpen.add(tr.dataset.live); else live.thinkingOpen.delete(tr.dataset.live); };
+      tr.querySelectorAll('[data-open-conv]').forEach(b => { b.onclick = e => { e.preventDefault(); call('open', b.dataset.openConv); }; });
+      tr.querySelectorAll('[data-open-file]').forEach(b => { b.onclick = e => { e.preventDefault(); call('openLiveFile', b.dataset.openFile, {}); }; });
+    });
+  }
+  function scrollToLive(id) {
+    const el = view().querySelector(`[data-live="${CSS.escape(id)}"]`);
+    if (el) el.scrollIntoView({ block: 'nearest' });
+  }
+  // A program whose first call is still running: not in the log yet.
+  function renderFirstRun() {
+    const calls = liveOf(page.name, page.module).reverse();
+    if (!calls.length) { page.firstRun = false; return showProgram(page.name, page.module); }
+    view().innerHTML = `<div class="pg-view"><nav class="pg-crumb"><button type="button" class="linkish" data-programs-all>AI programs</button></nav>
+      <div class="pg-title"><h1><span class="pg-glyph" aria-hidden="true">ƒ</span> ${h(page.name)}</h1>
+        <p class="pg-lede">${calls.some(running) ? 'Its first call is running now. Its page fills in when the call is done.' : 'Its first call just ended.'}</p></div>
+      <div class="pg-body"><section class="pg-live pg-first-run" aria-label="Running now"><div class="pg-table pg-live-table" role="table">${calls.map(liveRowHtml).join('')}</div></section></div></div>`;
+    wire(view());
+    tickerSync();
+  }
+
+  // ---- every program: the calls running now, across all of them ----
+  const LIST_LIVE = 12; // background work can run many at once: the newest, then a count
+  function liveListHtml() {
+    const calls = [...live.calls.values()].filter(running).reverse();
+    if (!calls.length) return '';
+    const more = calls.length - LIST_LIVE;
+    return `<section class="pg-group pg-live-group" aria-label="Running now"><h2><span class="pg-live-dot" aria-hidden="true"></span> Running now <span class="pg-count">${num(calls.length)}</span></h2>
+      <div class="pg-live-items">${calls.slice(0, LIST_LIVE).map(liveItemHtml).join('')}</div>
+      ${more > 0 ? `<p class="pg-dim pg-live-more">and ${plural(more, 'more call')} running</p>` : ''}</section>`;
+  }
+  function liveItemHtml(c) {
+    const who = liveWho(c, { links: false });
+    return `<button type="button" class="pg-live-item" data-live-go="${h(c.id)}" data-program="${h(JSON.stringify([c.name, c.module]))}">
+      <span class="pg-live-item-head"><span class="pg-glyph" aria-hidden="true">ƒ</span> <b>${h(c.name)}</b>${who ? ` <span class="pg-dim">${who}</span>` : ''}<span class="pg-live-item-state" data-live-state>${stateHtml(c)}</span></span>
+      <span class="pg-live-item-text pg-live-out" data-live-tail>${tailHtml(c, 220)}</span></button>`;
+  }
+  function wireLiveList(root) {
+    root.querySelectorAll('[data-live-go]').forEach(b => { b.onclick = () => { const [name, module] = JSON.parse(b.dataset.program); showProgram(name, module, { live: b.dataset.liveGo }); }; });
+  }
+  function liveMarkHtml(name, module) {
+    const n = liveOf(name, module).filter(running).length;
+    return n ? ` · <span class="pg-live-mark"><span class="pg-live-dot" aria-hidden="true"></span> ${n === 1 ? 'running now' : num(n) + ' running now'}</span>` : '';
+  }
+  // The right panel shows which programs are running; it is painted again
+  // only when that changes, and never under a person's typing.
+  function schedulePanel() {
+    if (!panelRerender || !panelShown()) return;
+    clearTimeout(live.panelTimer);
+    live.panelTimer = setTimeout(() => {
+      const box = document.querySelector('.pg-lib .pg-search');
+      if (box && document.activeElement === box) return;
+      if (panelShown() && panelRerender) panelRerender();
+    }, 200);
+  }
+  // Elapsed times tick while something runs and is on screen.
+  function tickerSync() {
+    const any = [...live.calls.values()].some(running);
+    if (any && !live.ticker) {
+      live.ticker = setInterval(() => {
+        const els = document.querySelectorAll('[data-live-since]');
+        if (!els.length && ![...live.calls.values()].some(running)) { clearInterval(live.ticker); live.ticker = null; return; }
+        els.forEach(el => { const c = live.calls.get(el.dataset.liveSince); if (c && running(c)) el.textContent = elapsed(since(c)); });
+      }, 1000);
+    } else if (!any && live.ticker) { clearInterval(live.ticker); live.ticker = null; }
+  }
+
   // ---- events ----
   function wire(root) {
     const on = (sel, f) => root.querySelectorAll(sel).forEach(el => { el.onclick = e => { e.preventDefault(); f(el, e); }; });
+    wireLive(root);
     on('[data-programs-all]', () => showList());
     on('[data-pg-tab]', el => setTab(el.dataset.pgTab));
     on('[data-pg-check]', () => { page.tab = 'examples'; startCheck().catch(e => errToast(e.message)); });
@@ -758,5 +1149,6 @@ await evaluate(${h(p.name)}, rows);</pre></div>
     else if (e.key === 'Escape' && page.open) { e.preventDefault(); openRun(page.open); }
   });
 
-  window.Programs = { panelHtml, wireHost, showList, showProgram, dispatch, describe, hashFor, parseHash, loadList };
+  window.Programs = { panelHtml, wireHost, showList, showProgram, dispatch, describe, hashFor, parseHash, loadList, live: onLive, connected,
+    liveInfo: () => ({ mode: live.mode, seq: live.seq, calls: [...live.calls.values()].map(c => ({ id: c.id, name: c.name, state: c.state, settled: !!c.settled })) }) };
 })();

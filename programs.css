@@ -213,3 +213,46 @@ button.pg-cmp-out:hover { border-color: var(--success); }
   .pg-ask .pg-yes, .pg-ask .pg-no { flex: 1; }
 }
 @media (pointer: coarse) { .pg-view kbd, .pg-keys { display: none; } }
+
+/* Running now (design/74, "Live"): the calls being made, above the
+   examples they become. Quiet: one pulsing dot and a caret where the text
+   grows, in the live color (tokens.css stops the motion for e-ink and for
+   people who asked for less). */
+.pg-live { margin: 0 0 20px; }
+.pg-live-title { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: var(--fs-micro); font-weight: 400; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); }
+.pg-live-dot { display: inline-block; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--live); vertical-align: middle; animation: pg-pulse 1.6s ease-in-out infinite; }
+@keyframes pg-pulse { 50% { opacity: .3; } }
+.pg-live-table { border-left: 3px solid var(--live); }
+.pg-live-tr.is-done, .pg-live-tr.is-cancelled { opacity: .75; }
+/* The newest words show: text that no longer fits leaves at the top. */
+.pg-live-out { display: flex; flex-direction: column; justify-content: flex-end; -webkit-line-clamp: unset; max-height: 3em; }
+.pg-live-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.pg-live-thought { color: var(--text-dim); font-weight: 400; font-style: italic; }
+.pg-caret { display: inline-block; width: .45em; height: 1.05em; margin-left: 2px; vertical-align: text-bottom; background: var(--live); animation: pg-blink 1s steps(1) infinite; }
+@keyframes pg-blink { 50% { opacity: 0; } }
+.pg-live-state { font-size: var(--fs-meta); white-space: nowrap; }
+.pg-live-state.run { color: var(--live); }
+.pg-live-state.good { color: var(--success); }
+.pg-live-state.bad { color: var(--danger); }
+.pg-live-state.dim { color: var(--text-dim); }
+.pg-live-state [data-live-since] { font-variant-numeric: tabular-nums; }
+.pg-live-open .pg-live-head { display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; font-size: var(--fs-meta); }
+.pg-live-open .pg-live-head .linkish { order: 3; margin-left: auto; }
+.pg-live-thinking { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-meta); line-height: 1.5; color: var(--text-dim); max-height: 18em; overflow-y: auto; }
+.pg-live-retry { margin: 0; font-size: var(--fs-meta); }
+.pg-live-cut { font-size: var(--fs-micro); margin-top: 4px; }
+.pg-live-mark { color: var(--live); white-space: nowrap; }
+.pg-live-mark .pg-live-dot, .pg-live-note .pg-live-dot { width: 6px; height: 6px; margin-right: 2px; }
+.pg-live-note { text-decoration: none; color: var(--live); }
+
+/* Every program: what runs now, across them all. */
+.pg-live-group h2 { display: flex; align-items: center; gap: 8px; }
+.pg-live-items { display: grid; gap: 8px; }
+.pg-live-item { display: grid; gap: 4px; width: 100%; text-align: left; padding: 10px 14px; border: 1px solid var(--border); border-left: 3px solid var(--live); background: none; color: inherit; font: inherit; cursor: pointer; }
+.pg-live-item:hover { background: var(--surface-1); }
+.pg-live-item-head { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; font-size: var(--fs-meta); }
+.pg-live-item-head .pg-dim { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 60%; }
+.pg-live-item-state { margin-left: auto; display: inline-flex; gap: 6px; align-items: baseline; }
+.pg-live-item-text { font-weight: 700; line-height: 1.5; overflow: hidden; }
+
+.pg-first-run { margin-top: 20px; }

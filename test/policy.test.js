@@ -126,3 +126,22 @@ test('events: narrowed to what the person may see, unknown types to the owner ti
   const read = policy.eventView({ type: 'agent-read', read: { open: 1, secret: 2 }, since: 5 }, { ...can, member: true });
   assert.deepEqual(read, { type: 'agent-read', read: { open: 1 }, since: 5 });
 });
+
+test('AI programs live: the household only, and of each call what the person may see of what it is about', () => {
+  const member = { all: false, member: true, key: k => k === 'open', project: p => p === 'open', path: a => a.startsWith('/p/open/') };
+  const guest = { ...member, member: false };
+  const ev = { type: 'program-live', now: 1, ops: [
+    { op: 'start', id: 'a', v: 1, scope: { key: 'open' }, call: { id: 'a' } },
+    { op: 'text', id: 'b', v: 2, scope: { key: 'secret' }, field: 'title', text: 'the secret plan' },
+    { op: 'text', id: 'c', v: 2, scope: { path: '/p/secret/notes.md' }, field: 'result', text: 'hidden' },
+    { op: 'text', id: 'd', v: 2, scope: { project: 'open', path: '/p/open/a.md' }, field: 'result', text: 'shown' },
+    { op: 'end', id: 'e', v: 3, scope: {}, state: 'done' },
+    { op: 'log', seq: 4 },
+  ] };
+  assert.equal(policy.eventView(ev, guest), null, 'never a guest');
+  assert.deepEqual(policy.eventView(ev, member).ops.map(o => o.id || o.op), ['a', 'd', 'e', 'log']);
+  const snap = policy.eventView({ type: 'program-live', ops: [{ op: 'snapshot', seq: 1, calls: [{ id: 'a', scope: { key: 'open' } }, { id: 'b', scope: { project: 'secret' } }] }] }, member);
+  assert.deepEqual(snap.ops[0].calls.map(c => c.id), ['a']);
+  assert.equal(policy.eventView({ type: 'program-live', ops: [{ op: 'text', id: 'b', scope: { key: 'secret' } }] }, member), null, 'nothing left: nothing sent');
+  assert.equal(policy.eventView(ev, { ...member, all: true }), ev, 'the owner tier sees every call');
+});

@@ -18143,8 +18143,11 @@ live.onmessage = ev => {
     st.runner.external(d.event);
     return;
   }
-  // A new stream is a new connection id: follow the open notebook on it.
+  if (d.type === 'program-live') { if (window.Programs) Programs.live(d); return; }
+  // A new stream is a new connection id: follow the open notebook on it,
+  // and the AI programs when their pages are open.
   if (d.type === 'hello' && docState) setTimeout(() => docFollow(docState), 0);
+  if (d.type === 'hello' && window.Programs) setTimeout(() => Programs.connected(), 0);
   if (peopleLiveEvent(d)) return;
   if (d.type === 'agent-recovery') { applyAgentRecovery(d.recovery); return; }
   if (d.type === 'delegation-update') { delegationUI.invalidate(); return; }

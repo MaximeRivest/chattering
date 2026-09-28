@@ -239,3 +239,22 @@ test('values not recorded (log_content off): sizes and times only, never a row',
   assert.deepEqual(index.rated('team', 'support').left_out, { other_signature: 0, no_content: 1, no_answer: 0 });
   assert.deepEqual(index.sample('team', 'support').ids, [], 'nothing to judge in a draw');
 });
+
+test('which programs moved: a call names its program, a rating its call\u2019s, an unknown call any', t => {
+  const { root, folder, index, tick } = fixture();
+  t.after(() => { index.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  const file = path.join(folder, '2026-09-26', 'lambda-1-aaaaaa.jsonl');
+  const a = call();
+  fs.writeFileSync(file, line(a) + line(call({ program: { name: 'summarize', module: 'notes' } })));
+  index.refresh();
+  assert.deepEqual(index.takeChanged().sort(), [['summarize', 'notes'], ['team', 'support']]);
+  assert.deepEqual(index.takeChanged(), [], 'taken once');
+  tick(1000);
+  fs.appendFileSync(file, line(rating(a.id, 'right')));
+  index.refresh();
+  assert.deepEqual(index.takeChanged(), [['team', 'support']]);
+  tick(1000);
+  fs.appendFileSync(file, line(rating('01926a8e-9999-7000-8000-000000000000', 'right')));
+  index.refresh();
+  assert.equal(index.takeChanged(), null, 'a rating of a call not read yet: any program');
+});
