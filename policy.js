@@ -58,6 +58,9 @@ const ROUTES = {
   'GET /api/agent-read': 'guest', // filtered per person
   'POST /api/agent-read': 'guest', // one household inbox: a guest's marks are answered, not written
   'GET /api/recent-files': 'guest', // filtered per person
+  // The household's open files (design/77); a guest keeps theirs in the browser.
+  'GET /api/open-files': 'member',
+  'POST /api/open-files': 'member',
   'POST /api/recent-files': 'member',
   '/api/handoff': 'member',
 
@@ -407,6 +410,7 @@ const EVENTS = {
   },
   agents: ev => can => ({ ...ev, keys: (ev.keys || []).filter(k => can.key(k)) }),
   'agent-read': ev => can => can.member && narrowKeyMaps(ev, can),
+  'open-files': ev => can => can.member && { ...ev, files: (ev.files || []).filter(f => f && can.path(f.path)) },
   'recent-files': ev => can => {
     const d = ev.delta || {};
     const upsert = (d.upsert || []).filter(f => f && (f.key ? can.key(f.key) : true) && can.path(f.path));

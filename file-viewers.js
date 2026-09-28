@@ -21,7 +21,7 @@ function fileViewerFrame(ws, kind) {
   $('ffCompare').innerHTML = `<div class="doc-view lf-media-view">
     <header class="live-file-head lf-media-head">
       <button id="liveBack" title="Return to the previous view"><span class="lf-back-arrow">←</span><span class="lf-wide">${esc(liveBackLabel(ws).slice(2))}</span></button>
-      <b id="ffTitle" title="${fgAttr(ws.path)}">${esc(liveFileLabel(ws))}</b>
+      ${liveFileNameHtml(ws)}
       <span id="docStatus" role="status">Opening ${kind}…</span>
       <button id="mediaReload">Reload</button>
       <a id="mediaDownload" href="${fgAttr(fileViewerURL(ws, true))}" download>Download</a>
@@ -41,6 +41,18 @@ function fileViewerFrame(ws, kind) {
   $('mediaReload').onclick = () => fileWsMountBody(ws, {});
   return state;
 }
+// Where a PDF or a video was left (its page, its time), per file on this
+// device, so opening it again, from the side list or anywhere, goes on
+// from there, as a text file's cursor does.
+function fileViewerPlace(ws) {
+  try { return Number(localStorage.getItem('chattering.place:' + ws.path)) || 0; } catch { return 0; }
+}
+function setFileViewerPlace(ws, value) {
+  try { if (value > 0) localStorage.setItem('chattering.place:' + ws.path, String(value)); else localStorage.removeItem('chattering.place:' + ws.path); } catch {}
+}
+// The last stretch of a video counts as its end: two seconds, or a tenth of
+// a short clip.
+const videoEndMargin = video => Math.min(2, video.duration / 10);
 async function liveFileMountVideo(ws) {
   if (fileWs !== ws || !$('ffCompare')) return;
   const state = fileViewerFrame(ws, 'video');
@@ -53,6 +65,8 @@ async function liveFileMountVideo(ws) {
     state.host.classList.add('lf-video-host'); state.host.prepend(video);
     video.onloadedmetadata = () => {
       if (!state.current()) return;
+      const at = fileViewerPlace(ws);
+      if (at > 0 && Number.isFinite(video.duration) && at < video.duration - videoEndMargin(video)) video.currentTime = at;
       state.message.hidden = true;
       state.status.textContent = `${video.videoWidth} × ${video.videoHeight} · Read-only`;
       liveFileRememberOpen(ws);
@@ -60,7 +74,12 @@ async function liveFileMountVideo(ws) {
     video.onerror = () => state.fail(video.error?.code === 2
       ? 'The video could not be loaded. Check your connection and try Reload.'
       : 'This device could not play the video. Its format may be unsupported or the file may be damaged. You can download it to use another player.');
-    state.cleanups.push(() => { video.onloadedmetadata = video.onerror = null; video.pause(); video.removeAttribute('src'); video.load(); });
+    // The time, when it settles: a pause, a seek, and the leaving itself.
+    // Near the end counts as watched: next time starts from the beginning.
+    const remember = () => { if (Number.isFinite(video.duration) && video.duration > 0) setFileViewerPlace(ws, video.currentTime < video.duration - videoEndMargin(video) ? video.currentTime : 0); };
+    video.addEventListener('pause', remember);
+    video.addEventListener('seeked', remember);
+    state.cleanups.push(() => { remember(); video.onloadedmetadata = video.onerror = null; video.removeEventListener('pause', remember); video.removeEventListener('seeked', remember); video.pause(); video.removeAttribute('src'); video.load(); });
     video.src = fileViewerURL(ws) + '&v=' + Date.now();
   } catch (error) { if (state.current()) state.fail(error.message); }
 }
@@ -76,6 +95,7 @@ async function liveFileMountPDF(ws) {
     const onMessage = event => {
       if (!state.current() || event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.type !== 'chattering:pdf') return;
       if (event.data.error) return state.fail(event.data.error);
+      if (event.data.page) return setFileViewerPlace(ws, event.data.page > 1 ? event.data.page : 0);
       state.message.hidden = true;
       state.status.textContent = `${event.data.pages} pages · Read-only`;
       liveFileRememberOpen(ws);
@@ -83,7 +103,7 @@ async function liveFileMountPDF(ws) {
     window.addEventListener('message', onMessage);
     state.cleanups.push(() => { window.removeEventListener('message', onMessage); frame.remove(); });
     state.host.append(frame);
-    const query = new URLSearchParams({ file: fileViewerURL(ws), eink: document.documentElement.dataset.themeMode === 'binary' ? '1' : '0' });
+    const query = new URLSearchParams({ file: fileViewerURL(ws), eink: document.documentElement.dataset.themeMode === 'binary' ? '1' : '0', page: String(fileViewerPlace(ws) || '') });
     frame.src = '/vendor/pdfjs/6.3.289/web/viewer.html?' + query;
   } catch (error) { if (state.current()) state.fail(error.message); }
 }

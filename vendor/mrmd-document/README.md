@@ -11,7 +11,14 @@ owns the editing surface.
 
 ## Current artifact
 
-- Version: 0.24.0 (entry `src/document-entry.js`, global `mrmdDocument`)
+- Version: 0.25.0 (entry `src/document-entry.js`, global `mrmdDocument`)
+- 0.25.0: change listeners are told who changed the text. `onChange(fn)`
+  calls `fn({userEdit})` in both editors: true when a person changed it in
+  this editor (a CodeMirror user event: typing, paste, delete, undo, an
+  accepted AI suggestion…), false for the host's `setContent` /
+  `updateContent`, a cell's output (`output.*`) and a collaborator's change
+  arriving through the shared text. Chattering keeps a file open in the side
+  list when its person edits it (open-files.js, design/77).
 - 0.24.0: rich displays. A run's result is an ordered series of output
   blocks, images and embeds (`<iframe class="rat-output" … sandbox>` for
   interactive pages: plotly, htmlwidgets); `setCellOutput(cell, text,
@@ -179,8 +186,8 @@ owns the editing surface.
   app.html); every value is a `var()` reference into tokens.css, so the
   editor follows light, dark, custom, and binary e-ink themes.
 - Source: `/home/maxime/Projects/mrmd-packages/mrmd-editor`
-- Source commit: `ded726d` ("document entry 0.22.0").
-- SHA-256: `e8f66e42fd8ed891bbe7a46b4f09076630bb7a877891c5e6455f7c299ac845b2`
+- Source commit: `fc5cc02` ("document entry 0.25.0").
+- SHA-256: `83b82bd8e1c4177ee2efbc25ce353bbf5e3b53326946f07e21cb3a25b62f6a3c`
 - License: MIT (see `0.13.0/LICENSE`)
 - Deployment: restart the server **after active runs finish**, then reload
   clients. Until the new static route is available, the loader falls back to
@@ -193,7 +200,8 @@ owns the editing surface.
 
 - `createDocumentEditor(target, options)` — hosted-mode editor
 - `getContent` / `setContent`
-- `onChange` (2 s Markdown autosave debounce) / `onSave` (host-owned: focused
+- `onChange` (2 s Markdown autosave debounce; `userEdit` keeps an edited
+  file in the side list, open-files.js) / `onSave` (host-owned: focused
   editing saves to disk; the legacy document workspace can create Git revisions)
 - `setLineMarks(marks, expectedContent?)`, `onLineHover(line)` and
   `onLineHoverEnd()` for host-owned gutter annotations

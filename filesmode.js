@@ -200,8 +200,12 @@ function fileWsWireDocLinks(ws) {
   });
 }
 
-function fileWsCloseEditor({ keepDraft = true } = {}) {
+// `park`: the workspace is being left (closeFileWorkspace), so a file the
+// side list keeps is parked instead of destroyed. Not when the same visit
+// only swaps its editor for History.
+function fileWsCloseEditor({ keepDraft = true, park = false } = {}) {
   if (!fileWs) return;
+  if (park && fileWs.kind === 'code' && fileWsParkCode(fileWs)) return;
   // A notebook the side list keeps is parked first: it takes the shared
   // text with it, so the leave below lets go of nothing it still uses.
   const parked = fileWs.kind === 'md' && parkDocument();
@@ -223,15 +227,85 @@ function fileWsCloseEditor({ keepDraft = true } = {}) {
     try { fileWs.editor.destroy(); } catch {}
   }
   fileWs.editor = null;
+  if (fileWs.kind !== 'md' && typeof OpenFiles !== 'undefined') OpenFiles.codeReleased(fileWs);
 }
 
 function closeFileWorkspace() {
   if (!fileWs) return;
   if (typeof askBubbleClose === 'function') askBubbleClose({ refocus: false });
-  fileWsCloseEditor();
+  fileWsCloseEditor({ park: true });
   clearInterval(fileWs.runTick);
   fileWs = null;
 }
+// ---- a code or text file kept open (open-files.js, design/77) ----
+// Leaving it parks its editor: the element leaves the page but the editor
+// stays, with its undo history, cursor, unsaved text and (for a shared
+// file) its place in the shared text. What belongs to the visit goes: the
+// gutter's annotation worker, an HTML preview, the people listener (it
+// paints whatever status line is on screen). Coming back puts the same
+// editor into a new frame (fileWsResumeCode).
+function fileWsParkCode(ws) {
+  if (typeof OpenFiles === 'undefined' || !OpenFiles.keepsCode(ws)) return false;
+  const host = $('ffCompare')?.querySelector('.code-host');
+  if (!host || !ws.editor.view || !host.contains(ws.editor.view.dom)) return false;
+  const scroll = ws.editor.view.scrollDOM?.scrollTop || 0;
+  try { localStorage.setItem('chattering.cursor:' + ws.path, String(ws.editor.selection().line)); } catch {}
+  ws.live?.dispose?.();
+  ws.live = null;
+  ws.htmlPreview?.dispose();
+  ws.htmlPreview = null;
+  if (ws.collabUnsub) { try { ws.collabUnsub(); } catch {} ws.collabUnsub = null; }
+  host.hidden = false; // an HTML preview hid the source
+  host.remove();
+  return OpenFiles.parkCode(ws, { host, scroll });
+}
+// A parked editor let go for good (its row closed, or the budget of warm
+// editors): unsaved single-player text becomes the draft a later visit
+// offers back, as when any file is left.
+function fileWsDisposeParked(ws) {
+  if (!ws || !ws.editor || (typeof fileWs !== 'undefined' && fileWs === ws)) return;
+  if (ws.dirty && !ws.wasShared) {
+    try { sessionStorage.setItem('chattering.draft:' + ws.path, JSON.stringify({ sha: ws.sha, text: ws.editor.getContent(), at: Date.now() })); } catch {}
+  }
+  try { ws.editor.destroy(); } catch {}
+  ws.editor = null;
+  fileWsLeaveShared(ws);
+}
+// Put a parked editor back, in a new frame, for this visit (openLiveFile
+// reuses the parked workspace itself, so every callback bound to it is
+// right again). The file may have changed on disk meanwhile: a clean
+// single-player editor takes the new text, one with edits is told.
+async function fileWsResumeCode(ws, parked, opts = {}) {
+  const frame = $('ffCompare');
+  if (!frame || fileWs !== ws) return;
+  frame.innerHTML = `<div class="doc-view code-view">${liveFileHead(ws)}<div class="fw-banner" id="fwBanner" hidden></div><div class="doc-editor-host code-host"></div></div>`;
+  frame.querySelector('.code-host').replaceWith(parked.host);
+  $('liveBack').onclick = () => liveFileGoBack(ws);
+  try { ws.editor.setTheme(mrmdHostTheme()); } catch {}
+  try { ws.editor.setLineWrapping?.(fileViewPrefs().wrap); } catch {}
+  ws.editor.view?.requestMeasure?.();
+  fileWsWireCode(ws);
+  const preview = ws.htmlPreviewOpen ? '1' : opts.preview;
+  ws.htmlPreviewOpen = false;
+  fileWsAfterMount(ws, { ...opts, resumed: true, preview });
+  // A detached element forgets its scroll offset; a line asked for wins.
+  if (parked.scroll && !opts.line) requestAnimationFrame(() => { if (fileWs === ws && ws.editor?.view) ws.editor.view.scrollDOM.scrollTop = parked.scroll; });
+  if (!ws.collab && !ws.readOnly) fileWsCheckDiskAfterPark(ws);
+}
+async function fileWsCheckDiskAfterPark(ws) {
+  const asked = ws.editor.getContent();
+  let d;
+  try { d = await (await fetch('/api/file/read?' + new URLSearchParams({ path: ws.path }))).json(); } catch { return; }
+  if (fileWs !== ws || !ws.editor || d.error || d.sha === ws.sha) return;
+  const clean = asked === ws.baseText && ws.editor.getContent() === asked;
+  if (!clean) return fileWsBanner(ws, 'The file changed on disk while it was kept open here. Your unsaved edits are still in the editor.', [['Reload disk', () => liveFileReload(ws)]]);
+  fileWsShowText(ws.editor, d.text);
+  ws.baseText = d.text; ws.sha = d.sha; ws.dirty = false;
+  if ($('fwSave')) $('fwSave').disabled = true;
+  liveFileSaved(ws, d.text, d.sha);
+  const el = $('docStatus'); if (el) el.textContent = 'Updated: it changed on disk while you were away';
+}
+
 // The shared copy of a file (collab-client.js). When the server answers,
 // the editor edits the shared text: everyone's cursors show, an agent's
 // write merges in, and the disk follows as people type. When it does not
@@ -298,7 +372,7 @@ async function fileWsMountMarkdown(ws, opts) {
   $('liveBack').onclick = () => liveFileGoBack(ws);
   // A notebook kept in the side list comes back as it was left: the same
   // editor, a cell still running where it runs (design/68).
-  const parked = typeof NotebookTabs !== 'undefined' ? NotebookTabs.take(ws.path) : null;
+  const parked = typeof OpenFiles !== 'undefined' ? OpenFiles.take(ws.path) : null;
   const resumed = !!parked && resumeDocumentEditor(parked.st, ws, parked.scroll);
   if (!resumed) await mountDocumentEditor(ws.path, ws.project, { focused: true });
   if (fileWs !== ws) return;
@@ -378,11 +452,17 @@ async function fileWsMountCode(ws, opts) {
     status(ws.dirty ? 'Unsaved' : 'Saved');
   };
   ws.baseText = d.text;
+  ws.readOnly = !!d.readOnly;
+  ws.readOnlyWhy = d.readOnly ? d.why : null;
   ws.editor = bundle.createCodeEditor($('codeEditor'), {
     doc: text, filename: ws.path, theme: mrmdHostTheme(),
     lineWrapping: fileViewPrefs().wrap, // the device's choice (live-file.js)
     extensions: shared ? collabEditorExtension(shared) : [],
-    onChange: markDirty,
+    onChange: change => {
+      // A person's own edit keeps the file open in the side list (design/77).
+      if (change?.userEdit && !ws.readOnly && typeof OpenFiles !== 'undefined') OpenFiles.edited(ws.path, ws.project || '');
+      markDirty();
+    },
     onSave: () => shared ? fileWsSharedSave(ws) : fileWsSaveCode(ws),
     onLineHover: line => liveFileHover(ws, line),
     onNavigateLocation: location => liveFileNavigate(ws, location),
@@ -400,34 +480,43 @@ async function fileWsMountCode(ws, opts) {
       },
     },
   });
-  $('fwSave').onclick = () => fileWsSaveCode(ws);
-  $('docReload').onclick = () => fileWsReloadCode(ws);
-  if (shared) {
-    $('fwSave').disabled = false;
-    $('fwSave').title = 'Shared: the disk follows as you type. Save writes it right now · Ctrl+S';
-    $('fwSave').onclick = () => fileWsSharedSave(ws);
-    ws.collabUnsub = collabOnPeople(shared, () => fileWsSharedStatus(ws));
-    fileWsSharedStatus(ws);
-  }
-  if (d.readOnly) {
-    ws.readOnly = true;
-    try { ws.editor.setReadonly(true); } catch {}
-    $('fwSave').hidden = true;
-    for (const id of ['liveAsk', 'liveAskMenu', 'liveAi']) if ($(id)) $(id).hidden = true;
-    status('Read-only · ' + d.why);
-    fileWsAfterMount(ws, opts);
-    return;
-  }
+  // A restored draft is unsaved text: the controls say so.
+  if (draft && !ws.readOnly) ws.dirty = true;
+  fileWsWireCode(ws);
+  if (ws.readOnly) { fileWsAfterMount(ws, opts); return; }
   if (draft) {
-    ws.dirty = true;
-    $('fwSave').disabled = false;
     fileWsBanner(ws, `an unsaved draft from ${ago(Date.now() - draft.at)} ago was restored — save it, or reload from disk to drop it`, [['reload from disk', () => fileWsReloadCode(ws, { dropDraft: true })]]);
     if (draft.sha !== d.sha) {
       ws.sha = draft.sha;
       fileWsBanner(ws, 'This draft was made on an older disk version. Your text is preserved; saving will not silently replace the newer disk file.', [['Reload disk', () => liveFileReload(ws)]]);
     }
-  } else status('Saved');
+  }
   fileWsAfterMount(ws, opts);
+}
+
+// The frame's controls for the editor in it: at mount, and again when a
+// parked editor comes back into a new frame.
+function fileWsWireCode(ws) {
+  const status = t => { const el = $('docStatus'); if (el) el.textContent = t; };
+  $('docReload').onclick = () => fileWsReloadCode(ws);
+  if (ws.readOnly) {
+    try { ws.editor.setReadonly(true); } catch {}
+    $('fwSave').hidden = true;
+    for (const id of ['liveAsk', 'liveAskMenu', 'liveAi']) if ($(id)) $(id).hidden = true;
+    status('Read-only · ' + (ws.readOnlyWhy || ''));
+    return;
+  }
+  if (ws.collab) {
+    $('fwSave').disabled = false;
+    $('fwSave').title = 'Shared: the disk follows as you type. Save writes it right now · Ctrl+S';
+    $('fwSave').onclick = () => fileWsSharedSave(ws);
+    ws.collabUnsub = collabOnPeople(ws.collab, () => fileWsSharedStatus(ws));
+    fileWsSharedStatus(ws);
+    return;
+  }
+  $('fwSave').onclick = () => fileWsSaveCode(ws);
+  $('fwSave').disabled = !ws.dirty;
+  status(ws.dirty ? 'Unsaved' : 'Saved');
 }
 
 async function fileWsSaveCode(ws) {

@@ -187,7 +187,7 @@ function liveFileHead(ws) {
   const md = ws.kind === 'md';
   return `<header class="live-file-head">
     <button id="liveBack" title="${fgAttr(liveBackLabel(ws).slice(2))}: return to the previous view"><span class="lf-back-arrow">←</span><span class="lf-wide">${esc(liveBackLabel(ws).slice(2))}</span></button>
-    <b id="ffTitle" title="${fgAttr(ws.path)}">${esc(liveFileLabel(ws))}</b>
+    ${liveFileNameHtml(ws)}
     ${typeof presenceFileSlotHtml === 'function' ? presenceFileSlotHtml(ws.path) : ''}
     <span id="docStatus" role="status">Opening…</span>
     <span id="liveServiceStatus" title="Built-in language support; no language server connected">${esc(liveLanguage(ws.path))}</span>
@@ -201,6 +201,7 @@ function liveFileHead(ws) {
       <button id="liveHistoryMenu" class="lf-narrow">History</button>
       <button id="liveAskMenu" class="lf-narrow">✦ Ask for a change (${modKey('K')})</button>
       ${md ? '<button id="docRunMenu" class="lf-narrow">▶ Run this cell</button>' : ''}
+      ${typeof OpenFiles !== 'undefined' ? `<button data-keep-menu="${fgAttr(ws.path)}">${esc(OpenFiles.menuLabel(ws.path))}</button>` : ''}
       ${ws.project ? '<button id="liveBrowse">Browse this folder</button>' : ''}
       <button id="liveAi">✦ AI commands (${modKey('J')})</button>
       ${md ? '<button id="docRunAll">Run all cells</button><button id="docVars">Variables</button><button id="docKernel">Kernel: restart, clear, shut down…</button><button id="docSource">Markdown source</button><button id="docUnwrap" hidden>Unwrap prose</button>' : ''}
@@ -209,6 +210,14 @@ function liveFileHead(ws) {
       <button id="liveKeys">Keyboard shortcuts (Ctrl+?)</button>
     </div></details>
   </header>`;
+}
+// The file's name, and the pin that keeps it open in the side list
+// (open-files.js, design/77). By the name, not among the actions: it is
+// about the file, and on a phone it stays when the actions fold under ⋯.
+// The name shortens (…) before the pin moves away from it.
+function liveFileNameHtml(ws) {
+  const keep = typeof OpenFiles !== 'undefined' ? OpenFiles.keepButtonHtml(ws.path, ws.project || '', { id: 'fileKeep' }) : '';
+  return `<span class="lf-name"><b id="ffTitle" title="${fgAttr(ws.path)}">${esc(liveFileLabel(ws))}</b>${keep}</span>`;
 }
 async function openLiveFile(pathValue, opts = {}) {
   const seq = ++fileWsSeq;
@@ -219,13 +228,20 @@ async function openLiveFile(pathValue, opts = {}) {
   if (window.fileInk?.teardown) fileInk.teardown();
   if (progressStream) { progressStream.close(); progressStream = null; }
   closeFileWorkspace();
-  const ws = { path: String(pathValue), project: opts.project || null, focused: true, mode: 'write', kind: fileWsKind(pathValue),
-    editor: null, sha: null, dirty: false, saving: false, row: null, seq, line: opts.line || null, back: opts.back || null,
-    touched: { repoRoot: opts.root || '', sessions: [], commits: [] }, browserContext: opts.browserContext || null,
-    reviewRef: opts.reviewRef || null, reviewData: opts.reviewData || null };
+  // A code or text file kept open in the side list comes back as it was
+  // left (open-files.js): the same workspace and editor, for this visit.
+  // Not for a review or history visit, which read the file another way.
+  const parked = !opts.reviewRef && !opts.to && !opts.from && typeof OpenFiles !== 'undefined' ? OpenFiles.takeCode(String(pathValue)) : null;
+  const visit = { focused: true, mode: 'write', seq, line: opts.line || null, back: opts.back || null,
+    touched: { repoRoot: opts.root || '', sessions: [], commits: [] }, browserContext: opts.browserContext || null, row: null, recentOpened: false };
+  const ws = parked
+    ? Object.assign(parked.ws, visit, { project: opts.project || parked.ws.project || null, touched: { ...visit.touched, repoRoot: opts.root || parked.ws.touched?.repoRoot || '' } })
+    : { path: String(pathValue), project: opts.project || null, kind: fileWsKind(pathValue), editor: null, sha: null, dirty: false, saving: false,
+      ...visit, reviewRef: opts.reviewRef || null, reviewData: opts.reviewData || null };
   fileWs = ws;
   setRoute('file', fileWsHash(ws), { project: ws.project || (typeof scopeFileProject === 'function' ? scopeFileProject(ws) : undefined) });
   $('view').innerHTML = '<section class="files-ws live-file-view"><div id="ffCompare" class="live-file-body"></div></section>';
+  if (parked) return fileWsResumeCode(ws, parked, opts);
   // A link may name recorded versions (to=, from=): open straight into history.
   if (opts.to || opts.from) return liveFileHistory(ws, { to: opts.to || null, from: opts.from || null });
   await fileWsMountBody(ws, opts);
@@ -240,7 +256,7 @@ async function liveFileMountImage(ws) {
   host.innerHTML = `<div class="doc-view image-view">
     <header class="live-file-head lf-media-head">
       <button id="liveBack" title="Return to the previous view"><span class="lf-back-arrow">←</span><span class="lf-wide">${esc(liveBackLabel(ws).slice(2))}</span></button>
-      <b id="ffTitle" title="${fgAttr(ws.path)}">${esc(liveFileLabel(ws))}</b>
+      ${liveFileNameHtml(ws)}
       <span id="docStatus" role="status">Opening image…</span>
       <button id="imageFit" aria-pressed="true" title="Fit the image in the panel">Fit</button>
       <button id="imageActual" aria-pressed="false" title="One image pixel per screen CSS pixel; scroll to explore">Actual size</button>

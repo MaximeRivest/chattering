@@ -314,6 +314,7 @@ const usageIdx = usageLib.openUsageIndex(USAGE_DB_FILE);
 // derived cache too; the boot backfill rebuilds it when it is missing.
 const fileLedgerLib = require('./fileledger.js');
 const recentFilesLib = require('./recent-files.js');
+const openFilesLib = require('./open-files-store.js');
 const fileLedger = process.env.CHATTERING_NO_LEDGER === '1' ? null : fileLedgerLib.openFileLedger(path.join(CACHE_DIR, 'files.db'));
 // This archive is durable user data, not part of CACHE_DIR or the note index.
 let fileArchive = null, fileArchiveError = '';
@@ -4167,6 +4168,55 @@ function recentFilesTouch(p, { project = '', kind = 'opened', actor = 'human', k
 }
 function recentFilesForget(p, actor = 'human') {
   if (recentFilesLib.forget(recentFileState, p, actor)) recentFilesChanged();
+}
+// ---------- open files: the side list's kept files (design/77) ----------
+// Pinned, run or edited by a person; one list for every device, like the
+// conversation list. Rules in open-files-store.js.
+const OPEN_FILES_FILE = path.join(NOTES_DIR, 'open-files.json');
+let openFileState = openFilesLib.createState();
+try { openFileState = openFilesLib.normalize(JSON.parse(fs.readFileSync(OPEN_FILES_FILE, 'utf8'))); } catch {}
+function saveOpenFilesSoon() {
+  clearTimeout(saveOpenFilesSoon.t);
+  saveOpenFilesSoon.t = setTimeout(() => {
+    fs.mkdirSync(path.dirname(OPEN_FILES_FILE), { recursive: true });
+    writeFileAtomic(OPEN_FILES_FILE, JSON.stringify(openFileState) + '\n').catch(e => console.error('open files:', e.message));
+  }, 500);
+}
+// The whole list travels: it is short, and a browser that missed an event
+// is right again with the next one.
+function openFilesChanged() {
+  saveOpenFilesSoon();
+  broadcast({ type: 'open-files', rev: openFileState.rev, files: openFileState.files });
+}
+// The list as this person may see it: a project closed to them (design/53)
+// does not show through the files others keep in it. Same rule as the event.
+function openFilesFor(identity) {
+  const receiver = receiverFor(identity);
+  return { rev: openFileState.rev, files: receiver.all ? openFileState.files : openFileState.files.filter(f => receiver.path(f.path)) };
+}
+// { keep: [{path, project}] }, { close: [path] }, { restore: [{path, project, at}] }.
+// Paths are resolved as every file route resolves them; a path this person
+// may not see is not kept, and is named in the answer (refused).
+function openFilesApply(identity, body) {
+  const resolve = p => path.resolve(expandHomePath(String(p || '')));
+  const refused = [];
+  const seeable = raw => {
+    const abs = resolve(raw);
+    try { assertPathAccess(identity, abs, 'see'); return abs; } catch { refused.push(String(raw)); return null; }
+  };
+  const list = v => (Array.isArray(v) ? v : []).slice(0, openFilesLib.MAX_FILES);
+  let changed = false;
+  for (const p of list(body.close)) changed = openFilesLib.close(openFileState, resolve(p)) || changed;
+  for (const f of list(body.restore)) {
+    const abs = f && f.path ? seeable(f.path) : null;
+    if (abs) changed = openFilesLib.restore(openFileState, { path: abs, project: String(f.project || ''), at: Number(f.at) }) || changed;
+  }
+  for (const f of list(body.keep)) {
+    const abs = f && f.path ? seeable(f.path) : null;
+    if (abs) changed = openFilesLib.keep(openFileState, { path: abs, project: String(f.project || '') || projectNameOf(path.dirname(abs)) || '' }) || changed;
+  }
+  if (changed) openFilesChanged();
+  return { refused };
 }
 const MEMORY_DOC_KINDS = ['overview', 'intent', 'environment', 'status'];
 function normalizeContextItems(raw) {
@@ -15757,7 +15807,7 @@ async function handleRequest(req, res) {
       '/ai-commands.js': { file: 'ai-commands.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/delegation-ui.js': { file: 'delegation-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/filesmode.js': { file: 'filesmode.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/notebook-tabs.js': { file: 'notebook-tabs.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/open-files.js': { file: 'open-files.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/navigation.js': { file: 'navigation.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/timeline-chart.js': { file: 'timeline-chart.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/files-browser.js': { file: 'files-browser.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
@@ -15830,6 +15880,7 @@ async function handleRequest(req, res) {
       '/vendor/mrmd-document/0.22.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.22.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
       '/vendor/mrmd-document/0.23.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.23.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
       '/vendor/mrmd-document/0.24.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.24.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+      '/vendor/mrmd-document/0.25.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.25.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
       '/vendor/mrmd-document/0.10.1/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.10.1/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
       '/chattering.apk': { file: 'chattering.apk', type: 'application/vnd.android.package-archive', cache: 'no-store', compress: false },
     }[u.pathname];
@@ -17791,6 +17842,17 @@ async function handleRequest(req, res) {
         else if (p.path) recentFilesTouch(path.resolve(expandHomePath(String(p.path))), { project: String(p.project || ''), kind: 'opened' });
         json(res, 200, { files: recentFileState.files });
       } catch (e) { json(res, 400, { error: e.message }); }
+    } else if (u.pathname === '/api/open-files' && req.method === 'GET') {
+      json(res, 200, openFilesFor(identity));
+    } else if (u.pathname === '/api/open-files' && req.method === 'POST') {
+      // Members only (policy.js): a guest's open files stay in their own browser.
+      let body = '';
+      for await (const chunk of req) { body += chunk; if (body.length > 256 * 1024) break; }
+      try {
+        if (body.length > 256 * 1024) throw Object.assign(new Error('request too large'), { status: 413 });
+        const { refused } = openFilesApply(identity, JSON.parse(body || '{}'));
+        json(res, 200, { ...openFilesFor(identity), refused });
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/agent-read' && req.method === 'GET') {
       const receiver = receiverFor(identity);
       json(res, 200, receiver.all ? agentRead : policy.eventView({ type: 'agent-read', ...agentRead }, { ...receiver, member: true }));

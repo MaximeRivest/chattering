@@ -3,6 +3,10 @@
 .live-file-view .doc-view { height:100%; margin:0; min-height:0; }
 .live-file-head { display:flex; align-items:center; flex-wrap:wrap; gap:9px; min-height:38px; height:auto; padding:5px 8px; border-bottom:1px solid var(--border); background:var(--bg); }
 .live-file-head #ffTitle { flex:1; min-width:100px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
+/* The name and the pin that keeps the file open (open-files.js): together
+   they take the room the name alone took; the name shortens first. */
+.live-file-head .lf-name { flex:1; min-width:100px; display:flex; align-items:center; gap:2px; }
+.live-file-head .lf-name #ffTitle { flex:0 1 auto; min-width:0; }
 .live-file-head button, .live-file-head summary { height:auto; min-height:26px; padding:3px 7px; border:0; border-radius:var(--r-sm); background:transparent; color:var(--text-dim); font:12px/1.4 var(--font); }
 .live-file-head button:hover, .live-file-head summary:hover { background:var(--surface-2); color:var(--text); }
 .live-file-head #docStatus, #liveServiceStatus { font-size:10px; color:var(--text-dim); }
@@ -44,6 +48,7 @@
   .live-file-view { height:calc(100dvh - 72px); }
   .live-file-head { gap:5px; }
   .live-file-head #ffTitle { font-size:12px; }
+  .live-file-head .lf-name { min-width:84px; }
   #liveServiceStatus { display:none; }
   .live-file-head #docStatus { max-width:22vw; }
   .live-file-head #liveBack { padding:3px 5px; }

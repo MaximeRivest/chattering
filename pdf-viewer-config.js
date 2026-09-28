@@ -27,7 +27,13 @@ const configure = event => {
   if (eink) document.documentElement.dataset.eink = 'true';
   window.PDFViewerApplication.initializedPromise.then(() => {
     const app = window.PDFViewerApplication;
-    app.eventBus.on('pagesinit', () => notify({ pages: app.pdfDocument.numPages }));
+    // The page the reader was on last time (the host remembers it per file).
+    const start = Number(new URLSearchParams(location.search).get('page')) || 0;
+    app.eventBus.on('pagesinit', () => {
+      if (start > 1 && start <= app.pdfDocument.numPages) app.page = start;
+      notify({ pages: app.pdfDocument.numPages });
+    });
+    app.eventBus.on('pagechanging', event => notify({ page: event.pageNumber }));
     app.eventBus.on('documenterror', () => {
       documentLoadError = true;
       notify({ error: 'This PDF could not be opened. It may be damaged, unavailable, or use an unsupported feature. Try Reload or Download.' });
@@ -47,6 +53,10 @@ document.addEventListener('click', event => {
   }
 }, true);
 document.addEventListener('keydown', event => {
+  // Alt+P keeps the file open in the side list, as it does outside the reader.
+  if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.code === 'KeyP' && !event.repeat && parent.OpenFiles) {
+    event.preventDefault(); event.stopImmediatePropagation(); parent.OpenFiles.toggleCurrent(); return;
+  }
   if (!(event.ctrlKey || event.metaKey)) return;
   const key = event.key.toLowerCase();
   if (key === 'o') { event.preventDefault(); event.stopImmediatePropagation(); }

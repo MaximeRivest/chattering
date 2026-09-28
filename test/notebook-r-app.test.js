@@ -61,7 +61,7 @@ test('an R cell: the chip, the menu and the drawer show R; completion replaces w
     await new Promise(r => setTimeout(r, 100));
   }
   assert.ok(indexed, serverLog);
-  assert.equal((await fetch(base + '/notebook-tabs.js')).status, 200);
+  assert.equal((await fetch(base + '/open-files.js')).status, 200);
 
   browser = spawn(chromiumBinary(), [...require('./helpers/chromium.js').CHROMIUM_TEST_FLAGS, '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--disable-sync', '--no-first-run', '--user-data-dir=' + path.join(home, 'browser'), '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   const endpoint = await new Promise((resolve, reject) => {
@@ -94,7 +94,7 @@ test('an R cell: the chip, the menu and the drawer show R; completion replaces w
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false }, sid);
   await send('Network.setCookie', { name: 'chattering', value: TEST_TOKEN, url: base }, sid);
   await send('Page.navigate', { url: base + '/#' + encodeURIComponent(key) }, sid);
-  await until(`typeof NotebookTabs !== 'undefined' && viewKind === 'conversation' && document.querySelector('#conversationTranscript')?.textContent.includes('Hi.')`, 'the app did not load');
+  await until(`typeof OpenFiles !== 'undefined' && viewKind === 'conversation' && document.querySelector('#conversationTranscript')?.textContent.includes('Hi.')`, 'the app did not load');
   assert.equal(await evaluate(`sideLayoutOn() && !$('agentsPop').hidden`), true, 'the side column is the default layout');
 
 

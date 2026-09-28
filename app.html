@@ -572,13 +572,25 @@ body:not(.home) .count { display: none !important; }
 .ag-notifications > summary .ag-notify-count { margin-left: auto; color: var(--text-faint); font-size: 10px; letter-spacing: 0; }
 .ag-notifications .job { margin: 0; border-width: 1px 0 0; padding: 7px 10px; }
 .ag-notifications .job:last-child { border-bottom: 1px solid var(--border); }
-/* Notebooks kept open (notebook-tabs.js, design/68): conversation rows with a
-   page glyph. A failed run's "!" does not pin the actions open (it has no
-   Resume to offer). A row not loaded in this window says so, quietly. */
-.ag-row.ag-nb .ag-nb-glyph { flex: 0 0 auto; color: var(--text-faint); font-size: 10px; }
-.ag-row.ag-nb.current .ag-nb-glyph { color: inherit; }
-.ag-row .ag-nb-cold { font-style: italic; }
-@media (pointer: fine) { .ag-row.ag-nb.stopped:not(:hover):not(.kbd-selected) .ag-acts { display: none; } }
+/* Open files (open-files.js, design/77): conversation rows with a glyph for
+   the kind of file. A failed run's "!" does not pin the actions open (it has
+   no Resume to offer). Two kept files of one name show their folder. */
+.ag-row.ag-of .of-glyph { flex: 0 0 auto; min-width: 1.4em; color: var(--text-faint); font-size: 10px; text-align: center; }
+.ag-row.ag-of.current .of-glyph { color: inherit; }
+.ag-row.ag-of .of-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ag-row.ag-of .of-twin { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-faint); font-weight: normal; }
+@media (pointer: fine) { .ag-row.ag-of.stopped:not(:hover):not(.kbd-selected) .ag-acts { display: none; } }
+/* The pin that keeps a file open (open-files.js): by its name in the file's
+   header, and on the Files browser's rows (files-browser.css). Outlined,
+   filled once kept: a shape, not only a colour, so e-ink reads it too. */
+.lf-keep, .fb-keep { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; min-width: 24px; min-height: 24px; padding: 0 4px; border: 0; background: transparent; color: var(--text-faint); cursor: pointer; }
+.lf-keep:hover, .fb-keep:hover { color: var(--text); }
+.lf-keep .of-pin path, .fb-keep .of-pin path { fill: none; }
+.lf-keep[aria-pressed="true"], .fb-keep[aria-pressed="true"] { color: var(--accent); }
+.lf-keep[aria-pressed="true"] .of-pin path, .fb-keep[aria-pressed="true"] .of-pin path { fill: currentColor; }
+.lf-keep:focus-visible, .fb-keep:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+@media (pointer: coarse) { .lf-keep, .fb-keep { min-width: 36px; min-height: 36px; } }
+:root[data-theme-mode="binary"] .lf-keep[aria-pressed="true"], :root[data-theme-mode="binary"] .fb-keep[aria-pressed="true"] { color: var(--text); }
 :root[data-theme-mode="binary"] #activeBtn.unread::after,
 :root[data-theme-mode="binary"] .ag-row.unread .ag-mark::before { background: var(--text); }
 :root[data-theme-mode="binary"] .ag-row.asks .ag-mark, :root[data-theme-mode="binary"] .ag-row.stopped .ag-mark,
@@ -2469,7 +2481,7 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <script src="/recent-files.js"></script>
 <script src="/sidebar-projects.js"></script>
 <script src="/project-scope.js"></script>
-<script src="/notebook-tabs.js"></script>
+<script src="/open-files.js"></script>
 <script src="/filesmode.js"></script>
 <script src="/files-browser.js"></script>
 <script src="/live-file.js"></script>
@@ -4420,11 +4432,11 @@ async function renderAgentsPop(refetch) {
   const tail = $('agentsUnread').querySelector(':scope > .ag-tail');
   const tailHtml = items.length ? panelListMore('open', listed.length) : '<div class="ag-empty">Nothing open yet. Conversations you open appear here.</div>';
   if (listMarkup.get(tail) !== tailHtml) { tail.innerHTML = tailHtml; listMarkup.set(tail, tailHtml); }
-  // Notebooks kept open in this window (notebook-tabs.js, design/68): under
-  // the conversations, above the processes nobody listed.
-  const notebooks = NotebookTabs.sectionHtml({ markHtml, typingHtml, isOpen: NotebookTabs.sectionOpen(),
+  // Files kept open (open-files.js, design/77): under the conversations,
+  // above the processes nobody listed.
+  const openFiles = OpenFiles.sectionHtml({ markHtml, typingHtml, isOpen: OpenFiles.sectionOpen(),
     currentPath: viewKind === 'file' && typeof fileWs !== 'undefined' && fileWs ? fileWs.path : null });
-  $('agentsLegacy').innerHTML = notebooks +
+  $('agentsLegacy').innerHTML = openFiles +
     (otherRows ? `<details class="ag-notifications ag-others"${agentIdleOpen ? ' open' : ''}><summary>Other processes<span class="ag-notify-count">${otherCount}</span></summary>${otherRows}</details>` : '') + recoverySection;
   renderPresenceMarks();
   ensureElapsedTicker();
@@ -4433,8 +4445,8 @@ async function renderAgentsPop(refetch) {
   if (recovery) recovery.ontoggle = () => { agentRecoveryOpen = recovery.open; };
   const idle = pop.querySelector('.ag-others');
   if (idle) idle.ontoggle = () => { agentIdleOpen = idle.open; };
-  const nbs = pop.querySelector('.ag-notebooks');
-  if (nbs) nbs.ontoggle = () => NotebookTabs.setSectionOpen(nbs.open);
+  const kept = pop.querySelector('.ag-open-files');
+  if (kept) kept.ontoggle = () => OpenFiles.setSectionOpen(kept.open);
   const autoResume = $('agentAutoResume');
   if (autoResume) autoResume.onchange = async () => {
     autoResume.disabled = true;
@@ -4503,7 +4515,7 @@ function agentsPopKeydown(e) {
   if (e.key === 'Enter') {
     e.preventDefault();
     const row = selectAgentRow(agentsSelectedKey, false);
-    if (row && NotebookTabs.isRowKey(row.dataset.key)) { toggleAgents(false); NotebookTabs.open(NotebookTabs.pathOfKey(row.dataset.key)); }
+    if (row && OpenFiles.isRowKey(row.dataset.key)) { toggleAgents(false); OpenFiles.open(OpenFiles.pathOfKey(row.dataset.key)); }
     else if (row) { toggleAgents(false); openPanelConversation(row.dataset.key, row.classList.contains('unread') ? 'reply' : undefined); }
     return true;
   }
@@ -4603,7 +4615,7 @@ $('agentsPop').addEventListener('contextmenu', e => {
   openAgentRowMenu(row.dataset.key, e.clientX, e.clientY);
 });
 $('rightFileList').onclick = $('agentsPop').onclick = async e => {
-  if (NotebookTabs.handleClick(e, () => {
+  if (OpenFiles.handleClick(e, () => {
     if (sideLayoutOn()) setAgentsKbd(false); else toggleAgents(false);
     if (typeof closePhoneSheets === 'function') closePhoneSheets();
   })) return;
@@ -4754,6 +4766,7 @@ async function load() {
   // The shared inbox state rides along with the list. The first boot waits
   // for it so the unread badge paints right once, not wrong then right.
   const readReq = fetchAgentReadState();
+  OpenFiles.refresh(); // the files kept open, likewise shared by every device
   let sessRes;
   try { sessRes = await fetch('/api/sessions', sessionsEtag ? { headers: { 'If-None-Match': sessionsEtag } } : {}); }
   catch { return; }
@@ -6512,7 +6525,7 @@ async function renderReposTab(refresh = false) {
 // provenance ledger (design boundary in vendor/mrmd-document/README.md).
 // The vendored light MRMD bundle owns only the editing surface. Loaded
 // lazily: normal chattering startup never pays for the editor.
-const MRMD_DOC_SRC = '/vendor/mrmd-document/0.24.0/mrmd-document.iife.min.js';
+const MRMD_DOC_SRC = '/vendor/mrmd-document/0.25.0/mrmd-document.iife.min.js';
 // A refreshed page can precede the server restart that adds the new route.
 // Keep documents usable during that window without interrupting active runs.
 const MRMD_DOC_FALLBACK_SRC = '/vendor/mrmd-document/0.21.0/mrmd-document.iife.min.js';
@@ -6729,8 +6742,8 @@ function mrmdHostTheme() {
 
 // The document on screen: { path, project, sha, editor, runner, dirty,
 // saveTimer, saving, collab, ws, body, closed… }. A notebook that is running
-// or was run here outlives its visit: leaving parks it (notebook-tabs.js,
-// design/68) and docState goes to whatever is on screen next, so work that
+// or kept open outlives its visit: leaving parks it (open-files.js,
+// design/68, design/77) and docState goes to whatever is on screen next, so work that
 // continues in the background checks `st.closed`, never `docState !== st`.
 let docState = null;
 
@@ -6752,7 +6765,7 @@ function disposeDocSession(st) {
     if (text !== null) st.saveQueue = (st.saveQueue || Promise.resolve()).then(() => docSaveIfDirty(st, { text })).catch(e => console.error('document save', e));
   }
   st.closed = true;
-  if (typeof NotebookTabs !== 'undefined') NotebookTabs.released(st);
+  if (typeof OpenFiles !== 'undefined') OpenFiles.released(st);
   if (st.runner) { try { st.runner.destroy(); } catch {} }
   if (docState === st) docUnfollow();
   if (st.editor) { try { st.editor.destroy(); } catch {} }
@@ -6788,7 +6801,7 @@ function leaveDocument() {
 // the shared text passes to the document.
 function parkDocument() {
   const st = docState;
-  if (!st || !st.body || typeof NotebookTabs === 'undefined' || !NotebookTabs.keeps(st)) return false;
+  if (!st || !st.body || typeof OpenFiles === 'undefined' || !OpenFiles.keeps(st)) return false;
   // An agent asked from this file is editing it (ask-bubble.js): its settle
   // and review are bound to this visit, so the visit ends as it always did.
   if (st.ws && st.ws.run) return false;
@@ -6803,7 +6816,7 @@ function parkDocument() {
   st.ws = null;
   st.body.remove();
   docState = null;
-  NotebookTabs.park(st, { scroll });
+  OpenFiles.park(st, { scroll });
   return true;
 }
 
@@ -6826,7 +6839,7 @@ function resumeDocumentEditor(st, ws, scroll = 0) {
   if (st.paintRun) st.paintRun();
   if (st.varsOpen) refreshDocVars(st);
   if (st.editor.listCells && st.editor.listCells().length) refreshDocDoctor();
-  NotebookTabs.shown(st);
+  OpenFiles.shown(st);
   // A detached element forgets its scroll offset; put it back once laid out.
   if (scroll) requestAnimationFrame(() => { if (docState === st) { const s = st.body.querySelector('.doc-editor-host'); if (s) s.scrollTop = scroll; } });
   return true;
@@ -7258,10 +7271,10 @@ function createDocRunner(st, bundle) {
         clearInterval(tick);
         tick = setInterval(() => { if (st.running === runId && !st.cancelling) say(label()); }, 1000);
         st.paintRun();
-        NotebookTabs.runStarted(st);
+        OpenFiles.runStarted(st);
       },
       onRunState({ waiting: w, error }) {
-        if (typeof w === 'boolean') { waiting = w; say(label()); NotebookTabs.runState(st, { waiting: w }); }
+        if (typeof w === 'boolean') { waiting = w; say(label()); OpenFiles.runState(st, { waiting: w }); }
         if (error) toast(error, null, 'err');
       },
       onRunEnd({ cell, result, ok, wrote }) {
@@ -7274,7 +7287,7 @@ function createDocRunner(st, bundle) {
         st.lastRunText = result.error ? '✗ ' + result.error
           : (ok ? '✓ ' : '✗ exit ' + result.code + ' · ') + (result.runtime || cell.lang) + ' · ' + secs + 's'
             + (wrote ? '' : ' · cell edited during run, output dropped');
-        NotebookTabs.runEnded(st, { ok, result, wrote });
+        OpenFiles.runEnded(st, { ok, result, wrote });
         if (!shown()) return;
         const { el, state, cancelBtn } = strip();
         if (cancelBtn) cancelBtn.hidden = true;
@@ -7728,9 +7741,9 @@ async function runAllDocCells() {
   // The side list follows the queue (and reports its end if the notebook
   // is off screen by then).
   const total = st.editor.listCells().filter(c => Object.hasOwn(NotebookEnv.RUN_LANGS, String(c.lang || '').toLowerCase())).length;
-  if (total && !st.runner.running) NotebookTabs.runAllStarted(st, total);
+  if (total && !st.runner.running) OpenFiles.runAllStarted(st, total);
   const r = await st.runner.runAll();
-  NotebookTabs.runAllEnded(st, r);
+  OpenFiles.runAllEnded(st, r);
   if (docState !== st) return;
   if (r.empty) return toast('no runnable code cells in this document');
   if (r.busy) return toast('a cell is already running — cancel it first');
@@ -7942,7 +7955,12 @@ async function mountDocumentEditor(docPath, project = null, { focused = false } 
     assetResolver: url => '/api/doc/asset?doc=' + encodeURIComponent(d.path) + '&src=' + encodeURIComponent(url),
     diagrams: mermaidDiagrams,
     // A parked notebook's results change its text too: they save with it.
-    onChange: shared ? () => { if (st.ws) fileWsSharedStatus(st.ws); } : () => scheduleDocAutosave(st),
+    onChange: change => {
+      // A person's own edit keeps the file open in the side list (design/77).
+      if (change?.userEdit && focused) OpenFiles.edited(st.path, st.project || '');
+      if (!shared) return scheduleDocAutosave(st);
+      if (st.ws) fileWsSharedStatus(st.ws);
+    },
     onSave: shared ? () => st.ws && fileWsSharedSave(st.ws) : focused ? () => autosaveDocumentOf(st) : commitDocument,
     onRunCell: (cell, o) => runDocCell(cell, o),
     // The Run button goes on cells rat can run; Stop on a busy cell.
@@ -7957,7 +7975,7 @@ async function mountDocumentEditor(docPath, project = null, { focused = false } 
   st.runner = createDocRunner(st, bundle);
   if (st.runner && st.editor.setLanguageServices) st.editor.setLanguageServices(docCompletionService(st));
   docState = st;
-  NotebookTabs.shown(st); // a notebook the side list names is kept again
+  OpenFiles.shown(st); // a file the side list keeps: this window holds this document now
   docFollow(st);
   wireDocumentChrome(st, d.text);
   if (focused && draft) docStatusLine('Recovered unsaved draft');
@@ -9562,6 +9580,20 @@ async function openPathInApp(ctx, quiet = false) {
   return true;
 }
 
+// A path as the transcript wrote it (often relative) is resolved as opening
+// it would be, then kept open in the side list, or let go.
+async function keepPathOpen(ctx, on) {
+  if (!on) return OpenFiles.close(ctx.path);
+  let info;
+  try { info = await (await fetch('/api/path/info?' + new URLSearchParams({ id: ctx.key || '', path: ctx.path }))).json(); }
+  catch { info = { error: 'network failure' }; }
+  if (info.error) return errToast(info.error);
+  if (info.kind === 'directory') return errToast('a folder cannot be kept open; its files can');
+  const s = sessions.find(x => x.key === ctx.key);
+  if (OpenFiles.keep(info.path, s ? projectOf(s) : currentProjectName() || '')) toast('Kept open: ' + info.path.split(/[\\/]/).pop() + ' is under Open files in the side list');
+  else toast(info.path.split(/[\\/]/).pop() + ' is already kept open');
+}
+
 // A folder opens as the Files browser at that folder, on any device: the
 // browser is served by the same server the files live on, so this works
 // from the laptop and the phone, where "Show in folder" (a desktop action
@@ -9621,6 +9653,9 @@ function openFileActionMenu(ctx, x, y) {
   if (ctx.change && !preview) items.push(['View this change', () => viewFileChange(ctx)]);
   items.push([image ? 'Open image in Chattering' : 'Open current file in Chattering', () => openPathInApp(ctx)]);
   if (ctx.change && preview) items.push(['View this change', () => viewFileChange(ctx)]);
+  // Keep it under Open files without leaving the page (open-files.js).
+  const kept = isFullPath(ctx.path) && OpenFiles.isKept(ctx.path);
+  items.push([kept ? 'Let go from Open files' : 'Keep open in the side list', () => keepPathOpen(ctx, !kept)]);
   items.push(['Open with system application', () => runNativePathAction(ctx, 'open')]);
   items.push(['Show in folder', () => runNativePathAction(ctx, 'reveal')]);
   items.push(['Copy full path', () => copyFullFilePath(ctx)]);
@@ -17722,6 +17757,7 @@ function fileEditorHelp({ inEditor }) {
   if (fileWs?.kind === 'md' && !reported) keys.push([modKey('enter', true), 'run this cell'], ['shift+enter', 'run and advance'], [modKey('j', true), 'AI commands']);
   keys.push(['alt+= · alt+−', 'larger / smaller text, in the text'], ['alt+0', 'text back to 100%, in the text']);
   if (fileWs?.kind === 'code') keys.push(['alt+z', 'wrap long lines on / off, in the text']);
+  keys.push(['alt+p', OpenFiles.isKept(fileWs?.path) ? 'let this file go from Open files, in the side list' : 'keep this file open in the side list, on every device']);
   keys.push(['ctrl+?', 'this help — also while typing']);
   if (inEditor) keys.push(['esc, then tab', 'leave the text — then the page’s shortcuts work']);
   sections.push({ label: 'file', keys });
@@ -18238,6 +18274,11 @@ live.onmessage = ev => {
   if (d.type === 'agent-read') {
     // Another device (or this one, echoed) read a reply or a run ended.
     applyAgentReadFromServer(d);
+    return;
+  }
+  if (d.type === 'open-files') {
+    // Another device (or this one, echoed) kept or let go of a file.
+    OpenFiles.fromServer(d);
     return;
   }
   if (d.type === 'recent-files') {

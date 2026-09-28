@@ -1,5 +1,12 @@
 # 68 — Notebooks that keep running while you are elsewhere
 
+> Since 2026-09-28 (design/77) the list is **Open files**: any file can be
+> kept (a pin, Alt+P, or editing it, besides running a cell), the list is
+> the server's and the same on every device, and `open-files.js` replaces
+> `notebook-tabs.js`. What follows about running notebooks still holds;
+> where it says the list is this window's, or that opening a file lists
+> nothing, read design/77.
+
 ## The ask (2026-09-26)
 
 > could we add notebooks with opened/attached rat processes be in a list

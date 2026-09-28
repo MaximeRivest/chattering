@@ -46,6 +46,12 @@
 .fb-row>button { text-align:left; background:none; border:0; height:auto; overflow-wrap:anywhere; }
 .fb-row>div { display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:11px; }
 .fb-row.changed { border-left:3px solid var(--accent); }
+/* Keep open (open-files.js): at the row's end, shown on hover or focus and
+   always once kept; always on touch screens, which have no hover. Faded,
+   not hidden, so it stays in the tab order. */
+.fb-row .fb-keep { margin-left:auto; opacity:0; }
+.fb-row:hover .fb-keep, .fb-row:focus-within .fb-keep, .fb-row .fb-keep[aria-pressed="true"] { opacity:1; }
+@media (pointer: coarse) { .fb-row .fb-keep { opacity:1; } }
 .fb-badge { display:inline-block; padding:2px 6px; border:1px solid var(--border); font-size:11px; }
 .fb-snippet { grid-column:1/-1; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--text-dim); }
 #fbReadme:not(:empty) { margin-top:20px; border:1px solid var(--border); }

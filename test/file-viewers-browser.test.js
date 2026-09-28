@@ -41,6 +41,7 @@ test('media and HTML viewers: real server, desktop, phone, tablet and security b
   await run(`(async()=>{window.fetch=viewerFetch;releaseSession();await pendingConversation})()`);
   assert.equal(await run(`viewKind==='file' && !!$('fileVideo')`), true, 'stale conversation cannot overwrite the file viewer');
   await size(390, 844, true); await open('clip.webm'); await until(`$('fileVideo')?.readyState>=1`);
+  assert.ok(await run(`$('fileVideo').currentTime`) >= 1.4, 'a video opens again where it was left');
   assert.equal(await run(`$('fileVideo').getBoundingClientRect().right<=innerWidth && document.documentElement.scrollWidth<=innerWidth`), true);
   assert.equal(await run(`$('mediaReload').getBoundingClientRect().height>=44 && $('mediaDownload').getBoundingClientRect().height>=44`), true);
   await b.screenshot('file-video-phone.png');
@@ -67,8 +68,11 @@ test('media and HTML viewers: real server, desktop, phone, tablet and security b
   await until(`${pdf}.pdfViewer.getPageView(1)?.renderingState===3`);
   await b.screenshot('file-pdf-phone.png');
   assert.ok(b.requests.some(r => r.url.includes('/api/file/media?') && Object.keys(r.headers).some(k => k.toLowerCase() === 'range')), 'media readers request ranges');
+  // The page it is left on is where it opens again.
+  await run(`${pdf}.page=2`);
+  await until(`Object.entries(localStorage).some(([k, v]) => k.startsWith('chattering.place:') && k.endsWith('reader & notes.pdf') && v === '2')`, 'the PDF page is remembered');
   await size(1024, 1366, true); await run(`$('mediaReload').click()`);
-  await until(`${pdf}?.pdfDocument?.numPages===3 && ${pdf}.pdfViewer.getPageView(0)?.renderingState===3`, 'PDF reload on tablet');
+  await until(`${pdf}?.pdfDocument?.numPages===3 && ${pdf}.pdfViewer.currentPageNumber===2 && ${pdf}.pdfViewer.getPageView(1)?.renderingState===3`, 'PDF reload on tablet, at the page it was left on');
   await b.screenshot('file-pdf-tablet.png');
   await run(`document.documentElement.dataset.themeMode='binary'`);
   await open('password.pdf');

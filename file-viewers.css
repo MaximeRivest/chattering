@@ -14,7 +14,7 @@
 @media (pointer:coarse), (max-width:700px) {
   .live-file-head button, .live-file-head summary, .live-file-head a,
   .lf-html-note button { min-height:44px; min-width:44px; display:inline-flex; align-items:center; justify-content:center; }
-  .lf-media-head #ffTitle { min-width:0; }
+  .lf-media-head .lf-name { min-width:0; }
   .lf-media-head #docStatus { order:5; flex-basis:100%; max-width:none; }
   .lf-html-note { font-size:11px; }
 }
