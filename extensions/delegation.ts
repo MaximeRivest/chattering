@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import {
   launchDelegation, resumeDelegation, listDelegations, getDelegation, controlDelegation, reportDelegationReview, normalizeMode, modeSha256,
 } from "../delegation.js";
@@ -105,7 +105,9 @@ export default function delegation(pi: ExtensionAPI) {
     name: "delegate", label: "Delegate",
     description: "Start a durable independent Pi conversation. Provide a full mode snapshot and matching tools. Include delegate in mode.tools to allow recursion. This is not a fork or sandbox. Completion requests review, not acceptance.",
     promptSnippet: "Delegate an authorized task to a saved child conversation with durable status and parent links",
-    promptGuidelines: ["Use delegate for background Pi workers instead of ad hoc shell launchers. Give parallel writers disjoint worktrees or output scopes. Use delegation_status to inspect results, and delegation_review only after checking evidence. Execution success is not acceptance."],
+    promptGuidelines: ["Use delegate for background Pi workers instead of ad hoc shell launchers. Give parallel writers disjoint worktrees or output scopes. Use delegation_status to inspect results, and delegation_review only after checking evidence. Execution success is not acceptance.",
+      "Before you say whether any delegation is running, finished, stuck or reviewed, call delegation_status and answer from it. Never answer from memory or from the absence of a callback: callbacks can be delayed.",
+      "Tell workers to run tests and other commands that could hang with a time limit (for example `timeout 600 npm test`), so a hung command fails instead of stalling the worker."],
     parameters: Type.Object({ title: Type.String(), role: Type.String(), prompt: Type.String(),
       mode: modeSchema, tools: toolNames, model: Type.Optional(Type.String()),
       thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const)),
@@ -127,7 +129,7 @@ export default function delegation(pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: "delegation_status", label: "Delegation status",
-    description: "Read durable status for this conversation and its delegated descendants. Shows up to 50 tasks and 45,000 characters. Success does not mean accepted.",
+    description: "Read durable status for this conversation and its delegated descendants: the truth about what is running, finished or reviewed, including work whose callback has not arrived yet. Call it before stating any delegation's state. Shows up to 50 tasks and 45,000 characters. Success does not mean accepted.",
     parameters: Type.Object({ id: Type.Optional(Type.String()) }),
     async execute(_id, params, _signal, _update, ctx) {
       const tasks = await related(ctx);
@@ -209,8 +211,10 @@ export default function delegation(pi: ExtensionAPI) {
   });
   // No notification claims or acknowledgements here. The host owns web delivery.
   // Terminal roots receive a repeatable next-turn review reminder, without automatic model turns.
+  // Web parents receive a short status line instead (see statusMessage).
   pi.on("before_agent_start", async (_event, ctx) => {
-    if (ctx.mode === "rpc" || !ctx.sessionManager.getSessionFile()) return;
+    if (!ctx.sessionManager.getSessionFile()) return;
+    if (ctx.mode === "rpc") return statusMessage(ctx);
     const pending = (await related(ctx)).filter((t: any) => t.parentSessionPath === sessionPath(ctx) &&
       t.delivery === "nextTurn" && terminal.has(t.status) && t.review === "unreviewed");
     if (!pending.length) return;
@@ -218,4 +222,64 @@ export default function delegation(pi: ExtensionAPI) {
       content: "Delegation results need parent review. Do not treat completion as acceptance. Stopped work (failed or lost) keeps its session; delegation_resume continues it.\n" +
         pending.slice(0, 30).map((t: any) => `${t.id}: ${t.status}${t.failure ? ` (${t.failure.kind})` : ""}; session ${t.sessionPath}`).join("\n") } };
   });
+}
+
+// What this conversation's direct children are doing, read from their
+// durable records at the start of each turn, so the model never answers
+// "is it done?" from memory while a callback is still on its way (it once
+// told the user none of four builders had finished when three had). Sent
+// only when the set of running and returned-unreviewed children changed
+// since the last line on this branch: context only, never shown in the
+// transcript (display false) and never a turn of its own.
+const STATUS_TYPE = "delegation-status";
+function lastOutputMs(task: any): number {
+  let last = 0;
+  for (const file of [task.logPath, task.sessionPath]) {
+    try { last = Math.max(last, statSync(file).mtimeMs); } catch {}
+  }
+  return last;
+}
+function spoken(ms: number): string {
+  const min = Math.max(0, Math.floor(ms / 60000));
+  if (min < 1) return "under a minute";
+  if (min < 60) return min + " min";
+  return Math.floor(min / 60) + " h" + (min % 60 ? " " + (min % 60) + " min" : "");
+}
+// Did this conversation ever launch a worker? Reading every task record on
+// every turn of every conversation would be wasted work for the many that
+// never delegate; the saved entries answer in memory.
+function everDelegated(ctx: any): boolean {
+  for (const e of ctx.sessionManager.getEntries() as any[]) {
+    if (e.type === "custom_message" && e.customType === STATUS_TYPE) return true;
+    const content = e.type === "message" && e.message?.role === "assistant" ? e.message.content : null;
+    if (Array.isArray(content) && content.some((c: any) => c?.type === "toolCall" && c.name === "delegate")) return true;
+  }
+  return false;
+}
+async function statusMessage(ctx: any) {
+  if (!everDelegated(ctx)) return;
+  const file = sessionPath(ctx);
+  const children = (await listDelegations()).filter((t: any) => t.parentSessionPath === file);
+  const running = children.filter((t: any) => !terminal.has(t.status));
+  const waiting = children.filter((t: any) => terminal.has(t.status) && t.status !== "cancelled" && t.review === "unreviewed");
+  const signature = [...running.map((t: any) => "r:" + t.id), ...waiting.map((t: any) => "w:" + t.id + ":" + t.status + ":" + (t.attempt || 1))].sort().join(",");
+  const previous = [...ctx.sessionManager.getBranch()].reverse()
+    .find((e: any) => e.type === "custom_message" && e.customType === STATUS_TYPE) as any;
+  if ((previous?.details?.signature ?? "") === signature) return;
+  const now = Date.now();
+  const line = (t: any) => {
+    if (!terminal.has(t.status)) {
+      const last = lastOutputMs(t);
+      return `${t.title} (${t.id}): running${t.startedAt ? ` for ${spoken(now - t.startedAt)}` : ""}${last ? `, last output ${spoken(now - last)} ago` : ""}`;
+    }
+    return `${t.title} (${t.id}): ${t.status}${t.failure ? ` (${t.failure.kind})` : ""}, not reviewed yet`;
+  };
+  const listed = [...running, ...waiting];
+  const content = signature
+    ? "Delegation status from the durable records at the start of this turn (a runner note, not a user message):\n" +
+      listed.slice(0, 20).map((t: any) => "- " + line(t)).join("\n") +
+      (listed.length > 20 ? `\n- and ${listed.length - 20} more: call delegation_status` : "") +
+      "\nState changes after this; call delegation_status before you tell the user what is running or finished."
+    : "Delegation status: nothing this conversation delegated is running or waiting for review.";
+  return { message: { customType: STATUS_TYPE, display: false, content, details: { signature } } };
 }

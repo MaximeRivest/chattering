@@ -59,7 +59,7 @@ const message = ids => ({ customType: 'delegation-complete', details: { taskIds:
 
 test('a failed delegation guard is a run error, not an ordinary informational extension notice', () => {
   const dirname = path.resolve(__dirname, '..');
-  const box = vm.createContext({ path, performance, responseSpeed: require('../responsespeed.js'), __dirname: dirname, liveRunTails: new Map(), broadcast() {},
+  const box = vm.createContext({ path, performance, responseSpeed: require('../responsespeed.js'), activityWatch: require('../activity-watch.js'), __dirname: dirname, liveRunTails: new Map(), broadcast() {},
     setTimeout, clearTimeout, addRunNotice(job, text) { job.notices = [...(job.notices || []), text]; } });
   load(box, 'function runEventForwarder(', '// Start one headless run');
   const ordinary = { id: 'one' }, guarded = { id: 'two' };

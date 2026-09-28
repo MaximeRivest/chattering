@@ -107,6 +107,20 @@
   function isLive(t) {
     return !!(t.sessionActive || t.workerAlive || !terminal.has(t.status));
   }
+  // Running, but no new output for the quiet threshold (design/29). The
+  // server sets `quiet` only past the threshold: { since, level, told }.
+  function isQuiet(t) {
+    return !!(t && t.quiet && Number(t.quiet.since) > 0 && isLive(t));
+  }
+  function quietWords(t, now) {
+    return isQuiet(t) ? 'quiet ' + (duration(now - Number(t.quiet.since)) || 'now') : '';
+  }
+  function quietWarning(t, now) {
+    if (!isQuiet(t)) return '';
+    const told = t.quiet.told === 'parent' ? ' The conversation that started it was told.'
+      : t.quiet.told === 'person' ? ' No agent could be told, so this is for you.' : '';
+    return 'No new output for ' + (duration(now - Number(t.quiet.since)) || 'a while') + '. It may be slow or stuck; nothing was stopped.' + told;
+  }
   function activityLabel(t) {
     return [t.sessionActive ? 'Continuing in web' : '', t.workerAlive ? 'Worker process alive' : ''].filter(Boolean).join(' · ');
   }
@@ -133,11 +147,12 @@
   // Progress of one orchestration: every recorded descendant of the given
   // tasks. Counts are facts, not verdicts.
   function progress(index, ids) {
-    const counts = { total: 0, done: 0, live: 0, failed: 0, unreviewed: 0 };
+    const counts = { total: 0, done: 0, live: 0, failed: 0, unreviewed: 0, quiet: 0 };
     for (const id of descendants(index, ids)) {
       const t = index.byId.get(id); if (!t) continue;
       counts.total++;
       if (isLive(t)) counts.live++;
+      if (isQuiet(t)) counts.quiet++;
       else if (terminal.has(t.status)) counts.done++;
       if (t.status === 'failed' || t.status === 'lost') counts.failed++;
       if (t.status === 'succeeded' && t.review !== 'accepted' && t.review !== 'rejected') counts.unreviewed++;
@@ -146,18 +161,20 @@
   }
   function progressLabel(counts) {
     if (!counts.total) return '';
-    return counts.done + '/' + counts.total + ' done' + (counts.failed ? ' \u00b7 ' + counts.failed + ' failed' : '') +
+    return counts.done + '/' + counts.total + ' done' + (counts.quiet ? ' \u00b7 ' + counts.quiet + ' quiet' : '') +
+      (counts.failed ? ' \u00b7 ' + counts.failed + ' failed' : '') +
       (counts.unreviewed ? ' \u00b7 ' + counts.unreviewed + ' to review' : '');
   }
   function summaryState(index, ids) {
-    const counts = { running: 0, failed: 0, unreviewed: 0 };
+    const counts = { running: 0, quiet: 0, failed: 0, unreviewed: 0 };
     for (const id of ids) {
       const t = index.byId.get(id); if (!t) continue;
       if (isLive(t)) counts.running++;
+      if (isQuiet(t)) counts.quiet++;
       if (t.status === 'failed' || t.status === 'lost') counts.failed++;
       if (t.status === 'succeeded' && t.review !== 'accepted' && t.review !== 'rejected') counts.unreviewed++;
     }
-    return [counts.running ? counts.running + ' running' : '', counts.failed ? counts.failed + ' failed or lost' : '',
+    return [counts.running ? counts.running + ' running' : '', counts.quiet ? counts.quiet + ' quiet' : '', counts.failed ? counts.failed + ' failed or lost' : '',
       counts.unreviewed ? counts.unreviewed + ' to review' : ''].filter(Boolean).join(' · ');
   }
   function cancellationMessage(index, id) {
@@ -182,7 +199,7 @@
     if (isLive(t)) {
       if (t.status === 'planned' || t.status === 'starting') return { glyph: '◌', word: 'starting', tone: 'live' };
       if (terminal.has(t.status)) return { glyph: '●', word: t.sessionActive ? 'continuing' : 'still running', tone: 'live' };
-      return { glyph: '●', word: 'running', tone: 'live' };
+      return { glyph: '●', word: 'running', tone: isQuiet(t) ? 'warn' : 'live' };
     }
     switch (t.status) {
       case 'succeeded': return { glyph: '✓', word: 'done', tone: 'ok' };
@@ -239,6 +256,8 @@
     const parts = [s.glyph + ' ' + s.word];
     const time = elapsedOf(t, now);
     if (time) parts.push(time);
+    const quiet = quietWords(t, now);
+    if (quiet) parts.push(quiet);
     if (typeof t.steps === 'number' && t.steps > 0) parts.push(t.steps + ' step' + (t.steps === 1 ? '' : 's'));
     if (typeof t.files === 'number' && t.files > 0) parts.push(t.files + ' file' + (t.files === 1 ? '' : 's'));
     const review = reviewWord(t);
@@ -250,9 +269,9 @@
     return parts.join(' · ');
   }
   // Problems the reader must know. Absent when nothing is wrong.
-  function warningOf(index, t) {
+  function warningOf(index, t, now = Date.now()) {
     if (!t) return '';
-    return [index && index.warnings.get(t.id), t.error,
+    return [index && index.warnings.get(t.id), quietWarning(t, now), t.error,
       t.takenOver ? 'You continued this conversation yourself; the worker will not restart on it.' : '',
       terminal.has(t.status) && t.workerAlive ? 'The worker process is still alive. Inspect it before you continue this conversation.' : '',
       t.notificationError,
@@ -318,6 +337,10 @@
     if (customType === 'delegation-complete') {
       const n = (body.match(/^- /gm) || []).length;
       return '↩ ' + (n || 'delegated') + ' delegated result' + (n === 1 ? '' : 's') + ' returned';
+    }
+    if (customType === 'delegation-attention') {
+      const n = (body.match(/^\* /gm) || []).length;
+      return '◌ ' + (n > 1 ? n + ' delegated workers' : 'delegated work') + ' went quiet';
     }
     if (customType === 'delegation-review-pending') return '↩ delegated results wait for review';
     return '↩ ' + text(customType || 'runner event').replace(/[-_]/g, ' ');
@@ -492,7 +515,7 @@
       const s = stateOf(t);
       setText(card.state, stateLine(t, now(), { unread: isUnread(t) }));
       card.state.dataset.tone = s.tone;
-      const w = warningOf(index, t);
+      const w = warningOf(index, t, now());
       setText(card.warn, w); show(card.warn, !!w);
       const summary = text(t.summary || '').trim();
       setText(card.resultV, summary); show(card.result, !!summary);
@@ -551,7 +574,7 @@
       setText(view.lockText, self.workerAlive ? 'a worker owns this conversation — cancel it to continue here' : self.sessionActive ? 'this conversation is still working' : 'this conversation is starting');
       show(view.cancel, live && !self.cancelRequested);
       view.cancel.disabled = busy.has(self.id);
-      const w = warningOf(index, self);
+      const w = warningOf(index, self, now());
       setText(view.warn, w); show(view.warn, !!w);
     }
     function mount(host, context) {
@@ -619,5 +642,5 @@
   }
   return { escape, indexTasks, descendants, contextTasks, trackedProcess, taskState, isLive, summaryState, canContinue, failureWord,
     attentionState, rootOf, progress, progressLabel, isTerminal: status => terminal.has(status), parentTarget, cancellationMessage, detailText,
-    stateOf, stateLine, reviewWord, warningOf, duration, taskForCall, taskIdInResult, treeNodes, eventSummary, stripName, createController };
+    stateOf, stateLine, reviewWord, warningOf, isQuiet, quietWords, duration, taskForCall, taskIdInResult, treeNodes, eventSummary, stripName, createController };
 });

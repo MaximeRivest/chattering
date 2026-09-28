@@ -45,11 +45,11 @@ append({type:'message',message}); console.log(JSON.stringify({type:'message_end'
   const mode = { key: 'fixture', label: 'Fixture', opener: 'Test the extension.', tools: ['read', 'delegate', 'delegation_status', 'delegation_control'] };
   loaded.runtime.getActiveTools = () => mode.tools;
   loaded.runtime.getAllTools = () => mode.tools.map(name => ({ name }));
-  let currentFile = file, branch = [], aborts = 0;
+  let currentFile = file, branch = [], entries = [], aborts = 0;
   const notices = [], choices = [];
   const ctx = { cwd: dir, mode: 'rpc', hasUI: true, model: { provider: 'fake', id: 'test' }, thinkingLevel: 'off',
     modelRegistry: { find: (provider, id) => provider === 'fake' && ['test', 'other'].includes(id) ? { provider, id } : undefined },
-    sessionManager: { getSessionFile: () => currentFile, getLeafId: () => 'actual-leaf', getBranch: () => branch },
+    sessionManager: { getSessionFile: () => currentFile, getLeafId: () => 'actual-leaf', getBranch: () => branch, getEntries: () => entries },
     abort: () => { aborts++; },
     ui: { notify: text => notices.push(text), select: async (_title, items) => { choices.push(items); return choices.length === 1 ? items[0] : 'Show saved paths'; }, confirm: async () => true },
   };
@@ -69,7 +69,7 @@ append({type:'message',message}); console.log(JSON.stringify({type:'message_end'
     }
   });
   return { dir, root, file, mode, ctx, ext, notices, choices, call, hook, done,
-    setFile: f => { currentFile = f; }, setBranch: b => { branch = b; }, aborts: () => aborts };
+    setFile: f => { currentFile = f; }, setBranch: b => { branch = b; }, setEntries: e => { entries = e; }, aborts: () => aborts };
 }
 
 const skip = !available && 'Pi package is unavailable; set PI_CODING_AGENT_PACKAGE to run extension tests';
@@ -86,7 +86,23 @@ test('real Pi extension loader registers standard tools and web-safe dialogs; la
   assert.equal((await f.done(task.id)).status, 'succeeded');
   await f.ext.commands.get('delegations').handler('', f.ctx);
   assert.equal(f.choices.length, 2); assert.ok(f.notices.some(s => s.includes('Session:')));
-  assert.equal(await f.hook('before_agent_start'), undefined, 'RPC never duplicates host review delivery');
+  // RPC never duplicates the host's review delivery. A web parent gets a
+  // status line instead: context only, from the durable records, and only
+  // when what is running or waiting changed.
+  assert.equal(await f.hook('before_agent_start'), undefined, 'a conversation with no delegate call gets nothing');
+  const launched = { type: 'message', id: 'launch', message: { role: 'assistant', content: [{ type: 'toolCall', id: 'c1', name: 'delegate', arguments: {} }] } };
+  f.setEntries([launched]);
+  const status = await f.hook('before_agent_start');
+  assert.equal(status.message.customType, 'delegation-status');
+  assert.equal(status.message.display, false);
+  assert.match(status.message.content, new RegExp(`Web task \\(${task.id}\\): succeeded, not reviewed yet`));
+  assert.match(status.message.content, /call delegation_status before you tell the user/);
+  const saved = { type: 'custom_message', customType: 'delegation-status', details: status.message.details };
+  f.setBranch([launched, saved]); f.setEntries([launched, saved]);
+  assert.equal(await f.hook('before_agent_start'), undefined, 'unchanged status is not repeated');
+  await f.call('delegation_review', { id: task.id, review: 'accepted', evidence: 'Checked the fixture output.' });
+  const cleared = await f.hook('before_agent_start');
+  assert.match(cleared.message.content, /nothing this conversation delegated is running or waiting/);
   assert.equal(fs.existsSync(path.join(f.root, task.id, 'notification.json')), false);
 });
 

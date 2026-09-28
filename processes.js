@@ -7,6 +7,8 @@
 //   identityProblem() why the last identity() gave null for a live pid ('' if it did not)
 //   cwd(pid)         its working folder, or null when the system will not say
 //   stopTree(pid, signal)  the process and everything it started
+//   usage(pid)       { ageMs, cpuMs }: how long it has lived and how much
+//                    processor time it used, or null when the system will not say
 //
 // Linux reads /proc (cheap, exact). macOS asks ps and the kernel boot time.
 // Windows asks the system's process table through PowerShell, which takes
@@ -247,5 +249,44 @@ function stopTree(pid, signal = 'SIGTERM', { spare = null } = {}) {
   }
 }
 
+// Lifetime and processor time of one process. The ratio of the two is what
+// `ps` calls %CPU: a test runner alive for four hours that used two seconds
+// of processor is waiting on something, not working. Linux reads
+// /proc/<pid>/stat in clock ticks. The tick is sysconf(_SC_CLK_TCK), which
+// Node does not expose; it is 100 on every mainstream Linux build (the
+// kernel ABI fixes USER_HZ at 100 on x86 and arm), so 100 is assumed.
+// macOS asks ps. Windows: null (unknown), never a guess.
+const LINUX_TICK_MS = 10;
+function linuxUsage(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const f = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    const uptimeS = Number(fs.readFileSync('/proc/uptime', 'utf8').split(' ')[0]);
+    const cpuMs = (Number(f[11]) + Number(f[12])) * LINUX_TICK_MS;
+    const ageMs = Math.max(0, Math.round(uptimeS * 1000 - Number(f[19]) * LINUX_TICK_MS));
+    return Number.isFinite(cpuMs) && Number.isFinite(ageMs) ? { ageMs, cpuMs } : null;
+  } catch { return null; }
+}
+// ps durations: [[dd-]hh:]mm:ss[.ss]
+function psDurationMs(text) {
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$/.exec(String(text || '').trim());
+  if (!m) return null;
+  return Math.round((((Number(m[1] || 0) * 24 + Number(m[2] || 0)) * 60 + Number(m[3])) * 60 + Number(m[4])) * 1000);
+}
+function darwinUsage(pid) {
+  let text = '';
+  try { text = execFileSync('ps', ['-o', 'etime=,time=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
+  catch { return null; }
+  const [etime, time] = text.split(/\s+/);
+  const ageMs = psDurationMs(etime), cpuMs = psDurationMs(time);
+  return ageMs == null || cpuMs == null ? null : { ageMs, cpuMs };
+}
+function usage(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  if (PLATFORM === 'linux') return linuxUsage(pid);
+  if (PLATFORM === 'darwin') return darwinUsage(pid);
+  return null;
+}
+
 function identityProblem() { return lastIdentityProblem; }
-module.exports = { reliable, list, warm, identity, identityProblem, cwd, stopTree, descendantsOf, splitWindowsCommandLine, parseWinList };
+module.exports = { reliable, list, warm, identity, identityProblem, cwd, stopTree, descendantsOf, usage, psDurationMs, splitWindowsCommandLine, parseWinList };

@@ -81,7 +81,7 @@ Durable records live under `~/.local/share/chattering/delegations`. They are not
 
 Callback rules:
 
-- Group returned sibling assignments into one attention point.
+- Group results that return close together into one attention point: a result waits until no other sibling returned for 60 seconds, and never more than 3 minutes after the first. It never waits for a sibling that is still running: one hung worker must not hold back finished ones (on 2026-09-28 a stuck TypeScript builder hid three finished builders and then six finished reviews from their orchestrator for hours). When nothing else is running there is nothing to wait for, and the result goes at once. The callback lists the siblings still running, with how long and when they last spoke.
 - Do not deliver while another writer owns the parent.
 - Do not resume an abandoned branch automatically.
 - Persist delivery intent before requesting a model turn.
@@ -91,6 +91,24 @@ Callback rules:
 - Cancelled work must not restart the orchestrator.
 
 Terminal roots use a next-turn review reminder. They do not receive automatic background model turns from this new runner. Web roots can receive tracked callbacks. Nested assignments inherit their recorded root delivery policy.
+
+Each web parent also receives, at the start of a turn and only when it changed, one context line (`delegation-status`, not shown in the transcript) naming its children that are running or returned but not reviewed, read from the durable records. The tools tell the model to call `delegation_status` before it states any delegation's state: callbacks can be delayed, and it once told the user none of four builders had finished when three had.
+
+## Quiet work
+
+Long work is fine; silence is the signal. Nothing here ever stops anything.
+
+A worker whose output has not moved for settings → quiet work (`quietMinutes`, default 20, 0 off) is quiet. Output is its JSON event log and its session file, whichever moved last; a web run's is its live event stream. A run waiting on a dialog is waiting for the person, not quiet.
+
+Who hears:
+
+- The conversation that launched the worker, when an agent turn can start there: a `delegation-attention` runner event (or, when a result is due in the same pass, the quiet facts inside that result's callback: one turn, not two). It says what the worker waits on (the open tool call), what the processes under it are doing (lifetime, processor time, pid, "idle" under 1% of one core), and where its log and session are, and leaves the decision to the parent: wait, look, stop only the stuck process, or cancel and later continue.
+- The person, when no agent can be told: a terminal parent, a parent a terminal owns, one not indexed, a lost or cancelled parent worker, a moved branch, a paused subtree, a parent whose turn failed (out of usage, no model), and every web run (a person's own conversation has no agent above it). The row says "quiet", its dots stop, the phone notifies on its own channel, and this machine plays the attention tone unless finish sounds are off or muted.
+- A busy parent is not skipped: it hears when its turn ends. If it is itself stuck, its own quiet check reports it.
+
+Reminders come at 1, 3, 9, then every 9 times the threshold while the work stays quiet; new output starts the count over. A host down across several levels sends one reminder, not a burst. Reminder records live under `delegations/attention`; each reminder has a stable delivery ID in the transcript, so a restarted host does not repeat it.
+
+Trade-offs: each reminder to an agent is a model turn; a legitimately silent step (a long download, a model thinking for half an hour) is reported too, with facts that show it is working. Processor time on Linux assumes the kernel's 100 ticks per second (Node cannot ask); Windows reports processes as unknown rather than guess.
 
 The legacy inbox remains a compatibility path. New managed delegations do not depend on its process-global callback address.
 

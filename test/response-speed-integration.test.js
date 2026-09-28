@@ -47,7 +47,7 @@ test('live status uses source timing despite IPC bursts and excludes thinking an
   const tails = new Map(), packets = [];
   const job = { id: 'run', key: 'pi:fixture', status: 'running' };
   const box = vm.createContext({ responseSpeed, performance, textOf, console, setTimeout, clearTimeout,
-    liveRunTails: tails, broadcast: ev => packets.push(ev),
+    activityWatch: require('../activity-watch.js'), liveRunTails: tails, broadcast: ev => packets.push(ev),
     speedCalibrationFor: () => ({ charsPerToken: 4, calibrated: false }), toolInputText: () => '' });
   vm.runInContext(extract('function liveSpeedText(', '// One transcript changed'), box);
   vm.runInContext(extract('function runEventForwarder(', '// Start one headless run'), box);

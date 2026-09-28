@@ -53,6 +53,7 @@ const agentReadLib = require('./agentread.js');
 const { createModelHealth } = require('./modelhealth.js');
 const delegationLib = require('./delegation.js');
 const { createDelegationCoordinator, inspectDeliverySession, TERMINAL: DELEGATION_TERMINAL } = require('./server-delegations.js');
+const activityWatch = require('./activity-watch.js');
 // Where Chattering keeps its own files (platform.appDirs: the folders this
 // install always used, or the system's own for a new install) and where Pi
 // keeps its (runtime.piAgentDir: Pi's own rule).
@@ -845,7 +846,7 @@ async function parseFile(absPath) {
       messages.push({ role: 'event', customType: 'compaction', text: String(d.summary || ''), tokensBefore: Number(d.tokensBefore) || null, ts: d.timestamp || null, _eid: eid });
       continue;
     } else if (d.type === 'custom_message' && d.display !== false &&
-      ['delegation-complete', 'delegation-review-pending', 'orchestrator-event'].includes(d.customType)) {
+      ['delegation-complete', 'delegation-attention', 'delegation-review-pending', 'orchestrator-event'].includes(d.customType)) {
       messages.push({ role: 'event', customType: d.customType, text: textOf(d.content), ts: d.timestamp || null, _eid: eid });
       continue;
     } else if (d.type === 'message' && d.message) {
@@ -2897,6 +2898,10 @@ function addRunNotice(job, text) {
 function runEventForwarder(job) {
   let lastPush = 0, blockSeq = 0;
   const blocks = [];
+  // What the quiet watch reads (watchQuietRuns): when the run last said
+  // anything, and which tool calls are open. Starts now: a run is not
+  // quiet before it began.
+  job.activity = activityWatch.createRunActivity();
   const state = { keyOf: () => job.key, blocks, timer: null, push: null };
   liveRunTails.set(job.id, state);
   const slim = b => b.kind === 'tool'
@@ -2916,7 +2921,7 @@ function runEventForwarder(job) {
       statusText: job.statusText, model: job.model, startedAt: job.startedAt, node: job.node || null, intent: job.intent || null,
       fanoutId: job.fanoutId, fanoutRootKey: job.fanoutRootKey, fanoutNode: job.fanoutNode,
       fanoutIndex: job.fanoutIndex, fanoutCount: job.fanoutCount, tail: blocks.map(slim),
-      uiRequests: job.uiRequests || [], notices: job.notices || [],
+      uiRequests: job.uiRequests || [], notices: job.notices || [], quiet: job.quiet || null,
       extStatus: job.extStatus ? Object.values(job.extStatus).join(' · ') : '',
       widgets: job.widgets || null, customViews: job.customViews || null });
   };
@@ -2928,6 +2933,8 @@ function runEventForwarder(job) {
   const speed = responseSpeed.createSpeedMeter();
   return event => {
     try {
+      job.activity.observe(event);
+      if (job.quiet) { job.quiet = null; push(true); }
       const speedAt = Number.isFinite(event.chatteringSpeedAt) ? event.chatteringSpeedAt : performance.now();
       speed.observe(event, speedAt);
       if (event.type === 'run_note') {
@@ -3040,8 +3047,10 @@ function runEventForwarder(job) {
         job.statusText = 'finishing';
         push(true);
       } else if (event.type === 'message_end' && event.message?.role === 'custom' &&
-        ['delegation-complete', 'orchestrator-event'].includes(event.message.customType)) {
-        addRunNotice(job, 'Delegated work returned. This response follows a runner event, not a new user message.');
+        ['delegation-complete', 'delegation-attention', 'orchestrator-event'].includes(event.message.customType)) {
+        addRunNotice(job, event.message.customType === 'delegation-attention'
+          ? 'Delegated work went quiet. This response follows a runner event, not a new user message.'
+          : 'Delegated work returned. This response follows a runner event, not a new user message.');
         push(true);
       } else if (event.type === 'extension_error') {
         // Informational, exactly like the TUI: show it, never kill the run.
@@ -3196,7 +3205,7 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
   agentRunJobs.set(job.id, job);
   jobChanged(job);
   const record = { jobId: job.id, key, startedAt: job.startedAt, model: job.model, handle: null, yielded: null,
-    callbackTaskIds: customMessage?.customType === 'delegation-complete' ? customMessage.details.taskIds : [], launchStarted: false };
+    callbackTaskIds: ['delegation-complete', 'delegation-attention'].includes(customMessage?.customType) ? customMessage.details.taskIds : [], launchStarted: false };
   headlessRuns.set(sessionPath, record);
   const finish = async (status, statusText, error) => {
     if (headlessRuns.get(sessionPath) === record) headlessRuns.delete(sessionPath);
@@ -3224,7 +3233,7 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
       if (record.yielded) return await finish('done', 'stopped — ' + record.yielded);
       if (expectedVersion && recoveryLib.fileVersion(sessionPath) !== expectedVersion) throw new Error('The conversation changed. Open it before continuing.');
       if (expectedLeaf && !node && !await conversationSnapshotMatches(sessionPath, expectedLeaf)) throw new Error('The conversation advanced on another screen. Reload before sending.');
-      if (customMessage?.customType === 'delegation-complete') {
+      if (['delegation-complete', 'delegation-attention'].includes(customMessage?.customType)) {
         // Recheck under the mutation lock: the branch can change between
         // the coordinator's inspection and this queued operation.
         const state = await inspectDeliverySession(sessionPath);
@@ -3358,7 +3367,7 @@ async function assertDelegationOwnership(file) {
 }
 
 async function assertDelegationLaunch(file, message) {
-  if (message?.customType === 'delegation-complete') {
+  if (['delegation-complete', 'delegation-attention'].includes(message?.customType)) {
     for (const id of message.details.taskIds) {
       const task = await delegationLib.getDelegation(id, { root: DELEGATION_ROOT });
       if (task.cancelRequested || task.status === 'cancelled' || task.paused) {
@@ -3434,29 +3443,129 @@ function delegationView(t) {
   }
   return out;
 }
+// ---- Quiet work (design/29): long is fine; silence is the signal ----
+// A worker or run whose output has not moved for settings → quietMinutes
+// (0: off) is reported, never stopped: to the agent that started it when
+// one can take a turn, else to the person.
+function quietThresholdMs() {
+  const minutes = Number(appSettings.quietMinutes);
+  return Number.isFinite(minutes) && minutes > 0 ? minutes * 60000 : 0;
+}
+async function fileMtimeMs(file) {
+  if (!file) return 0;
+  try { return (await fsp.stat(file)).mtimeMs; } catch { return 0; }
+}
+// A worker's output: its JSON event log (every token, tool start, tool
+// output) and its session file (every saved entry), whichever moved last.
+async function delegationActivity(task) {
+  const last = Math.max(await fileMtimeMs(task.logPath), await fileMtimeMs(task.sessionPath));
+  return last > 0 ? { lastActivityAt: last } : null;
+}
+// The processes under an agent process, or null when this system cannot say.
+function quietProcesses(pid) {
+  try { return activityWatch.processReport(Number(pid), processesLib); }
+  catch (e) { console.error('[quiet] process report:', e.message); return null; }
+}
+async function delegationQuietReport(task, facts) {
+  const tail = await activityWatch.readTail(task.logPath).catch(() => []);
+  return activityWatch.describeQuiet({ title: task.title, id: task.id, quietMs: facts.quietMs,
+    openTools: activityWatch.openToolsFromEvents(tail), processes: task.workerAlive ? quietProcesses(task.pid) : null,
+    log: task.logPath, session: task.sessionPath });
+}
+// The person hears about quiet work no agent could be told: the row says so
+// on every screen, the phone notifies (Android NotifyService), and this
+// machine plays the attention tone unless finish sounds are off or muted.
+function announceQuiet({ key, title, text, quietMs, level }) {
+  broadcast({ type: 'attention', kind: 'quiet', key: key || null, title: title || null, text, quietMs, level, at: Date.now() });
+  if (doneSoundMode() !== 'off') enqueueAnnouncement({ tone: 'attention' });
+}
+// Can the parent conversation take a callback turn now? 'busy' waits;
+// 'unreachable' means no web turn will start there (not indexed, a terminal
+// owns it, its own worker is lost or cancelled).
+async function delegationParentReach(parent) {
+  const key = delegationSessionKey(parent);
+  if (!key) return 'unreachable';
+  if (shuttingDown) return 'busy';
+  const owner = await delegationOwnerForFile(parent);
+  if (owner && (owner.cancelRequested || owner.status === 'cancelled' || owner.status === 'lost')) return 'unreachable';
+  if (owner && (owner.workerAlive || !DELEGATION_TERMINAL.has(owner.status))) return 'busy';
+  if (findRunningConversation(key)) return 'unreachable';
+  if (headlessRuns.has(parent)) return 'busy';
+  return 'ready';
+}
 const delegationCoordinator = createDelegationCoordinator({
   root: DELEGATION_ROOT,
   list: () => delegationLib.listDelegations({ root: DELEGATION_ROOT, includeSessionPaths: [...headlessRuns.keys()] }),
   listAll: () => delegationLib.listDelegations({ root: DELEGATION_ROOT, all: true }),
   decorate: delegationView,
-  canDeliver: async parent => {
-    const key = delegationSessionKey(parent);
-    const owner = await delegationOwnerForFile(parent);
-    return !!key && (!owner || (!owner.workerAlive && !owner.cancelRequested && owner.status !== 'lost' && DELEGATION_TERMINAL.has(owner.status))) && !shuttingDown && !headlessRuns.has(parent) && !findRunningConversation(key);
-  },
+  reach: delegationParentReach,
   deliver: async (parent, customMessage) => {
     const key = delegationSessionKey(parent);
     if (!key) throw new Error('Parent conversation is not indexed.');
-    const job = await startAgentRun(key, { message: 'Review returned delegated work', customMessage });
+    const job = await startAgentRun(key, { message: customMessage.customType === 'delegation-attention' ? 'Look at quiet delegated work' : 'Review returned delegated work', customMessage });
     await headlessRuns.get(parent)?.completion;
     if (job.status === 'error') throw new Error(job.error || job.statusText);
   },
+  activityOf: delegationActivity,
+  reportOf: delegationQuietReport,
+  quietMs: quietThresholdMs,
+  onQuiet: ({ task, level, quietMs, report }) => {
+    const view = delegationView(task);
+    announceQuiet({ key: view.key || view.parentKey, title: task.title, text: report, quietMs, level });
+  },
   onChange: snapshot => broadcast({ type: 'delegation-update', revision: snapshot.revision }),
 });
-let delegationTimer = null;
+// Web runs (a person's own conversations, and a person continuing a
+// worker's): no agent above them, so the person hears. A run waiting on a
+// dialog is waiting for the person already, and is not quiet. Parallel
+// answers are one turn: announced once, when every running column is quiet.
+const quietRunState = new Map(); // turn (fan-out id or job id) → { since, level } last announced
+function watchQuietRuns() {
+  const threshold = quietThresholdMs();
+  const turns = new Map();
+  for (const job of agentRunJobs.values()) {
+    if (job.status !== 'running' || !job.activity) continue;
+    const since = job.activity.lastAt();
+    const waiting = !!(job.uiRequests && job.uiRequests.length);
+    const level = threshold && !waiting ? activityWatch.quietLevel(Date.now() - since, threshold) : -1;
+    const quiet = level >= 0 ? { since, level } : null;
+    if (JSON.stringify(job.quiet || null) !== JSON.stringify(quiet)) {
+      job.quiet = quiet;
+      liveRunTails.get(job.id)?.push(true);
+      jobChanged(job);
+    }
+    const turn = job.fanoutId || job.id;
+    if (!turns.has(turn)) turns.set(turn, []);
+    turns.get(turn).push(job);
+  }
+  for (const id of quietRunState.keys()) if (!turns.has(id)) quietRunState.delete(id);
+  for (const [turn, jobs] of turns) {
+    if (!jobs.every(j => j.quiet)) { quietRunState.delete(turn); continue; }
+    // The turn went quiet when its last column did; its level is the lowest.
+    const since = Math.max(...jobs.map(j => j.quiet.since)), level = Math.min(...jobs.map(j => j.quiet.level));
+    const told = quietRunState.get(turn);
+    if (told && told.since === since && told.level >= level) continue;
+    quietRunState.set(turn, { since, level });
+    const job = jobs[0], key = job.fanoutRootKey || job.key;
+    const entry = key && index[key];
+    const title = (entry && (entry.title || entry.timelineTitle) || '').trim() || job.title || 'a conversation';
+    const files = new Map([...headlessRuns].map(([file, r]) => [r.jobId, file]));
+    const warm = [...pirpc.listWarmSessions(), ...pisdk.listWarmSessions()];
+    const text = jobs.map(j => {
+      const file = files.get(j.id);
+      const w = file && warm.find(x => path.resolve(x.sessionPath) === file);
+      return activityWatch.describeQuiet({ title: jobs.length > 1 ? (j.model || 'one answer') : title, quietMs: Date.now() - j.quiet.since,
+        openTools: j.activity.openTools(), processes: w ? quietProcesses(w.pid) : null });
+    }).join('\n');
+    announceQuiet({ key, title, quietMs: Date.now() - since, level, text });
+  }
+}
+let delegationTimer = null, quietRunsAt = 0;
 function startDelegationMonitor() {
   if (delegationTimer) return;
   const tick = () => abortCancelledDelegationRuns().then(() => {
+    // Minutes-scale thresholds: every 15 s is precise enough, and cheap.
+    if (Date.now() - quietRunsAt >= 15000) { quietRunsAt = Date.now(); watchQuietRuns(); }
     if (process.env.CHATTERING_DISABLE_DELEGATION_CALLBACKS !== '1') return delegationCoordinator.processPending();
   }).catch(e => console.error('[delegation]', e.message));
   tick(); delegationTimer = setInterval(tick, 2000); delegationTimer.unref();
@@ -7802,6 +7911,7 @@ function jobView(job) {
     uiRequests: job.uiRequests && job.uiRequests.length ? job.uiRequests : undefined,
     notices: job.notices && job.notices.length ? job.notices : undefined,
     customViews: job.customViews && Object.keys(job.customViews).length ? job.customViews : undefined,
+    quiet: job.quiet || undefined,
   };
 }
 
@@ -14713,12 +14823,14 @@ const voiceMuted = () => voice.mutedUntil && Date.now() < voice.mutedUntil;
 //   ack   — one short high tick: speech was captured, the gate is deciding
 //   wait  — two quick high ticks: kept open, keep thinking or talking
 //   close — falling two notes: the microphone closed, nothing was sent
+//   attention — two same notes, then a lower one: running work went quiet
 const VOICE_TONES = {
   done: [[523, 80], [659, 80], [784, 180]],
   open: [[660, 90], [880, 120]],
   ack: [[988, 70]],
   wait: [[880, 60], [0, 50], [880, 60]],
   close: [[660, 90], [440, 150]],
+  attention: [[587, 140], [0, 90], [587, 140], [0, 90], [440, 260]],
 };
 
 function tonePath(name) {

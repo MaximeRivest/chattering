@@ -392,6 +392,8 @@ function checkRoute(identity, method, pathname, searchParams, canSeeConversation
 const keyed = ev => can => can.key(ev.key);
 const EVENTS = {
   update: keyed, 'run-event': keyed, 'editor-text': keyed, 'fanout-retained': keyed,
+  // Quiet work the person should look at (design/29): the conversation's reader.
+  attention: keyed,
   'fanout-settled': keyed, compaction: keyed, 'conversation-project': keyed, reading: keyed,
   'voice-nav': ev => can => can.member && can.key(ev.key),
   'project-title': ev => can => can.project(ev.project),

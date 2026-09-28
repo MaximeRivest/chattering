@@ -468,6 +468,7 @@ body:not(.home) .count { display: none !important; }
 .dg-state { color: var(--text-dim); white-space: nowrap; }
 .dg-state[data-tone="live"] { color: var(--accent); }
 .dg-state[data-tone="bad"] { color: var(--danger); }
+.dg-state[data-tone="warn"] { color: var(--warn); }
 .dg-state[data-tone="ok"] { color: var(--text-dim); }
 .dg-body { padding: 4px 0 6px 18px; display: flex; flex-direction: column; gap: 6px; }
 .dg-row { display: flex; gap: 10px; align-items: baseline; overflow-wrap: anywhere; }
@@ -528,6 +529,10 @@ body:not(.home) .count { display: none !important; }
 .ag-row.unread .ag-dir { color: var(--text-dim); }
 .ag-row.working .ag-doing { color: var(--accent); }
 .ag-row.stopped .ag-doing { color: var(--danger); }
+/* Quiet (design/29): still running, but nothing has moved for a while. The
+   word says it; the dots stop, since nothing is moving; colour only adds. */
+.ag-row.quiet .ag-doing.ag-quiet { color: var(--warn); }
+.ag-row.quiet .ag-typing i { animation: none; opacity: .45; }
 .ag-typing { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 2px; height: 6px; }
 .ag-typing i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); opacity: .35; animation: ag-typing 1.2s ease-in-out infinite; }
 .ag-typing i:nth-child(2) { animation-delay: .2s; }
@@ -595,6 +600,7 @@ body:not(.home) .count { display: none !important; }
 :root[data-theme-mode="binary"] .ag-row.unread .ag-mark::before { background: var(--text); }
 :root[data-theme-mode="binary"] .ag-row.asks .ag-mark, :root[data-theme-mode="binary"] .ag-row.stopped .ag-mark,
 :root[data-theme-mode="binary"] .ag-row .ag-doing { color: var(--text); }
+:root[data-theme-mode="binary"] .ag-row.quiet .ag-doing.ag-quiet { color: var(--text); font-weight: 700; }
 :root[data-theme-mode="binary"] .ag-row .ag-ctx::before { background: var(--text); height: 1px; }
 :root[data-theme-mode="binary"] .ag-row .ag-ctx.warn::before { background: var(--text); height: 2px; } /* no amber on e-ink: nearly full is thicker */
 :root[data-theme-mode="binary"] .ag-typing i { background: var(--text); opacity: 1; animation: none; }
@@ -1746,6 +1752,7 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
 .tnode.delegated .tdstate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .tnode.delegated .tdstate[data-tone="live"] { color: var(--accent); }
 .tnode.delegated .tdstate[data-tone="bad"] { color: var(--danger); }
+.tnode.delegated .tdstate[data-tone="warn"] { color: var(--warn); }
 .tnode.work { color: var(--text-dim); }
 .tnode.work .tt { color: var(--text-dim); }
 .tnode.fanout { border-style: dashed; min-height: 86px; cursor: default; }
@@ -4268,10 +4275,12 @@ async function renderAgentsPop(refetch) {
     const unread = !!(s && agentUnreadAt(s)), live = DelegationUI.isLive(t);
     const kids = delegationIndex.children.get(id) || [];
     const note = attentionNote(t) || (t.error ? String(t.error).slice(0, 80) : t.role || '');
-    return `<div class="ag-row ag-child${unread ? ' unread' : ''}${live ? ' working' : ''}${t.key ? '' : ' off'}" data-key="${esc(t.key || '')}" style="--depth:${depth}">` +
+    const quiet = DelegationUI.isQuiet(t);
+    return `<div class="ag-row ag-child${unread ? ' unread' : ''}${live ? ' working' : ''}${quiet ? ' quiet' : ''}${t.key ? '' : ' off'}" data-key="${esc(t.key || '')}" style="--depth:${depth}">` +
       `<span class="ag-main"><span class="ag-title" title="${esc(t.title || 'Untitled task')}"><span>${esc(t.title || 'Untitled task')}</span>${unread ? markHtml : ''}${live ? typingHtml : ''}</span>` +
       `<span class="ag-sub"><span class="ag-dir">${[projectLink(s), esc(note)].filter(Boolean).join(' · ')}</span>` +
-      `<span class="ag-age">${esc((t.status || 'running') + (t.review && t.review !== 'unreviewed' ? ' · ' + t.review : ''))}</span></span></span></div>` +
+      (quiet ? `<span class="ag-age ag-doing ag-quiet" title="${esc(DelegationUI.warningOf(delegationIndex, t, now))}">quiet ${esc(tinyAge(now - Number(t.quiet.since)))}</span>`
+        : `<span class="ag-age">${esc((t.status || 'running') + (t.review && t.review !== 'unreviewed' ? ' · ' + t.review : ''))}</span>`) + `</span></span></div>` +
       (kids.length ? childRows(kids, depth + 1) : '');
   }).join('');
   const orchestration = key => {
@@ -4302,7 +4311,7 @@ async function renderAgentsPop(refetch) {
   // The elapsed time counts from the run's start; a terminal run has no
   // recorded start, so it counts from the person's last message, which is
   // when the turn began.
-  const runStatus = new Map(), runSince = new Map();
+  const runStatus = new Map(), runSince = new Map(), runQuiet = new Map();
   const webGroups = new Map();
   for (const r of activeRuns.values()) {
     const id = r.fanoutId || r.jobId;
@@ -4318,8 +4327,21 @@ async function renderAgentsPop(refetch) {
       ? rs.filter(r => r.status === 'running').length + '/' + rs.length + ' working'
       : (first.statusText || 'working').slice(0, 24));
     runSince.set(key, Math.min(...rs.map(r => Number(r.startedAt) || Infinity)));
+    // Quiet (design/29): the server marks a run whose output stopped for the
+    // threshold. A parallel turn is quiet only when every live column is.
+    const live = rs.filter(r => r.status === 'running');
+    if (live.length && live.every(r => r.quiet && r.quiet.since > 0)) runQuiet.set(key, Math.max(...live.map(r => r.quiet.since)));
   }
+  // Since when a working row has said nothing: its own web run, or the
+  // delegated worker behind it. 0 when it is not quiet.
+  const quietSince = key => {
+    if (runQuiet.has(key)) return runQuiet.get(key);
+    const t = delegatedBy.get(key);
+    return t && DelegationUI.isQuiet(t) ? Number(t.quiet.since) : 0;
+  };
   const workingLine = (s, key) => {
+    const quiet = quietSince(key);
+    if (quiet) return `<span class="ag-doing ag-quiet" title="No new output since ${esc(new Date(quiet).toLocaleTimeString())}. It may be slow or stuck; nothing was stopped.">quiet <span class="ag-elapsed" data-since="${quiet}">${esc(tinyAge(now - quiet))}</span></span>`;
     const p = orchProgress.get(key);
     const what = runStatus.get(key) || (p && p.live ? p.live + ' working' : 'working');
     const since = Number.isFinite(runSince.get(key)) ? runSince.get(key) : s && s.lastUserTs ? Date.parse(s.lastUserTs) : 0;
@@ -4350,6 +4372,7 @@ async function renderAgentsPop(refetch) {
   const stateOf = (s, key) => interruptedBy.has(key) ? 'stopped' : busyNow.has(key) ? 'working'
     : s && s.last && s.last.role === 'assistant' && s.last.asks ? 'asks' : '';
   const stateWord = { stopped: 'stopped', working: 'working', asks: 'waiting for your answer', '': '' };
+  const quietClass = (state, key) => state === 'working' && quietSince(key) ? ' quiet' : '';
   const more = (s, key) => s && key ? `<button class="ag-more" data-more="${esc(key)}" title="Pin, mark unread, close…" aria-label="Conversation actions" aria-haspopup="menu">⋯</button>` : '';
   const closeBtn = (key, r) => r
     ? `<button class="ag-close" data-close="${esc(key)}" data-recovery="${esc(r.id)}" title="Give up recovering this run and close. Saved history is kept." aria-label="Give up and close">✕</button>`
@@ -4370,8 +4393,8 @@ async function renderAgentsPop(refetch) {
     // The marker is a shape; the state is also said, for a screen reader
     // (the context line only once it is nearly full: said on every row it
     // would bury the titles).
-    const said = [isUnread ? 'unread' : '', stateWord[state], fill && fill.warn ? 'context nearly full' : ''].filter(Boolean).join(', ');
-    return `<div class="ag-row${state ? ' ' + state : ''}${isUnread ? ' unread' : ''}${key === activeRel && ['conversation', 'tree'].includes(viewKind) ? ' current' : ''}${agentIsPinned(key) ? ' pinned' : ''}" data-key="${esc(key)}">` +
+    const said = [isUnread ? 'unread' : '', stateWord[state], quietClass(state, key) ? 'quiet' : '', fill && fill.warn ? 'context nearly full' : ''].filter(Boolean).join(', ');
+    return `<div class="ag-row${state ? ' ' + state : ''}${quietClass(state, key)}${isUnread ? ' unread' : ''}${key === activeRel && ['conversation', 'tree'].includes(viewKind) ? ' current' : ''}${agentIsPinned(key) ? ' pinned' : ''}" data-key="${esc(key)}">` +
       `<span class="ag-main"><span class="ag-title" title="${esc(tip)}"><span>${esc(title)}</span>${said ? `<span class="sr-only">, ${esc(said)}</span>` : ''}${isUnread || state === 'asks' || state === 'stopped' ? markHtml : ''}${state === 'working' ? typingHtml : ''}${presenceSlotHtml(key)}${s ? participantsHtml(s) : ''}${s && s.mirror ? `<span class="badge-mirror" title="Mirrored from ${esc(s.mirror.peerName)}: read here, driven there">${esc(s.mirror.peerName)}</span>` : ''}<span class="ag-age">${esc(activity ? tinyAge(now - activity) : '')}</span></span>` +
       (sub || o.badge ? `<span class="ag-sub"><span class="ag-dir">${sub}</span>${o.badge}</span>` : '') + `</span>` +
       `<span class="ag-acts">${acts}</span>` +
@@ -13932,7 +13955,8 @@ function renderRunCards() {
       if (!card) { card = buildRunCard(r); host.appendChild(card); }
       setLiveText(card.querySelector('.rc-title'), '● running · ' + (r.model || 'session model') +
         (r.startedAt ? ' · ' + fmtElapsed(Date.now() - r.startedAt) : ''));
-      setLiveText(card.querySelector('.rc-status'), (r.statusText || 'working…') + (r.extStatus ? ' · ' + r.extStatus : ''));
+      setLiveText(card.querySelector('.rc-status'), (r.quiet && r.quiet.since > 0 ? 'quiet ' + fmtElapsed(Date.now() - r.quiet.since) + ' · no new output; nothing was stopped · ' : '') +
+        (r.statusText || 'working…') + (r.extStatus ? ' · ' + r.extStatus : ''));
       updateRunUi(card, r);
       updateRunCustoms(card, r);
     }
@@ -15932,7 +15956,23 @@ function paneModel() {
       <div class="set-help">Used by the Resume button and by automatic connection recovery. It is sent as your next message, so write it as you would speak to the agent. Applies to resumes started after saving. An empty message restores the default.</div>
       <button type="button" id="setResumePromptSave">Save message</button>
       <button type="button" id="setResumePromptReset">Restore default</button>
-    </details>`;
+    </details>
+    <h3>quiet work</h3>
+    <div class="set-field">
+      <label for="setQuietMinutes">report running work with no new output for</label>
+      <select id="setQuietMinutes">${quietMinutesOptions(s.quietMinutes)}</select>
+      <div class="set-help">Long work is fine: nothing is ever stopped. When a running conversation or delegated worker says nothing for this long (a test that never ends, a hung connection), the agent that started it is woken with what it is waiting on and what its processes are doing, so it can decide. When no agent can be told (your own conversations, a terminal, a parent that is out of usage), you are: the row says “quiet”, the phone notifies, and this machine plays a short tone unless finish sounds are off. Reminders repeat at 3, 9, then every 9 times this long while it stays quiet. Each reminder to an agent is one model turn.</div>
+    </div>`;
+}
+
+// The quiet-work choices; a value set elsewhere (the file, the API) is kept
+// as its own option rather than shown as something it is not.
+function quietMinutesOptions(value) {
+  const current = Number.isInteger(Number(value)) ? Number(value) : 20;
+  const choices = [0, 5, 10, 20, 30, 60, 120];
+  if (!choices.includes(current)) choices.push(current), choices.sort((a, b) => a - b);
+  const label = m => !m ? 'never (off)' : m % 60 ? m + ' minutes' : m === 60 ? '1 hour' : m / 60 + ' hours';
+  return choices.map(m => `<option value="${m}"${m === current ? ' selected' : ''}>${label(m)}</option>`).join('');
 }
 
 // Model calls Chattering makes on its own, with the model above. Changed
@@ -15963,6 +16003,10 @@ function bindPaneModel(root) {
   $('setAutoResumeNetwork').onchange = async () => {
     await saveSettings({ autoResumeNetwork: $('setAutoResumeNetwork').checked }, 'connection recovery updated');
     await loadAgentRecovery();
+  };
+  $('setQuietMinutes').onchange = () => {
+    const m = Number($('setQuietMinutes').value);
+    saveSettings({ quietMinutes: m }, m ? 'quiet work reported after ' + $('setQuietMinutes').selectedOptions[0].textContent : 'quiet work not reported');
   };
   $('setSimplifyAnswers').onchange = () => saveSettings({ simplifyAnswers: $('setSimplifyAnswers').checked }, 'simpler answers updated');
   $('setArtifactLibraries').onchange = () => saveSettings({ artifactNetwork: $('setArtifactLibraries').checked ? 'libraries' : 'open' }, 'artifact pages updated');

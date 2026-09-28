@@ -90,6 +90,10 @@ const DEFAULT_SETTINGS = {
   simplifyPrompt: DEFAULT_SIMPLIFY_PROMPT,
   autoResumeNetwork: false,
   resumePrompt: DEFAULT_RESUME_PROMPT,
+  // Running work whose output has not moved for this many minutes is
+  // reported (design/29): to the agent that started it, else to the person.
+  // Never stopped. 0 turns the watch off.
+  quietMinutes: 20,
   // pi theme for hosted extension views (custom TUI components rendered
   // in the browser). 'light' matches Chattering's paper look.
   piTheme: 'light',
@@ -218,6 +222,10 @@ function settingsInputError(src) {
   }
   if (String(src.ttsVoice || '').trim() && !VOICE_NAME.test(String(src.ttsVoice).trim())) return 'the voice name may only hold letters, digits, dots, dashes and underscores';
   if (String(src.voiceModel || '').trim() && !MODEL_NAME.test(String(src.voiceModel).trim())) return 'the spoken-digest model name has characters a model name does not use';
+  if (src.quietMinutes !== undefined && src.quietMinutes !== null && String(src.quietMinutes).trim() !== '') {
+    const n = Number(src.quietMinutes);
+    if (!Number.isInteger(n) || (n !== 0 && (n < 5 || n > 1440))) return 'the quiet-work time is whole minutes from 5 to 1440, or 0 to turn it off';
+  }
   return null;
 }
 
@@ -402,6 +410,7 @@ function normalizeSettings(input) {
   const simplifyPrompt = typeof src.simplifyPrompt === 'string' && src.simplifyPrompt.trim() ? src.simplifyPrompt : DEFAULT_SIMPLIFY_PROMPT;
   const autoResumeNetwork = src.autoResumeNetwork === true;
   const resumePrompt = typeof src.resumePrompt === 'string' && src.resumePrompt.trim() ? src.resumePrompt.trim().slice(0, 4000) : DEFAULT_RESUME_PROMPT;
+  const quietMinutes = normalizeQuietMinutes(src.quietMinutes);
   const piTheme = typeof src.piTheme === 'string' && src.piTheme.trim() ? src.piTheme.trim() : DEFAULT_SETTINGS.piTheme;
   const usageBilling = normalizeUsageBilling(src.usageBilling);
   const budgets = normalizeBudgets(src.budgets);
@@ -441,6 +450,7 @@ function normalizeSettings(input) {
     simplifyPrompt,
     autoResumeNetwork,
     resumePrompt,
+    quietMinutes,
     piTheme,
     usageBilling,
     budgets,
@@ -454,6 +464,15 @@ function normalizeSettings(input) {
     publicDoor,
     tailscaleApiKey,
   };
+}
+
+// Whole minutes, 0 (off) or 5 to 1440. Under five minutes a model thinking
+// through a hard step would be flagged; over a day nobody is waiting.
+// Anything else is not a choice a person made: the default.
+function normalizeQuietMinutes(raw) {
+  if (raw === 0 || raw === '0') return 0;
+  const n = Math.round(Number(raw));
+  return Number.isFinite(n) && n >= 5 && n <= 1440 ? n : DEFAULT_SETTINGS.quietMinutes;
 }
 
 // 1–4 visible characters; never a bare / or @, which already own the

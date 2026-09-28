@@ -33,6 +33,7 @@ class NotifyService : Service() {
     companion object {
         private const val CHANNEL_RUNNING = "running"
         private const val CHANNEL_REPLIES = "replies"
+        private const val CHANNEL_QUIET = "quiet"
         private const val RUNNING_ID = 1
         private const val PREF_ENABLED = "notify"
         const val EXTRA_KEY = "conversationKey"
@@ -147,6 +148,7 @@ class NotifyService : Service() {
 
     private fun handleEvent(raw: String) {
         val ev = try { JSONObject(raw) } catch (_: Exception) { return }
+        if (ev.optString("type") == "attention") { handleQuiet(ev); return }
         if (ev.optString("type") != "run-event" || !ev.optBoolean("final")) return
         if (appOnScreen) return
         // Parallel-model runs all report under one root conversation; one
@@ -178,6 +180,31 @@ class NotifyService : Service() {
         }
     }
 
+    /** Running work went quiet and no agent could be told (design/29). Its
+     *  own channel, so a person can silence these without losing replies;
+     *  one notification per conversation, replaced by the next reminder. */
+    private fun handleQuiet(ev: JSONObject) {
+        if (appOnScreen || ev.optString("kind") != "quiet") return
+        val key = ev.optString("key")
+        val title = ev.optString("title").ifEmpty { "running work" }
+        val body = ev.optString("text")
+        val n = NotificationCompat.Builder(this, CHANNEL_QUIET)
+            .setSmallIcon(R.drawable.ic_stat_rockfrog)
+            .setContentTitle("Quiet: $title")
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentIntent(openAppIntent(key.ifEmpty { null }))
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .build()
+        try {
+            (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(("quiet:" + key).hashCode(), n)
+        } catch (_: SecurityException) {
+            // POST_NOTIFICATIONS was revoked after enabling; nothing to show
+        }
+    }
+
     private fun openAppIntent(key: String?): PendingIntent {
         val intent = Intent(this, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -198,5 +225,8 @@ class NotifyService : Service() {
         nm.createNotificationChannel(NotificationChannel(
             CHANNEL_REPLIES, "Agent replies", NotificationManager.IMPORTANCE_DEFAULT,
         ).apply { description = "A conversation has a new reply" })
+        nm.createNotificationChannel(NotificationChannel(
+            CHANNEL_QUIET, "Quiet work", NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply { description = "Running work has had no new output for a while and no agent could be told" })
     }
 }

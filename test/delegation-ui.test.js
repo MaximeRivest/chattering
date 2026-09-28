@@ -464,7 +464,7 @@ test('orchestration progress counts the recorded subtree, not verdicts', () => {
     task('other', { parentKey: 'elsewhere', status: 'succeeded' }),
   ]);
   const p = D.progress(index, ['a', 'b']);
-  assert.deepEqual(p, { total: 5, done: 4, live: 1, failed: 2, unreviewed: 1 });
+  assert.deepEqual(p, { total: 5, done: 4, live: 1, failed: 2, unreviewed: 1, quiet: 0 });
   assert.equal(D.progressLabel(p), '4/5 done · 2 failed · 1 to review');
   assert.equal(D.progressLabel(D.progress(index, [])), '');
   assert.equal(D.rootOf(index, 'd'), 'a');
@@ -500,4 +500,29 @@ test('a stopped worker offers continue and continue-as; done, cancelled, taken-o
   f.setRecords([task('a', { status: 'failed', takenOver: { at: 1 } })]); await settle();
   assert.match(cls(host, 'dg-state').textContent, /continued by you/);
   assert.match(cls(host, 'dg-warn').textContent, /continued this conversation yourself/);
+});
+
+test('quiet work: a running worker past the threshold says so on its line, its warning, and the counts', () => {
+  const now = 10 * 3600000;
+  const quiet = task('q', { status: 'running', startedAt: now - 5 * 3600000, quiet: { since: now - 4 * 3600000, level: 2, told: 'parent' } });
+  const moving = task('m', { status: 'running', startedAt: now - 60000 });
+  // A finished worker keeps no stale quiet flag, whatever the record says.
+  const done = task('d', { status: 'succeeded', quiet: { since: now - 3600000, level: 0 } });
+  assert.equal(D.isQuiet(quiet), true); assert.equal(D.isQuiet(moving), false); assert.equal(D.isQuiet(done), false);
+  assert.match(D.stateLine(quiet, now), /running · 5 h · quiet 4 h/);
+  assert.equal(D.stateOf(quiet).tone, 'warn'); assert.equal(D.stateOf(moving).tone, 'live');
+  assert.match(D.warningOf(null, quiet, now), /No new output for 4 h\. It may be slow or stuck; nothing was stopped\. The conversation that started it was told\./);
+  assert.match(D.warningOf(null, { ...quiet, quiet: { ...quiet.quiet, told: 'person' } }, now), /this is for you/);
+  const index = D.indexTasks([quiet, moving, done]);
+  const p = D.progress(index, ['q', 'm', 'd']);
+  assert.equal(p.quiet, 1);
+  assert.equal(D.progressLabel(p), '1/3 done · 1 quiet · 1 to review');
+  assert.equal(D.summaryState(index, ['q', 'm']), '2 running · 1 quiet');
+});
+
+test('a quiet reminder reads as its own event, not as returned results', () => {
+  assert.equal(D.eventSummary('delegation-attention', 'Delegated work has gone quiet.\n* A (task a): no new output for 20 min.'), '◌ delegated work went quiet');
+  assert.equal(D.eventSummary('delegation-attention', 'x\n* A\n* B'), '◌ 2 delegated workers went quiet');
+  // Running siblings listed with a result do not count as results.
+  assert.equal(D.eventSummary('delegation-complete', 'Delegated work returned.\n- A: succeeded\nStill running:\n* B (task b), 1 h so far.'), '↩ 1 delegated result returned');
 });

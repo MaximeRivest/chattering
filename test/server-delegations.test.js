@@ -130,3 +130,201 @@ test('a continued attempt reaches the parent again; the message names the stop r
   assert.match(sent[1].content, /succeeded, attempt 2/);
   await host.processPending(); assert.equal(sent.length, 2);
 });
+
+// ---- 2026-09-28: one stuck worker held three finished siblings back for
+// four hours, and nothing told anyone it was stuck. ----
+function clockHost(root, tasks, extra = {}) {
+  const clock = { t: 10 * 3600000 };
+  const sent = [], told = [];
+  const host = createDelegationCoordinator({ root, list: async () => tasks, now: () => clock.t,
+    reach: async () => 'ready',
+    deliver: async (file, message) => { sent.push(message); await appendEvent(file, message); },
+    onQuiet: item => { told.push(item); },
+    ...extra });
+  host.root = root;
+  return { host, clock, sent, told };
+}
+// Passes until n messages went out and no delivery is still in flight
+// (records say "delivering" until the transcript check completes).
+async function settle(host, sent, n) {
+  const root = host.root;
+  const inFlight = async () => {
+    for (const dir of ['notifications', 'attention']) {
+      let files = [];
+      try { files = await fs.readdir(path.join(root, dir)); } catch {}
+      for (const f of files.filter(f => f.endsWith('.json'))) {
+        // A record being replaced (atomic write) may vanish between the listing and the read.
+        const text = await fs.readFile(path.join(root, dir, f), 'utf8').catch(e => { if (e.code === 'ENOENT') return null; throw e; });
+        if (text && JSON.parse(text).state === 'delivering') return true;
+      }
+    }
+    return false;
+  };
+  await until(async () => { await host.processPending(); return sent.length >= n && !(await inFlight()); });
+}
+
+test('a sibling still at work never holds a returned result back; the parent reads what is still running', async t => {
+  const { root, task } = await fixture(t);
+  const tasks = [];
+  const { host, clock, sent } = clockHost(root, tasks);
+  tasks.push({ ...task, id: 'py', title: 'Python', finishedAt: clock.t - 5 * 60000 },
+    { ...task, id: 'ts', title: 'TypeScript', status: 'running', startedAt: clock.t - 3 * 3600000 });
+  await settle(host, sent, 1);
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].details.taskIds, ['py']);
+  assert.match(sent[0].content, /Still running:\n\* TypeScript \(task ts\), 3 h so far\./);
+  // The running worker is not reported as a result.
+  assert.doesNotMatch(sent[0].content, /^- TypeScript/m);
+  await host.processPending(); assert.equal(sent.length, 1);
+});
+
+test('results that return close together share one turn: quiet for a minute, at most three after the first', async t => {
+  const { root, task } = await fixture(t);
+  const tasks = [];
+  const { host, clock, sent } = clockHost(root, tasks);
+  const base = clock.t;
+  tasks.push({ ...task, id: 'r', title: 'R', finishedAt: base },
+    { ...task, id: 'ts', title: 'TypeScript', status: 'running', startedAt: base - 3600000 },
+    { ...task, id: 'jl', title: 'Julia', status: 'running', startedAt: base - 3600000 });
+  await host.processPending(); assert.equal(sent.length, 0, 'waits for a quiet minute');
+  clock.t = base + 40000; tasks[2] = { ...tasks[2], status: 'succeeded', finishedAt: clock.t };
+  await host.processPending(); assert.equal(sent.length, 0, 'another arrival restarts the minute');
+  clock.t = base + 100001;
+  await settle(host, sent, 1);
+  assert.deepEqual(sent[0].details.taskIds.sort(), ['jl', 'r']);
+  // A stream of arrivals cannot postpone delivery past three minutes.
+  const more = [{ ...task, id: 'a1', title: 'A1', finishedAt: clock.t }];
+  tasks.push(...more);
+  for (const step of [50000, 50000, 50000]) {
+    clock.t += step;
+    tasks.push({ ...task, id: 'n' + clock.t, title: 'N', finishedAt: clock.t });
+    await host.processPending();
+  }
+  assert.equal(sent.length, 1, 'still inside three minutes of the first');
+  clock.t += 30001;
+  await settle(host, sent, 2);
+  assert.equal(sent[1].details.taskIds.length, 4);
+});
+
+test('when nothing else is running, a result goes at once', async t => {
+  const { root, task } = await fixture(t);
+  const tasks = [];
+  const { host, clock, sent } = clockHost(root, tasks);
+  tasks.push({ ...task, finishedAt: clock.t });
+  await settle(host, sent, 1);
+  assert.equal(sent.length, 1);
+  assert.doesNotMatch(sent[0].content, /Still running/);
+});
+
+async function quietFixture(t, extra = {}) {
+  const f = await fixture(t);
+  const log = path.join(f.root, 'stdout.jsonl');
+  const tasks = [{ ...f.task, id: 'ts', title: 'TypeScript', status: 'running', startedAt: 0, logPath: log }];
+  let lastActivityAt = 0;
+  const h = clockHost(f.root, tasks, { quietMs: () => 20 * 60000,
+    activityOf: async () => ({ lastActivityAt }),
+    reportOf: async (task, facts) => `${task.title} (task ${task.id}): no new output for ${Math.round(facts.quietMs / 60000)} min. pid 12 idle.`,
+    ...extra });
+  lastActivityAt = h.clock.t;
+  return { ...f, ...h, tasks, setActivity: at => { lastActivityAt = at; } };
+}
+
+test('a quiet worker wakes its parent once per reminder; output starts the count over; nothing is stopped', async t => {
+  const q = await quietFixture(t);
+  const start = q.clock.t;
+  q.clock.t = start + 19 * 60000; await q.host.processPending(); assert.equal(q.sent.length, 0);
+  q.clock.t = start + 20 * 60000; await settle(q.host, q.sent, 1);
+  assert.equal(q.sent[0].customType, 'delegation-attention');
+  assert.deepEqual(q.sent[0].details.taskIds, ['ts']);
+  assert.match(q.sent[0].content, /has gone quiet\. This is a runner event, not a user request\. Nothing was stopped\./);
+  assert.match(q.sent[0].content, /\* TypeScript \(task ts\): no new output for 20 min\. pid 12 idle\./);
+  assert.match(q.sent[0].content, /If you cannot tell, tell the user/);
+  assert.equal((await q.host.refresh()).tasks[0].quiet.told, 'parent');
+  q.clock.t = start + 59 * 60000; await q.host.processPending(); assert.equal(q.sent.length, 1, 'same level: not again');
+  q.clock.t = start + 60 * 60000; await settle(q.host, q.sent, 2);
+  assert.notEqual(q.sent[1].details.deliveryId, q.sent[0].details.deliveryId);
+  // It speaks again: the flag clears, and a new stretch needs the full threshold.
+  q.setActivity(q.clock.t); await q.host.processPending();
+  assert.equal((await q.host.refresh()).tasks[0].quiet, undefined);
+  q.clock.t += 19 * 60000; await q.host.processPending(); assert.equal(q.sent.length, 2);
+  q.clock.t += 60000; await settle(q.host, q.sent, 3);
+  assert.equal(q.told.length, 0, 'the parent could hear every time: the person is not alarmed');
+  assert.equal(q.tasks[0].status, 'running');
+});
+
+test('a parent that is busy hears when it is free; one that cannot take a turn means the person hears', async t => {
+  let state = 'busy';
+  const q = await quietFixture(t, { reach: async () => state });
+  q.clock.t += 25 * 60000;
+  await q.host.processPending(); assert.equal(q.sent.length, 0); assert.equal(q.told.length, 0);
+  state = 'ready'; await settle(q.host, q.sent, 1);
+  assert.equal(q.sent[0].customType, 'delegation-attention');
+  state = 'unreachable'; q.clock.t += 40 * 60000;
+  await q.host.processPending();
+  assert.equal(q.told.length, 1);
+  assert.equal(q.told[0].reason, 'parent-unreachable'); assert.equal(q.told[0].level, 1);
+  assert.match(q.told[0].report, /no new output for 65 min/);
+  assert.equal((await q.host.refresh()).tasks[0].quiet.told, 'person');
+  await q.host.processPending(); assert.equal(q.told.length, 1, 'once per level');
+});
+
+test('a quiet sibling and a returned result make one parent turn, not two', async t => {
+  const q = await quietFixture(t);
+  q.clock.t += 21 * 60000;
+  q.tasks.push({ ...q.task, id: 'py', title: 'Python', finishedAt: q.clock.t - 1000 });
+  await settle(q.host, q.sent, 1);
+  await q.host.processPending();
+  assert.equal(q.sent.length, 1);
+  assert.equal(q.sent[0].customType, 'delegation-complete');
+  assert.deepEqual(q.sent[0].details.taskIds, ['py']);
+  assert.match(q.sent[0].content, /Still running:\n\* TypeScript \(task ts\): no new output for 21 min\. pid 12 idle\./);
+  assert.deepEqual(q.sent[0].details.attention.map(a => a.taskId), ['ts']);
+  assert.equal((await q.host.refresh()).tasks.find(t => t.id === 'ts').quiet.told, 'parent');
+});
+
+test('when the parent cannot run its turn (a usage limit), the person hears about the stuck worker', async t => {
+  const q = await quietFixture(t, { deliver: async () => { throw new Error('429 usage limit'); } });
+  q.clock.t += 20 * 60000;
+  await q.host.processPending();
+  await until(() => q.told.length === 1);
+  assert.equal(q.told[0].reason, 'parent-failed');
+});
+
+test('a terminal parent gets no automatic turn, so its quiet worker is the person\'s; a paused one too', async t => {
+  const q = await quietFixture(t);
+  q.tasks[0] = { ...q.tasks[0], delivery: 'nextTurn' };
+  q.clock.t += 20 * 60000;
+  await q.host.processPending();
+  assert.deepEqual(q.told.map(i => i.reason), ['terminal-parent']); assert.equal(q.sent.length, 0);
+  q.tasks[0] = { ...q.tasks[0], delivery: 'web', paused: true };
+  q.clock.t += 40 * 60000;
+  await q.host.processPending();
+  assert.deepEqual(q.told.map(i => i.reason), ['terminal-parent', 'paused']); assert.equal(q.sent.length, 0);
+});
+
+test('a quiet reminder that landed before a host restart is not sent again', async t => {
+  const q = await quietFixture(t);
+  q.clock.t += 20 * 60000;
+  await settle(q.host, q.sent, 1);
+  // A new host over the same records and transcript, with the record left mid-delivery.
+  const file = path.join(q.root, 'attention', 'ts.json');
+  const record = JSON.parse(await fs.readFile(file, 'utf8'));
+  await fs.writeFile(file, JSON.stringify({ ...record, state: 'delivering' }));
+  const again = createDelegationCoordinator({ root: q.root, list: async () => q.tasks, now: () => q.clock.t, reach: async () => 'ready',
+    quietMs: () => 20 * 60000, activityOf: async () => ({ lastActivityAt: q.clock.t - 20 * 60000 }),
+    deliver: async () => assert.fail('duplicate reminder') });
+  await again.processPending();
+  assert.equal(JSON.parse(await fs.readFile(file, 'utf8')).state, 'delivered');
+});
+
+test('the watch is off at 0 minutes, for finished work, and for a person continuing a worker in the web', async t => {
+  let minutes = 0;
+  const q = await quietFixture(t, { quietMs: () => minutes * 60000 });
+  q.clock.t += 5 * 3600000;
+  await q.host.processPending(); assert.equal(q.sent.length, 0);
+  minutes = 20; q.tasks[0] = { ...q.tasks[0], sessionActive: true };
+  await q.host.processPending(); assert.equal(q.sent.length, 0);
+  q.tasks[0] = { ...q.tasks[0], sessionActive: false, status: 'succeeded', finishedAt: q.clock.t };
+  await settle(q.host, q.sent, 1);
+  assert.equal(q.sent[0].customType, 'delegation-complete');
+});

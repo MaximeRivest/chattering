@@ -243,3 +243,16 @@ test('the resume message is editable, trimmed, bounded, and defaults when blank'
   }
   assert.equal(DEFAULT_SETTINGS.resumePrompt, DEFAULT_RESUME_PROMPT);
 });
+
+test('quiet work: 20 minutes by default, 0 is off, whole minutes from 5 to 1440; nonsense is refused, not saved', () => {
+  assert.equal(DEFAULT_SETTINGS.quietMinutes, 20);
+  assert.equal(normalizeSettings({}).quietMinutes, 20);
+  assert.equal(normalizeSettings({ quietMinutes: 0 }).quietMinutes, 0);
+  assert.equal(normalizeSettings({ quietMinutes: '45' }).quietMinutes, 45);
+  for (const bad of [3, 2000, 'soon', null, -5]) assert.equal(normalizeSettings({ quietMinutes: bad }).quietMinutes, 20);
+  assert.equal(settingsInputError({ quietMinutes: 30 }), null);
+  assert.equal(settingsInputError({ quietMinutes: 0 }), null);
+  assert.equal(settingsInputError({}), null);
+  assert.match(settingsInputError({ quietMinutes: 2 }), /5 to 1440/);
+  assert.match(settingsInputError({ quietMinutes: 12.5 }), /whole minutes/);
+});
