@@ -5,6 +5,13 @@ Written after a day that took notebooks in Chattering from "cannot answer
 an input prompt" to live output, prompts, Run buttons, progress, variables
 and kernel controls — each step touching rat, MRMD and Chattering at once.*
 
+> **Status, 2026-09-28.** D5 is decided (Maxime, conversation 01a0ea09):
+> **Chattering is the product; MRMD is its document library, not a product
+> of its own.** The experiences merge, the software stays in parts — see
+> "Rules of the parts" below. D3 is done and D1, D2 are partly done; the
+> roadmap carries a status per step. The UX consequences are in
+> [design/78](78-a-place-to-think.md).
+
 ## The question
 
 Maxime owns three projects that each describe themselves as the place
@@ -144,9 +151,42 @@ Findings that shape the answer:
    │ + one rat adapter    │    │                          │
    └──────────────────────┘    └──────────────────────────┘
        also hosted by VS Code        also used by terminals,
-       (and a browser-only app,      agents, VS Code, any
-        if that stays a goal)         MCP client
+       (the browser-only app is      agents, VS Code, any
+        dropped: D5, 2026-09-28)      MCP client
 ```
+
+## Rules of the parts (2026-09-28)
+
+One product for people, separate parts in the code. Each rule exists to keep
+the parts honest while the experiences merge.
+
+1. **Dependencies point one way.** Chattering loads MRMD and drives rat;
+   MRMD never knows it runs inside Chattering. When the editor needs
+   something (run a cell, resolve an asset, draw a diagram, call a model),
+   it asks its host through `document-host-services.js` and the options of
+   `createDocumentEditor`, as it does today.
+2. **The file format is the contract.** Plain Markdown, the `rat:` front
+   matter, ```` ```output ```` fences and `_assets/generated/`, defined once
+   in `rat-notebook.js`. Any change to it is a versioned change of that
+   module, never a host-side special case.
+3. **Hand-over by version.** Chattering serves a numbered copy
+   (`vendor/mrmd-document/<version>/`) with its README changelog; an editor
+   change reaches Chattering only as a new number. Old numbers that nothing
+   serves are deleted (design/32 already noted 5 MB of them).
+4. **Keep a second host.** rat's VS Code extension also hosts the editor
+   and vendors `rat-notebook.js`. It is the test that the library is a
+   library: a Chattering-only shortcut inside MRMD shows up as breakage
+   there.
+5. **Large abilities live in Chattering or rat, not in the editor.**
+   Server-side runs, agents writing into the shared text, permissions and
+   memory belong to Chattering (or rat for kernels). The editor displays
+   them.
+6. **Retire the products, keep the code as reference.** mrmd-electron,
+   mrmd-server, markco-services, the mrmd daemon, mrmd-vscode and the
+   mrmd-ai server are untouched since March 2026. Archive them (mark the
+   repositories read-only with a pointer here); do not delete them — the
+   daemon's "Yjs is the bus" design and the project model are still the
+   blueprint for design/78's later steps.
 
 **rat owns** what computes and who computed it: kernel identity, project and
 environment resolution, execution, streaming, input, cancel, variables,
@@ -247,6 +287,24 @@ Each with a recommendation; none is made by this note.
   MRMD be a library only? *No recommendation without knowing whether a
   no-install public product still matters to you* — it changes how much
   MRMD's shell code is worth keeping.
+  **Decided 2026-09-28 (Maxime): fold.** "My product is Chattering, a better
+  place to think with AI, and Markdown notebooks are key to that." MRMD is a
+  library; its shells are retired (Rules of the parts, 6). "mrmd" stays the
+  open name of the notebook format and editor, the way an editor library
+  keeps its name inside a product.
+
+**Status of the other decisions, 2026-09-28:**
+
+- **D1** — the fence is settled: ```` ```output ````, older forms
+  (```` ```output:<execId> ````, VS Code's status suffix) are read and
+  replaced (`rat-notebook.js`). Chattering writes once per run. Whether
+  VS Code's runner also writes once is not verified.
+- **D2** — half done. The format rules are one module (`rat-notebook.js`),
+  and VS Code vendors it (0.16.0). The runner (`createNotebookRunner`) is
+  used by Chattering only; VS Code keeps its own queue (`queue.ts`).
+- **D3** — done: Chattering follows kernels with `rat events --json`
+  (server.js, "kernel followers").
+- **D4, D6** — not revisited.
 - **D6 — Who reaches other machines.** rat's tunnels (kernels anywhere) or
   Chattering's doors (the whole workspace anywhere)? They are not the same
   thing: Chattering on lambda already reaches lambda's kernels; rat's
@@ -258,20 +316,27 @@ Each with a recommendation; none is made by this note.
 
 1. **`rat events` + caller names**, and Chattering showing other clients'
    runs and refreshing variables live. (rat M, Chattering M)
+   *Done 2026-09-22 (rat `events`, Chattering kernel followers).*
 2. **Plots in Chattering notebooks**: read `__RAT_PLOT__`, show the image
    under the cell, save it beside the notebook. A stopgap until step 4 — but
    plots are the most common notebook output. (S)
+   *Done (plots in `_assets/generated/`, named by content).*
 3. **The shared rat adapter in MRMD** (D2), then VS Code switches to it.
-   (M, then M)
+   (M, then M) *Half done: see D2.*
 4. **Output registry** (MRMD Epic 5.0/5.1) in the light bundle: images,
    tables, HTML outputs. (L)
+   *Mostly done in 0.24.0: ordered rich displays, images, sandboxed
+   interactive embeds. Tables as tables: not yet.*
 5. **Read / notebook / full modes** (Epic 3.3) in Chattering, read mode on
-   e-ink and phone by default. (S–M)
+   e-ink and phone by default. (S–M) *Not started.*
 6. **AI commands with a host-lent backend** (MRMD's menu, Chattering's
-   agents and ledger). (M)
+   agents and ledger). (M) *Done (0.20.0 and earlier; outcomes in
+   `ai-feedback.jsonl`).*
 7. **Variables and kernel controls for every language** (rat's look/ctl are
-   already uniform). (S)
+   already uniform). (S) *Mostly done: Python, R, Julia, shell and
+   JavaScript cells run; R and Julia kernels landed 2026-09-27.*
 8. **Project model** (Epic 11) when links and assets become daily pain. (L)
+   *Not started; now step 4 of design/78.*
 
 Not on it: switching to the full bundle, reviving mrmd-electron, mrmd-server
 or markco cloud, the mrmd-ai server, rat's network, non-code runtimes. Each
