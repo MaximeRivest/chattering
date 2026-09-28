@@ -5717,12 +5717,21 @@ function programRoute(u, req, res, identity) {
   const name = String(q.name || ''), module = String(q.module ?? '');
   if (at === '/api/programs') {
     return json(res, 200, { folder: log.folder, exists: fs.existsSync(log.folder), seq: log.seq, recordAgents: appSettings.programsRecordAgents === true,
-      you: programRater(identity), programs: log.programs() });
+      you: programRater(identity), programs: withMadePrograms(log.programs()) });
   }
   if (at === '/api/programs/program') {
-    const p = log.program(name, module);
+    const made = module === MADE_MODULE && madePrograms.get(name);
+    const p = made ? madeSummary(made, log.program(name, module)) : log.program(name, module);
     if (!p) return json(res, 404, { error: 'No calls of this program in the log.' });
-    return json(res, 200, { program: p, versions: log.versions(name, module), seq: log.seq, you: programRater(identity) });
+    let versions = log.versions(name, module);
+    if (made) {
+      // Made here: versions named as its endpoint names them, live and draft marked.
+      const names = madeVersionNames(name);
+      const draft = programsDeploy.readSource(made.folder);
+      versions = versions.map(v => ({ ...v, n: names.get(v.version) || v.n, live: !!(made.live && made.live.version === v.version) }));
+      return json(res, 200, { program: p, versions, seq: log.seq, you: programRater(identity), made: { live: made.live ? { ...made.live, n: names.get(made.live.version) || null } : null, error: draft.error || null } });
+    }
+    return json(res, 200, { program: p, versions, seq: log.seq, you: programRater(identity) });
   }
   if (at === '/api/programs/runs') return json(res, 200, log.runs(name, module, q));
   if (at === '/api/programs/run') {
@@ -5742,6 +5751,33 @@ function programRoute(u, req, res, identity) {
     return json(res, 200, out);
   }
   return json(res, 404, { error: 'not found' });
+}
+
+// Programs made here (design/75) in the list and on their page: before their
+// first call too, in their project, and described by their definition (what
+// it says now) rather than by the newest call's prompt.
+function madeSummary(entry, fromLog) {
+  const read = programsDeploy.readSource(entry.folder);
+  const def = read.definition;
+  const answer = def ? def.outputs[def.outputs.length - 1] : null;
+  const base = fromLog || {
+    name: entry.name, module: MADE_MODULE, kind: 'ai', version: null, signature: null, file: null, line: null,
+    unjudged: 0, languages: [], calls: 0, useCalls: 0, errors: 0, recent: 0, first: null, last: entry.created, versions: 0,
+    tokensIn: 0, tokensOut: 0, ratings: { right: 0, wrong: 0, disputed: 0, open: 0 },
+    stats: { use: 0, other: {}, errors: 0, p50: null, p95: null, tokensIn: 0, tokensOut: 0, models: [], languages: [], callers: [], people: [], days: [] },
+    sample: null, sampleAll: null, answers: [], files: [], sources: [],
+  };
+  return {
+    ...base, own: false, made: true, project: entry.project || null, live: entry.live ? true : false,
+    ...(def ? { answer: answer.name, inputs: def.inputs.map(i => i.name), outputs: def.outputs.map(o => o.name), instruction: def.description || base.instruction || null,
+      choices: answer.shape.enum || null } : {}),
+  };
+}
+function withMadePrograms(list) {
+  const made = new Map(madePrograms.list().map(e => [e.name, e]));
+  const out = list.map(p => (p.module === MADE_MODULE && made.has(p.name) ? madeSummary(made.get(p.name), p) : p));
+  for (const e of made.values()) if (!list.some(p => p.module === MADE_MODULE && p.name === e.name)) out.push(madeSummary(e, null));
+  return out.sort((a, b) => String(b.last).localeCompare(String(a.last)));
 }
 
 // ---- AI programs, live (design/74, "Live") ----
@@ -5851,6 +5887,237 @@ function programLiveFollow(conn) {
 function programLiveUnfollow(conn) {
   programLiveFollowers.delete(conn);
   if (!programLiveFollowers.size) programLogWatchStop();
+}
+
+// ---- AI programs made here, and their endpoints (design/75) ----
+// A program made in Chattering is a folder in its project (programs/<name>:
+// program.json, FunctAI's definition, and functai.json, FunctAI's saved
+// program made from it). The folder is the draft; publishing copies it under
+// this install's data, and /programs/<name> answers with that copy only.
+const programsDeploy = require('./programs-deploy.js');
+const MADE_DIR = path.join(DATA_DIR, 'programs');
+const madePrograms = programsDeploy.createRegistry({ file: path.join(MADE_DIR, 'registry.json'), versionsDir: path.join(MADE_DIR, 'published') });
+const madeKeyLimiter = programsDeploy.createLimiter({ perMinute: 60, atOnce: 4 });
+const MADE_MODULE = require('./ai-programs.js').MADE_MODULE;
+// Where a new program's folder goes: its project's programs/ folder, or this
+// install's own when it belongs to no project.
+function madeFolderFor(project, name) {
+  const meta = project && project !== LOOSE_PROJECT ? projectMetaFor(project) : null;
+  if (project && project !== LOOSE_PROJECT && !(meta && meta.cwd)) throw Object.assign(new Error('The project ' + project + ' has no folder here.'), { status: 400 });
+  return meta ? path.join(meta.cwd, 'programs', name) : path.join(MADE_DIR, 'made', name);
+}
+// The draft as it is in its folder. FunctAI's saved program is written again
+// when the definition was changed by hand (an agent, an editor, git), so
+// functai.load(folder) always runs what program.json says.
+async function madeDraft(name) {
+  const entry = madePrograms.get(name);
+  if (!entry) throw Object.assign(new Error('No program named ' + name + ' was made here.'), { status: 404 });
+  const read = programsDeploy.readSource(entry.folder);
+  if (read.error) return { entry, error: read.error };
+  const def = read.definition;
+  if (def.name !== name) return { entry, error: `program.json names it ${def.name}; its folder and address are ${name}. Put the name back, or make a new program.` };
+  let made;
+  try { made = await aiPrograms.madeManifest(def); } catch (e) { return { entry, definition: def, error: e.message }; }
+  let saved = null;
+  try { saved = JSON.parse(fs.readFileSync(path.join(entry.folder, programsDeploy.SAVED), 'utf8')); } catch {}
+  const savedVersion = saved && saved.nodes && Object.values(saved.nodes)[0] && Object.values(saved.nodes)[0].ai && Object.values(saved.nodes)[0].ai.version;
+  if (savedVersion !== made.version) { try { programsDeploy.writeSource(entry.folder, def, made.manifest); } catch {} }
+  return { entry, definition: def, version: made.version, signature: made.signature };
+}
+// Versions named v1, v2… by when each first appeared: in the call log (a
+// try, a call) or by being published, whichever came first. The same names
+// on the page, on the endpoint's answers and in its description.
+function madeVersionNames(name) {
+  const entry = madePrograms.get(name);
+  const first = new Map();
+  try { for (const v of programLog().versions(name, MADE_MODULE)) if (v.version) first.set(v.version, v.first); } catch {}
+  for (const p of (entry && entry.published) || []) if (!first.has(p.version) || String(p.at) < String(first.get(p.version))) first.set(p.version, p.at);
+  const order = [...first].sort((a, b) => String(a[1]).localeCompare(String(b[1]))).map(([v]) => v);
+  return new Map(order.map((v, i) => [v, i + 1]));
+}
+const madeUrl = name => (PUBLIC_URL ? PUBLIC_URL.replace(/\/+$/, '') : '') + '/programs/' + name;
+// A made program sits in its project: acting on it is acting on the project.
+function assertMadeAccess(identity, name) {
+  const entry = madePrograms.get(name);
+  if (!entry) throw Object.assign(new Error('No program named ' + name + ' was made here.'), { status: 404 });
+  if (entry.project) assertCan(identity, 'act', { project: entry.project, creator: projectCreatorOf(entry.project) }, 'project ' + entry.project);
+  return entry;
+}
+// Everything the Edit and Endpoint tabs show.
+async function madeView(name, identity) {
+  assertMadeAccess(identity, name);
+  const d = await madeDraft(name);
+  const names = madeVersionNames(name);
+  const n = v => (v ? names.get(v) || null : null);
+  const e = d.entry;
+  const mine = k => policy.isOwnerTier(identity) || (identity && identity.user && k.by === identity.user.id);
+  return {
+    name, module: MADE_MODULE, folder: e.folder, project: e.project, created: e.created, by: e.by,
+    definition: d.definition || null, error: d.error || null, draft: d.version ? { version: d.version, n: n(d.version), signature: d.signature } : null,
+    live: e.live ? { ...e.live, n: n(e.live.version) } : null,
+    published: e.published.map(p => ({ ...p, n: n(p.version) })).reverse(),
+    tests: Object.fromEntries(Object.entries(e.tests || {}).map(([v, t]) => [v, { ...t, n: n(v) }])),
+    keys: e.keys.filter(k => !k.revoked).map(k => ({ ...k, yours: mine(k), byName: (userById(k.by) || {}).name || k.by })),
+    url: madeUrl(name), host: PUBLIC_URL || null,
+  };
+}
+// One call of a made program, in the context Chattering's own run in: the
+// model of settings → model, the person the call is for (usage and budget),
+// a time limit, a stop signal.
+function madeCall(definition, inputs, { person, caller = {}, signal = null, onEvent = null, timeoutMs = 3 * 60 * 1000, purpose }) {
+  const ctx = { automatic: false, timeoutMs, signal, purpose: purpose || 'program:' + definition.name, person: person ? person.id : null };
+  const who = { ...caller };
+  for (const [k, v] of Object.entries(who)) if (v === undefined || v === null || v === '') delete who[k];
+  return modelCallContext.run(ctx, () => aiPrograms.runMade(definition, inputs, { caller: who, signal, onEvent }));
+}
+// Is this answer the one expected? Values as JSON; text also ignoring case
+// and the space around it (a model's "Billing" for "billing").
+const canonicalJson = v => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.keys(x).sort().map(key => [key, x[key]])) : x));
+function sameAnswer(a, b) {
+  if (typeof a === 'string' && typeof b === 'string') return a.trim().toLowerCase() === b.trim().toLowerCase();
+  return canonicalJson(a) === canonicalJson(b);
+}
+const freeText = shape => !!shape && shape.type === 'string' && !shape.enum;
+// What a failed call says to whoever called: a status and a sentence.
+function madeFailure(e) {
+  if (e.code === 'ABORTED') return { status: 499, body: { error: 'stopped', code: 'stopped' } };
+  if (e.code === 'MODEL_CALLS_PAUSED') return { status: 503, body: { error: 'The model is paused after repeated failures; try again in a minute.', code: 'model-paused' } };
+  if (e.status === 402) return { status: 402, body: { error: e.message, code: 'budget' } };
+  if (e.name === 'Refusal' || e.constructor && e.constructor.name === 'Refusal') return { status: 422, body: { error: 'The model\u2019s reply could not be read as this program\u2019s answer, even when asked again: ' + e.message, code: e.code || 'unreadable' } };
+  return { status: 502, body: { error: e.message || 'the model call failed', code: 'model' } };
+}
+// A made program's call as a stream of small events (a try, the endpoint):
+// the text of each answer as it is written, a retry, then done or error.
+function madeEvents(send) {
+  let outer = null;
+  return e => {
+    if (e.kind === 'started') { outer ??= e.call; if (e.call === outer) send('started', { call: e.call }); return; }
+    if (e.call !== outer) return;
+    if (e.kind === 'text') send('text', { field: e.field, answer: e.answer, text: e.text });
+    else if (e.kind === 'retry') send('retry', { reason: e.reason });
+  };
+}
+// The endpoint: run the live copy for a key or a signed-in person.
+async function madeEndpoint(req, res, name, { person, key = null }) {
+  const live = madePrograms.liveDefinition(name);
+  if (!live) return json(res, 404, { error: madePrograms.has(name) ? `${name} is not published: publish it on its page first.` : `No program named ${name} is published here.`, code: 'not-published' });
+  const def = live.definition;
+  const stream = /text\/event-stream/.test(String(req.headers.accept || ''));
+  let inputs;
+  try {
+    let body = '';
+    for await (const chunk of req) { body += chunk; if (body.length > 256 * 1024) return json(res, 413, { error: 'The inputs are at most 256 KiB.', code: 'too-large' }); }
+    let values;
+    try { values = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'The body is not JSON.', code: 'bad-json' }); }
+    inputs = programsDeploy.checkInputs(def, values);
+  } catch (e) { return json(res, e.status || 400, { error: e.message, code: e.code || 'bad-inputs', ...(e.problems ? { problems: e.problems } : {}) }); }
+  const turn = madeKeyLimiter.take(key ? 'key:' + key.id : 'person:' + person.id);
+  if (!turn.ok) { res.setHeader('Retry-After', String(turn.retryAfter)); return json(res, 429, { error: 'Too many calls: ' + turn.why + '.', code: 'rate-limit' }); }
+  const stop = new AbortController();
+  let finished = false;
+  res.on('close', () => { if (!finished) stop.abort(); });
+  const n = madeVersionNames(name).get(live.version);
+  const answerName = def.outputs[def.outputs.length - 1].name;
+  const sse = (event, data) => { if (!res.writableEnded && !res.destroyed) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
+  try {
+    assertWithinBudget(person);
+    if (key) madePrograms.used(name, key.id);
+    if (stream) res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' });
+    const out = await madeCall(def, inputs, {
+      person, signal: stop.signal, onEvent: stream ? madeEvents(sse) : null,
+      caller: { kind: 'endpoint', user: programPerson(person), key: key ? key.label : undefined },
+    });
+    const body = { result: out.outputs[answerName], outputs: out.outputs, version: n ? 'v' + n : null, call: out.callId };
+    if (stream) sse('done', body); else json(res, 200, body);
+  } catch (e) {
+    const f = madeFailure(e);
+    if (f.status === 499) return;
+    if (stream && res.headersSent) sse('error', { ...f.body, status: f.status });
+    else json(res, f.status, f.body);
+  } finally {
+    finished = true;
+    turn.release();
+    if (stream && !res.writableEnded) res.end();
+  }
+}
+// The model's draft (program_draft) as a definition that passes the checks:
+// names made into names, kinds into shapes, a taken name numbered. Its
+// examples come back in the program's own inputs, for the person to review.
+function draftedDefinition(o, taken) {
+  const ident = (s, fallback) => {
+    let n = String(s || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').replace(/^[^a-z]+/, '').slice(0, 40);
+    return n || fallback;
+  };
+  let name = ident(o.name, 'my_program');
+  for (let i = 2; taken(name); i++) name = ident(o.name, 'my_program').slice(0, 40) + '_' + i;
+  const used = new Set();
+  const field = (f, fallback) => {
+    let n = ident(f && f.name, fallback);
+    for (let i = 2; used.has(n); i++) n = ident(f && f.name, fallback) + '_' + i;
+    used.add(n);
+    const choices = Array.isArray(f && f.choices) ? f.choices.map(String).filter(Boolean) : [];
+    const kind = f && f.kind === 'choice' && !choices.length ? 'text' : (f && f.kind) || 'text';
+    const note = String((f && f.note) || '').trim();
+    return { name: n, shape: programsDeploy.shapeOfKind(kind, choices), ...(note ? { desc: note } : {}) };
+  };
+  const takes = (Array.isArray(o.takes) && o.takes.length ? o.takes : [{ name: 'text', kind: 'text' }]).slice(0, 20);
+  const gives = (Array.isArray(o.gives) && o.gives.length ? o.gives : [{ name: 'result', kind: 'text' }]).slice(0, 20);
+  const inputs = takes.map((f, i) => field(f, 'input_' + (i + 1)));
+  const outputs = gives.map((f, i) => field(f, i === gives.length - 1 ? 'result' : 'output_' + (i + 1)));
+  let definition;
+  try { definition = programsDeploy.normalizeDefinition({ name, description: String(o.task || '').trim(), inputs, outputs }); }
+  catch (e) { throw Object.assign(new Error('The draft could not be used (' + e.message + '). Try saying it differently, or start from a blank program.'), { status: 502 }); }
+  const names = new Set(definition.inputs.map(i => i.name));
+  const examples = (Array.isArray(o.examples) ? o.examples : []).slice(0, 10).map(x => {
+    const given = x && x.inputs && typeof x.inputs === 'object' && !Array.isArray(x.inputs) ? x.inputs : definition.inputs.length === 1 ? { [definition.inputs[0].name]: x && x.inputs } : {};
+    return { inputs: Object.fromEntries(Object.entries(given).filter(([k]) => names.has(k))), answer: x ? x.answer : null };
+  }).filter(x => Object.keys(x.inputs).length);
+  return { definition, examples };
+}
+// Does a value fit a shape (an expected answer before it is used as one)?
+const fitsShape = (shape, v) => { try { programsDeploy.checkInputs({ inputs: [{ name: 'v', shape }] }, { v }); return true; } catch { return false; } };
+// The examples a program was made with, tried one by one. An answer that is
+// the expected one is judged right; one that is not is judged wrong with
+// the expected answer as the correction, except free text (other words can
+// be as right): it waits for the person, the expected answer kept with it.
+async function madeTryExamples(def, examples, identity) {
+  const answer = def.outputs[def.outputs.length - 1];
+  const person = (identity && identity.user) || usersLib.ownerOf(roster);
+  for (const x of examples) {
+    let inputs;
+    try { inputs = programsDeploy.checkInputs(def, x && x.inputs); } catch { continue; }
+    const expected = x.answer;
+    let out;
+    try { out = await madeCall(def, inputs, { person, caller: { kind: 'example', user: programRater(identity), expected } }); }
+    catch { continue; }
+    const got = out.outputs[answer.name];
+    const log = programLog();
+    log.refresh({ force: true });
+    try {
+      if (sameAnswer(got, expected)) log.rate({ call: out.callId, verdict: 'right', by: programRater(identity), note: 'the answer given with this example when the program was made' });
+      else if (!freeText(answer.shape) && fitsShape(answer.shape, expected)) log.rate({ call: out.callId, verdict: 'wrong', answer: expected, by: programRater(identity), note: 'the answer given with this example when the program was made' });
+    } catch (e) { console.error('[programs] rating an example: ' + e.message); }
+    programLogChanged();
+  }
+}
+// What the live copy takes and gives, as a caller reads it (JSON Schema).
+function madeDescribed(name) {
+  const live = madePrograms.liveDefinition(name);
+  if (!live) return null;
+  return programsDeploy.describe(live.definition, { url: madeUrl(name), version: live.version, n: madeVersionNames(name).get(live.version) });
+}
+function madeDescribe(res, name) {
+  const d = madeDescribed(name);
+  if (!d) return json(res, 404, { error: madePrograms.has(name) ? `${name} is not published.` : `No program named ${name} is published here.`, code: 'not-published' });
+  return json(res, 200, d);
+}
+// A signed-in person's page for a program: a form for its inputs, the answer
+// written as it comes. The same address answers scripts with JSON.
+function madeFormPage(name, described) {
+  const data = JSON.stringify(described).replace(/</g, '\\u003c');
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escapeHtml(name)}</title><link rel="stylesheet" href="/program-form.css"></head>
+<body><main id="app"></main><script>window.PROGRAM = ${data};</script><script src="/program-form.js"></script></body></html>`;
 }
 
 function usageDashboardResponse(searchParams) {
@@ -5994,6 +6261,9 @@ async function piExec({ system, input, signal: ownSignal = null, onDelta = null,
         timestamp: new Date(finalMessage.timestamp || Date.now()).toISOString(),
         chatteringCategory: 'internal',
         ...(ctx.purpose ? { chatteringPurpose: String(ctx.purpose) } : {}),
+        // The person the call is for, when one is (a made program's endpoint):
+        // their usage, and their budget, rather than background work.
+        ...(ctx.person ? { chatteringPerson: String(ctx.person) } : {}),
         message: { ...finalMessage, content: [] },
       };
       try { fs.appendFileSync(INTERNAL_USAGE_FILE, JSON.stringify(record) + '\n', { mode: 0o600 }); } catch {}
@@ -6040,10 +6310,11 @@ const aiPrograms = require('./ai-programs.js').createAiPrograms({
 // Run one of them within this call's context. `caller` goes to the log
 // (a conversation key, a project, the person); the rest is the context
 // piExec reads. Resolves with { outputs, callId, response }.
-function aiProgram(name, inputs, { automatic, background, purpose, thinking, timeoutMs, signal, caller = {}, onText = null } = {}) {
+function aiProgram(name, inputs, { automatic, background, purpose, thinking, timeoutMs, signal, person, caller = {}, onText = null } = {}) {
   const inherited = modelCallContext.getStore() || {};
   const ctx = { ...inherited };
-  for (const [k, v] of Object.entries({ automatic, background, thinking, timeoutMs, signal })) if (v !== undefined) ctx[k] = v;
+  // person: the id of whoever the call is for (usage and budget), when a person asked for it.
+  for (const [k, v] of Object.entries({ automatic, background, thinking, timeoutMs, signal, person })) if (v !== undefined) ctx[k] = v;
   ctx.purpose = purpose || name;
   const who = { ...caller };
   for (const [k, v] of Object.entries(who)) if (v === undefined || v === null || v === '') delete who[k];
@@ -15301,6 +15572,22 @@ async function handleRequest(req, res) {
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
       return;
     }
+    // A made program's endpoint called with its key (design/75). The key
+    // opens that one program and nothing else; a key that opens nothing
+    // counts as a failed sign-in, behind the same limiter. Its calls are
+    // for the person who made it.
+    const madeAddress = /^\/programs\/([a-z][a-z0-9_]{0,47})\/?$/.exec(u.pathname);
+    const presentedKey = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+    if (madeAddress && presentedKey.startsWith(programsDeploy.KEY_PREFIX)) {
+      if (!(await gate())) return;
+      const hit = madePrograms.keyFor(presentedKey);
+      if (!hit || hit.program !== madeAddress[1]) { noteSignIn('fail', { via: 'program-key' }, presentedKey); return json(res, 401, { error: 'This key does not open this program.', code: 'bad-key' }); }
+      const person = usersLib.findUser(roster, hit.key.by);
+      if (!person || person.disabled || person.scope === 'guest') return json(res, 401, { error: 'The person who made this key cannot use it any more; make a new key.', code: 'key-person' });
+      if (req.method === 'GET' || req.method === 'HEAD') return madeDescribe(res, madeAddress[1]);
+      if (req.method === 'POST') return madeEndpoint(req, res, madeAddress[1], { person, key: hit.key });
+      return json(res, 405, { error: 'POST the inputs as JSON, or GET what the program takes and gives.' });
+    }
     // Company sign-in (OpenID Connect, design/72): before any credential,
     // like the invite and token doors below, and behind the same limiter.
     if (u.pathname === '/auth/sso' && req.method === 'GET') {
@@ -15434,6 +15721,20 @@ async function handleRequest(req, res) {
       res.writeHead(302, { Location: '/', 'Set-Cookie': authGuard.cookieHeader('chattering', '', req, { maxAge: 0 }) });
       return res.end();
     }
+    // A made program's address for a signed-in person of the household: a
+    // browser gets a form, a script its description (GET) or an answer (POST).
+    if (madeAddress) {
+      if (!policy.levelAllows(identity, 'member')) return json(res, 403, { error: 'This is not available to guests.' });
+      const person = identity.user || usersLib.ownerOf(roster);
+      if (req.method === 'POST') return madeEndpoint(req, res, madeAddress[1], { person });
+      if (req.method !== 'GET' && req.method !== 'HEAD') return json(res, 405, { error: 'POST the inputs as JSON, or GET what the program takes and gives.' });
+      if (/text\/html/.test(String(req.headers.accept || ''))) {
+        const described = madeDescribed(madeAddress[1]);
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        return res.end(madeFormPage(madeAddress[1], described || { name: madeAddress[1], missing: madePrograms.has(madeAddress[1]) ? 'not-published' : 'unknown' }));
+      }
+      return madeDescribe(res, madeAddress[1]);
+    }
     if (u.pathname === '/manifest.webmanifest') {
       const manifest = JSON.parse(await fsp.readFile(path.join(__dirname, 'manifest.webmanifest'), 'utf8'));
       const tokens = await fsp.readFile(path.join(__dirname, 'design', 'tokens.css'), 'utf8');
@@ -15487,6 +15788,9 @@ async function handleRequest(req, res) {
       '/artifacts.js': { file: 'artifacts.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/programs-ui.js': { file: 'programs-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/programs.css': { file: 'programs.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+      '/program-form.js': { file: 'program-form.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/programs-make.js': { file: 'programs-make.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/program-form.css': { file: 'program-form.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/artifacts.css': { file: 'artifacts.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/streaming-tool.js': { file: 'streaming-tool.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/conversation-reader.js': { file: 'conversation-reader.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
@@ -16688,7 +16992,9 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/programs/rate' && req.method === 'POST') {
       try {
         const p = await programBody(req), log = programLog();
-        log.refresh();
+        // A call that ended a moment ago (a try, a live call) is judged at
+        // once: read the log first, not at most every so often.
+        log.refresh({ force: true });
         json(res, 200, log.rate({ call: p.call, verdict: p.verdict, ...('answer' in p ? { answer: p.answer } : {}), outputs: p.outputs, reasons: p.reasons,
           note: p.note, origin: p.origin, sample: p.sample, by: programRater(identity) }));
         programLogChanged(); // others watching see the judgement
@@ -16703,6 +17009,172 @@ async function handleRequest(req, res) {
         if (!client || docRunOwner(client.identity) !== docRunOwner(identity)) return json(res, 404, { error: 'no such event stream for you' });
         if (p.follow === false) programLiveUnfollow(conn); else programLiveFollow(conn);
         json(res, 200, { ok: true, following: programLiveFollowers.has(conn) });
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/programs/draft' && req.method === 'POST') {
+      // Making a program (design/75): what it should do and a few examples,
+      // drafted by the model into a definition the person then edits.
+      try {
+        const p = await programBody(req, 64 * 1024);
+        const request = String(p.request || '').trim();
+        if (!request) return json(res, 400, { error: 'Say what the program should do.' });
+        const given = (Array.isArray(p.examples) ? p.examples : []).slice(0, 10)
+          .map(x => ({ input: String((x && x.input) || '').trim(), answer: String((x && x.answer) || '').trim() })).filter(x => x.input || x.answer);
+        const person = identity.user || usersLib.ownerOf(roster);
+        assertWithinBudget(person);
+        const { outputs } = await aiProgram('program_draft', { request, given_examples: given }, { automatic: false, timeoutMs: 3 * 60 * 1000, person: person.id, caller: { user: programRater(identity) } });
+        json(res, 200, draftedDefinition(outputs, name => madePrograms.has(name)));
+      } catch (e) { const f = madeFailure(e); json(res, e.status || f.status, e.status ? { error: e.message } : f.body); }
+    } else if (u.pathname === '/api/programs/create' && req.method === 'POST') {
+      // Write the program's folder, and try it on the examples it was made
+      // with: each one's answer is judged against what the person said, so
+      // the answer key starts with them (free text only when it matches).
+      try {
+        const p = await programBody(req, 512 * 1024);
+        const def = programsDeploy.normalizeDefinition(p.definition);
+        if (madePrograms.has(def.name)) return json(res, 409, { error: `A program named ${def.name} already exists here.` });
+        if (Array.isArray(p.examples) && p.examples.length) assertWithinBudget(identity.user || usersLib.ownerOf(roster));
+        const project = p.project ? canonicalProjectName(String(p.project)) : null;
+        if (project) assertCan(identity, 'act', { project, creator: projectCreatorOf(project) }, 'project ' + project);
+        const folder = madeFolderFor(project, def.name);
+        if (fs.existsSync(path.join(folder, programsDeploy.SOURCE))) return json(res, 409, { error: `${folder} already holds a program.` });
+        let made;
+        try { made = await aiPrograms.madeManifest(def); } catch (e) { return json(res, 400, { error: 'FunctAI cannot lay this program out: ' + e.message }); }
+        programsDeploy.writeSource(folder, def, made.manifest);
+        const entry = madePrograms.add({ name: def.name, module: MADE_MODULE, folder, project, by: identity && identity.user ? identity.user.id : null });
+        const examples = (Array.isArray(p.examples) ? p.examples : []).slice(0, 10);
+        json(res, 200, { name: entry.name, module: MADE_MODULE, folder, examples: examples.length });
+        if (examples.length) madeTryExamples(def, examples, identity).catch(e => console.error('[programs] examples: ' + e.message));
+        programLogChanged();
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/programs/made' && req.method === 'GET') {
+      try { json(res, 200, await madeView(String(u.searchParams.get('name') || ''), identity)); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/programs/made' && req.method === 'PUT') {
+      // Save the draft: the folder only; what is live does not change.
+      try {
+        const p = await programBody(req, 512 * 1024);
+        const name = String(p.name || '');
+        const entry = assertMadeAccess(identity, name);
+        const def = programsDeploy.normalizeDefinition(p.definition);
+        if (def.name !== name) return json(res, 400, { error: 'A program keeps its name: it is its address, and its callers use it. Make a new program for a new name.' });
+        let made;
+        try { made = await aiPrograms.madeManifest(def); } catch (e) { return json(res, 400, { error: 'FunctAI cannot lay this program out: ' + e.message }); }
+        programsDeploy.writeSource(entry.folder, def, made.manifest);
+        json(res, 200, await madeView(name, identity));
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/programs/try' && req.method === 'POST') {
+      // Run the draft once on inputs a person typed, streamed back as NDJSON:
+      // {type:'text', field, text} as it is written, then done or error.
+      let p;
+      try { p = await programBody(req, 256 * 1024); } catch (e) { return json(res, e.status || 400, { error: e.message }); }
+      let d, inputs;
+      try {
+        assertMadeAccess(identity, String(p.name || ''));
+        d = await madeDraft(String(p.name || ''));
+        if (d.error) return json(res, 400, { error: d.error });
+        inputs = programsDeploy.checkInputs(d.definition, p.inputs);
+        assertWithinBudget(identity.user || usersLib.ownerOf(roster));
+      } catch (e) { return json(res, e.status || 400, { error: e.message }); }
+      const stop = new AbortController();
+      let finished = false;
+      res.on('close', () => { if (!finished) stop.abort(); });
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' });
+      const send = (type, data) => { if (!res.writableEnded && !res.destroyed) res.write(JSON.stringify({ type, ...data }) + '\n'); };
+      try {
+        const out = await madeCall(d.definition, inputs, { person: identity.user || usersLib.ownerOf(roster), signal: stop.signal, onEvent: madeEvents(send), caller: { kind: 'try', user: programRater(identity) } });
+        send('done', { outputs: out.outputs, answer: d.definition.outputs[d.definition.outputs.length - 1].name, call: out.callId, version: out.version });
+      } catch (e) { const f = madeFailure(e); if (f.status !== 499) send('error', { ...f.body, status: f.status }); }
+      finally { finished = true; if (!res.writableEnded) res.end(); programLogChanged(); }
+    } else if (u.pathname === '/api/programs/test' && req.method === 'POST') {
+      // The draft against the answer key: every example whose right answer
+      // is known, for the draft's inputs and answers. NDJSON: each row as it
+      // is answered, then the totals. These calls are an evaluation in the
+      // log (not use), so they do not count as the program's answers.
+      let p;
+      try { p = await programBody(req, 4096); } catch (e) { return json(res, e.status || 400, { error: e.message }); }
+      let d, rows;
+      try {
+        assertMadeAccess(identity, String(p.name || ''));
+        d = await madeDraft(String(p.name || ''));
+        if (d.error) return json(res, 400, { error: d.error });
+        assertWithinBudget(identity.user || usersLib.ownerOf(roster));
+        const log = programLog(); log.refresh({ force: true });
+        rows = log.rated(d.entry.name, MADE_MODULE, { signature: d.signature }).rows.slice(0, 200);
+      } catch (e) { return json(res, e.status || 400, { error: e.message }); }
+      const stop = new AbortController();
+      let finished = false;
+      res.on('close', () => { if (!finished) stop.abort(); });
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' });
+      const send = (type, data) => { if (!res.writableEnded && !res.destroyed) res.write(JSON.stringify({ type, ...data }) + '\n'); };
+      const def = d.definition, answer = def.outputs[def.outputs.length - 1];
+      const evaluation = programsLib.newId(Date.now());
+      const tally = { right: 0, wrong: 0, worded: 0, failed: 0, total: rows.length };
+      send('start', { total: rows.length, version: d.version });
+      let next = 0;
+      const worker = async () => {
+        while (next < rows.length && !stop.signal.aborted) {
+          const i = next++, row = rows[i];
+          const inputs = Object.fromEntries(def.inputs.map(f => [f.name, f.name in row ? row[f.name] : null]));
+          const expected = row[answer.name];
+          try {
+            const out = await madeCall(def, inputs, { person: identity.user || usersLib.ownerOf(roster), signal: stop.signal, caller: { kind: 'test', evaluation, user: programRater(identity) }, purpose: 'program-test:' + def.name });
+            const got = out.outputs[answer.name];
+            const verdict = sameAnswer(got, expected) ? 'right' : freeText(answer.shape) ? 'worded' : 'wrong';
+            tally[verdict]++;
+            send('row', { i, inputs, expected, got, verdict, call: out.callId });
+          } catch (e) {
+            if (stop.signal.aborted) return;
+            tally.failed++;
+            send('row', { i, inputs, expected, verdict: 'failed', error: madeFailure(e).body.error });
+          }
+        }
+      };
+      try {
+        await Promise.all(Array.from({ length: Math.min(3, rows.length) }, worker));
+        if (!stop.signal.aborted) { madePrograms.noteTest(d.entry.name, d.version, tally); send('done', tally); }
+      } finally { finished = true; if (!res.writableEnded) res.end(); programLogChanged(); }
+    } else if (u.pathname === '/api/programs/publish' && req.method === 'POST') {
+      // What the endpoint answers with: the draft as it is now, copied.
+      try {
+        const p = await programBody(req, 4096);
+        assertMadeAccess(identity, String(p.name || ''));
+        const d = await madeDraft(String(p.name || ''));
+        if (d.error) return json(res, 400, { error: 'It cannot be published as it is: ' + d.error });
+        madePrograms.publish(d.entry.name, { version: d.version, by: identity && identity.user ? identity.user.id : null });
+        json(res, 200, await madeView(d.entry.name, identity));
+        programLogChanged();
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/programs/rollback' && req.method === 'POST') {
+      try {
+        const p = await programBody(req, 4096);
+        assertMadeAccess(identity, String(p.name || ''));
+        madePrograms.rollback(String(p.name || ''), String(p.version || ''), identity && identity.user ? identity.user.id : null);
+        json(res, 200, await madeView(String(p.name), identity));
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/programs/unpublish' && req.method === 'POST') {
+      try {
+        const p = await programBody(req, 4096);
+        assertMadeAccess(identity, String(p.name || ''));
+        madePrograms.unpublish(String(p.name || ''));
+        json(res, 200, await madeView(String(p.name), identity));
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/programs/keys' && req.method === 'POST') {
+      // A key for one program: shown once, kept as a hash. Its calls are for
+      // the person who made it (their usage, their budget).
+      try {
+        const p = await programBody(req, 4096);
+        if (!identity || !identity.user) return json(res, 400, { error: 'A key belongs to a person: sign in as one.' });
+        assertMadeAccess(identity, String(p.name || ''));
+        const made = madePrograms.createKey(String(p.name || ''), { label: p.label, by: identity.user.id });
+        json(res, 200, made);
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/programs/keys/revoke' && req.method === 'POST') {
+      try {
+        const p = await programBody(req, 4096);
+        const entry = madePrograms.get(String(p.name || ''));
+        const k = entry && entry.keys.find(x => x.id === p.id);
+        if (k && k.by !== (identity.user && identity.user.id) && !policy.isOwnerTier(identity)) return json(res, 403, { error: 'Only the person who made a key, or this machine\u2019s owner, can revoke it.' });
+        json(res, 200, madePrograms.revokeKey(String(p.name || ''), String(p.id || '')));
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/programs/recording' && req.method === 'PUT') {
       try {

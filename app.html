@@ -2453,6 +2453,7 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <script src="/artifacts.js"></script>
 <link rel="stylesheet" href="/programs.css">
 <script src="/programs-ui.js"></script>
+<script src="/programs-make.js"></script>
 <script src="/navigation.js"></script>
 <script src="/timeline-chart.js"></script>
 <script src="/context-panel.js"></script>
@@ -2698,7 +2699,7 @@ function describeRoute(h) {
   if (!h) return { kind: 'home', title: 'Gantt' };
   if (h === 'settings' || h.startsWith('settings=')) return { kind: 'settings', title: 'settings' };
   if (h === 'usage') return { kind: 'usage', title: 'usage' };
-  if (h === 'programs' || h.startsWith('program=')) return window.Programs ? Programs.describe(h) : { kind: 'programs', title: 'AI programs' };
+  if (h === 'programs' || h === 'program-new' || h.startsWith('program=')) return window.Programs ? Programs.describe(h) : { kind: 'programs', title: 'AI programs' };
   if (h.startsWith('q=')) return { kind: 'home', title: 'search “' + dec(h.slice(2)) + '”' };
   if (h.startsWith('note=')) return { kind: 'note', title: 'note · ' + base(dec(h.slice(5))) };
   if (h === 'new' || h.startsWith('new=')) return { kind: 'draft', title: 'new conversation' };
@@ -2750,8 +2751,8 @@ function dispatchHash(h, { restore = false } = {}) {
   if (!h) return goHome();
   if (h === 'settings' || h.startsWith('settings=')) return showSettings(settingsPaneOf(h));
   if (h === 'usage') return showUsageDashboard();
-  // AI programs (design/74): the list, and one program's page.
-  if ((h === 'programs' || h.startsWith('program=')) && window.Programs) return Programs.dispatch(h);
+  // AI programs (design/74): the list, one program's page, making one (design/75).
+  if ((h === 'programs' || h === 'program-new' || h.startsWith('program=')) && window.Programs) return Programs.dispatch(h);
   // Saved search links use the current dialog, not the removed list view.
   if (h.startsWith('q=')) {
     markSettingsClosed();

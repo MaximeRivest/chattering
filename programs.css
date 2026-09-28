@@ -256,3 +256,57 @@ button.pg-cmp-out:hover { border-color: var(--success); }
 .pg-live-item-text { font-weight: 700; line-height: 1.5; overflow: hidden; }
 
 .pg-first-run { margin-top: 20px; }
+
+/* Making a program, and its endpoint (design/75). */
+.pg-title-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.pg-live-chip, .pg-draft-chip { font-size: var(--fs-meta); font-weight: 400; padding: 2px 10px; border-radius: var(--r-pill); background: none; cursor: pointer; align-self: center; }
+.pg-live-chip { color: var(--live); border: 1px solid var(--live); }
+.pg-draft-chip { color: var(--text-dim); border: 1px dashed var(--border-strong); }
+.mk-new { max-width: 1000px; }
+.mk-new textarea, .mk-new input, .mk-new select, .mk-edit textarea, .mk-edit input, .mk-edit select, .mk-endpoint input { font: inherit; width: 100%; box-sizing: border-box; }
+.mk-label { display: block; margin: 16px 0 6px; font-size: var(--fs-meta); font-weight: 700; }
+.mk-label .pg-dim { font-weight: 400; }
+.mk-small { font-size: var(--fs-meta); }
+.mk-left { justify-content: flex-start; margin-top: 18px; }
+.mk-add { font-size: var(--fs-meta); margin-top: 6px; }
+.mk-examples { display: grid; gap: 8px; }
+.mk-example { display: grid; grid-template-columns: minmax(0, 1.4fr) auto minmax(0, 1fr); gap: 10px; align-items: start; }
+.mk-example .pg-arrow { padding-top: 8px; }
+.mk-review, .mk-cols { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 28px; align-items: start; }
+.mk-side { display: grid; gap: 18px; min-width: 0; }
+.mk-side > section, .mk-mapped { border: 1px solid var(--border); padding: 12px 14px; background: var(--surface-1); }
+.mk-side h3, .mk-endpoint h3 { margin: 0 0 8px; font-size: var(--fs-micro); font-weight: 400; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); }
+.mk-mapped { display: grid; gap: 4px; margin-bottom: 8px; }
+.mk-mapped .linkish { justify-self: start; }
+.mk-fields { display: grid; gap: 8px; }
+.mk-field { display: grid; grid-template-columns: minmax(90px, 1fr) 128px minmax(0, 1.6fr) auto; gap: 6px; align-items: center; }
+.mk-field .mk-choices, .mk-field .mk-custom { grid-column: 1 / -1; }
+.mk-field .mk-answer-mark { grid-column: 1 / -1; font-size: var(--fs-micro); color: var(--cyan); margin-top: -4px; }
+.mk-fname { font-weight: 700; font-family: var(--font-mono, monospace); }
+.mk-field-tools { display: inline-flex; gap: 2px; }
+.mk-mini { padding: 1px 8px; font-size: var(--fs-meta); }
+.mk-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 18px; border: 1px solid var(--border); background: var(--surface-1); font-size: var(--fs-meta); }
+.mk-saved { margin-left: 6px; }
+.mk-try form { display: grid; }
+.mk-out { margin-top: 12px; display: grid; gap: 10px; }
+.mk-out .pg-field-value { font-weight: 700; }
+.mk-score { margin: 8px 0 0; }
+.mk-misses { display: grid; gap: 8px; margin-top: 10px; max-height: 26em; overflow-y: auto; }
+.mk-miss { border-top: 1px solid var(--border); padding-top: 6px; }
+.mk-endpoint { display: grid; gap: 22px; max-width: 900px; }
+.mk-endpoint section p { margin: 0 0 8px; }
+.mk-url code { font-size: 15px; }
+.mk-code { margin: 6px 0 0; border: 1px solid var(--border); padding: 10px 12px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-meta); background: var(--surface-1); }
+.mk-key { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.mk-keyform { display: flex; gap: 8px; margin-top: 10px; }
+.mk-keyform input { flex: 1; }
+.mk-secret { border: 1px solid var(--live); padding: 10px 14px; margin-bottom: 10px; }
+.mk-secret code { overflow-wrap: anywhere; }
+.mk-versions { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: var(--fs-body); }
+@media (max-width: 860px) {
+  .mk-review, .mk-cols { grid-template-columns: 1fr; }
+  .mk-field { grid-template-columns: minmax(0, 1fr) 118px auto; }
+  .mk-field .mk-note { grid-column: 1 / -1; grid-row: 2; }
+  .mk-example { grid-template-columns: 1fr; }
+  .mk-example .pg-arrow { display: none; }
+}

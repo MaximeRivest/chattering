@@ -199,6 +199,20 @@ function definitions(t) {
     outputs: { proposals: t.list(t.object({ locationId: s('a given id'), localPath: s('an absolute local candidate, if supported, else empty'), host: s('the recorded host'), path: s('the remote path, if supported, else empty'), reason: s('brief evidence') })) },
   });
 
+  // Making a program (design/75): what a person says it should do, and a
+  // few examples, drafted into a definition they then edit.
+  add('program_draft', {
+    description: 'Design a small AI program (a function whose whole body is one model call) from what a person says it should do and a few examples of what goes in and what should come out. name: a short snake_case identifier for what it answers (lowercase letters, digits and underscores, starting with a letter), like sort_email or french_check. task: what the model is told, written to it: the task and the rules that decide the answer, in plain sentences; do not describe the format of the inputs or of the reply, the program adds that; do not copy the examples into it (they become its tests, and a test it was given the answer to proves nothing): state the general rule they show, if they show one. takes: what it is given, usually one; each with a snake_case name, a kind, and a short note on what it holds. gives: what it answers, usually one named result; the last one is the answer; each with a kind and a short note; for kind choice, list every allowed answer in choices. Pick choice when the examples show a small fixed set of answers, yes/no for a true or false question, number or whole number for a quantity, list for several items, text otherwise. examples: the given examples rewritten for this program: for each, every input\'s value and the expected answer, as the person gave them wherever possible. Keep the person\'s language.',
+    inputs: { request: s('what the person says the program should do'), given_examples: t.list(t.object({ input: t.string(), answer: t.string() }), { description: 'what goes in, and what should come out; may be empty' }) },
+    outputs: {
+      name: t.string(),
+      task: t.string(),
+      takes: t.list(t.object({ name: t.string(), kind: t.enum('text', 'number', 'whole number', 'yes/no', 'list'), note: t.string() })),
+      gives: t.list(t.object({ name: t.string(), kind: t.enum('text', 'number', 'whole number', 'yes/no', 'choice', 'list'), choices: t.list(t.string()), note: t.string() })),
+      examples: t.list(t.object({ inputs: t.json({ description: 'each input by name' }), answer: t.json() })),
+    },
+  });
+
   // Spoken words (the voice model).
   add('speech_script', {
     description: 'Rewrite a text so it sounds natural when spoken, for text-to-speech. Spell out abbreviations and numbers. Skip code syntax and URLs.',
@@ -289,7 +303,7 @@ function createAiPrograms({ piExec, chatPost, voiceEndpoint, lm, logFolder, cont
       const { voice: isVoice, maxTokens, command, ...def } = d;
       fns[name] = lib.ai({ ...def, definedIn: 'chattering', router: isVoice ? voice : pi, capabilities: TEXT_ONLY, ...(maxTokens ? { maxTokens } : {}) });
     }
-    built = { lib, defs, fns };
+    built = { lib, defs, fns, pi };
     return built;
   }
   const sizeOf = v => { try { return Buffer.byteLength(JSON.stringify(v)); } catch { return Infinity; } };
@@ -306,11 +320,69 @@ function createAiPrograms({ piExec, chatPost, voiceEndpoint, lm, logFolder, cont
    * as a plain call; the stream only lets `onText` and the live Programs
    * pages see it. Closing it (the signal) stops the call.
    */
-  async function run(name, inputs, { caller = {}, onText = null, signal = null } = {}) {
-    const { lib, defs, fns } = await load();
+  async function run(name, inputs, opts = {}) {
+    const { defs, fns } = await load();
     const fn = fns[name];
     if (!fn) throw new Error('no AI program named ' + name);
     const def = defs[name];
+    return execute(fn, { voice: !!def.voice, raw: !!def.template, outputs: def.outputs ? Object.keys(def.outputs) : [fn.answerName] }, inputs, opts);
+  }
+
+  // Programs people make here (design/75): built from FunctAI's definition
+  // (functions.md, "A definition"), on the same router as Chattering's own,
+  // and run, logged and watched the same way. One function per definition,
+  // kept while the definition is the same.
+  const made = new Map();
+  const definedFields = list => Object.fromEntries(list.map(f => [f.name, f.desc ? { ...f.shape, description: f.desc } : f.shape]));
+  function buildMade(lib, definition, extra = {}) {
+    const fn = lib.ai({ name: definition.name, description: definition.description, inputs: definedFields(definition.inputs), outputs: definedFields(definition.outputs), definedIn: MADE_MODULE, ...extra });
+    const st = definition.state || {};
+    if (st.instructions || (st.demos && st.demos.length)) fn.loadState({ instructions: st.instructions || null, demos: st.demos || [] });
+    return fn;
+  }
+  async function madeProgram(definition) {
+    const key = JSON.stringify(definition);
+    if (made.has(key)) return made.get(key);
+    const { lib, pi } = await load();
+    const fn = buildMade(lib, definition, { router: pi, capabilities: TEXT_ONLY });
+    if (made.size > 200) made.clear();
+    made.set(key, fn);
+    return fn;
+  }
+  /** Run a program made here: `definition` as programs-deploy.js normalizes it. */
+  async function runMade(definition, inputs, opts = {}) {
+    const fn = await madeProgram(definition);
+    return execute(fn, { voice: false, raw: false, outputs: definition.outputs.map(o => o.name) }, inputs, opts);
+  }
+  /** Its version (what the log calls it) and FunctAI's saved form of it, for functai.load. */
+  async function madeManifest(definition) {
+    const { lib } = await load();
+    const fn = buildMade(lib, definition);
+    const manifest = lib.toManifest(fn);
+    // Lay it out as it will be sent here, on FunctAI's own sample input: a
+    // program FunctAI cannot lay out (a name its layout reserves) is refused
+    // now, not at its first call.
+    const node = Object.values(manifest.nodes)[0];
+    const sample = (node && node.ai && node.ai.probes && node.ai.probes[0]) || {};
+    const routed = await madeProgram(definition);
+    lib.withSettings({ lm: lm() }, () => routed.render(sample));
+    return { version: fn.version, signature: fn.signatureId, manifest };
+  }
+
+  /**
+   * Run one program. Resolves with its outputs ({name: value}) and the call's
+   * id in the log; rejects with its error (code 'ABORTED' when `signal`
+   * stopped it). `onText(piece)` streams the answer's text as it is written;
+   * `onEvent(e)` gets every FunctAI stream event. `caller` is added to the
+   * log's caller.
+   *
+   * Every call is a FunctAI stream: the same call, watched while it is made
+   * (functai contract/streaming.md). It asks, retries, logs and ends exactly
+   * as a plain call; the stream only lets `onText` and the live Programs
+   * pages see it. Closing it (the signal) stops the call.
+   */
+  async function execute(fn, { voice, raw, outputs }, inputs, { caller = {}, onText = null, onEvent = null, signal = null } = {}) {
+    const { lib } = await load();
     const folder = logFolder();
     // A transcript-sized input is logged as its size only: the log keeps
     // what can be read and judged, not every conversation twice.
@@ -320,12 +392,11 @@ function createAiPrograms({ piExec, chatPost, voiceEndpoint, lm, logFolder, cont
     // by an agent). Unset keys are left out of the record.
     const who = { kind: 'chattering', user: undefined, conversation: undefined, notebook: undefined, cell: undefined, ...caller };
     const settings = {
-      lm: def.voice ? (voiceEndpoint().model || 'voice') : lm(),
+      lm: voice ? (voiceEndpoint().model || 'voice') : lm(),
       logCalls: folder || false,
       logContent: content,
       caller: who,
     };
-    const raw = !!def.template;
     return lib.withSettings(settings, async () => {
       let tracker = null;
       const early = []; // raw text written before the tracker exists
@@ -333,7 +404,7 @@ function createAiPrograms({ piExec, chatPost, voiceEndpoint, lm, logFolder, cont
       const st = onRaw ? rawText.run(onRaw, () => fn.stream(inputs)) : fn.stream(inputs);
       if (live) {
         tracker = live.track({
-          name, module: fn.module, answer: fn.answerName, outputs: def.outputs ? Object.keys(def.outputs) : [fn.answerName],
+          name: fn.name, module: fn.module, answer: fn.answerName, outputs,
           inputs, content, raw, caller: Object.fromEntries(Object.entries(who).filter(([, v]) => v !== undefined)),
         }, st.events());
         for (const piece of early.splice(0)) tracker.raw(piece);
@@ -341,19 +412,20 @@ function createAiPrograms({ piExec, chatPost, voiceEndpoint, lm, logFolder, cont
       const stop = () => st.close();
       if (signal) { if (signal.aborted) stop(); else signal.addEventListener('abort', stop, { once: true }); }
       // The answer's text for `onText`, when FunctAI's reader shows it in
-      // pieces (every program but the raw ones).
-      const reading = onText && !raw ? (async () => {
+      // pieces (every program but the raw ones), and every event for `onEvent`.
+      const reading = (onText && !raw) || onEvent ? (async () => {
         let outer = null;
         for await (const e of st.events()) {
           if (e.kind === 'started') outer ??= e.call;
-          else if (e.kind === 'text' && e.answer && e.call === outer) onText(e.text);
+          if (onEvent) onEvent(e);
+          if (onText && !raw && e.kind === 'text' && e.answer && e.call === outer) onText(e.text);
         }
       })() : null;
       if (reading) reading.catch(() => {});
       try {
         const p = await st.prediction;
         if (reading) await reading;
-        return { outputs: p.outputs, callId: p.callId, response: p.response };
+        return { outputs: p.outputs, answer: p.answer, callId: p.callId, response: p.response, version: fn.version };
       } catch (e) {
         if (signal && signal.aborted) throw stopped(e);
         throw e;
@@ -370,7 +442,11 @@ function createAiPrograms({ piExec, chatPost, voiceEndpoint, lm, logFolder, cont
   };
   // The inputs a program takes (a document command takes only what its text uses).
   const inputNames = async name => Object.keys((await load()).defs[name].inputs);
-  return { run, load, replyText, inputNames, names: () => load().then(b => Object.keys(b.defs)) };
+  return { run, runMade, madeManifest, load, replyText, inputNames, names: () => load().then(b => Object.keys(b.defs)) };
 }
 
-module.exports = { createAiPrograms, definitions, FUNCTAI_FILE, functai, TEXT_ONLY };
+// The module of every program made in Chattering (design/75): their folder
+// is programs/<name>, and a name is unique on an install.
+const MADE_MODULE = 'programs';
+
+module.exports = { createAiPrograms, definitions, FUNCTAI_FILE, functai, TEXT_ONLY, MADE_MODULE };

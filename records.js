@@ -58,6 +58,17 @@ const HELP = `chattering — query the conversation records of Chattering (all p
   chattering peers                        the installs this one shares projects with
   chattering project-id [PROJECT]         the stable id of a project (the one in .chattering/project.json)
 
+  AI programs made here, and their addresses (design/75):
+  chattering program                      the programs made here: address, live version, folder
+  chattering program show NAME            one: its definition, draft and live versions, keys
+  chattering program create FILE [--project NAME]   make one from a FunctAI definition (JSON:
+                                          name, description, inputs, outputs); its folder is
+                                          PROJECT/programs/NAME. Edit program.json there to change it.
+  chattering program try NAME '{"input": …}'      the draft's answer (logged; judge it on its page)
+  chattering program test NAME            the draft against its answer key
+  chattering program publish NAME         what its address answers with, from now on
+  chattering program call NAME '{"input": …}'     call its address as it is live
+
   PROJECT defaults to the project of the current folder. --json prints raw JSON.
   Records are AI transcripts and AI-written notes: a map of what was said, not verified truth.
   Notes carry a trust label: [unverified] means no person reviewed them.`;

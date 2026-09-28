@@ -77,11 +77,13 @@
   }
   function describe(hash) {
     if (hash === 'programs') return { kind: 'programs', title: 'AI programs' };
+    if (hash === 'program-new') return { kind: 'program-new', title: 'new AI program' };
     const p = parseHash(hash);
     return { kind: 'program', title: p ? p.name : 'AI program' };
   }
   function dispatch(hash) {
     if (hash === 'programs') return showList();
+    if (hash === 'program-new') return window.ProgramsMake ? ProgramsMake.showNew() : showList();
     const p = parseHash(hash);
     return p ? showProgram(p.name, p.module, { tab: p.tab, run: p.run }) : showList();
   }
@@ -102,7 +104,9 @@
   }
   const needs = p => (p.ratings && p.ratings.open) || 0;
   function statusWords(p) {
+    if (p.made && !p.calls) return `made ${ago(p.last)}, not tried yet${p.live ? ' · <span class="pg-live-mark">● live</span>' : ''}`;
     const bits = [p.recent ? `${num(p.recent)} this week` : `last used ${ago(p.last)}`];
+    if (p.live) bits.push('<span class="pg-live-mark">● live</span>');
     if (p.errors) bits.push(`<span class="pg-bad">${plural(p.errors, 'failure')}</span>`);
     if (needs(p)) bits.push(`<span class="pg-warn">${num(needs(p))} waiting for the right answer</span>`);
     return bits.join(' · ');
@@ -184,8 +188,9 @@
       </button>`).join('')}</section>`).join('');
     const canEdit = typeof settingsState === 'undefined' || !settingsState || settingsState.canEditSettings !== false;
     view().innerHTML = `<div class="pg-view pg-list">
-      <div class="pg-title"><h1>AI programs</h1>
+      <div class="pg-title pg-title-row"><div><h1>AI programs</h1>
         <p class="pg-lede">Functions whose body is a model call. See what each one really answers, and say when it is wrong.</p></div>
+        ${window.ProgramsMake && canMake() ? '<button type="button" class="primary" data-pg-new>New program</button>' : ''}</div>
       <div data-live-list>${liveListHtml()}</div>
       ${data.programs.length > 6 ? `<input type="search" id="pgListSearch" class="pg-list-search" placeholder="Find a program" value="${h(list.query)}">` : ''}
       ${data.programs.length ? cards || '<p class="pg-dim">No program matches.</p>' : howToHtml(data.folder)}
@@ -198,6 +203,8 @@
     root.querySelectorAll('.pg-card[data-program]').forEach(b => { b.onclick = () => { const [name, module] = JSON.parse(b.dataset.program); showProgram(name, module); }; });
     wireLiveList(root);
     tickerSync();
+    const nb = root.querySelector('[data-pg-new]');
+    if (nb) nb.onclick = () => ProgramsMake.showNew();
     const search = root.querySelector('#pgListSearch');
     if (search) search.oninput = () => { list.query = search.value; const at = search.selectionStart; renderList(); const s = view().querySelector('#pgListSearch'); s.focus(); s.setSelectionRange(at, at); };
     const box = root.querySelector('[data-pg-record]');
@@ -215,12 +222,16 @@
   const pq = () => ({ name: page.name, module: page.module });
   const vName = v => { const x = page.versions.find(y => y.version === v); return x ? 'v' + x.n : 'v?'; };
 
+  // Examples, Compare, Answer key and About for every program; Edit and
+  // Endpoint for the ones made here (programs-make.js, design/75).
+  const TABS = ['examples', 'edit', 'endpoint', 'compare', 'key', 'about'];
+  const madeTab = tab => tab === 'edit' || tab === 'endpoint';
   async function showProgram(name, module, { tab = 'examples', run = null, live: liveId = null } = {}) {
     call('markSettingsClosed');
     if (page.name !== name || page.module !== module) Object.assign(page, { name, module, program: null, versions: [], runs: [], counts: null, answers: [], total: 0,
       open: null, detail: null, correcting: false, check: null, compare: null, key: null, filter: fresh(), limit: 50, seq: -1, showSame: false });
     page.firstRun = false;
-    page.tab = ['examples', 'compare', 'key', 'about'].includes(tab) ? tab : 'examples';
+    page.tab = TABS.includes(tab) ? tab : 'examples';
     if (liveId) { live.open = liveId; page.tab = 'examples'; }
     call('setRoute', 'program', hashFor({ name, module, tab: page.tab, run }));
     view().innerHTML = '<div class="empty">reading the call log…</div>';
@@ -231,6 +242,9 @@
       if (liveOf(name, module).length) { page.firstRun = true; return renderFirstRun(); }
       view().innerHTML = `<div class="pg-view"><p class="empty">${h(e.message)}</p><p><button type="button" class="ghost" data-programs-all>← all AI programs</button></p></div>`; view().querySelector('[data-programs-all]').onclick = showList; return;
     }
+    // A program made here and never called yet opens on its editor.
+    if (page.program.made && !page.program.calls && !run && !liveId && page.tab === 'examples') { page.tab = 'edit'; call('replaceRoute', hashFor({ name, module, tab: 'edit' })); }
+    if (madeTab(page.tab) && !page.program.made) page.tab = 'examples';
     await loadTab();
     if (!samePage(name, module)) return;
     if (run) await openRun(run, { render: false });
@@ -241,7 +255,7 @@
   const samePage = (name, module) => onPage('program') && page.name === name && page.module === module;
   async function loadProgram() {
     const d = await api('/api/programs/program?' + qs(pq()));
-    page.program = d.program; page.versions = d.versions; page.you = d.you; page.seq = d.seq;
+    page.program = d.program; page.versions = d.versions; page.you = d.you; page.seq = d.seq; page.made = d.made || null;
   }
   async function loadRuns() {
     const f = page.filter;
@@ -249,6 +263,7 @@
     page.runs = d.runs; page.total = d.total; page.counts = d.counts; page.answers = d.answers; page.seq = d.seq;
   }
   async function loadTab() {
+    if (madeTab(page.tab)) { if (window.ProgramsMake) await ProgramsMake.load(page.name, { force: true }); return; }
     if (page.tab === 'examples') await loadRuns();
     else if (page.tab === 'key') page.key = await api('/api/programs/rated?' + qs(pq()));
     else if (page.tab === 'compare' && !page.compare && page.versions.length > 1) await loadCompare(page.versions[1].version, page.versions[0].version);
@@ -277,17 +292,20 @@
     const tab = (id, label, count) => `<button type="button" role="tab" data-pg-tab="${id}" aria-selected="${page.tab === id}" class="${page.tab === id ? 'on' : ''}">${label}${count ? ` <span class="pg-count">${count}</span>` : ''}</button>`;
     const known = p.ratings.right + p.ratings.wrong - p.ratings.open + p.ratings.disputed;
     return `<nav class="pg-crumb"><button type="button" class="linkish" data-programs-all>AI programs</button>${projectName(p.project) ? ' / ' + h(p.project) : ''}</nav>
-      <div class="pg-title"><h1><span class="pg-glyph" aria-hidden="true">ƒ</span> ${h(p.name)}</h1>
+      <div class="pg-title"><h1><span class="pg-glyph" aria-hidden="true">ƒ</span> ${h(p.name)}${page.made && page.made.live ? ` <button type="button" class="pg-live-chip" data-pg-tab="endpoint" title="Published: it answers at its address">● live${page.made.live.n ? ' v' + page.made.live.n : ''}</button>` : p.made ? ' <button type="button" class="pg-draft-chip" data-pg-tab="endpoint" title="Not published">draft</button>' : ''}</h1>
         ${first ? `<p class="pg-lede">${h(first)}${more ? ` <button type="button" class="linkish" data-pg-tab="about">the whole instruction</button>` : ''}</p>` : ''}</div>
       <div class="pg-sigbox">${signatureHtml(p, { big: true })}</div>
       ${statusHtml()}
-      <div class="pg-tabs" role="tablist">${tab('examples', 'Examples', '')}${page.versions.length > 1 ? tab('compare', 'Compare versions', '') : ''}${tab('key', 'Answer key', known > 0 ? num(known) : '')}${tab('about', 'About', '')}</div>`;
+      <div class="pg-tabs" role="tablist">${tab('examples', 'Examples', '')}${p.made && window.ProgramsMake ? tab('edit', 'Edit', '') + tab('endpoint', 'Endpoint', page.made && page.made.live ? '● live' : '') : ''}${page.versions.length > 1 ? tab('compare', 'Compare versions', '') : ''}${tab('key', 'Answer key', known > 0 ? num(known) : '')}${tab('about', 'About', '')}</div>`;
   }
   function render() {
     if (!page.program) return;
-    const body = page.check ? checkHtml() : page.tab === 'compare' ? compareHtml() : page.tab === 'key' ? keyHtml() : page.tab === 'about' ? aboutHtml() : examplesHtml();
+    const made = window.ProgramsMake;
+    const body = page.check ? checkHtml() : page.tab === 'edit' && made ? made.editHtml() : page.tab === 'endpoint' && made ? made.endpointHtml()
+      : page.tab === 'compare' ? compareHtml() : page.tab === 'key' ? keyHtml() : page.tab === 'about' ? aboutHtml() : examplesHtml();
     view().innerHTML = `<div class="pg-view">${headHtml()}<div class="pg-body">${body}</div></div>`;
     wire(view());
+    if (made && madeTab(page.tab)) made.wire(view());
   }
 
   // ---- Examples: the page's heart ----
@@ -346,6 +364,10 @@
   }
   function whereFrom(r) {
     const c = r.caller || {};
+    if (c.kind === 'endpoint') return `its endpoint${c.key ? ` (key “${h(c.key)}”)` : ' (in a browser)'}`;
+    if (c.kind === 'try') return 'a try in its editor';
+    if (c.kind === 'example') return 'an example it was made with';
+    if (c.kind === 'test' && c.evaluation) return 'a test against its answer key';
     if (c.conversation) return `an agent in <button type="button" class="linkish" data-open-conv="${h(c.conversation)}">${h(sessionTitle(c.conversation))}</button>`;
     if (c.notebook) return `the notebook <button type="button" class="linkish" data-open-file="${h(c.notebook)}">${h(base(c.notebook))}</button>`;
     if (c.kind) return 'a ' + h(c.kind);
@@ -369,7 +391,9 @@
     const details = `<details class="pg-fold"><summary>Details</summary><p>Called ${h(ago(r.started))} from ${whereFrom(r)}${r.person ? ' by ' + h(r.person) : ''}. ${h(r.model || 'No model')} answered in ${secs(r.seconds)}${u ? `, using ${num(u)} tokens` : ''}${r.exchanges > 1 ? ` over ${num(r.exchanges)} requests` : ''}. ${page.versions.length > 1 ? `Version ${vName(r.version)}.` : ''}</p>
       ${d.parent ? `<p>It ran inside <button type="button" class="linkish" data-open-run="${h(d.parent.id)}" data-open-program="${h(JSON.stringify([d.parent.name, d.parent.module]))}">${h(d.parent.name)}</button>.</p>` : ''}
       ${d.children.length ? `<p>It called ${d.children.map(k => `<button type="button" class="linkish" data-open-run="${h(k.id)}" data-open-program="${h(JSON.stringify([k.name, k.module]))}">${h(k.name)}</button>`).join(', ')}.</p>` : ''}</details>`;
-    return `<div class="pg-open" aria-label="This example, whole">
+    const expected = r.caller && r.caller.kind === 'example' && 'expected' in r.caller && !r.rating
+      ? `<p class="pg-dim">When it was made, the answer given with this example was <b>${h(inline(r.caller.expected))}</b>.</p>` : '';
+    return `<div class="pg-open" aria-label="This example, whole">${expected}
       <div class="pg-pair"><section><h3 class="pg-in-h">input</h3>${fields(rec.inputs)}</section>
         <section><h3 class="pg-out-h">output</h3>${r.error ? '<p class="pg-bad">no answer</p>' : fields(rec.outputs, r.answer)}</section></div>
       ${judge}${others}
@@ -1149,6 +1173,12 @@ await evaluate(${h(p.name)}, rows);</pre></div>
     else if (e.key === 'Escape' && page.open) { e.preventDefault(); openRun(page.open); }
   });
 
+  // Who may make programs: the household (the routes say the same).
+  const canMake = () => !(typeof peopleState !== 'undefined' && peopleState && peopleState.me && peopleState.me.scope === 'guest');
   window.Programs = { panelHtml, wireHost, showList, showProgram, dispatch, describe, hashFor, parseHash, loadList, live: onLive, connected,
+    // For programs-make.js.
+    _x: { h, api, post, call, view, wire, render, showList, showProgram, rate, onPage, ago, plural, num, list,
+      toast: m => toast(m), errToast: m => errToast(m), get page() { return page; },
+      reloadProgram: async () => { await loadProgram(); await loadTab(); render(); } },
     liveInfo: () => ({ mode: live.mode, seq: live.seq, calls: [...live.calls.values()].map(c => ({ id: c.id, name: c.name, state: c.state, settled: !!c.settled })) }) };
 })();

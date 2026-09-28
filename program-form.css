@@ -1,0 +1,24 @@
+/* program-form.css — a made program's form (design/75), in the app's tokens. */
+@import url('/tokens.css');
+html { background: var(--bg); color: var(--text); font: 15px/1.55 system-ui, sans-serif; }
+body { margin: 0; }
+main { max-width: 720px; margin: 0 auto; padding: 28px 18px 60px; }
+h1 { font-size: 24px; margin: 0 0 6px; display: flex; gap: 10px; align-items: baseline; }
+.glyph { color: var(--accent); font-style: italic; }
+.ver { font-size: 14px; font-weight: 400; }
+.dim { color: var(--text-dim); }
+.lede { color: var(--text-dim); margin: 0 0 20px; }
+form { display: grid; gap: 6px; }
+label { margin-top: 10px; font-size: 13px; }
+label .name { font-weight: 700; color: var(--green); }
+textarea, input, select { font: inherit; color: var(--text); background: var(--surface-1); border: 1px solid var(--border-strong); padding: 8px 10px; border-radius: var(--r, 4px); width: 100%; box-sizing: border-box; }
+textarea { resize: vertical; }
+.row { display: flex; gap: 12px; align-items: center; margin-top: 12px; }
+button { font: inherit; padding: 8px 18px; cursor: pointer; border-radius: var(--r, 4px); border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text); }
+button.primary { background: var(--accent-strong); color: var(--accent-ink); border-color: var(--accent-strong); font-weight: 700; }
+#out { margin-top: 22px; border: 1px solid var(--border); border-left: 3px solid var(--live, var(--accent)); padding: 14px 16px; display: grid; gap: 12px; }
+.value { white-space: pre-wrap; overflow-wrap: anywhere; font-weight: 700; color: var(--cyan); font-size: 16px; }
+.value.pending::after { content: '…'; color: var(--text-dim); }
+.field.answer .value { color: var(--cyan); }
+.foot { margin-top: 28px; font-size: 13px; }
+a { color: var(--cyan); }

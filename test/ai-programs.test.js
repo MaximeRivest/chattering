@@ -220,3 +220,37 @@ test('a document command is watched as the model writes it, leading space and al
   assert.equal(texts.map(o => o.text).join(''), reply, 'the raw text, once: not again from FunctAI\u2019s reader');
   assert.deepEqual(w.ops.find(o => o.op === 'start').scope, { path: '/work/notes.md' });
 });
+
+// ---- programs made in Chattering (design/75) ----
+test('a made program runs from its definition, logged under module "programs", the same version its saved file has', async t => {
+  const { programs, records, sent } = setup(t, '<result>\nbilling\n</result>');
+  const definition = require('../programs-deploy.js').normalizeDefinition({
+    name: 'team', description: 'Which team should answer this customer message?',
+    inputs: [{ name: 'message', shape: { type: 'string' }, desc: 'what the customer wrote' }],
+    outputs: [{ name: 'result', shape: { enum: ['shipping', 'billing'], type: 'string' } }],
+  });
+  const events = [];
+  const out = await programs.runMade(definition, { message: 'I was charged twice.' }, { caller: { kind: 'endpoint', user: 'maxime' }, onEvent: e => events.push(e.kind) });
+  assert.deepEqual(out.outputs, { result: 'billing' });
+  assert.match(sent[0].system, /^Function: team\n\nWhich team should answer this customer message\?\n\nParameter guidance:\n- message: what the customer wrote/);
+  const [rec] = records();
+  assert.deepEqual([rec.program.name, rec.program.module], ['team', 'programs']);
+  assert.deepEqual(rec.caller, { kind: 'endpoint', user: 'maxime' });
+  assert.deepEqual(events, ['started', 'text', 'done']);
+  // Its saved form: what functai.load runs in Python or TypeScript.
+  const made = await programs.madeManifest(definition);
+  assert.equal(made.version, rec.program.version, 'the log names the same version');
+  const lib = await functai();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'made-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, 'functai.json'), JSON.stringify(made.manifest));
+  const loaded = lib.load(dir);
+  assert.deepEqual([loaded.name, loaded.module, loaded.version], ['team', 'programs', rec.program.version]);
+  assert.equal(made.manifest.nodes['programs:team'].ai.settings.capabilities, undefined, 'saved without Chattering\u2019s router settings');
+});
+
+test('a made program FunctAI cannot lay out (a name its layout reserves) is refused before it exists', async t => {
+  const { programs } = setup(t, 'x');
+  const bad = require('../programs-deploy.js').normalizeDefinition({ name: 'x', description: '', inputs: [{ name: 'text', shape: { type: 'string' } }], outputs: [{ name: 'instruction', shape: { type: 'string' } }] });
+  await assert.rejects(programs.madeManifest(bad), /cannot both form the pattern/);
+});

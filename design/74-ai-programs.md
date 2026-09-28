@@ -1,7 +1,8 @@
 # 74 — AI programs in Chattering
 
 Status: the proposal (2026-09-26, below the line) and, first, what was built
-on 2026-09-27 (phase 1: see and judge) and 2026-09-28 (live). The proposal
+on 2026-09-27 (phase 1: see and judge) and 2026-09-28 (live). Making
+programs in Chattering and their addresses: design/75. The proposal
 extends the Program Atlas mockup (`design/program-atlas.html`, fictional
 data).
 

@@ -185,8 +185,107 @@ function sharingText(op, d) {
   return JSON.stringify(d, null, 2);
 }
 
+// ---- chattering program … (design/75) ----
+// The same routes the Programs pages use; every answer in plain words.
+function request(method, pathname, body, { accept = 'application/json', onLine = null } = {}) {
+  const headers = { ...(TOKEN ? { Authorization: 'Bearer ' + TOKEN } : {}), 'Content-Type': 'application/json', Accept: accept };
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: PORT, method, path: pathname, headers }, res => {
+      let text = '', carry = '';
+      res.setEncoding('utf8');
+      res.on('data', c => {
+        text += c;
+        if (!onLine) return;
+        carry += c;
+        const lines = carry.split('\n'); carry = lines.pop();
+        for (const l of lines) if (l.trim()) { try { onLine(JSON.parse(l)); } catch {} }
+      });
+      res.on('end', () => { let data = null; try { data = JSON.parse(text); } catch { data = null; } resolve({ status: res.statusCode, data, text }); });
+    });
+    req.on('error', reject);
+    req.end(body === undefined ? undefined : JSON.stringify(body));
+  });
+}
+const shown = v => (typeof v === 'string' ? v : JSON.stringify(v));
+async function programCommand(rest, opts) {
+  const [sub, name, arg] = rest;
+  const need = what => { if (!name) fail(`usage: chattering program ${sub} NAME${what ? ' ' + what : ''}`); };
+  const inputsOf = () => { if (!arg) fail(`usage: chattering program ${sub} NAME '{"input": …}'`); try { return JSON.parse(arg); } catch { fail('the inputs are JSON, like \'{"message": "hi"}\''); } };
+  const ok = r => { if (r.status !== 200) fail('error: ' + ((r.data && r.data.error) || r.text.slice(0, 300) || r.status), 1); return r.data; };
+  if (!sub) {
+    const d = ok(await request('GET', '/api/programs'));
+    const made = d.programs.filter(p => p.made);
+    if (opts.json) return console.log(JSON.stringify(made, null, 2));
+    if (!made.length) return console.log('No program made here yet. Make one on the AI programs page, or: chattering program create FILE');
+    for (const p of made) console.log(`${p.name}${p.live ? ' (live)' : ' (not published)'}${p.project ? ' · ' + p.project : ''} · ${p.calls} call${p.calls === 1 ? '' : 's'}`);
+    return;
+  }
+  if (sub === 'show') {
+    need();
+    const v = ok(await request('GET', '/api/programs/made?name=' + encodeURIComponent(name)));
+    if (opts.json) return console.log(JSON.stringify(v, null, 2));
+    const vn = x => (x && x.n ? 'v' + x.n : 'a new version');
+    console.log(`${v.name} — /programs/${v.name}`);
+    console.log(`  folder: ${v.folder}${v.project ? ' (project ' + v.project + ')' : ''}`);
+    console.log(`  live: ${v.live ? vn(v.live) + ', published ' + v.live.at : 'not published'}; draft: ${v.error ? 'cannot run: ' + v.error : vn(v.draft) + (v.live && v.draft && v.live.version === v.draft.version ? ' (the same)' : '')}`);
+    if (v.definition) {
+      const d = v.definition, shape = s => (s.enum ? 'one of ' + s.enum.join(', ') : s.type === 'array' ? 'list' : s.type || 'value');
+      console.log(`  takes: ${d.inputs.map(i => `${i.name} (${shape(i.shape)})`).join(', ')}`);
+      console.log(`  answers: ${d.outputs.map(o => `${o.name} (${shape(o.shape)})`).join(', ')}`);
+    }
+    console.log(`  keys: ${v.keys.length ? v.keys.map(k => `${k.label} ${k.prefix}…`).join(', ') : 'none (make one on its Endpoint tab)'}`);
+    return;
+  }
+  if (sub === 'create') {
+    if (!name) fail('usage: chattering program create FILE [--project NAME]');
+    let definition;
+    try { definition = JSON.parse(require('fs').readFileSync(name, 'utf8')); } catch (e) { fail(`cannot read ${name}: ${e.message}`); }
+    const d = ok(await request('POST', '/api/programs/create', { definition, project: opts.project || null }));
+    return console.log(`Made ${d.name}: ${d.folder}\nTry it: chattering program try ${d.name} '{…}'`);
+  }
+  if (sub === 'try') {
+    need('\'{…}\'');
+    let last = null;
+    const r = await request('POST', '/api/programs/try', { name, inputs: inputsOf() }, { onLine: e => { if (e.type === 'done' || e.type === 'error') last = e; } });
+    if (r.status !== 200 && !last) ok(r);
+    if (!last) fail('no answer', 1);
+    if (last.type === 'error') fail('error: ' + last.error, 1);
+    if (opts.json) return console.log(JSON.stringify(last, null, 2));
+    return console.log(Object.keys(last.outputs).length === 1 ? shown(Object.values(last.outputs)[0]) : Object.entries(last.outputs).map(([k, v]) => `${k}: ${shown(v)}`).join('\n'));
+  }
+  if (sub === 'test') {
+    need();
+    let done = null;
+    const r = await request('POST', '/api/programs/test', { name }, { onLine: e => {
+      if (e.type === 'row' && e.verdict !== 'right') console.log(`${e.verdict}: ${Object.values(e.inputs).map(shown).join(' · ').slice(0, 120)} — expected ${shown(e.expected)}, got ${e.error || shown(e.got)}`);
+      if (e.type === 'done') done = e;
+    } });
+    if (r.status !== 200 && !done) ok(r);
+    if (!done) fail('the test did not finish', 1);
+    return console.log(`${done.right} of ${done.total} right${done.worded ? `, ${done.worded} in other words` : ''}${done.wrong ? `, ${done.wrong} wrong` : ''}${done.failed ? `, ${done.failed} failed` : ''}.`);
+  }
+  if (sub === 'publish') {
+    need();
+    const v = ok(await request('POST', '/api/programs/publish', { name }));
+    return console.log(`Published: v${v.live.n || '?'} answers at /programs/${v.name}.`);
+  }
+  if (sub === 'call') {
+    need('\'{…}\'');
+    const r = await request('POST', '/programs/' + encodeURIComponent(name), inputsOf());
+    const d = ok(r);
+    if (opts.json) return console.log(JSON.stringify(d, null, 2));
+    return console.log(shown(d.result));
+  }
+  fail(`unknown: chattering program ${sub}. Run: chattering help`);
+}
+
 async function main() {
   const { positional, opts } = parse(process.argv.slice(2));
+  if (positional[0] === 'program' || positional[0] === 'programs') {
+    try { await programCommand(positional.slice(1), opts); }
+    catch (e) { fail(`chattering server is not answering on port ${PORT} (${e.code || e.message}).`, 3); }
+    return;
+  }
   const { op, params, method } = plan(positional, opts);
   let r;
   if (method) {

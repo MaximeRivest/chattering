@@ -258,6 +258,21 @@ const ROUTES = {
   'POST /api/programs/sample': 'member',
   'POST /api/programs/rate': 'member',
   'POST /api/programs/live': 'member', // follow the calls running now: 'program-live' events below
+  // Making programs and their endpoints (design/75). A program lives in its
+  // project's folder: the handlers also check the right to act on it. The
+  // endpoint itself (/programs/<name>) is outside /api: a key opens that one
+  // program, a signed-in person needs 'member' (server.js checks both).
+  'POST /api/programs/draft': 'member',
+  'POST /api/programs/create': 'member',
+  'GET /api/programs/made': 'member',
+  'PUT /api/programs/made': 'member',
+  'POST /api/programs/try': 'member',
+  'POST /api/programs/test': 'member',
+  'POST /api/programs/publish': 'member',
+  'POST /api/programs/rollback': 'member',
+  'POST /api/programs/unpublish': 'member',
+  'POST /api/programs/keys': 'member',
+  'POST /api/programs/keys/revoke': 'member',
   'PUT /api/programs/recording': 'owner', // what agents' processes record: a machine setting
 
   // ---- voice and speech: this machine's speaker and microphone ----

@@ -368,7 +368,8 @@ async function parseUsageFile(file, context = {}, catalog = new PricingCatalog()
       costInput: cost ? cost.input : null, costOutput: cost ? cost.output : null,
       costCacheRead: cost ? cost.cacheRead : null, costCacheWrite: cost ? cost.cacheWrite : null,
       priceSource, priceConfidence,
-      person: source === 'pi' ? (personOf.get(d.id) ?? null) : null,
+      // Chattering's own calls name the person they were for (chatteringPerson).
+      person: source === 'pi' ? (typeof d.chatteringPerson === 'string' ? d.chatteringPerson : (personOf.get(d.id) ?? null)) : null,
     });
   }
   return { facts, speed };
