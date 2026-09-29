@@ -1,7 +1,7 @@
 # One computer, two sides: the Windows app and Chattering in WSL
 
-Status: step 1 implemented (switching). Steps 2 and 3 are proposals.
-Tested on Linux with both roles simulated (`test/localmachines*.test.js`); not yet on a real Windows PC.
+Status: step 1 implemented (switching), in 0.1.6. Steps 2 and 3 are proposals.
+Tested on Linux with both roles simulated (`test/localmachines*.test.js`, also run by CI on Windows), and on a real PC (2026-09-29): Windows 11 with the 0.1.6 Setup beside Ubuntu-24.04 in WSL (NAT networking, LAN forward on). Both cards appeared within a minute; WSL found LocalAppData through interop from its systemd service; handoff both ways signed in as the owner; both cookies held together; the Windows app took port 7434 beside WSL's 7433. Not yet clicked through by the person in her own browser.
 
 ## The question
 
@@ -117,8 +117,6 @@ would open the Windows app.
 
 ## Not done, stated
 
-- Not run on a real Windows PC yet. Assumptions to check there: WSL's
-  localhost forward reaches a WSL server bound to `127.0.0.1`
-  (the WSL launcher relies on it today); `cmd.exe /u` from a systemd
-  service with `WSL_INTEROP` set; mirrored networking mode.
+- Not tried with WSL's mirrored networking mode, nor with the WSL server
+  local-only (the PC above has the LAN forward on).
 - One list and send-to-owner (steps 2 and 3).
