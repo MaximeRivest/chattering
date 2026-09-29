@@ -3,15 +3,21 @@
 //
 // An agent's work shows as folded groups of steps: "21 steps · thinking ×7 ·
 // bash ×11", and inside, one line per command or search. Useful to someone
-// who programs, noise to someone who does not. When the owner turns this on
-// (settings → model), a small model writes one short phrase per step
-// ("Searched the code for the startup part") and one sentence per group
-// ("Looked through the code to see how reviews are saved"). The technical
-// lines stay: one click on the screen shows them again.
+// who programs, a wall to someone who does not. When the owner turns this on
+// (settings → model), a small model writes, above each step, one light
+// sentence on what it is trying to achieve and how ("Finding where the app
+// starts: searching the code for the word “startup”"), and one sentence per
+// finished group. The command stays under its sentence: read together, they
+// teach what the commands mean.
+//
+// A step is described by its aim, not its result: the model reads the command
+// (and the thought just before it), never what came back. So a step can be
+// described as soon as it is written, while it runs, and no file contents
+// reach the model through a command's output.
 //
 // Two ways to get there, whichever costs less for what is on screen:
-// - Work being done now: each step on its own, as soon as it has finished
-//   (a command has its result, a thought is complete), several at a time.
+// - Work being done now: each step on its own, as soon as it is written (a
+//   command's call is complete, a thought has ended), several at a time.
 //   The group's sentence waits for the group to be finished; then it is one
 //   small call that reads the phrases, not the commands again.
 // - Older work scrolled to, mostly unexplained: the whole group in one call,
@@ -38,12 +44,12 @@ const fs = require('fs');
 const path = require('path');
 
 // Bump when the inputs or the programs change in a way old answers should not survive.
-const REVISION = 2;
+const REVISION = 3;
 const MAX_STEPS = 200;           // explained per group; the rest keep their technical line
 const INPUT_BUDGET = 24000;      // characters of step text per group call, shared by its steps
 const STEP_BUDGET = 3000;        // characters of one step, for a call about that step alone
+const THOUGHT_BEFORE = 1500;     // the end of the thought before a command, for its why
 const REQUEST_CHARS = 700;
-const RESULT_CHARS = 240;
 const PLAIN_CHARS = 240;         // longest phrase kept from the model
 const SUMMARY_CHARS = 400;
 // A finished group with more unexplained steps than this is one group call.
@@ -90,29 +96,36 @@ function requestOf(ix, eid, index) {
   return '';
 }
 
-const outcomeLine = (text, err, images) => {
-  const first = String(text || '').split('\n').map(l => l.trim()).filter(Boolean).slice(0, 4).join(' / ');
-  return oneLine((err ? 'failed: ' : '') + (first || (images ? images + ' image(s)' : 'nothing came back')));
-};
+// The thought the assistant had just before a saved step, in the same turn.
+function thoughtBefore(ix, index) {
+  for (let i = (index ?? 0) - 1; i >= 0; i--) {
+    const m = ix.messages[i];
+    if (!m || m.role === 'user') return '';
+    if (m.role === 'thinking') return ix.thinking.get(m.eid) || String(m.text || '');
+  }
+  return '';
+}
+const tail = (s, n) => { s = oneLine(s); return s.length > n ? '…' + s.slice(-(n - 1)) : s; };
 
 /**
- * One step named by the page, as the model will read it, once it is finished;
- * null while it is not (a command still running) or when it is not in this
- * conversation. `live` finds steps of a run in progress that the snapshot
- * does not hold yet: { tool(callId), thought(run, block) }.
+ * One step named by the page, as the model will read it, once it is written;
+ * null while it is not (a command's call still streaming, a thought going on)
+ * or when it is not in this conversation. `live` finds steps of a run in
+ * progress that the snapshot does not hold yet: { tool(callId), thought(run, block) }.
  * identity: what the step's phrase is kept under (a tool call's id is unique;
  * a thought is its text, which the saved entry and the run both have).
  */
 function resolveStep(ix, name, live = null) {
   if (typeof name !== 'string' || !STEP_ID.test(name)) return null;
   if (name.startsWith('t:')) {
-    const id = name.slice(2), call = ix.tools.get(id), res = ix.results.get(id);
-    if (call && res) {
-      return { name, identity: name, kind: String(call.name || 'tool'), eid: call.eid, index: ix.order.get(name),
-        detail: oneLine([call.path, call.text].filter(Boolean).join(' ')), outcome: outcomeLine(res.text, res.err, res.images && res.images.length) };
+    const id = name.slice(2), call = ix.tools.get(id);
+    if (call) {
+      const index = ix.order.get(name);
+      return { name, identity: name, kind: String(call.name || 'tool'), eid: call.eid, index,
+        detail: oneLine([call.path, call.text].filter(Boolean).join(' ')), before: tail(thoughtBefore(ix, index), THOUGHT_BEFORE) };
     }
     const t = live && live.tool ? live.tool(id) : null;
-    if (t && t.done) return { name, identity: name, kind: String(t.name || 'tool'), detail: oneLine(t.args), outcome: outcomeLine(t.out, t.error) };
+    if (t && t.written) return { name, identity: name, kind: String(t.name || 'tool'), detail: oneLine(t.args), before: tail(t.thought || '', THOUGHT_BEFORE) };
     return null;
   }
   let text = null, eid = null, index;
@@ -124,13 +137,12 @@ function resolveStep(ix, name, live = null) {
     if (th && th.done) text = th.text;
   }
   if (!text || !text.trim()) return null;
-  return { name, identity: 'h:' + sha(text).slice(0, 32), kind: 'thinking', eid, index, detail: oneLine(text), outcome: '' };
+  return { name, identity: 'h:' + sha(text).slice(0, 32), kind: 'thinking', eid, index, detail: oneLine(text), before: '' };
 }
 
 const stepText = (s, budget) => [
   s.kind,
   s.detail ? `${s.kind === 'thinking' ? 'thought' : 'given'}: ${clip(s.detail, budget)}` : '',
-  s.outcome ? `came back: ${clip(s.outcome, Math.min(RESULT_CHARS, budget))}` : '',
 ].filter(Boolean).join('\n');
 
 // The question the steps answer: that of the first saved one, else the latest.
@@ -185,7 +197,7 @@ function readAnswer(outputs, count) {
  * @param {object} o
  * @param {string} o.file                where answers are kept (JSON)
  * @param {(program, inputs, live) => Promise<object>} o.run  one program call
- *   → its outputs: 'step' ({request, step} → {phrase}), 'summary' ({request,
+ *   → its outputs: 'step' ({request, thought_before, step} → {phrase}), 'summary' ({request,
  *   phrases} → {summary}) or 'group' ({request, steps} → {summary, phrases});
  *   it tells `live.text(field, piece)` what the model writes and `live.retry()`
  *   when the call starts its answer again
@@ -377,7 +389,7 @@ function createPlainSteps({ file, run, model, onProgress = () => {}, concurrency
         if (known) { known.at = at; res.steps[s.name] = known.plain; } else missing.push(s);
       }
       const wait = job => { if (job && !res.jobs.includes(job.token)) res.jobs.push(job.token); return job; };
-      const alone = list => { for (const s of list) wait(ask(s.key, key, [s.name], () => ({ program: 'step', inputs: { request, step: stepText(s, STEP_BUDGET) } }), fresh)); };
+      const alone = list => { for (const s of list) wait(ask(s.key, key, [s.name], () => ({ program: 'step', inputs: { request, thought_before: s.before || 'none', step: stepText(s, STEP_BUDGET) } }), fresh)); };
       if (!group.settled) { alone(missing); continue; }
 
       const gk = groupKey(label, request, steps);

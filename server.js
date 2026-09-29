@@ -6597,15 +6597,20 @@ function abortedModelCall() {
 const plainStepsHealth = createModelHealth({ baseCooldownMs: 5 * 60 * 1000 });
 const PLAIN_STEPS_PROGRAMS = { step: 'step_in_plain_words', summary: 'steps_summary_in_plain_words', group: 'steps_in_plain_words' };
 // Steps of the runs in progress in one conversation that its snapshot may not
-// hold yet (runEventForwarder's blocks): a command once it has its result,
-// a thought once its message has ended.
+// hold yet (runEventForwarder's blocks): a command once its call is written
+// (with the thought just before it, for its why), a thought once its message
+// has ended.
 function plainStepsLive(key) {
   const tails = [...liveRunTails.entries()].filter(([, t]) => t.keyOf() === key);
   return {
     tool(callId) {
       for (const [, t] of tails) {
-        const b = t.blocks.find(x => x.kind === 'tool' && x.callId === callId);
-        if (b) return { name: b.name, args: b.args, out: b.out, error: !!b.error, done: b.phase === 'done' };
+        const i = t.blocks.findIndex(x => x.kind === 'tool' && x.callId === callId);
+        if (i < 0) continue;
+        const b = t.blocks[i];
+        let thought = '';
+        for (let j = i - 1; j >= 0 && !thought; j--) if (t.blocks[j].kind === 'text' && t.blocks[j].think) thought = t.blocks[j].think;
+        return { name: b.name, args: b.args, thought, written: !!b.phase && b.phase !== 'args' };
       }
       return null;
     },

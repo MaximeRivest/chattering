@@ -121,36 +121,21 @@
 :root[data-theme-mode="binary"] .rd-paths, :root[data-theme-mode="binary"] .reader-destination { border-color: var(--text); }
 
 /* ---- work steps in plain words (plain-steps-ui.js) ----
-   The plain sentence takes the group's line and may wrap: it is read, not
-   scanned. Each step shows its phrase; the technical text stays in the page
-   (the phrase's tooltip, the open step, "show commands"). */
+   A light sentence above each step's command, both always shown: read
+   together they teach what the command means. The sentence's line exists
+   before its words do, so nothing below moves when they arrive. */
+.plain-on .step-say { display: block; min-height: 1.45em; margin: 0 0 3px; font: 13px/1.45 var(--font); font-weight: 400; color: var(--text); white-space: normal; overflow-wrap: anywhere; text-align: left; cursor: text; user-select: text; }
+.plain-on .step-say.pending::before { content: "…"; color: var(--text-faint); }
+.plain-on .step-say.typing::after { content: "▍"; margin-left: 1px; color: var(--text-faint); animation: blink 1s steps(1) infinite; }
+.plain-on .step-say[hidden] { display: none; }
+.plain-on .ls-b > .step-say { margin-bottom: 6px; font-size: 14px; }
+.plain-on .msg.tool, .plain-on .msg.thinking { margin-top: 6px; }
+/* A finished group's folded line: its sentence, which may wrap. */
 .tg-detail.tg-plain { white-space: normal; max-width: 64ch; overflow: visible; text-overflow: clip; font-size: 12px; line-height: 1.45; color: var(--text); }
 .toolgroup > summary:has(.tg-plain) { border-radius: var(--r); }
 .toolgroup:not([open]) > summary:has(.tg-plain) { align-items: baseline; }
-.tg-detail[aria-busy="true"]::after { content: " · explaining…"; color: var(--text-faint); }
-/* Being written: a caret after the sentence, as in a live answer. */
-.tg-detail.tg-writing::after { content: "▍"; margin-left: 1px; color: var(--text-faint); animation: blink 1s steps(1) infinite; }
-@media (prefers-reduced-motion: reduce) { .tg-detail.tg-writing::after { animation: none; } }
-:root[data-theme-mode="binary"] .tg-detail.tg-writing::after { animation: none; }
-.has-plain > summary > .step-tech { display: none; }
-.step-plain { color: var(--text-dim); }
-.msg.tool.has-plain > summary, .msg.thinking.has-plain > summary { font-size: 12px; }
-.toolline.has-plain > .step-plain { margin-right: 6px; }
-.tg-plain-switch { margin-left: auto; flex: 0 0 auto; height: 22px; padding: 0 8px; border: 1px solid var(--border); border-radius: var(--r-pill); background: transparent; color: var(--text-dim); font-size: 11px; }
-.tg-plain-switch:hover { color: var(--text); border-color: var(--border-strong); }
-.toolgroup:not([open]) > summary > .tg-plain-switch { display: none; }
 @media (max-width: 650px) {
   .toolgroup:not([open]) .tg-detail.tg-plain { display: block; max-width: none; }
-  .tg-plain-switch { height: 36px; }
 }
-/* A live step once explained: its phrase, the command and its output hidden
-   (the tooltip-free way back is "show commands"). A phrase still being
-   written ends in the caret. */
-.ls-plain { font-size: 13px; line-height: 1.5; color: var(--text); padding: 2px 0; }
-.ls-b.has-plain { margin-bottom: 8px; }
-.ls-b.has-plain > :not(.ls-plain) { display: none; }
-.ls-plain.writing::after, .step-plain.writing::after { content: "▍"; margin-left: 1px; color: var(--text-faint); animation: blink 1s steps(1) infinite; }
-@media (prefers-reduced-motion: reduce) { .ls-plain.writing::after, .step-plain.writing::after { animation: none; } }
-:root[data-theme-mode="binary"] .ls-plain.writing::after, :root[data-theme-mode="binary"] .step-plain.writing::after { animation: none; }
-:root[data-theme-mode="binary"] .tg-plain-switch { border-color: var(--text); color: var(--text); }
-:root[data-theme-mode="binary"] .step-plain { color: var(--text); }
+@media (prefers-reduced-motion: reduce) { .plain-on .step-say.typing::after { animation: none; } }
+:root[data-theme-mode="binary"] .plain-on .step-say.typing::after { animation: none; }

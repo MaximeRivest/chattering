@@ -26,21 +26,25 @@ const conversation = () => ({
 });
 const GROUP = ['k:a2', 't:call-1', 't:call-2'];
 
-test('a step, as the model reads it, once it is finished', () => {
+test('a step, as the model reads it, as soon as it is written: its command and the thought before, never its result', () => {
   const ix = indexConversation(conversation());
   const grep = resolveStep(ix, 't:call-1');
-  assert.deepEqual([grep.identity, grep.kind, grep.detail, grep.outcome], ['t:call-1', 'bash', 'grep -rn "startup" server.js', '12: startup() / 40: startup done']);
-  assert.equal(resolveStep(ix, 't:call-2').outcome, 'failed: ENOENT');
+  assert.deepEqual([grep.identity, grep.kind, grep.detail, grep.before], ['t:call-1', 'bash', 'grep -rn "startup" server.js', 'I should look at the startup code first.']);
+  assert.equal(grep.outcome, undefined);
+  // A saved call without its result yet (still running) is described too.
+  const running = conversation();
+  running.messages = running.messages.filter(m => m.role !== 'toolresult');
+  assert.equal(resolveStep(indexConversation(running), 't:call-2').detail, '/p/server.js');
   // A thought is kept under its text: the saved entry and the run agree.
   const saved = resolveStep(ix, 'k:a2');
   const live = resolveStep(ix, 'j:run:ab12:7', { thought: (run, block) => run === 'run:ab12' && block === 7 ? { text: 'I should look at the startup code first.', done: true } : null });
   assert.equal(saved.identity, live.identity);
   assert.match(saved.identity, /^h:[0-9a-f]{32}$/);
-  // Not finished, or not there: nothing to explain yet.
+  // Not written yet, or not there: nothing to describe yet.
   assert.equal(resolveStep(ix, 'j:run:ab12:7', { thought: () => ({ text: 'half a tho', done: false }) }), null);
-  assert.equal(resolveStep(ix, 't:call-9', { tool: id => id === 'call-9' ? { name: 'bash', args: 'npm test', out: 'ok', done: false } : null }), null);
-  const running = resolveStep(ix, 't:call-9', { tool: id => id === 'call-9' ? { name: 'bash', args: 'npm test', out: '\n12 passed\n', error: false, done: true } : null });
-  assert.deepEqual([running.detail, running.outcome], ['npm test', '12 passed']);
+  assert.equal(resolveStep(ix, 't:call-9', { tool: id => id === 'call-9' ? { name: 'bash', args: 'npm te', written: false } : null }), null);
+  const inRun = resolveStep(ix, 't:call-9', { tool: id => id === 'call-9' ? { name: 'bash', args: 'npm test', thought: 'Now the tests.', written: true } : null });
+  assert.deepEqual([inRun.detail, inRun.before], ['npm test', 'Now the tests.']);
   assert.equal(resolveStep(ix, 't:missing'), null);
   assert.equal(resolveStep(ix, 'x:bad'), null);
 });
@@ -79,6 +83,10 @@ test('work being done: each finished step alone and side by side, no sentence ye
   assert.deepEqual(calls.map(c => c.program), ['step', 'step', 'step'], 'three calls, started together');
   assert.match(calls[0].inputs.step, /^thinking\nthought: I should look/);
   assert.equal(calls[0].inputs.request, 'Why does the app open slowly?');
+  const grep = calls.find(c => /grep/.test(c.inputs.step));
+  assert.equal(grep.inputs.step, 'bash\ngiven: grep -rn "startup" server.js');
+  assert.equal(grep.inputs.thought_before, 'I should look at the startup code first.');
+  assert.doesNotMatch(JSON.stringify(calls), /startup\(\)|ENOENT/, 'no result reaches the model');
   const again = steps.lookup(conversation(), [{ g: 'a', steps: GROUP, settled: false }], { key: 'k1' }).groups.a;
   assert.deepEqual(again, { steps: { 'k:a2': 'Worked out where to start', 't:call-1': 'Searched the code', 't:call-2': 'Tried to open the server file' }, jobs: [] });
 });
