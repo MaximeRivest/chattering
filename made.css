@@ -1,0 +1,115 @@
+/* What this conversation made (design/82): the right-hand column's "Made"
+   view and the header chip. States are words first; colour only repeats
+   them, so e-ink and grayscale themes read the same. */
+
+.made { padding: 2px 6px 24px; font-size: var(--fs-meta); color: var(--text); }
+.made-empty { padding: 14px 8px; color: var(--text-dim); line-height: 1.5; }
+.made-dim { color: var(--text-faint); }
+.made-pad { padding: 4px 8px; font-size: var(--fs-micro); }
+.made-note { margin: 2px 8px 6px; color: var(--text-dim); font-size: var(--fs-micro); line-height: 1.45; }
+
+/* The state block: working or finished, totals, what needs a person. */
+.made-status { margin: 0 2px 10px; padding: 10px 10px 12px; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface-1); }
+.made-state { display: flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: var(--fs-micro); }
+.made-state > span:first-child { display: inline-flex; align-items: center; gap: 6px; }
+.made-when { margin-left: auto; color: var(--text-faint); white-space: nowrap; }
+.made-live { width: 7px; height: 7px; border-radius: 50%; background: var(--live); animation: made-pulse 1.6s ease-in-out infinite; }
+@keyframes made-pulse { 50% { opacity: .35; } }
+:root[data-theme-motion="none"] .made-live { animation: none; }
+@media (prefers-reduced-motion: reduce) { .made-live { animation: none; } }
+.made-totals { margin-top: 8px; font-size: var(--fs-body); line-height: 1.35; }
+.made-totals b { font-weight: 700; }
+.made-needs { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
+.made-needs li { display: flex; align-items: baseline; gap: 8px; line-height: 1.35; }
+.made-needs li::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; transform: translateY(-1px); background: currentColor; }
+.made-needs li > span { flex: 1; min-width: 0; color: var(--text); }
+.made-needs li.t-warn::before { background: var(--warn); }
+.made-needs li.t-info::before { background: var(--cyan); }
+.made-needs li.t-bad::before { background: var(--danger); }
+.made-needs li.t-ok::before { background: var(--success); }
+.made-primary { display: block; width: 100%; margin-top: 10px; padding: 6px 10px; border: 1px solid var(--accent); border-radius: var(--r); background: var(--accent); color: var(--accent-ink); font-weight: 700; cursor: pointer; }
+.made-primary:hover { filter: brightness(1.08); }
+.made-link { flex: none; border: 0; padding: 0; background: none; color: var(--accent); font: inherit; font-size: var(--fs-micro); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.made-icon { flex: none; border: 0; padding: 0 5px; background: transparent; color: var(--text-dim); border-radius: var(--r-sm); cursor: pointer; line-height: 1.6; }
+.made-icon:hover { color: var(--text); background: var(--surface-3); }
+
+/* Sections. */
+.made-sec { margin: 0 0 6px; }
+.made-sec > summary { display: flex; align-items: baseline; gap: 6px; padding: 8px 8px 4px; cursor: pointer; list-style: none; user-select: none; }
+.made-sec > summary::-webkit-details-marker { display: none; }
+.made-sec > summary::before { content: "▸"; flex: none; width: 10px; color: var(--text-faint); font-size: 10px; }
+.made-sec[open] > summary::before { content: "▾"; }
+.made-sec-title { font-weight: 700; letter-spacing: .02em; }
+.made-count { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.made-sec-note { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-size: var(--fs-micro); }
+.made-sub { margin: 4px 0 0; }
+.made-sub > summary { padding: 4px 8px 4px 24px; color: var(--text-dim); font-size: var(--fs-micro); cursor: pointer; }
+.made-group { margin: 2px 0 8px; }
+.made-tree { margin: 0 2px; border-radius: var(--panel-row-r); }
+.made-tree > summary { display: flex; flex-direction: column; gap: 1px; padding: 4px 8px 4px 16px; cursor: pointer; list-style: none; border-radius: var(--panel-row-r); }
+.made-tree > summary::-webkit-details-marker { display: none; }
+.made-tree > summary .made-l1::before { content: "▸"; flex: none; width: 10px; margin-left: -12px; color: var(--text-faint); font-size: 10px; }
+.made-tree[open] > summary .made-l1::before { content: "▾"; }
+.made-tree > summary:hover { background: var(--surface-2); }
+.made-tree > summary .made-l2 { padding-left: 0; flex-wrap: nowrap; }
+.made-tree > summary .made-agent { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.made-tree > summary .made-l2 > :not(.made-agent) { flex: none; }
+.made-tree > summary .made-count { margin-left: auto; }
+.made-tree > [role="list"] { padding-left: 8px; }
+.made-group-head, .made-tree-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 4px; padding: 4px 8px 2px; line-height: 1.4; }
+.made-group-head b { font-weight: 700; }
+.made-tree-head { padding-left: 16px; color: var(--text-dim); font-size: var(--fs-micro); }
+.made-branch { color: var(--text-dim); }
+.made-more { display: block; margin: 2px 8px 4px 24px; border: 0; padding: 0; background: none; color: var(--accent); font-size: var(--fs-micro); cursor: pointer; }
+
+/* Rows: two lines, a button that opens, actions at the end. */
+.made-row { position: relative; display: flex; align-items: flex-start; margin: 0 2px; border-radius: var(--panel-row-r); }
+.made-row:hover, .made-row:focus-within { background: var(--surface-2); }
+.made-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; padding: 4px 6px 4px 8px; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: var(--panel-row-r); }
+.made-main:disabled { cursor: default; }
+.made-main:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.made-l1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.made-l2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 6px; min-width: 0; padding-left: 20px; font-size: var(--fs-micro); line-height: 1.45; }
+.made-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.made-subject { color: var(--text); }
+.made-dir { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); }
+.made-agent { color: var(--magenta); }
+.made-age { margin-left: auto; padding-left: 6px; flex: none; color: var(--text-faint); font-size: var(--fs-micro); }
+.made-lines { margin-left: auto; flex: none; display: inline-flex; gap: 5px; font-family: var(--font-mono); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; }
+.made-totals .made-lines { margin-left: 6px; }
+.made-lines ins { color: var(--success); text-decoration: none; }
+.made-lines del { color: var(--danger); text-decoration: none; }
+.made-st { flex: none; width: 14px; text-align: center; font-family: var(--font-mono); font-size: var(--fs-micro); font-weight: 700; color: var(--text-dim); }
+.made-st.st-added { color: var(--success); }
+.made-st.st-deleted { color: var(--danger); }
+.made-st.st-modified { color: var(--warn); }
+.made-glyph { flex: none; width: 14px; text-align: center; color: var(--text-dim); }
+.made-hash { flex: none; font-family: var(--font-mono); font-size: var(--fs-micro); color: var(--text-dim); }
+.made-glyph.made-has-thumb { position: relative; width: 28px; height: 20px; line-height: 20px; }
+.made-thumb { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: var(--r-sm); background: var(--surface-3); }
+.made-tags { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 4px; }
+.made-sep { color: var(--text-faint); }
+.made-tag { white-space: nowrap; }
+.made-tag.t-warn { color: var(--warn); }
+.made-tag.t-bad { color: var(--danger); }
+.made-tag.t-info { color: var(--text-dim); text-decoration: underline dotted; text-underline-offset: 2px; }
+.made-tag.t-ok { color: var(--success); }
+.made-tag.t-muted { color: var(--text-faint); }
+.made-acts { flex: none; display: flex; align-items: center; padding: 3px 4px 0 0; opacity: 0; }
+.made-row:hover .made-acts, .made-row:focus-within .made-acts, .made-acts.made-acts-shown { opacity: 1; }
+.made-acts-shown { padding-top: 6px; padding-right: 8px; }
+@media (hover: none) { .made-acts { opacity: 1; } }
+.made-warnings { margin: 0 8px 6px 24px; padding: 0; color: var(--text-dim); font-size: var(--fs-micro); line-height: 1.45; }
+
+/* The header chip: what it made, in a few words; opens this view. */
+.made-chip { white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.made-chip[aria-pressed="true"] { background: var(--surface-2); border-color: var(--border-strong); }
+.made-chip.made-chip-warn { color: var(--warn); }
+
+/* E-ink and grayscale: tones become weight; nothing depends on colour. */
+:root[data-theme-mode="binary"] .made-tag.t-warn, :root[data-theme-mode="binary"] .made-tag.t-bad,
+:root[data-theme-mode="binary"] .made-needs li.t-warn > span, :root[data-theme-mode="binary"] .made-needs li.t-bad > span { font-weight: 700; color: var(--text); }
+:root[data-theme-mode="binary"] .made-tag, :root[data-theme-mode="binary"] .made-dir, :root[data-theme-mode="binary"] .made-age { color: var(--text); }
+:root[data-theme-mode="binary"] .made-row:hover { background: transparent; outline: 1px solid var(--text); }
+:root[data-theme-mode="binary"] .made-acts { opacity: 1; }
+:root[data-theme-mode="binary"] .made-chip.made-chip-warn { color: var(--text); font-weight: 700; }

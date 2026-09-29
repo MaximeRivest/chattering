@@ -19,6 +19,7 @@ const { createHash, randomUUID } = require('node:crypto');
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const within = (root, file) => !!root && (file === root || file.startsWith(root + path.sep));
 const posix = p => p.split(path.sep).join('/');
+const { lineCounts } = require('./task-reviews');
 
 function displayPath(abs, mainRoot, agentRoot) {
   if (within(mainRoot, abs)) return posix(path.relative(mainRoot, abs));
@@ -31,7 +32,7 @@ function displayPath(abs, mainRoot, agentRoot) {
 const BUILD = 1;
 const stepId = (agent, call) => agent ? `a${agent}:${call}` : call;
 
-async function joinOccurrences(service, entries) {
+async function joinOccurrences(service, entries, { measure = false } = {}) {
   // entries: occurrences of one file, each { file, agent, start, end }.
   entries.sort((a, b) => a.start - b.start || a.end - b.end);
   const first = entries[0], last = [...entries].sort((a, b) => a.end - b.end).at(-1);
@@ -48,13 +49,15 @@ async function joinOccurrences(service, entries) {
   out.canRead = !old.unavailable || !next.unavailable;
   out.unavailable = old.unavailable || next.unavailable || null;
   out.provenance = `Edited by ${out.agents.length} agents · ${out.nextRef.label || 'saved versions'}`;
+  if (measure) out.lines = lineCounts(old, next);
   return out;
 }
 
-// agents: [{ key, title, depth, parent, review }] (review: a schema-2 task
-// review id, or null when the agent changed nothing). branches: branchWork().
-async function buildConversationReview(service, { key, project, title, agents, branches = [], warnings = [] }) {
-  const subs = agents.map(a => a.review ? service.get(a.review) : null);
+// Every agent's changes joined into one list, not saved. subs[i] is agent
+// i's task review or its live analysis (task-reviews.js analyseTask), or
+// null when it changed nothing. Shared by the saved review below and the
+// live "what this conversation made" panel (made.js).
+async function joinAgents(service, { agents, subs, branches = [], measure = false }) {
   const mainRoot = subs[0]?.root || subs.find(Boolean)?.root || null;
   const taskFiles = new Map(), other = new Map(), artifacts = [], steps = [];
   const at = (sub, calls) => {
@@ -84,9 +87,9 @@ async function buildConversationReview(service, { key, project, title, agents, b
       taskFiles: (s.taskFiles || []).map(f => ({ ...f, path: localName(f) || `${agents[agent].title}: ${f.path}`, calls: (f.calls || []).map(ns) })) });
   });
   const files = [];
-  for (const entries of taskFiles.values()) { const f = await joinOccurrences(service, entries); if (!f.unchanged) files.push(f); }
+  for (const entries of taskFiles.values()) { const f = await joinOccurrences(service, entries, { measure }); if (!f.unchanged) files.push(f); }
   const otherFiles = [];
-  for (const entries of other.values()) { const f = await joinOccurrences(service, entries); if (!f.unchanged) otherFiles.push(f); }
+  for (const entries of other.values()) { const f = await joinOccurrences(service, entries, { measure }); if (!f.unchanged) otherFiles.push(f); }
   const taskNames = new Set(files.map(f => f.path));
   const branchFiles = branches.flatMap(b => b.files);
   // An agent's edit to a file it later committed: the committed version is
@@ -103,23 +106,33 @@ async function buildConversationReview(service, { key, project, title, agents, b
   }
   const agentInfo = agents.map((a, i) => ({ key: a.key, title: a.title, depth: a.depth, parent: a.parent, review: a.review,
     steps: subs[i]?.steps.length || 0, files: files.filter(f => f.agents.includes(i)).length, coverage: subs[i] ? !!subs[i].coverage : null }));
+  const complete = subs.filter(Boolean).every(s => s.coverage);
+  return { mainRoot, files, otherFiles: otherFiles.filter(f => !taskNames.has(f.path)), otherTouched: otherFiles.length, artifacts, steps, branchFiles, agentInfo, complete,
+    exclusions: [...new Set(subs.filter(Boolean).flatMap(s => s.exclusions || []))], warnings: [...new Set(subs.filter(Boolean).flatMap(s => s.warnings || []))] };
+}
+
+// agents: [{ key, title, depth, parent, review }] (review: a schema-2 task
+// review id, or null when the agent changed nothing). branches: branchWork().
+async function buildConversationReview(service, { key, project, title, agents, branches = [], warnings = [] }) {
+  const subs = agents.map(a => a.review ? service.get(a.review) : null);
+  const joined = await joinAgents(service, { agents, subs, branches });
+  const { mainRoot, files, otherFiles, artifacts, steps, branchFiles, agentInfo, complete } = joined;
   const identity = digest({ kind: 'conversation', build: BUILD, key, agents: agentInfo.map(a => [a.key, a.review]), branches: branches.map(b => [b.gitDir, b.base, b.head]) });
   const exists = service.db.prepare('SELECT id FROM change_reviews WHERE identity=?').get(identity);
   if (exists) return service.get(exists.id);
   const sourceGroup = digest({ kind: 'conversation', key });
   const previous = service.db.prepare("SELECT id FROM change_reviews WHERE json_extract(body,'$.sourceGroup')=? ORDER BY rowid DESC LIMIT 1").get(sourceGroup);
-  const complete = subs.filter(Boolean).every(s => s.coverage);
   const body = { id: randomUUID(), schema: 2, kind: 'conversation', sourceGroup, key, project, title, root: mainRoot,
     calls: [], sourceCalls: [], steps, base: null, head: null, coverage: complete, workspaceCoverage: false,
-    files, artifacts, otherFiles: otherFiles.filter(f => !taskNames.has(f.path)), branchFiles,
+    files, artifacts, otherFiles, branchFiles,
     branches: branches.map(({ files, ...b }) => ({ ...b, files: files.length })), agents: agentInfo,
-    exclusions: [...new Set(subs.filter(Boolean).flatMap(s => s.exclusions || []))],
-    touched: files.length + otherFiles.length,
+    exclusions: joined.exclusions,
+    touched: files.length + joined.otherTouched,
     capture: { boundaries: 'per agent', taskFiles: complete ? 'paired versions available' : 'partial', artifacts: artifacts.some(f => !f.canRead) ? 'current or unverified references' : 'paired versions available', provenance: files.some(f => f.shared) ? 'shared targets' : 'target evidence, not exclusive authorship' },
     created: Date.now(), parentReview: null, repairOf: previous?.id || null, overrides: {},
-    warnings: [...new Set([...warnings, ...subs.filter(Boolean).flatMap(s => s.warnings || [])])] };
+    warnings: [...new Set([...warnings, ...joined.warnings])] };
   service.db.prepare('INSERT OR IGNORE INTO change_reviews VALUES (?,?,?)').run(body.id, identity, JSON.stringify(body));
   return service.get(service.db.prepare('SELECT id FROM change_reviews WHERE identity=?').get(identity).id);
 }
 
-module.exports = { buildConversationReview, displayPath, stepId };
+module.exports = { buildConversationReview, joinAgents, displayPath, stepId };

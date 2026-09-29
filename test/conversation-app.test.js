@@ -672,8 +672,13 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   assert.equal(subFile.next.text, 'written by the sub-agent\n');
   assert.equal((await post('/api/reviews/conversation', { key })).id, whole.id, 'nothing changed: the same review');
   await evaluate(`open(${JSON.stringify(key)},'restore')`);
-  assert.equal(await evaluate(`!!document.querySelector('#convChanges')`), true, 'the conversation offers its whole review');
+  assert.equal(await evaluate(`!!document.querySelector('#convChanges')`), true, 'the conversation says what it made');
+  // The header opens what it made (design/82); its "Review all changes" is the whole review.
   await evaluate(`document.querySelector('#convChanges').click()`);
+  for (let i = 0; i < 300; i++) { if (await evaluate(`!!document.querySelector('#rightFileList .made [data-made-review]')`)) break; await new Promise(r => setTimeout(r, 30)); }
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('#rightFileList [data-made-file]')].map(b => b.dataset.madeFile).sort()`), ['docs/example.js', 'docs/sub.md'], 'the same files as the review');
+  assert.match(await evaluate(`document.querySelector('#rightFileList [data-made-file="docs/sub.md"]').innerText`), /Fixture sub-agent/, 'a sub-agent\u2019s file names it');
+  await evaluate(`document.querySelector('#rightFileList .made [data-made-review]').click()`);
   for (let i = 0; i < 300; i++) { if (await evaluate(`viewKind==='change-review'&&!!document.querySelector('#crAgent')`)) break; await new Promise(r => setTimeout(r, 30)); }
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('#crAgent option')].map(o=>o.textContent)`), ['All agents', 'Main conversation · 1 file', '↳ Fixture sub-agent · 1 file']);
   assert.equal(await evaluate(`[...document.querySelectorAll('.cr-file-agent')].map(e=>e.textContent).sort().join()`), 'Fixture sub-agent,main');

@@ -233,6 +233,8 @@ action registry.
    workers): net changes with commit state, artifacts with versions, pages,
    and the state line on the side-list row. Built from checkpoints,
    reviews and the artifact index that already exist.
+   *Built 2026-09-29 as the Made view and the header chip:
+   [design/82](82-what-it-made.md). The side-list row is not done yet.*
 3. **Works:** forks and delegations grouped automatically, "continue this
    work", merge two works; the Gantt and the side list show works.
 4. **The pair, both ways:** conversation beside any outcome, and a page

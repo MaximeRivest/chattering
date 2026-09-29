@@ -2398,7 +2398,7 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <button id="filesToggle" type="button" aria-label="Open files" title="Open files" aria-expanded="false" aria-controls="rightFilePanel">▤</button>
 <aside id="rightFiles" hidden aria-label="Files">
   <section id="rightFilePanel" hidden aria-labelledby="rightFileTitle">
-    <div class="right-file-head"><span id="rightFileTitle" class="right-file-views" role="group" aria-label="Show"><button type="button" data-right-view="files" aria-pressed="true" title="Files people and agents opened, wrote or edited">Files</button><button type="button" data-right-view="artifacts" aria-pressed="false" title="Pages, apps, slides and documents agents made">Artifacts</button><button type="button" data-right-view="programs" aria-pressed="false" title="AI programs: functions whose body is a model call, every call logged, judged right or wrong">Programs</button></span><button id="rightFileClose" type="button" title="Close file panel" aria-label="Close file panel">✕</button></div>
+    <div class="right-file-head"><span id="rightFileTitle" class="right-file-views" role="group" aria-label="Show"><button type="button" data-right-view="made" aria-pressed="false" title="What the open conversation made: files it changed, commits, artifacts and outputs, and what state each is in">Made</button><button type="button" data-right-view="files" aria-pressed="true" title="Files people and agents opened, wrote or edited">Files</button><button type="button" data-right-view="artifacts" aria-pressed="false" title="Pages, apps, slides and documents agents made">Artifacts</button><button type="button" data-right-view="programs" aria-pressed="false" title="AI programs: functions whose body is a model call, every call logged, judged right or wrong">Programs</button></span><button id="rightFileClose" type="button" title="Close file panel" aria-label="Close file panel">✕</button></div>
     <div class="file-scope-switch" role="group" aria-label="File scope">
       <button type="button" data-file-scope="recent-files" aria-pressed="true" title="File activity across all projects">All</button>
       <button type="button" data-file-scope="files" aria-pressed="false" title="File activity in the selected project">Project</button>
@@ -2492,6 +2492,8 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <script src="/conversation-reader.js"></script>
 <script src="/plain-steps-ui.js"></script>
 <script src="/artifacts.js"></script>
+<link rel="stylesheet" href="/made.css">
+<script src="/made-panel.js"></script>
 <link rel="stylesheet" href="/programs.css">
 <script src="/programs-ui.js"></script>
 <script src="/programs-make.js"></script>
@@ -3990,7 +3992,7 @@ function renderSidebarProjects() {
 // in the picker; old per-browser panel choices must not resurrect the rail.
 const SIDE_PANELS = ['inbox'];
 let rightFilesMode = agentSecState.filePanel === 'files' ? 'files' : 'recent-files';
-let rightFilesView = ['artifacts', 'programs'].includes(agentSecState.fileView) ? agentSecState.fileView : 'files';
+let rightFilesView = ['made', 'artifacts', 'programs'].includes(agentSecState.fileView) ? agentSecState.fileView : 'files';
 let rightFilesOpen = agentSecState.filePanelOpen === true;
 if (['files', 'recent-files'].includes(agentSecState.panel)) {
   rightFilesMode = agentSecState.panel;
@@ -4080,9 +4082,17 @@ function renderRightFiles() {
   // Or Programs (design/74): the AI programs of this project, or all of them.
   const artifactsView = rightFilesView === 'artifacts' && !!window.Artifacts;
   const programsView = rightFilesView === 'programs' && !!window.Programs;
-  const shownView = artifactsView ? 'artifacts' : programsView ? 'programs' : 'files';
+  // Or Made (design/82): what the open conversation made. It follows the
+  // conversation, not the project scope, so the scope switch steps aside.
+  const madeView = rightFilesView === 'made' && !!window.Made;
+  const shownView = madeView ? 'made' : artifactsView ? 'artifacts' : programsView ? 'programs' : 'files';
   document.querySelectorAll('[data-right-view]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.rightView === shownView)));
-  $('rightFilePanel').setAttribute('aria-label', shownView === 'artifacts' ? 'Artifacts' : shownView === 'programs' ? 'Programs' : 'Files');
+  $('rightFilePanel').setAttribute('aria-label', shownView === 'made' ? 'What this conversation made' : shownView === 'artifacts' ? 'Artifacts' : shownView === 'programs' ? 'Programs' : 'Files');
+  document.querySelector('#rightFilePanel .file-scope-switch').hidden = madeView;
+  $('rightFileScope').hidden = madeView;
+  if (madeView) { Made.render(host); if ($('convChanges')) $('convChanges').setAttribute('aria-pressed', 'true'); return; }
+  delete host.dataset.madeSig;
+  if ($('convChanges')) $('convChanges').setAttribute('aria-pressed', 'false');
   if (window.Artifacts) Artifacts.library.wireHost(host, renderRightFiles);
   if (window.Programs) Programs.wireHost(host, renderRightFiles);
   host.innerHTML = rightFilesMode === 'files' && !hasProject
@@ -10813,14 +10823,18 @@ function convHead(d) {
   $('chTitle').textContent = title;
   $('chTitle').title = chTitleHint(title);
   $('convHeadExtra').innerHTML = '';
-  // Every change this conversation and its sub-agents made, as one pull
-  // request (design/79).
+  // What this conversation and its sub-agents made (design/82): a few words
+  // in the header that open the Made view, whose "Review all changes" is the
+  // whole-conversation review (design/79).
   if (!d.draft && (d.messages || []).some(m => m.role === 'tool')) {
-    const b = document.createElement('button');
-    b.id = 'convChanges'; b.textContent = '\u00b1 changes';
-    b.title = 'Review every change this conversation and its sub-agents made, like a pull request';
-    b.onclick = () => openConversationReview(d.key);
-    $('convHeadExtra').append(b);
+    if (window.Made) Made.headerChip(d, $('convHeadExtra'));
+    else {
+      const b = document.createElement('button');
+      b.id = 'convChanges'; b.textContent = '\u00b1 changes';
+      b.title = 'Review every change this conversation and its sub-agents made, like a pull request';
+      b.onclick = () => openConversationReview(d.key);
+      $('convHeadExtra').append(b);
+    }
   }
   // Who else is here, and how this conversation is shared (people.js).
   renderConversationPresence();
@@ -13431,6 +13445,7 @@ async function renderConv(scroll) {
   if (keepCompose && newTa && keepCompose.focused) newTa.focus({ preventScroll: true });
   composeShareCheck();
   if (window.Artifacts) Artifacts.onConversation(d);
+  if (window.Made) Made.onConversation(d);
   } catch (err) { console.error('transcript wiring failed — the words still show:', err); }
   // Default landing is the bottom (the newest messages). 'top' opts out.
   // 'hit:N' lands on the exact message a search result pointed at.
@@ -16866,7 +16881,7 @@ document.querySelectorAll('[data-file-scope]').forEach(button => button.onclick 
   setRightFiles(button.dataset.fileScope, true);
 });
 function setRightView(view) {
-  rightFilesView = ['artifacts', 'programs'].includes(view) ? view : 'files';
+  rightFilesView = ['made', 'artifacts', 'programs'].includes(view) ? view : 'files';
   agentSecState.fileView = rightFilesView; saveAgentSecState();
   $('rightFileList').scrollTop = 0;
   setRightFiles(rightFilesMode, true);
@@ -17146,6 +17161,7 @@ $('phoneMore').onclick = e => {
     !$('shareBtn').hidden ? ['Who can see this', () => $('shareBtn').click()] : null,
     !current?.draft ? ['Move to another project', () => $('chMove').click()] : null,
     !current?.draft ? ['Conversation tree', () => $('agentTree')?.click()] : null,
+    !current?.draft && (current?.messages || []).some(m => m.role === 'tool') && window.Made ? ['What it made', () => Made.open()] : null,
     !current?.draft && (current?.messages || []).some(m => m.role === 'tool') ? ['Review all changes', () => openConversationReview(current.key)] : null,
     !current?.draft && current?.source !== 'claude' ? ['Compact conversation…', () => openCompactDialog(activeRel)] : null,
     inProject ? ['Browse project files', () => $('conversationFiles').click()] : null,

@@ -3,6 +3,7 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const { createHash, randomUUID } = require('node:crypto');
 const { gather, sensitive, permittedLocal, VERSION } = require('./task-locations');
+const LineDiff = require('./linediff');
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const mediaType = file => ({ '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.mp4': 'video/mp4' })[path.extname(file || '').toLowerCase()] || null;
 const within = (root, file) => file === root || file.startsWith(root + path.sep);
@@ -16,6 +17,17 @@ async function verifyLocal(file) {
   } catch (e) { return { status: e.code === 'ENOENT' ? 'missing' : 'unavailable' }; }
 }
 function refKey(ref) { return ref ? digest(ref) : null; }
+// Lines added and removed between two read versions ({ text, absent,
+// unavailable }), or null when either side cannot be counted honestly:
+// unreadable, binary, or too large to diff on a request.
+const MEASURE_MAX = 1024 * 1024;
+function lineCounts(old, next) {
+  if (!old || !next || old.unavailable || next.unavailable) return null;
+  const a = old.absent ? '' : old.text, b = next.absent ? '' : next.text;
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length > MEASURE_MAX || b.length > MEASURE_MAX || a.includes('\0') || b.includes('\0')) return null;
+  const { added, removed } = LineDiff.scriptStats(LineDiff.diffLines(a, b));
+  return { add: added, del: removed };
+}
 function applyTool(text, tool) {
   if (!tool.success) return null;
   const input = tool.input || tool.arguments || {};
@@ -108,13 +120,21 @@ async function fileDescriptor(service, loc, args, rows, tools, overrides) {
     f.unchanged = !old.unavailable && !next.unavailable && old.text === next.text && !!old.absent === !!next.absent;
     f.canRead = !old.unavailable || !next.unavailable;
     f.unavailable = old.unavailable || next.unavailable || null;
+    if (args.measure) f.lines = lineCounts(old, next);
   } else f.unavailable = 'No complete saved before/after pair';
   f.canRead ??= !!(f.oldRef || f.nextRef);
   f.provenance = f.nextRef?.label || f.oldRef?.label || 'Current location only; historical contents unavailable';
   f.shared = (args.otherEvents || []).some(e => e.path === loc.path && Date.parse(e.ts) >= args.from && Date.parse(e.ts) <= args.to);
   return f;
 }
-async function buildTaskReview(service, input) {
+// What one agent's steps changed, worked out but not saved. A review
+// (buildTaskReview) saves it; the "what this conversation made" panel
+// (made.js) reads it live, so the two can never disagree about which files
+// a conversation changed. Options for the live reader:
+//   steps: false   no per-step file lists (the panel lists files, not steps)
+//   measure: true  lines added and removed per file (f.lines), from the same
+//                  saved versions the comparison reads
+async function analyseTask(service, input, { steps: perStep = true, measure = false } = {}) {
   const cp = service.cp, root = await cp.root(input.cwd);
   const tools = input.tools.filter(t => input.calls.includes(t.id));
   const rows = cp.boundaries(input.session, input.calls);
@@ -130,7 +150,7 @@ async function buildTaskReview(service, input) {
   const first = [...complete].sort((a, b) => a.start - b.start)[0], last = [...complete].sort((a, b) => b.end - a.end)[0];
   const base = workspaceCoverage ? first.before : null, head = workspaceCoverage ? last.after : null;
   const from = Math.min(...steps.map(s => s.start).filter(Number.isFinite)), to = Math.max(...steps.map(s => s.end).filter(Number.isFinite));
-  const args = { ...input, root, from, to };
+  const args = { ...input, root, from, to, measure };
   const analysis = gather(tools, input.cwd, input.host || 'local');
   const context = gather(input.contextTools || [], input.cwd, input.host || 'local');
   for (const loc of analysis.locations) {
@@ -153,6 +173,7 @@ async function buildTaskReview(service, input) {
   let stepFiles = 0;
   for (const step of steps) {
     step.taskFiles = [];
+    if (!perStep) continue;
     for (const loc of locations.filter(l => l.calls.includes(step.call) && l.evidence === 'explicit-tool' && l.host === 'local' && l.path && !mediaType(l.path))) {
       if (++stepFiles > 1000) { analysis.warnings.push('Per-step file limit reached; combined task files remain available'); break; }
       const file = await fileDescriptor(service, { ...loc, calls: [step.call] }, { ...args, from: step.start, to: step.end }, rows, tools.filter(t => t.id === step.call), overrides);
@@ -167,6 +188,12 @@ async function buildTaskReview(service, input) {
   const otherFiles = workspaceFiles.filter(f => !taskPaths.has(path.join(root, f.path)));
   const exclusions = head ? (await cp.snapshot(head)).manifest.filter(f => f.unavailable).map(f => f.path) : [];
   const coverage = locations.length <= 300 && stepFiles <= 1000 && files.every(f => f.oldRef && f.nextRef && !f.unavailable);
+  return { root, steps, base, head, coverage, workspaceCoverage, files, artifacts, otherFiles, exclusions, touched: all.length, rows, all,
+    warnings: [...new Set([...analysis.warnings, ...context.warnings])], stepFiles };
+}
+async function buildTaskReview(service, input) {
+  const { root, steps, base, head, coverage, workspaceCoverage, files, artifacts, otherFiles, exclusions, touched, rows, all, warnings } = await analyseTask(service, input);
+  const overrides = input.overrides || {};
   const stableFile = f => { const { livePath, liveDirectory, liveStatus, size, ...stable } = f; return stable; };
   const identity = digest({ schema: 2, resolver: VERSION, key: input.key, calls: input.sourceCalls || input.calls, files: files.map(stableFile), artifacts: artifacts.map(stableFile),
     steps: steps.map(s => ({ ...s, taskFiles: s.taskFiles.map(stableFile) })), overrides, repairOf: input.repairOf || null,
@@ -178,10 +205,10 @@ async function buildTaskReview(service, input) {
   const parents = [...new Set(rows.map(r => service.db.prepare('SELECT review FROM checkpoint_runs WHERE run=? AND session=?').get(r.run, input.session)?.review).filter(Boolean))];
   const parentReview = parents.length === 1 && service.db.prepare('SELECT 1 FROM change_reviews WHERE id=?').get(parents[0]) ? parents[0] : null;
   const body = { id: randomUUID(), schema: 2, resolverVersion: VERSION, sourceGroup, key: input.key, project: input.project, title: input.title, root,
-    calls: input.calls, sourceCalls: input.sourceCalls || input.calls, steps, base, head, coverage, workspaceCoverage, files, artifacts, otherFiles, exclusions, touched: all.length,
+    calls: input.calls, sourceCalls: input.sourceCalls || input.calls, steps, base, head, coverage, workspaceCoverage, files, artifacts, otherFiles, exclusions, touched,
     capture: { boundaries: workspaceCoverage ? 'complete' : 'partial', taskFiles: coverage ? 'paired versions available' : 'partial', artifacts: artifacts.some(f => !f.canRead) ? 'current or unverified references' : 'paired versions available', provenance: files.some(f => f.shared) ? 'shared targets' : 'target evidence, not exclusive authorship' },
-    created: Date.now(), parentReview, repairOf: input.repairOf || previous?.id || null, overrides, warnings: [...new Set([...analysis.warnings, ...context.warnings])] };
+    created: Date.now(), parentReview, repairOf: input.repairOf || previous?.id || null, overrides, warnings };
   service.db.prepare('INSERT OR IGNORE INTO change_reviews VALUES (?,?,?)').run(body.id, identity, JSON.stringify(body));
   return service.get(service.db.prepare('SELECT id FROM change_reviews WHERE identity=?').get(identity).id);
 }
-module.exports = { buildTaskReview, verifyLocal, mediaType, refKey, applyTool };
+module.exports = { buildTaskReview, analyseTask, lineCounts, verifyLocal, mediaType, refKey, applyTool };

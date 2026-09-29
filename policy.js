@@ -217,6 +217,7 @@ const ROUTES = {
   '/api/doc/asset': 'member',
   '/api/vouch/status': 'member',
   '/api/vouch/all': 'member',
+  'GET /api/made': { level: 'member', conversation: 'key', right: 'see' }, // design/82
   '/api/reviews': 'member',
   '/api/reviews/*': 'member',
   '/api/snippets': 'member',

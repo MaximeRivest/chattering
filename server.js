@@ -3,6 +3,7 @@
 // No dependencies. Run: node server.js  → http://localhost:7433
 'use strict';
 require('./win-hide.js'); // first: on Windows nothing this starts opens a window (design/70)
+require('./module-stamps.js'); // second: when each source file was loaded, for "restart to use it" (design/82)
 
 const fs = require('fs');
 const fsp = fs.promises;
@@ -398,7 +399,7 @@ async function conversationFamily(key) {
       if (seen.has(file)) continue; // a resumed worker is the same conversation
       seen.add(file);
       const childKey = delegationSessionKey(t.sessionPath);
-      if (childKey) agents.push({ key: childKey, session: file, cwd: t.cwd, title: t.title || index[childKey]?.title || 'Sub-agent', depth, parent });
+      if (childKey) agents.push({ key: childKey, session: file, cwd: t.cwd, title: t.title || index[childKey]?.title || 'Sub-agent', depth, parent, status: t.status || null });
       else warnings.push(`Sub-agent “${t.title || t.id}” has no readable conversation; its changes are missing`);
       walk(file, depth + 1, childKey ? agents.length - 1 : parent);
     }
@@ -422,6 +423,18 @@ async function conversationReviewView(service, review, step, scope, agentParam) 
     files: review.files.filter(mine).map(slim), otherFiles: review.otherFiles.filter(mine).map(slim), branchFiles: (review.branchFiles || []).filter(mine).map(slim),
     artifacts: artifacts.slice(0, 300), artifactCount: review.artifacts.filter(mine).length,
     shownFiles: shown, stepFiles: step ? shown : undefined, captureScopes: [] };
+}
+// What a conversation made (design/82): the same evidence as the review
+// above, never saved, with the present added (disk, git, reviewed marks,
+// whether this server runs the current code).
+let madeService = null;
+function madeSummaries() {
+  madeService ||= require('./made.js').createMade({
+    service: reviewServices, family: conversationFamily,
+    input: (agent, family) => reviewInput(agent.key, null, { all: true, family }),
+    loaded: () => require('./module-stamps.js').loaded(), appRoot: __dirname, boot: BOOT_AT, delegationRoot: DELEGATION_ROOT,
+  });
+  return madeService;
 }
 const conversationReviewsRunning = new Map();
 function conversationReview(key) {
@@ -16138,6 +16151,8 @@ async function handleRequest(req, res) {
       '/conversation-flow.js': { file: 'conversation-flow.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/conversation-tree.js': { file: 'conversation-tree.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/artifacts.js': { file: 'artifacts.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/made-panel.js': { file: 'made-panel.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/made.css': { file: 'made.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/programs-ui.js': { file: 'programs-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/programs.css': { file: 'programs.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/program-form.js': { file: 'program-form.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
@@ -16539,6 +16554,11 @@ async function handleRequest(req, res) {
         const items = await require('./file-completion.js').completeFiles({ piDir: dir, root, cwd, query, signal: ctl.signal });
         if (!res.destroyed) json(res, 200, { items });
       } finally { clearTimeout(timeout); res.removeListener('close', abort); }
+    } else if (u.pathname === '/api/made' && req.method === 'GET') {
+      const key = u.searchParams.get('key') || '';
+      if (!index[key]) return json(res, 404, { error: 'conversation not found' });
+      try { json(res, 200, await madeSummaries().summary(key)); }
+      catch (e) { json(res, 500, { error: e.message }); }
     } else if (u.pathname === '/api/reviews' || u.pathname.startsWith('/api/reviews/')) {
       try {
         const service = reviewServices();
