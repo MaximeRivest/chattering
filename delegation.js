@@ -100,7 +100,9 @@ function workerArgv({ sessionPath, model, thinking, title, modePath, tools, prom
   const argv = ['--mode', 'json', '--session', sessionPath, '--model', model, '--thinking', thinking,
     '--name', title, '-e', path.join(__dirname, 'extensions/delegation.ts'),
     '-e', path.join(__dirname, 'extensions/records.ts'),
-    '-e', path.join(__dirname, 'extensions/image-budget.ts')];
+    '-e', path.join(__dirname, 'extensions/image-budget.ts'),
+    // Before/after workspace checkpoints, so a worker's edits can be reviewed.
+    '-e', path.join(__dirname, 'extensions/checkpoints.ts')];
   if (options.modeExtensionPath) argv.push('-e', path.resolve(options.modeExtensionPath));
   argv.push('--prompt-mode-file', modePath);
   if (tools.length) argv.push('--tools', tools.join(','));

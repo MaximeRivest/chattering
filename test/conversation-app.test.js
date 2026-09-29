@@ -60,6 +60,14 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
     { type: 'message', id: 'r', parentId: 'a', timestamp: '2026-09-01T12:00:01Z', message: { role: 'toolResult', toolName: call.name, toolCallId: call.id, content: [{ type: 'text', text: 'done' }], isError: false } },
   ].map(JSON.stringify).join('\n') + '\n');
   auxiliary('artifacts', { type: 'toolCall', id: 'artifact-call', name: 'bash', arguments: { command: artifactCommand } });
+  // A sub-agent the conversation started (design/79): its own session, known
+  // to Chattering through a delegation record.
+  auxiliary('sub', { type: 'toolCall', id: 'sub-write', name: 'write', arguments: { path: path.join(work, 'docs/sub.md'), content: 'written by the sub-agent\n' } });
+  const subTask = '0b0e2c3d-1111-4222-8333-444455556666', subDir = path.join(home, 'delegations', subTask);
+  fs.mkdirSync(subDir, { recursive: true });
+  fs.writeFileSync(path.join(subDir, 'request.json'), JSON.stringify({ version: 1, id: subTask, parentTaskId: null, parentSessionPath: path.join(sessionDir, 'chat.jsonl'), parentEntryId: 'qa',
+    sessionPath: path.join(sessionDir, 'sub.jsonl'), title: 'Fixture sub-agent', role: 'worker', cwd: work, model: 'fixture/one', thinking: 'off', delivery: 'none', status: 'starting', review: 'accepted', createdAt: 1, updatedAt: 1, tools: ['write'] }));
+  fs.writeFileSync(path.join(subDir, 'state.json'), JSON.stringify({ status: 'succeeded', updatedAt: 2, finishedAt: 2 }));
   const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
   const port = socket.address().port; await new Promise(r => socket.close(r));
   registerConsole(port, TEST_TOKEN);
@@ -645,6 +653,35 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   const repaired = await (await fetch(base + '/api/reviews/repair', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: artifactReview.id }) })).json();
   assert.equal(repaired.repairOf, artifactReview.id);
   assert.notEqual(repaired.id, artifactReview.id);
+  // The whole conversation and its sub-agent, as one review (design/79).
+  const post = (url, body) => fetch(base + url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json());
+  const whole = await post('/api/reviews/conversation', { key });
+  assert.ok(!whole.error, whole.error);
+  assert.equal(whole.agents, 2);
+  const everyone = await (await fetch(base + '/api/reviews?' + new URLSearchParams({ id: whole.id }))).json();
+  assert.equal(everyone.kind, 'conversation');
+  assert.equal(everyone.agents[1].title, 'Fixture sub-agent');
+  assert.deepEqual(everyone.files.find(f => f.path === 'docs/sub.md')?.agents, [1]);
+  assert.deepEqual(everyone.files.find(f => f.path === 'docs/example.js')?.agents, [0]);
+  assert.deepEqual(everyone.steps, [], 'all agents together: steps are listed one agent at a time');
+  assert.equal(everyone.files[0].oldRef, undefined, 'the screen gets no saved-version internals');
+  const onlySub = await (await fetch(base + '/api/reviews?' + new URLSearchParams({ id: whole.id, agent: '1' }))).json();
+  assert.deepEqual(onlySub.shownFiles.map(f => f.path), ['docs/sub.md']);
+  assert.deepEqual(onlySub.steps.map(s => s.call), ['a1:sub-write']);
+  const subFile = await (await fetch(base + '/api/reviews/file?' + new URLSearchParams({ id: whole.id, path: 'docs/sub.md' }))).json();
+  assert.equal(subFile.next.text, 'written by the sub-agent\n');
+  assert.equal((await post('/api/reviews/conversation', { key })).id, whole.id, 'nothing changed: the same review');
+  await evaluate(`open(${JSON.stringify(key)},'restore')`);
+  assert.equal(await evaluate(`!!document.querySelector('#convChanges')`), true, 'the conversation offers its whole review');
+  await evaluate(`document.querySelector('#convChanges').click()`);
+  for (let i = 0; i < 300; i++) { if (await evaluate(`viewKind==='change-review'&&!!document.querySelector('#crAgent')`)) break; await new Promise(r => setTimeout(r, 30)); }
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('#crAgent option')].map(o=>o.textContent)`), ['All agents', 'Main conversation · 1 file', '↳ Fixture sub-agent · 1 file']);
+  assert.equal(await evaluate(`[...document.querySelectorAll('.cr-file-agent')].map(e=>e.textContent).sort().join()`), 'Fixture sub-agent,main');
+  await evaluate(`const a=document.querySelector('#crAgent');a.value='1';a.onchange()`);
+  for (let i = 0; i < 300; i++) { if (await evaluate(`changeReview?.agent===1`)) break; await new Promise(r => setTimeout(r, 30)); }
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('.cr-file-name')].map(e=>e.textContent)`), ['docs/sub.md']);
+  assert.match(await evaluate(`location.hash`), /agent=1/);
+  assert.equal(await evaluate(`[...document.querySelectorAll('#crRelated button')].some(b=>b.textContent==='This agent\u2019s own review')`), true);
   assert.deepEqual(exceptions, []);
   assert.equal(fs.readFileSync(path.join(sessionDir, 'chat.jsonl'), 'utf8'), raw, 'read/compare/merge draft changed the session');
   await send('Browser.close'); await new Promise(r => browser.exitCode != null ? r() : browser.once('exit', r));

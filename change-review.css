@@ -36,6 +36,11 @@
 .cr-file-name { font-size:12px; font-weight:600; overflow-wrap:anywhere; min-width:0; }
 .cr-file-status, .cr-drift { font-size:10px; color:var(--text-dim); }
 .cr-file-status:empty, .cr-drift:empty { display:none; }
+.cr-file-agent { font-size:10px; color:var(--text-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:18em; }
+.cr-view .cr-committed { font-size:10px; padding:2px 4px; min-height:0; text-decoration:underline; white-space:nowrap; }
+.cr-branches p { margin:0 0 4px; }
+.cr-branches ul { margin:0; padding-left:18px; }
+.cr-branches li { overflow-wrap:anywhere; }
 .cr-file-actions { display:flex; align-items:center; flex-shrink:0; gap:5px; margin-left:auto; }
 .cr-view .cr-icon { display:inline-flex; align-items:center; justify-content:center; gap:3px; min-width:26px; padding:4px; }
 .cr-reviewed { display:flex; align-items:center; gap:4px; white-space:nowrap; font-size:11px; color:var(--text-dim); }

@@ -32,37 +32,58 @@ function crIcon(name) {
   };
   return `<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.25" aria-hidden="true">${paths[name]}</svg>`;
 }
-async function showChangeReview(id, step = '', scope = 'task') {
-  scope = scope === 'other' ? 'other' : 'task';
+// A whole conversation and its sub-agents, as one review (design/79). The
+// first build reads every agent's steps and commits: it can take a while.
+async function openConversationReview(key) {
+  const origin = currentHash;
+  toast('Gathering every change in this conversation and its sub-agents\u2026');
+  try {
+    const review = await crRequest('/api/reviews/conversation', { key });
+    if (currentHash !== origin) return toast('Whole-conversation review ready', () => showChangeReview(review.id));
+    return showChangeReview(review.id);
+  } catch (e) { errToast(e.message); }
+}
+// The agents of a whole-conversation review, as the filter lists them.
+function crAgentLabel(a, i) { return i === 0 ? 'Main conversation' : '\u2003'.repeat(Math.max(0, a.depth - 1)) + '\u21b3 ' + a.title; }
+function crAgentNames(s, file) {
+  if (s.kind !== 'conversation' || s.agent != null || !file.agents?.length) return '';
+  const names = file.agents.map(i => i === 0 ? 'main' : s.agents[i]?.title || 'sub-agent');
+  return names.length > 1 ? names[0] + ' +' + (names.length - 1) : names[0];
+}
+async function showChangeReview(id, step = '', scope = 'task', agent = '') {
+  scope = ['other', 'branch'].includes(scope) ? scope : 'task';
+  agent = agent === null || agent === undefined ? '' : String(agent);
   const seq = ++changeReviewSeq;
   markSettingsClosed();
   if (progressStream) { progressStream.close(); progressStream = null; }
-  setRoute('change-review', 'review=' + encodeURIComponent(id) + '&step=' + encodeURIComponent(step) + '&scope=' + (scope === 'other' ? 'other' : 'task'));
+  setRoute('change-review', 'review=' + encodeURIComponent(id) + '&step=' + encodeURIComponent(step) + '&scope=' + scope + (agent ? '&agent=' + encodeURIComponent(agent) : ''));
   $('view').innerHTML = '<div class="empty">Opening review…</div>';
   try {
-    const r = await crRequest('/api/reviews?' + new URLSearchParams({ id, step, scope }));
+    const r = await crRequest('/api/reviews?' + new URLSearchParams({ id, step, scope, agent }));
     if (seq !== changeReviewSeq || viewKind !== 'change-review') return;
     const s = changeReview = { ...r, step, scope, seq, loaded: new Map(), cards: new Map() };
+    const whole = r.kind === 'conversation';
     if (step && !r.steps.some(t => t.call === step)) throw Error('Step not found');
     const files = s.shownFiles = r.shownFiles || (step ? r.stepFiles || [] : r.files);
     $('view').innerHTML = `<section class="cr-view">
       <header class="cr-head">
         <button id="crBack" class="cr-quiet">← Conversation</button>
         <h1>${esc(r.project)} <span>${esc(r.title)}</span></h1>
-        <select id="crScope" aria-label="Review scope" ${r.schema === 2 ? '' : 'disabled'}><option value="task">${r.schema === 2 ? 'This task' : 'Workspace (legacy)'}</option><option value="other">Other / unassigned${step ? '' : r.schema === 2 && !r.workspaceCoverage ? ' (partial)' : ` (${r.otherFiles?.length || 0})`}</option></select>
-        <select id="crStep" aria-label="Changes to review"><option value="">All changes</option>${r.steps.map((t, i) => `<option value="${fgAttr(t.call)}" ${r.schema === 2 || t.before && t.after && !t.gap ? '' : 'disabled'}>${i + 1}. ${esc(t.tool)}${t.failed ? ' · failed' : ''}${t.gap ? ' · capture gap' : ''}</option>`).join('')}</select>
+        ${whole && r.agents.length > 1 ? `<select id="crAgent" aria-label="Agent"><option value="">All agents</option>${r.agents.map((a, i) => `<option value="${i}" ${a.steps ? '' : 'disabled'}>${esc(crAgentLabel(a, i))}${a.steps ? ` \u00b7 ${a.files} ${a.files === 1 ? 'file' : 'files'}` : ' \u00b7 no changes'}</option>`).join('')}</select>` : ''}
+        <select id="crScope" aria-label="Review scope" ${r.schema === 2 ? '' : 'disabled'}><option value="task">${whole ? 'Agent edits' : r.schema === 2 ? 'This task' : 'Workspace (legacy)'}${whole && !step ? ` (${r.files.length})` : ''}</option><option value="other">Other / unassigned${step ? '' : whole ? ` (${r.otherFiles.length})` : r.schema === 2 && !r.workspaceCoverage ? ' (partial)' : ` (${r.otherFiles?.length || 0})`}</option>${whole ? `<option value="branch" ${r.branchFiles.length ? '' : 'disabled'}>Commits (${r.branchFiles.length})</option>` : ''}</select>
+        <select id="crStep" aria-label="Changes to review" ${scope === 'branch' ? 'disabled' : ''}><option value="">${whole && r.agent == null && !step ? 'All steps \u00b7 choose an agent for one step' : 'All changes'}</option>${r.steps.map((t, i) => `<option value="${fgAttr(t.call)}" ${r.schema === 2 || t.before && t.after && !t.gap ? '' : 'disabled'}>${whole && r.agent == null ? '' : i + 1 + '. '}${esc(t.tool)}${t.failed ? ' · failed' : ''}${t.gap ? ' · capture gap' : ''}</option>`).join('')}</select>
         <details class="cr-menu" id="crFilePicker"><summary>${files.length} ${files.length === 1 ? 'file' : 'files'}</summary><nav class="cr-menu-panel" id="crFileList" aria-label="Changed files"></nav></details>
         <details class="cr-menu" id="crOptions"><summary>View${r.exclusions.length ? ` · ${r.exclusions.length} excluded` : ''}${r.warnings?.length ? ' · resolution notes' : ''}</summary><div class="cr-menu-panel">
           <label>Layout <select id="crLayout"><option value="split">Side by side</option><option value="unified">Unified</option></select></label>
           <button id="crExpand">Expand all files</button><button id="crCollapse">Collapse all files</button>
-          <button id="crRepair">Rebuild task review…</button>
-          ${r.schema === 2 ? '<button id="crRepairModel">Suggest unresolved locations…</button><button id="crCaptureScope">Include an experiment folder…</button>' : ''}
+          <button id="crRepair">${whole ? 'Rebuild with the latest changes' : 'Rebuild task review…'}</button>
+          ${r.schema === 2 && !whole ? '<button id="crRepairModel">Suggest unresolved locations…</button><button id="crCaptureScope">Include an experiment folder…</button>' : ''}
           <details class="cr-about"><summary>About this review</summary><p>${r.touched} files touched · ${r.files.length} with net changes. These are fixed recorded versions, not live files. Changes during this interval may include other people or agents.${r.steps.some(t => t.overlapping) ? ' Some tools overlapped.' : ''}${r.capture ? ' Task files: ' + esc(r.capture.taskFiles) + '. Workspace boundaries: ' + esc(r.capture.boundaries) + '.' : ''}</p>${r.exclusions.length ? `<p>Not captured:</p><pre>${esc(r.exclusions.join('\n'))}</pre>` : ''}${r.warnings?.length ? `<p>Resolution notes:</p><pre>${esc(r.warnings.join('\n'))}</pre>` : ''}</details>
         </div></details>
         <button id="crFinish" class="primary">Review</button>
       </header>
       <nav id="crRelated" class="cr-related"></nav>
-      ${r.schema !== 2 ? '<p class="cr-warning">Legacy workspace review: concurrent tasks may be mixed. Rebuild it from View to separate task evidence.</p>' : scope === 'other' ? '<p class="cr-warning">Other or unassigned workspace changes. Do not attribute these to this task merely because they happened during its steps.</p>' : !r.coverage && r.files.length ? '<p class="cr-warning">Some task files have incomplete history. Available versions and live files can still be opened.</p>' : ''}
+      ${whole && scope === 'branch' ? crBranchNotice(r) : whole && scope === 'task' && r.files.some(f => f.unavailable && f.committed) ? '<p class="cr-warning">Some sub-agents ran before their steps were recorded, so their edits have no saved before/after versions. Their committed result is complete: see <b>Commits</b>, or the \u201ccommitted version\u201d link on a file.</p>' : r.schema !== 2 ? '<p class="cr-warning">Legacy workspace review: concurrent tasks may be mixed. Rebuild it from View to separate task evidence.</p>' : scope === 'other' ? '<p class="cr-warning">Other or unassigned workspace changes. Do not attribute these to this task merely because they happened during its steps.</p>' : !r.coverage && r.files.length ? '<p class="cr-warning">Some task files have incomplete history. Available versions and live files can still be opened.</p>' : ''}
       <main id="crFiles"></main>
       <details class="cr-general" id="crArtifacts" ${r.artifacts?.length ? '' : 'hidden'}><summary>Artifacts and references (${r.artifacts?.length || 0})</summary><div id="crArtifactList"></div></details>
       <details class="cr-general" id="crGeneralPanel"><summary id="crGeneralSummary">General comments</summary><div id="crComments"></div><form id="crGeneral"><textarea id="crGeneralText" placeholder="Comment on the whole review…" aria-label="General review comment" required maxlength="12000"></textarea><button>Save comment</button></form></details>
@@ -87,8 +108,11 @@ async function showChangeReview(id, step = '', scope = 'task') {
     if (r.original) addLink('Original review', r.original);
     if (r.followup) addLink('Follow-up only', r.followup);
     for (const f of r.followups || []) addLink('Follow-up · ' + f.title, f.id);
-    $('crScope').value = scope; $('crScope').onchange = () => showChangeReview(id, step, $('crScope').value);
-    $('crStep').value = step; $('crStep').onchange = () => showChangeReview(id, $('crStep').value, scope);
+    $('crScope').value = scope; $('crScope').onchange = () => showChangeReview(id, $('crScope').value === 'branch' ? '' : step, $('crScope').value, agent);
+    $('crStep').value = step; $('crStep').onchange = () => showChangeReview(id, $('crStep').value, scope, agent);
+    if ($('crAgent')) { $('crAgent').value = agent; $('crAgent').onchange = () => showChangeReview(id, '', scope, $('crAgent').value); }
+    if (whole && r.agent != null && r.agents[r.agent]?.review) addLink('This agent\u2019s own review', r.agents[r.agent].review);
+    if (whole && r.agent != null && r.agents[r.agent]?.key) { const b = document.createElement('button'); b.textContent = 'Open its conversation'; b.onclick = () => open(r.agents[r.agent].key, 'restore'); related.append(b); }
     $('crRepair').onclick = () => crRepairReview(s);
     if ($('crRepairModel')) $('crRepairModel').onclick = () => crRepairSuggestions(s);
     if ($('crCaptureScope')) $('crCaptureScope').onclick = () => crCaptureFolder(s);
@@ -101,7 +125,7 @@ async function showChangeReview(id, step = '', scope = 'task') {
       card.open = true; $('crFilePicker').open = false; card.scrollIntoView({ block: 'start', behavior: 'smooth' });
     });
     for (const file of files) crFileCard(s, file);
-    if (!files.length) $('crFiles').innerHTML = `<div class="empty">${r.schema === 2 && scope === 'task' ? 'No directly targeted file changes in this selection. Check artifacts or other / unassigned changes.' : r.schema === 2 && scope === 'other' && !r.workspaceCoverage && !step ? 'Workspace interval incomplete. Inspect available individual steps.' : 'No net file changes in this selection.'}</div>`;
+    if (!files.length) $('crFiles').innerHTML = `<div class="empty">${scope === 'branch' ? 'No commits were made in this selection.' : r.schema === 2 && scope === 'task' ? 'No directly targeted file changes in this selection. Check artifacts or other / unassigned changes.' : r.schema === 2 && scope === 'other' && !r.workspaceCoverage && !step ? 'Workspace interval incomplete. Inspect available individual steps.' : 'No net file changes in this selection.'}</div>`;
     $('crExpand').onclick = async () => {
       $('crOptions').open = false;
       for (const card of s.cards.values()) { if (changeReview !== s || viewKind !== 'change-review') break; card.open = true; await card.loadDiff(); }
@@ -133,15 +157,33 @@ async function showChangeReview(id, step = '', scope = 'task') {
     }
   }
 }
+// Which commits the Commits view compares, and whose they are.
+function crBranchNotice(r) {
+  if (!r.branches?.length) return '';
+  const rows = r.branches.filter(b => r.agent == null || b.agents.includes(r.agent)).map(b => {
+    const also = b.branches.length > 1 ? ` \u00b7 continues ${b.branches.slice(0, -1).map(esc).join(', ')}` : '';
+    const others = b.foreign.length ? ` \u00b7 <b>${b.foreign.length} ${b.foreign.length === 1 ? 'commit' : 'commits'} in this range made elsewhere</b>` : '';
+    return `<li><b>${esc(b.label)}</b> ${esc(b.base.slice(0, 7))} \u2192 ${esc(b.head.slice(0, 7))} \u00b7 ${b.commits.length} ${b.commits.length === 1 ? 'commit' : 'commits'} \u00b7 ${b.files} ${b.files === 1 ? 'file' : 'files'}${also}${others}</li>`;
+  });
+  return `<div class="cr-warning cr-branches"><p>Each branch is compared from just before the agents\u2019 first commit to their last, like a pull request. A commit counts as theirs when an agent\u2019s own git command made it.</p><ul>${rows.join('')}</ul></div>`;
+}
 function crFileCard(s, file) {
   const card = document.createElement('details'); card.className = 'cr-file'; card.crFile = file; card.crExpanded = [];
-  card.innerHTML = `<summary><span class="cr-file-name">${esc(file.path)}</span><span class="cr-file-status">${file.unavailable ? 'Unavailable' : !file.old ? 'Added' : !file.next ? 'Deleted' : ''}</span><span class="cr-drift"></span><span class="cr-file-actions">
+  const agents = crAgentNames(s, file);
+  card.innerHTML = `<summary><span class="cr-file-name">${esc(file.path)}</span>${agents ? `<span class="cr-file-agent" title="${fgAttr(file.agents.map(i => s.agents[i]?.title || '').join('\n'))}">${esc(agents)}</span>` : ''}${file.committed ? '<button data-cr-committed class="cr-quiet cr-committed" title="The version this file has in the commits the agents made">committed version</button>' : ''}<span class="cr-file-status">${file.unavailable ? 'Unavailable' : !file.old ? 'Added' : !file.next ? 'Deleted' : ''}</span><span class="cr-drift"></span><span class="cr-file-actions">
     <button data-cr-read class="cr-icon" title="Read recorded file" aria-label="Read recorded file">${crIcon('read')}</button>
     <button data-cr-live class="cr-icon" title="Edit live file" aria-label="Edit live file">${crIcon('edit')}</button>
     ${!s.step ? `<label class="cr-reviewed"><input type="checkbox" data-cr-reviewed ${s.reviewed.includes(file.path) ? 'checked' : ''}> Reviewed</label>` : ''}
     <button data-cr-comment class="cr-icon" title="Comment on file" aria-label="Comment on file">${crIcon('comment')}<span class="cr-comment-count"></span></button>
   </span></summary><div class="cr-file-discussion"><div class="cr-file-comments"></div><div class="cr-comment-form" hidden></div><div class="cr-other-comments"></div></div><div class="cr-diff">Loading comparison…</div>`;
   card.querySelector('.cr-file-actions').onclick = e => e.stopPropagation();
+  const committed = card.querySelector('[data-cr-committed]');
+  if (committed) committed.onclick = async e => {
+    e.preventDefault(); e.stopPropagation();
+    await showChangeReview(s.id, '', 'branch', s.agent ?? '');
+    const target = changeReview?.cards.get(file.committed);
+    if (target) { target.open = true; target.scrollIntoView({ block: 'start' }); }
+  };
   s.cards.set(file.path, card);
   const host = card.querySelector('.cr-diff');
   let loading;

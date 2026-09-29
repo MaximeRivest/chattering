@@ -337,10 +337,15 @@ function reviewServices() {
   if (!changeReviews) changeReviews = new (require('./change-reviews.js').ChangeReviews)(checkpointStore, { archive: fileArchive, baseURL: 'http://127.0.0.1:' + PORT });
   return changeReviews;
 }
-async function reviewInput(key, requested) {
+// The tool steps a review covers, read from the conversation's own file.
+// `all`: every step that could change a file (the built-in readers are left
+// out), for a whole-conversation review (design/79); no 1000-step cap, since
+// the server chose the list.
+async function reviewInput(key, requested, { all = false, family = null, toolsOnly = false } = {}) {
   const { sessionPath, entry } = sessionPathsFor(key);
-  if (!Array.isArray(requested) || !requested.length || requested.length > 1000 || requested.some(c => typeof c !== 'string')) throw Error('Choose between 1 and 1000 tool steps');
-  const wanted = new Set(requested), found = [], contextTools = [], results = new Map();
+  if (!all && (!Array.isArray(requested) || !requested.length || requested.length > 1000 || requested.some(c => typeof c !== 'string'))) throw Error('Choose between 1 and 1000 tool steps');
+  const wanted = new Set(all ? [] : requested), found = [], contextTools = [], results = new Map();
+  const readOnly = require('./checkpoint-store.js').READ_ONLY;
   const raw = await fsp.readFile(sessionPath, 'utf8');
   for (const line of raw.split('\n')) {
     let row; try { row = JSON.parse(line); } catch { continue; }
@@ -350,22 +355,108 @@ async function reviewInput(key, requested) {
       if (c?.type === 'tool_result') results.set(c.tool_use_id, { success: !c.is_error, endTs: ts });
       if ((m.role === 'assistant' || row.type === 'assistant') && ['toolCall', 'tool_use'].includes(c?.type)) {
         const tool = { id: c.id, name: c.name, input: c.arguments || c.input || {}, ts };
+        if (all && c.id && !readOnly.has(c.name) && !wanted.has(c.id)) wanted.add(c.id);
         if (wanted.has(c.id)) found.push(tool);
         if (['bash', 'shell'].includes(c.name)) contextTools.push(tool);
       }
     }
   }
+  if (all && !wanted.size) return null; // nothing here could have changed a file
   if (new Set(found.map(c => c.id)).size !== wanted.size) throw Error('Some selected tools are not in this conversation');
   const rows = checkpointStore.boundaries(sessionPath, [...wanted]), captured = new Set(rows.map(r => r.call));
   const tools = [...new Map(found.filter(t => captured.has(t.id) || !require('./checkpoint-store.js').READ_ONLY.has(t.name)).map(t => [t.id, { ...t, ...results.get(t.id) }])).values()];
   const project = projectNameOf(entry.cwd, key), otherEvents = [];
-  const from = rows.length ? Math.min(...rows.map(r => r.started)) : Math.min(...tools.map(t => Date.parse(t.ts)));
-  const to = rows.length ? Math.max(...rows.map(r => r.finished)) : Math.max(...tools.map(t => Date.parse(t.endTs || t.ts)));
-  const peers = Object.entries(index).filter(([k, e]) => k !== key && projectNameOf(e.cwd, k) === project && Date.parse(e.lastTs || '') >= from && Date.parse(e.firstTs || '') <= to).slice(0, 80);
+  if (toolsOnly) return { key, session: sessionPath, cwd: entry.cwd, project, tools };
+  const least = xs => xs.reduce((a, b) => (b < a ? b : a), Infinity), most = xs => xs.reduce((a, b) => (b > a ? b : a), -Infinity);
+  const from = rows.length ? least(rows.map(r => r.started)) : least(tools.map(t => Date.parse(t.ts)));
+  const to = rows.length ? most(rows.map(r => r.finished)) : most(tools.map(t => Date.parse(t.endTs || t.ts)));
+  // Another conversation's edits make a file shared. In a whole-conversation
+  // review the conversation's own sub-agents are not "another".
+  const peers = Object.entries(index).filter(([k, e]) => k !== key && !family?.has(k) && projectNameOf(e.cwd, k) === project && Date.parse(e.lastTs || '') >= from && Date.parse(e.firstTs || '') <= to).slice(0, 80);
   for (const [k] of peers) {
     try { otherEvents.push(...(await conversationDiffs(k)).filter(e => e.kind !== 'shell' && e.outcome === 'applied' && Date.parse(e.ts) >= from && Date.parse(e.ts) <= to).map(e => ({ key: k, path: e.path, ts: e.ts }))); } catch {}
   }
   return { key, session: sessionPath, cwd: entry.cwd, host: entry.source === 'pi-remote' ? 'unresolved-remote' : 'local', project, tools, contextTools: contextTools.slice(-2000), sourceCalls: [...wanted], calls: tools.map(t => t.id), otherEvents, title: `${tools.length} tool ${tools.length === 1 ? 'step' : 'steps'}` };
+}
+// The conversation and, recursively, every sub-agent it started, as one
+// review (design/79). Agents are listed parent first, each followed by its
+// own sub-agents in the order they started.
+async function conversationFamily(key) {
+  const { sessionPath, entry } = sessionPathsFor(key);
+  const tasks = await delegationLib.listDelegations({ root: DELEGATION_ROOT, all: true });
+  const byId = new Map(tasks.map(t => [t.id, t])), children = new Map();
+  for (const t of tasks) {
+    const parent = path.resolve(t.parentTaskId ? byId.get(t.parentTaskId)?.sessionPath || t.parentSessionPath : t.parentSessionPath);
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(t);
+  }
+  const agents = [{ key, session: sessionPath, cwd: entry.cwd, title: entry.title || 'This conversation', depth: 0, parent: null }], warnings = [];
+  const seen = new Set([path.resolve(sessionPath)]);
+  const walk = (session, depth, parent) => {
+    for (const t of (children.get(path.resolve(session)) || []).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))) {
+      const file = path.resolve(t.sessionPath);
+      if (seen.has(file)) continue; // a resumed worker is the same conversation
+      seen.add(file);
+      const childKey = delegationSessionKey(t.sessionPath);
+      if (childKey) agents.push({ key: childKey, session: file, cwd: t.cwd, title: t.title || index[childKey]?.title || 'Sub-agent', depth, parent });
+      else warnings.push(`Sub-agent “${t.title || t.id}” has no readable conversation; its changes are missing`);
+      walk(file, depth + 1, childKey ? agents.length - 1 : parent);
+    }
+  };
+  walk(sessionPath, 1, 0);
+  return { agents, warnings, project: projectNameOf(entry.cwd, key) };
+}
+// What the review screen receives for a whole conversation: one agent's
+// part, or everyone's files without the thousands of steps and shell
+// references (a few hundred kilobytes, not several megabytes, on a tablet).
+// The saved review keeps everything; file reads and comments use it.
+function conversationReviewView(service, review, step, scope, agentParam) {
+  const agent = agentParam === null || agentParam === '' || !Number.isInteger(Number(agentParam)) ? null : Number(agentParam);
+  const mine = f => agent === null || (f.agents || []).includes(agent);
+  const slim = ({ oldRef, nextRef, calls, ...f }) => f;
+  const shown = service.pair(review, step, scope).files.filter(f => step || mine(f)).map(slim);
+  const steps = review.steps.filter(s => agent === null ? s.call === step : s.agent === agent)
+    .map(({ taskFiles, before, after, ...s }) => ({ ...s, before: !!before, after: !!after }));
+  const artifacts = review.artifacts.filter(mine).filter(f => agent !== null || f.canRead || f.mediaType);
+  return { ...review, agent, steps, stepCount: review.steps.length,
+    files: review.files.filter(mine).map(slim), otherFiles: review.otherFiles.filter(mine).map(slim), branchFiles: (review.branchFiles || []).filter(mine).map(slim),
+    artifacts: artifacts.slice(0, 300), artifactCount: review.artifacts.filter(mine).length,
+    shownFiles: shown, stepFiles: step ? shown : undefined, captureScopes: [] };
+}
+const conversationReviewsRunning = new Map();
+function conversationReview(key) {
+  // One build per conversation at a time: a second click waits for the first.
+  if (conversationReviewsRunning.has(key)) return conversationReviewsRunning.get(key);
+  const work = (async () => {
+    const service = reviewServices();
+    const { agents, warnings, project } = await conversationFamily(key);
+    const family = new Set(agents.map(a => a.key)), sources = [];
+    let next = 0;
+    const one = async agent => {
+      const stat = await fsp.stat(agent.session);
+      const signature = service.agentSignature(agent.session, stat);
+      const cached = service.cachedAgent(agent.session, signature);
+      // A reused review still needs the steps: commits are read afresh.
+      const input = await reviewInput(agent.key, null, { all: true, family, toolsOnly: cached !== undefined });
+      if (input) sources.push({ agent: agents.indexOf(agent), cwd: input.cwd, tools: input.tools });
+      if (cached !== undefined) { agent.review = cached; return; }
+      agent.review = input ? (await service.createTask({ ...input, title: agent.title })).id : null;
+      service.rememberAgent(agent.session, signature, agent.review);
+    };
+    // A few agents at a time: each review reads saved versions through git.
+    await Promise.all(Array.from({ length: Math.min(4, agents.length) }, async () => {
+      while (next < agents.length) {
+        const agent = agents[next++];
+        try { await one(agent); } catch (e) { agent.review = null; warnings.push(`${agent.title}: ${e.message}`); }
+      }
+    }));
+    const branches = await require('./branch-work.js').branchWork(sources, { warn: w => warnings.push(w) });
+    const title = agents.length > 1 ? `Whole conversation · ${agents.length - 1} ${agents.length === 2 ? 'sub-agent' : 'sub-agents'}` : 'Whole conversation';
+    return service.createConversation({ key, project, title, agents: agents.map(({ key, title, depth, parent, review }) => ({ key, title, depth, parent, review })), branches, warnings });
+  })();
+  conversationReviewsRunning.set(key, work);
+  work.finally(() => conversationReviewsRunning.delete(key)).catch(() => {});
+  return work;
 }
 const checkpointTimers = new Map(), checkpointCapturing = new Set(), checkpointDirty = new Map();
 function scheduleWorkspaceCheckpoint(cwd, phase) {
@@ -16339,10 +16430,14 @@ async function handleRequest(req, res) {
         const id = body.id || u.searchParams.get('id');
         if (u.pathname === '/api/reviews' && req.method === 'POST') {
           json(res, 200, await service.createTask(await reviewInput(String(body.key || ''), body.calls)));
+        } else if (u.pathname === '/api/reviews/conversation' && req.method === 'POST') {
+          const review = await conversationReview(String(body.key || ''));
+          json(res, 200, { id: review.id, title: review.title, files: review.files.length, agents: review.agents.length });
         } else if (u.pathname === '/api/reviews' && req.method === 'GET') {
           const review = service.get(id);
           const targets = Object.entries(index).filter(([key, e]) => conversationKind(e) !== 'claude' && projectNameOf(e.cwd, key) === review.project).map(([key, e]) => ({ key, title: e.title || key }));
-          const step = u.searchParams.get('step'), scope = u.searchParams.get('scope') === 'other' ? 'other' : 'task';
+          const step = u.searchParams.get('step'), scope = ['other', 'branch'].includes(u.searchParams.get('scope')) ? u.searchParams.get('scope') : 'task';
+          if (review.kind === 'conversation') { json(res, 200, { ...conversationReviewView(service, review, step, scope, u.searchParams.get('agent')), targets }); return; }
           json(res, 200, { ...review, targets, shownFiles: review.schema !== 2 && !step ? review.files : service.pair(review, step, scope).files, stepFiles: step ? service.pair(review, step, scope).files : undefined, captureScopes: review.root ? checkpointStore.scopes(review.root) : [] });
         } else if (u.pathname === '/api/reviews/asset' && req.method === 'GET') {
           const file = await service.localFile(id, u.searchParams.get('path'));
@@ -16361,6 +16456,7 @@ async function handleRequest(req, res) {
         } else if (u.pathname === '/api/reviews/repair' && req.method === 'POST') {
           const original = service.get(id);
           if (original.original && original.followup) throw Error('Rebuild the original and follow-up reviews separately, then combine them again.');
+          if (original.kind === 'conversation') { json(res, 200, await conversationReview(original.key)); return; }
           let overrides = original.overrides || {};
           if (body.proposal) overrides = require('./review-repair').accepted(service, original, body.proposal.token, Number(body.proposal.index));
           json(res, 200, await service.createTask({ ...await reviewInput(original.key, original.sourceCalls || original.calls), repairOf: original.id, overrides }));
@@ -16372,6 +16468,7 @@ async function handleRequest(req, res) {
         } else if (u.pathname === '/api/reviews/suggest-preview' && req.method === 'POST') {
           const review = service.get(id);
           if (review.schema !== 2) throw Error('Rebuild this legacy review first');
+          if (review.kind === 'conversation') throw Error('Open one agent\u2019s own review to look for its unresolved locations');
           const input = await reviewInput(review.key, review.sourceCalls || review.calls);
           json(res, 200, require('./review-repair').preview(service, review, input.tools, currentModelLabel()));
         } else if (u.pathname === '/api/reviews/suggest' && req.method === 'POST') {

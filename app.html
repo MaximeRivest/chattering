@@ -2789,7 +2789,7 @@ function dispatchHash(h, { restore = false } = {}) {
   // alias for old links.
   if (h.startsWith('review=')) {
     const parts = new URLSearchParams('id=' + h.slice(7));
-    return showChangeReview(parts.get('id'), parts.get('step') || '', parts.get('scope') || 'task');
+    return showChangeReview(parts.get('id'), parts.get('step') || '', parts.get('scope') || 'task', parts.get('agent') || '');
   }
   if (h.startsWith('browse=')) {
     try {
@@ -10781,6 +10781,15 @@ function convHead(d) {
   $('chTitle').textContent = title;
   $('chTitle').title = chTitleHint(title);
   $('convHeadExtra').innerHTML = '';
+  // Every change this conversation and its sub-agents made, as one pull
+  // request (design/79).
+  if (!d.draft && (d.messages || []).some(m => m.role === 'tool')) {
+    const b = document.createElement('button');
+    b.id = 'convChanges'; b.textContent = '\u00b1 changes';
+    b.title = 'Review every change this conversation and its sub-agents made, like a pull request';
+    b.onclick = () => openConversationReview(d.key);
+    $('convHeadExtra').append(b);
+  }
   // Who else is here, and how this conversation is shared (people.js).
   renderConversationPresence();
   refreshShareControl();
@@ -17055,6 +17064,7 @@ $('phoneMore').onclick = e => {
     !$('shareBtn').hidden ? ['Who can see this', () => $('shareBtn').click()] : null,
     !current?.draft ? ['Move to another project', () => $('chMove').click()] : null,
     !current?.draft ? ['Conversation tree', () => $('agentTree')?.click()] : null,
+    !current?.draft && (current?.messages || []).some(m => m.role === 'tool') ? ['Review all changes', () => openConversationReview(current.key)] : null,
     !current?.draft && current?.source !== 'claude' ? ['Compact conversation…', () => openCompactDialog(activeRel)] : null,
     inProject ? ['Browse project files', () => $('conversationFiles').click()] : null,
     !$('machineBtn').hidden ? ['Switch machine', () => $('machineBtn').click()] : null,

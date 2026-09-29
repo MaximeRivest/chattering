@@ -66,7 +66,7 @@ async function crPreviewArtifact(s, file) {
   const download = document.createElement('a'); download.href = url; download.download = file.livePath.split(/[\\/]/).pop(); download.textContent = 'Download current file'; host.append(download);
 }
 async function crRepairReview(s, proposal = null) {
-  if (!confirm('Create a corrected task review? The original review and its comments will be kept unchanged.')) return;
+  if (!confirm(s.kind === 'conversation' ? 'Build this review again with every change made since? This review and its comments are kept unchanged.' : 'Create a corrected task review? The original review and its comments will be kept unchanged.')) return;
   const origin = currentHash;
   try {
     const repaired = await crRequest('/api/reviews/repair', { id: s.id, proposal });
