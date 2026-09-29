@@ -45,6 +45,7 @@ const { agentPath } = require('./agentpath.js');
 const themesLib = require('./themes.js');
 const fanoutLib = require('./fanout.js');
 const conversationFlow = require('./conversation-flow.js');
+const { createClaudeChain } = require('./claude-chain.js');
 const conversationTree = require('./conversation-tree.js');
 const fanoutMerge = require('./fanoutmerge.js');
 const usageLib = require('./usageanalytics.js');
@@ -706,7 +707,7 @@ function cachePathFor(key) {
 }
 
 // Bump when the cached message format changes; forces a re-index.
-const CACHE_VERSION = 18; // v18: the last message summary for the side list (design/59)
+const CACHE_VERSION = 19; // v19: Claude Code's parallel tool calls are one step, not branches (claude-chain.js); v18: the last message summary for the side list (design/59)
 // New speed entries change file size; historical caches need no rebuild.
 
 // One line of plain text for a list row: markdown syntax, code, links and
@@ -922,6 +923,8 @@ async function parseFile(absPath) {
   // of each reply, each model switch, and each compaction, by entry. Read
   // along the active path once the leaf is known.
   const ctxUsage = new Map(), ctxModels = new Map(), ctxCompactions = new Set();
+  // Claude Code: the results of one reply's parallel tool calls are one step, not branches (claude-chain.js)
+  const claudeChain = createClaudeChain();
   const stream = fs.createReadStream(absPath, { encoding: 'utf8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   for await (const line of rl) {
@@ -939,6 +942,7 @@ async function parseFile(absPath) {
     const eid = d.type === 'session' ? null : (typeof (d.id || d.uuid) === 'string' ? (d.id || d.uuid) : null);
     if (eid && !d.isSidechain) {
       parents.set(eid, d.parentId !== undefined ? d.parentId : (d.parentUuid !== undefined ? d.parentUuid : null));
+      claudeChain.add(d);
       leafId = eid;
       // pi: { type: 'message', message: { role: 'assistant', usage } };
       // Claude: { type: 'assistant', message: { usage } }.
@@ -1051,6 +1055,7 @@ async function parseFile(absPath) {
       messages.push({ role: 'abort', text: 'aborted', ts: d.timestamp || null, _eid: eid });
     }
   }
+  claudeChain.linearize(parents);
   // Mark messages that are NOT on the active path. The flag is additive:
   // search, copy, and export keep the complete file-order record.
   const active = new Set();
@@ -2180,6 +2185,7 @@ function nodeTitle(text) {
 
 function parseTreeEntries(kind, raw) {
   const out = [];
+  const claudeChain = kind === 'pi' ? null : createClaudeChain();
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
     let d; try { d = JSON.parse(line); } catch { continue; }
@@ -2226,6 +2232,7 @@ function parseTreeEntries(kind, raw) {
       }
     } else {
       if (!d.uuid || d.isSidechain) continue;
+      claudeChain.add(d);
       node = { id: d.uuid, parent: d.parentUuid || null, role: null, text: '', ts: d.timestamp || null };
       if ((d.type === 'user' || d.type === 'assistant') && !d.isMeta && d.message) {
         node.role = d.type;
@@ -2257,6 +2264,10 @@ function parseTreeEntries(kind, raw) {
       : node.role === 'assistant' ? node.text.trim() && !node.calls : false);
     node.work = !node.box && !!(node.tres || node.calls || node.role === 'assistant');
     out.push(node);
+  }
+  if (claudeChain) {
+    const parents = new Map(out.map(n => [n.id, n.parent]));
+    if (claudeChain.linearize(parents)) for (const n of out) n.parent = parents.get(n.id);
   }
   return out;
 }

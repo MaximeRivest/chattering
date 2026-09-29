@@ -25,7 +25,7 @@ async function parseAll(t, lines) {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'session.jsonl');
   fs.writeFileSync(file, lines.map(l => JSON.stringify(l)).join('\n'));
-  const box = vm.createContext({ fs, readline, usageLib, settingsLib, textOf, conversationFlow: require('../conversation-flow'),
+  const box = vm.createContext({ fs, readline, usageLib, settingsLib, textOf, conversationFlow: require('../conversation-flow'), createClaudeChain: require('../claude-chain').createClaudeChain,
     toolEventsOf: () => [], directImagesOf: () => [], pathCandidates: () => [], isNoise: () => false });
   vm.runInContext(extract(serverSource, 'async function parseFile(absPath) {', '\nasync function transcriptImage('), box);
   return JSON.parse(JSON.stringify(await box.parseFile(file)));
@@ -35,7 +35,7 @@ async function parse(t, lines) {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'session.jsonl');
   fs.writeFileSync(file, lines.map(l => JSON.stringify(l)).join('\n'));
-  const box = vm.createContext({ fs, readline, usageLib, settingsLib, textOf, conversationFlow: require('../conversation-flow'),
+  const box = vm.createContext({ fs, readline, usageLib, settingsLib, textOf, conversationFlow: require('../conversation-flow'), createClaudeChain: require('../claude-chain').createClaudeChain,
     toolEventsOf: () => [], directImagesOf: () => [], pathCandidates: () => [], isNoise: () => false });
   vm.runInContext(extract(serverSource, 'async function parseFile(absPath) {', '\nasync function transcriptImage('), box);
   return JSON.parse(JSON.stringify((await box.parseFile(file)).meta.ctx));

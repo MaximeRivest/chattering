@@ -25,7 +25,7 @@ test('saved history hides the request, links both answers, and counts successful
   const source = fs.readFileSync(require.resolve('../server'), 'utf8');
   const start = source.indexOf('async function parseFile(absPath) {'), end = source.indexOf('\nasync function transcriptImage(', start);
   assert.ok(start >= 0 && end > start);
-  const context = { fs, readline, settingsLib: require('../settings'), conversationFlow: require('../conversation-flow'),
+  const context = { fs, readline, settingsLib: require('../settings'), conversationFlow: require('../conversation-flow'), createClaudeChain: require('../claude-chain').createClaudeChain,
     textOf: content => typeof content === 'string' ? content : (content || []).filter(b => b.type === 'text').map(b => b.text).join('\n'),
     toolEventsOf: () => [], directImagesOf: () => [], pathCandidates: () => [], isNoise: () => false };
   vm.createContext(context); vm.runInContext(source.slice(start, end), context);

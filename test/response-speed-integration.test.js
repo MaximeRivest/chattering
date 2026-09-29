@@ -31,7 +31,7 @@ test('transcript attaches speed to the saved reply, hides metadata, and preserve
     { type: 'custom', id: 'future', parentId: 'speed', customType: 'chattering-speed', data: { v: 100, samples: [{ ...sample, text: part(100, 90, 4, 3) }] } },
   ];
   fs.writeFileSync(file, lines.map(JSON.stringify).join('\n'));
-  const box = vm.createContext({ fs, readline, usageLib, textOf, conversationFlow: require('../conversation-flow'),
+  const box = vm.createContext({ fs, readline, usageLib, textOf, conversationFlow: require('../conversation-flow'), createClaudeChain: require('../claude-chain').createClaudeChain,
     toolEventsOf: () => [], directImagesOf: () => [], pathCandidates: () => [], isNoise: () => false });
   vm.runInContext(extract('async function parseFile(absPath) {', '\nasync function transcriptImage('), box);
   const parsed = await box.parseFile(file);
