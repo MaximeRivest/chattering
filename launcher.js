@@ -109,9 +109,13 @@ async function start({ quiet = false } = {}) {
 async function startLocked({ quiet }) {
   const already = await running();
   if (already) return already;
-  const port = await freePort(Number(process.env.PORT) || 7433);
-  const preview = await freePort(port + 2, [port]);
-  const tls = await freePort(port + 10, [port, preview]);
+  // Chattering inside WSL shows on Windows' localhost only while WSL runs:
+  // its ports look free when it is stopped. Keep off them, or starting it
+  // later would find its address taken by this one (design/84).
+  const wsl = platform.IS_WIN ? require('./localmachines.js').portsTaken(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')) : [];
+  const port = await freePort(Number(process.env.PORT) || 7433, wsl);
+  const preview = await freePort(port + 2, [port, ...wsl]);
+  const tls = await freePort(port + 10, [port, preview, ...wsl]);
   fs.mkdirSync(LOG_DIR, { recursive: true });
   // The previous run's log stays one generation.
   try { fs.renameSync(LOG_FILE, LOG_FILE + '.1'); } catch {}

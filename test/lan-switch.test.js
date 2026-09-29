@@ -82,17 +82,35 @@ test('the reach switch rebinds the listener both ways without a restart', async 
     const legacy = await fetch(base + '/api/settings', { headers: { Cookie: 'aiconvo=' + installToken } });
     assert.equal(legacy.status, 200, 'the pre-rename cookie still signs in');
     const set = legacy.headers.getSetCookie();
-    assert.ok(set.some(c => c.startsWith('chattering=' + installToken + ';')), 'moved to the new name: ' + set);
+    const own = set.find(c => /^chattering_[0-9a-f]{8}=/.test(c));
+    assert.ok(own && own.includes('=' + installToken + ';'), 'moved to this install\'s own name: ' + set);
     assert.ok(set.some(c => /^aiconvo=;.*Max-Age=0/.test(c)), 'the old name is cleared: ' + set);
     const bogus = await fetch(base + '/api/settings', { headers: { Cookie: 'aiconvo=not-a-token' } });
     assert.equal(bogus.status, 401, 'a wrong old cookie is still wrong');
     assert.ok(bogus.headers.getSetCookie().some(c => /^aiconvo=;.*Max-Age=0/.test(c)), 'and is cleared');
+    // design/84: each install has its own cookie name, since two installs
+    // on one computer (Windows and WSL, both 127.0.0.1) share a cookie jar.
+    const ownName = own.split('=')[0];
+    const shared = await fetch(base + '/api/settings', { headers: { Cookie: 'chattering=' + installToken } });
+    assert.equal(shared.status, 200, 'the shared name from before still signs in');
+    const moved = shared.headers.getSetCookie();
+    assert.ok(moved.some(c => c.startsWith(ownName + '=' + installToken + ';')), 'and moves to the own name: ' + moved);
+    assert.ok(moved.some(c => /^chattering=;.*Max-Age=0/.test(c)), 'the shared name is freed for the other install: ' + moved);
+    const sibling = await fetch(base + '/api/settings', { headers: { Cookie: 'chattering=another-installs-secret' } });
+    assert.equal(sibling.status, 401, 'another install\'s cookie does not sign in here');
+    assert.ok(!sibling.headers.getSetCookie().some(c => /^chattering=;/.test(c)), 'nor is it cleared: that would sign the person out there');
+    const both = await fetch(base + '/api/settings', { headers: { Cookie: 'chattering=another-installs-secret; ' + ownName + '=' + installToken } });
+    assert.equal(both.status, 200, 'the own cookie wins over the other install\'s');
+    assert.ok(!both.headers.getSetCookie().some(c => /^chattering=;/.test(c)), 'and the other install\'s stays');
+    const staleOwn = await fetch(base + '/api/settings', { headers: { Cookie: ownName + '=revoked' } });
+    assert.equal(staleOwn.status, 401);
+    assert.ok(staleOwn.headers.getSetCookie().some(c => c.startsWith(ownName + '=;') && /Max-Age=0/.test(c)), 'a stale own cookie is cleared');
   }
   // Flipping the switch on from this machine also signs that browser in,
   // so the person who opened the door is not locked out by it.
   s = await putLan(base, false, home);
   const on = await fetch(base + '/api/settings', withToken(home, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...s.settings, lan: true }) }));
-  assert.match(on.headers.get('set-cookie') || '', /^chattering=/);
+  assert.match(on.headers.get('set-cookie') || '', /^chattering_[0-9a-f]{8}=/);
   s = await on.json();
   assert.equal(s.lan.on, true);
   if (ip) {

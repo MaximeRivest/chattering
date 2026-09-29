@@ -151,7 +151,7 @@ test('a real server: company sign-in makes and links the person; walls per perso
   let done = await signIn();
   assert.equal(done.status, 302, await done.text());
   const cookie = (done.headers.get('set-cookie') || '').split(';')[0];
-  assert.match(cookie, /^chattering=/);
+  assert.match(cookie, /^chattering_[0-9a-f]{8}=/, 'the install\'s own cookie name (design/84)');
   const me = await (await fetch(base + '/api/users', { headers: { Cookie: cookie } })).json();
   assert.equal(me.me.name, 'Ada Lovelace'); assert.equal(me.me.role, 'member');
   done = await signIn();

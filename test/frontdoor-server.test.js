@@ -49,10 +49,13 @@ test('sign-in guard: lockout after ten distinct wrong tokens, a stale cookie cou
   for (let i = 0; i < 30; i++) assert.equal((await raw(remote + '/')).status, 401, 'bare visits are never counted');
 
   // A stale cookie, sent on every request of a page load: one guess.
+  // Its own name is cleared (checked in lan-switch.test.js).
   for (let i = 0; i < 12; i++) {
     const r = await raw(remote + '/api/sessions', { headers: { Cookie: 'chattering=stale-value' } });
     assert.equal(r.status, 401, 'still 401, not 429: ' + i);
-    if (i === 0) assert.match(r.headers.get('set-cookie') || '', /chattering=; .*Max-Age=0/, 'the stale cookie is cleared');
+    // The shared old name may be another install's on this computer
+    // (design/84): it is refused, not cleared.
+    if (i === 0) assert.doesNotMatch(r.headers.get('set-cookie') || '', /(^|, )chattering=;/, 'the old shared name is left alone');
   }
   // Nine distinct wrong tokens (the stale cookie was the first guess): the tenth is the last allowed.
   for (let i = 0; i < 8; i++) assert.equal((await login('wrong-' + i)).status, 401);

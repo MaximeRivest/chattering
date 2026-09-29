@@ -3419,9 +3419,39 @@ document.addEventListener('click', e => {
 function machineUrl(m) {
   return m.url + '/' + (m.token ? '?token=' + encodeURIComponent(m.token) : '');
 }
+// The other installs on this computer (design/84): the Windows app and the
+// one inside WSL find each other with nothing to pair. They answer at a
+// port of this computer, so they are offered only to a browser on it.
+function pageOnThisComputer() {
+  const h = location.hostname;
+  return h === '127.0.0.1' || h === 'localhost' || h === '[::1]' || h.endsWith('.localhost');
+}
+function localMachinesHere() { return pageOnThisComputer() ? ((settingsState && settingsState.localMachines) || []) : []; }
+function machineCount() { return (settingsOf().machines || []).length + localMachinesHere().length; }
+function localMachineWhere(m, all) {
+  const linuxes = all.filter(x => x.kind === 'wsl').length;
+  return m.kind === 'windows' ? 'Windows, on this computer' : 'Linux' + (linuxes > 1 && m.distro ? ' (' + m.distro + ')' : '') + ', on this computer';
+}
+const LOCAL_BLOCKED = {
+  'same-port': m => `${m.name} and this one use the same address on this computer, so only one can be opened. Restart the computer (or run “chattering-app stop” in a terminal) and open Chattering on Windows again: it will keep clear of the Linux side's address from then on.`,
+};
+async function goToLocalMachine(m, b) {
+  const where = b.querySelector('.mach-url');
+  const down = why => { b.disabled = false; where.textContent = why; where.classList.add('mach-down'); };
+  b.disabled = true; where.textContent = 'checking…';
+  let hand = null;
+  try { const r = await fetch('/api/handoff?local=' + encodeURIComponent(m.id)); hand = await r.json(); if (!r.ok) return down(hand.error || 'it is no longer on this computer'); } catch { return down('this Chattering did not answer'); }
+  if (hand.blocked) return down((LOCAL_BLOCKED[hand.blocked] || (() => 'it cannot be opened from here'))(hand));
+  const base = 'http://' + location.hostname + ':' + hand.port;
+  // Does it answer? The page cannot read another address's reply, but a
+  // refused connection is an error and any answer is not.
+  try { await fetch(base + '/health', { mode: 'no-cors', cache: 'no-store', signal: AbortSignal.timeout(5000) }); }
+  catch { return down(m.kind === 'wsl' ? 'it does not answer — open Chattering (Linux) once to start it' : 'it does not answer — open Chattering from the Start menu to start it'); }
+  location.href = base + hand.path;
+}
 function renderMachineBtn() {
   const btn = $('machineBtn');
-  const list = settingsOf().machines || [];
+  const list = [...(settingsOf().machines || []), ...localMachinesHere()];
   const host = (settingsState && settingsState.hostname) || '';
   btn.hidden = !list.length;
   btn.textContent = '@' + (host || 'this machine');
@@ -3434,8 +3464,14 @@ function toggleMachinePop(show) {
   if (pop.hidden) return;
   const host = (settingsState && settingsState.hostname) || 'this machine';
   const list = settingsOf().machines || [];
+  const locals = localMachinesHere();
   pop.innerHTML = `<div class="mach-head">you are on ${esc(host)} · go to</div>` +
+    locals.map(m => `<button type="button" data-local="${esc(m.id)}"><span>${esc(m.name)}</span><span class="mach-url">${esc(localMachineWhere(m, locals))}</span></button>`).join('') +
     list.map((m, i) => `<button type="button" data-i="${i}"><span>${esc(m.name)}</span><span class="mach-url">${esc(m.url.replace(/^https?:\/\//i, ''))}</span></button>`).join('');
+  pop.querySelectorAll('button[data-local]').forEach(b => b.onclick = () => {
+    const m = locals.find(x => x.id === b.dataset.local);
+    if (m) goToLocalMachine(m, b);
+  });
   const anchor = sideLayoutOn() ? $('railMachine') : $('machineBtn');
   const rect = anchor.getBoundingClientRect();
   pop.style.maxHeight = Math.max(80, innerHeight - rect.bottom - 14) + 'px';
@@ -4109,7 +4145,7 @@ function renderRightFiles() {
 function paintSideRail() {
   const machine = $('railMachine');
   const host = (settingsState && settingsState.hostname) || '';
-  const others = (settingsOf().machines || []).length;
+  const others = machineCount();
   machine.querySelector('.rail-initials').textContent = host || 'Machine';
   machine.title = (host ? 'This is ' + host : 'This machine') + (others ? ' — switch to another Chattering machine' : ' — connect other machines under settings → machines');
   machine.setAttribute('aria-label', machine.title);
@@ -16332,6 +16368,7 @@ function bindPaneSnippets(root) {
 
 function paneMachines() {
   const list = settingsOf().machines || [];
+  const locals = (settingsState && settingsState.localMachines) || [];
   const host = (settingsState && settingsState.hostname) || 'this machine';
   const lan = (settingsState && settingsState.lan) || { on: false, fixed: false, addresses: [] };
   const links = (settingsState && settingsState.connectLinks) || [];
@@ -16373,9 +16410,14 @@ function paneMachines() {
       </div>
       <div class="set-status" id="setMachStatus"></div>
     </div>
+    ${locals.length ? `<div class="set-group">
+      <h3>on this computer</h3>
+      <div class="set-help">The other Chattering on this computer (Windows and Linux) found each other by themselves: nothing to paste, and neither opens to the network. They are in the switcher of a browser on this computer.</div>
+      <div>${locals.map(m => `<div class="mach-item shown"><b class="mach-name">${esc(m.name)}</b><span class="mach-url">${esc(localMachineWhere(m, locals))}</span></div>`).join('')}</div>
+    </div>` : ''}
     <div class="set-group">
       <div class="set-group-head"><h3>connected machines</h3><button type="button" class="ghost" id="setMachNew">add by hand</button></div>
-      <div id="setMachList">${list.length ? list.map((m, i) => row(m, i, false)).join('') : '<span class="hint">none yet — the header switcher stays hidden</span>'}</div>
+      <div id="setMachList">${list.length ? list.map((m, i) => row(m, i, false)).join('') : `<span class="hint">none yet${locals.length ? '' : ' — the header switcher stays hidden'}</span>`}</div>
     </div>`;
 }
 
@@ -16930,7 +16972,7 @@ $('rightFiles').addEventListener('keydown', e => {
 });
 $('railMachine').onclick = e => {
   e.stopPropagation();
-  if (!(settingsOf().machines || []).length) { showSettings('machines'); return; }
+  if (!machineCount()) { showSettings('machines'); return; }
   toggleMachinePop();
   $('railMachine').setAttribute('aria-expanded', String(!$('machinePop').hidden));
 };

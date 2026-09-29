@@ -78,6 +78,11 @@ const SOURCES = {
 };
 // The name this machine goes by in memory documents and towards peers.
 const HOST_NAME = String(process.env.CHATTERING_HOSTNAME || '').trim() || os.hostname();
+// The name people see in the machine switcher. WSL takes the Windows
+// computer's name, so the Linux side of a PC would look like its Windows
+// side: it says which it is (design/84). HOST_NAME stays as it was, since
+// memory documents and peers already know this machine by it.
+const MACHINE_NAME = String(process.env.CHATTERING_HOSTNAME || '').trim() || (platform.IS_WSL ? os.hostname() + ' (Linux)' : os.hostname());
 const CACHE_DIR = path.resolve(DIRS.cache);
 const NOTES_DIR = DIRS.notes;
 const SESS_DIR = path.join(CACHE_DIR, 'sessions');
@@ -165,20 +170,51 @@ function cookieValue(req, name) {
   }
   return '';
 }
-// The sign-in cookie. Until the rename (2026-09-22) it was called `aiconvo`;
-// a browser signed in before then still presents that one, holding the
-// same credential. It is honoured, and moved to the new name on the first
+// The sign-in cookie carries this install's own name, `chattering_<id>`
+// (design/84). A browser keeps one cookie jar per host name whatever the
+// port, so two installs on one computer (the Windows app and the one in
+// WSL, both at 127.0.0.1) sharing one name would sign each other out at
+// every switch.
+//
+// Older names are honoured and moved to the own name on the first
 // signed-in answer (moveLegacySignInCookie), so nobody is asked for the
-// token again because of a rename.
+// token again: `chattering` (until 2026-09-29) and `aiconvo` (until the
+// rename, 2026-09-22). A `chattering` cookie that names nobody here is not
+// cleared: it may be another install's on this computer, still on the
+// shared name.
+const LEGACY_SIGN_IN_COOKIES = ['chattering', 'aiconvo'];
 const LEGACY_SIGN_IN_COOKIE = 'aiconvo';
-function signInCookie(req) {
-  return cookieValue(req, 'chattering') || cookieValue(req, LEGACY_SIGN_IN_COOKIE);
+let signInCookieNameCache = '';
+function signInCookieName() {
+  if (!signInCookieNameCache) signInCookieNameCache = 'chattering_' + require('./localmachines.js').installId(installKey.publicKey).slice(0, 8);
+  return signInCookieNameCache;
+}
+// { name, value } of the cookie this request signs in with, or null.
+function signInCookieOf(req) {
+  for (const name of [signInCookieName(), ...LEGACY_SIGN_IN_COOKIES]) {
+    const value = cookieValue(req, name);
+    if (value) return { name, value };
+  }
+  return null;
+}
+function signInCookie(req) { const c = signInCookieOf(req); return c ? c.value : ''; }
+function signInCookieHeader(value, req, opts) { return authGuard.cookieHeader(signInCookieName(), value, req, opts); }
+// Clearing: the own name always; older names only when this install is
+// the one they signed in to (legacy) or nobody's (aiconvo predates pairs).
+function clearSignInCookieHeaders(req, { legacyToo = false } = {}) {
+  const names = [signInCookieName(), LEGACY_SIGN_IN_COOKIE, ...(legacyToo ? ['chattering'] : [])];
+  return names.filter(n => cookieValue(req, n)).map(n => authGuard.cookieHeader(n, '', req, { maxAge: 0 }));
 }
 function moveLegacySignInCookie(req, res) {
-  const old = cookieValue(req, LEGACY_SIGN_IN_COOKIE);
-  if (!old) return;
-  const headers = [authGuard.cookieHeader(LEGACY_SIGN_IN_COOKIE, '', req, { maxAge: 0 })];
-  if (!cookieValue(req, 'chattering')) headers.unshift(authGuard.cookieHeader('chattering', old, req));
+  const used = signInCookieOf(req);
+  if (!used || used.name === signInCookieName()) {
+    // Signed in by the own name (or a bearer): an aiconvo leftover goes.
+    if (cookieValue(req, LEGACY_SIGN_IN_COOKIE)) res.setHeader('Set-Cookie', [authGuard.cookieHeader(LEGACY_SIGN_IN_COOKIE, '', req, { maxAge: 0 })]);
+    return;
+  }
+  // Signed in by an older name: that cookie is this install's. Move it.
+  const headers = [signInCookieHeader(used.value, req), authGuard.cookieHeader(used.name, '', req, { maxAge: 0 })];
+  if (used.name !== LEGACY_SIGN_IN_COOKIE && cookieValue(req, LEGACY_SIGN_IN_COOKIE)) headers.push(authGuard.cookieHeader(LEGACY_SIGN_IN_COOKIE, '', req, { maxAge: 0 }));
   res.setHeader('Set-Cookie', headers);
 }
 // The pages shown before sign-in cannot fetch the icon (every other path
@@ -5171,6 +5207,55 @@ let roster = usersLib.loadRoster(USERS_FILE, { ownerName: accountPersonName() })
 function saveRoster() { try { usersLib.saveRoster(USERS_FILE, roster); } catch (e) { console.error('[users] save:', e.message); } }
 try { if (!fs.existsSync(USERS_FILE)) saveRoster(); } catch {}
 const installKey = usersLib.loadInstallKey(INSTALL_KEY_FILE);
+// The other Chattering installs on this computer: the Windows app and the
+// ones inside WSL (design/84, localmachines.js). Elsewhere, none.
+// CHATTERING_LOCAL_APPDATA names the Windows account's LocalAppData as this
+// system sees it, for an operator whose WSL cannot ask Windows (and for
+// tests, with CHATTERING_LOCAL_KIND saying which side this install plays).
+const localMachinesLib = require('./localmachines.js');
+const LOCAL_APPDATA_OVERRIDE = String(process.env.CHATTERING_LOCAL_APPDATA || '').trim();
+const LOCAL_KIND = ['windows', 'wsl'].includes(process.env.CHATTERING_LOCAL_KIND) ? process.env.CHATTERING_LOCAL_KIND : platform.IS_WIN ? 'windows' : 'wsl';
+const localMachines = platform.IS_WIN || platform.IS_WSL || LOCAL_APPDATA_OVERRIDE
+  ? localMachinesLib.createLocalMachines({
+    kind: LOCAL_KIND,
+    onlyIfFolder: LOCAL_KIND === 'wsl',
+    self: () => ({ name: MACHINE_NAME, port: PORT, ports: [PREVIEW_PORT, TLS_PORT, PREVIEW_TLS_PORT], publicKey: installKey.publicKey,
+      distro: wslDistroName(), user: os.userInfo().username, version: APP_VERSION || '' }),
+    locate: LOCAL_APPDATA_OVERRIDE ? async () => LOCAL_APPDATA_OVERRIDE
+      : platform.IS_WIN ? async () => process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
+      : () => localMachinesLib.wslLocalAppData({ run: runWindowsProgram, cacheFile: path.join(CACHE_DIR, 'windows-localappdata') }),
+    log: m => console.log('[this computer] ' + m),
+  })
+  : { start: async () => {}, list: () => [], find: () => null, trustedKeys: () => [], isLocalKey: () => false };
+// A Windows program from WSL, its output as bytes. Started from a Windows
+// folder, so cmd.exe does not warn that it cannot start in a Linux one.
+function runWindowsProgram(file, args) {
+  return new Promise((resolve, reject) => {
+    const cwd = fs.existsSync('/mnt/c') ? '/mnt/c' : undefined;
+    execFile(file, args, { timeout: 8000, encoding: 'buffer', cwd, windowsHide: true }, (err, stdout) => (err ? reject(err) : resolve(stdout)));
+  });
+}
+// The WSL distribution this runs in. A systemd service does not inherit
+// WSL_DISTRO_NAME; the root folder's Windows name (\\wsl.localhost\<distro>\)
+// says it too, and is asked once.
+let wslDistroCache = null;
+function wslDistroName() {
+  if (!platform.IS_WSL) return '';
+  if (wslDistroCache !== null) return wslDistroCache;
+  wslDistroCache = String(process.env.WSL_DISTRO_NAME || '').trim();
+  if (!wslDistroCache) {
+    try {
+      const win = execFileSync('wslpath', ['-w', '/'], { timeout: 3000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      const m = /^\\\\wsl(?:\.localhost|\$)\\([^\\]+)/i.exec(win);
+      wslDistroCache = m ? m[1] : '';
+    } catch { wslDistroCache = ''; }
+  }
+  return wslDistroCache;
+}
+// What the page may know of another install on this computer: never its key.
+function publicLocalMachine(m) {
+  return { id: m.id, name: m.name, kind: m.kind, distro: m.distro || '', port: m.port, blocked: m.blocked || null };
+}
 let accessRules = accessLib.loadRules(ACCESS_FILE);
 let accessRulesVersion = 0;
 function saveAccessRules() { accessRulesVersion++; try { accessLib.saveRules(ACCESS_FILE, accessRules); } catch (e) { console.error('[access] save:', e.message); } }
@@ -5844,7 +5929,9 @@ async function connectMachine(link) {
   if (!parsed) throw new Error('paste the connect link from the other machine (http://host:7433/?token=…)');
   const remote = await remoteJson(parsed.url, '/api/settings', parsed.token);
   const name = String(remote.hostname || '').trim() || parsed.url.replace(/^https?:\/\//, '');
-  if (name === os.hostname() && parsed.url.includes('127.0.0.1')) throw new Error('that link points at this machine');
+  // The same install answered (its signing key is ours). A name says
+  // nothing: the Linux side of a PC is called like its Windows side.
+  if (remote.publicKey && remote.publicKey === installKey.publicKey) throw new Error('that link points at this Chattering');
   // Its signing key comes back with its settings: from now on a person
   // signed in here arrives there as themselves (handoff), no paste.
   upsertMachine({ name, url: parsed.url, token: parsed.token, publicKey: String(remote.publicKey || '') });
@@ -5855,7 +5942,7 @@ async function connectMachine(link) {
   else {
     try {
       await remoteJson(parsed.url, '/api/machines/register', parsed.token, {
-        method: 'POST', body: JSON.stringify({ name: os.hostname(), url: myUrl, token: LAN_TOKEN, publicKey: installKey.publicKey }),
+        method: 'POST', body: JSON.stringify({ name: MACHINE_NAME, url: myUrl, token: LAN_TOKEN, publicKey: installKey.publicKey }),
       });
       registeredBack = true;
     } catch (e) { why = e.message; }
@@ -5904,7 +5991,11 @@ function settingsResponse(identity = ownerIdentity()) {
     readyProviders: readyProviders(),
     path: SETTINGS_FILE,
     // Which install the page is talking to; the header machine switcher shows it.
-    hostname: os.hostname(),
+    hostname: MACHINE_NAME,
+    // The other installs on this computer (design/84): the switcher offers
+    // them to a browser on this computer, with no pairing to do. Guests
+    // are walled to what was shared with them, here.
+    localMachines: identity && identity.user && !usersLib.isGuest(identity.user) ? localMachines.list().map(publicLocalMachine) : [],
     port: PORT,
     // A connect link carries the install token, which is the owner's
     // credential: only the owner tier is shown it.
@@ -15899,7 +15990,7 @@ async function handleRequest(req, res) {
     };
     const setSignInCookie = (secret, next, who = null) => {
       noteSignIn('ok', { user: who ? { id: who.id, name: who.name } : undefined, via: u.pathname });
-      res.writeHead(302, { Location: next || '/', 'Set-Cookie': authGuard.cookieHeader('chattering', secret, req) });
+      res.writeHead(302, { Location: next || '/', 'Set-Cookie': signInCookieHeader(secret, req) });
       res.end();
     };
     // An install joining as a person (chattering join): the credential is in
@@ -16034,8 +16125,12 @@ async function handleRequest(req, res) {
       if (handoff) {
         if (!(await gate())) return;
         try {
-          const claim = usersLib.verifyHandoff(handoff, { trustedPublicKeys: (appSettings.machines || []).map(m => m.publicKey).filter(Boolean) });
-          const { user } = usersLib.upsertHandoffUser(roster, claim.user);
+          const claim = usersLib.verifyHandoff(handoff, { trustedPublicKeys: [...(appSettings.machines || []).map(m => m.publicKey).filter(Boolean), ...localMachines.trustedKeys()] });
+          // The other install on this computer is the same Windows account:
+          // its owner is this install's owner (design/84). Anyone else
+          // arrives as on any paired install.
+          const sameComputerOwner = claim.user.role === 'owner' && localMachines.isLocalKey(claim.iss) ? usersLib.ownerOf(roster) : null;
+          const { user } = sameComputerOwner ? { user: sameComputerOwner } : usersLib.upsertHandoffUser(roster, claim.user);
           if (user.disabled) throw new Error('this person is disabled here');
           const { secret } = usersLib.issueCredential(roster, user.id, { kind: 'session', label: 'handoff' });
           saveRoster();
@@ -16066,7 +16161,8 @@ async function handleRequest(req, res) {
       const presented = stale || String(req.headers.authorization || '');
       if (presented) { if (!(await gate())) return; noteSignIn('fail', { via: stale ? 'cookie' : 'bearer' }, presented); }
       // A stale cookie is cleared so the browser stops presenting it.
-      if (stale) res.setHeader('Set-Cookie', [authGuard.cookieHeader('chattering', '', req, { maxAge: 0 }), authGuard.cookieHeader(LEGACY_SIGN_IN_COOKIE, '', req, { maxAge: 0 })]);
+      const clear = stale ? clearSignInCookieHeaders(req) : [];
+      if (clear.length) res.setHeader('Set-Cookie', clear);
       if (u.pathname.startsWith('/api/')) return json(res, 401, { error: 'sign in first' });
       res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });
       return res.end(lanLoginPage());
@@ -16092,7 +16188,7 @@ async function handleRequest(req, res) {
       if (!gate.ok) return json(res, gate.status, { error: gate.error });
     }
     if (u.pathname === '/logout' && req.method === 'POST') {
-      res.writeHead(302, { Location: '/', 'Set-Cookie': authGuard.cookieHeader('chattering', '', req, { maxAge: 0 }) });
+      res.writeHead(302, { Location: '/', 'Set-Cookie': clearSignInCookieHeaders(req, { legacyToo: signInCookieOf(req)?.name === 'chattering' }) });
       return res.end();
     }
     // A made program's address for a signed-in person of the household: a
@@ -17843,6 +17939,15 @@ async function handleRequest(req, res) {
         const p = JSON.parse(body || '{}');
         json(res, 200, await joinRemoteProject({ link: String(p.link || ''), name: p.name, folder: p.folder ? path.resolve(String(p.folder)) : null }));
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/handoff' && req.method === 'GET' && u.searchParams.has('local')) {
+      // To the other install on this computer: its card says its port; the
+      // page builds the address on the host name it is on (127.0.0.1 or
+      // localhost), so the browser stays on this computer.
+      const m = localMachines.find(String(u.searchParams.get('local') || ''));
+      if (!m) return json(res, 404, { error: 'that Chattering is no longer on this computer' });
+      if (m.blocked) return json(res, 200, { ...publicLocalMachine(m), path: null });
+      const token = usersLib.mintHandoff(installKey, identity.user, { ttlMs: 30000 });
+      json(res, 200, { ...publicLocalMachine(m), path: '/?handoff=' + encodeURIComponent(token), as: usersLib.publicUser(identity.user) });
     } else if (u.pathname === '/api/handoff' && req.method === 'GET') {
       // The switcher asks for the address that lands the current person on
       // another install as themselves. Without that install's key (paired
@@ -17956,7 +18061,7 @@ async function handleRequest(req, res) {
       const entry = settingsLib.normalizeMachines([JSON.parse(body || '{}')])[0];
       if (!entry) return json(res, 400, { error: 'name, url and token are required' });
       upsertMachine(entry);
-      json(res, 200, { ok: true, name: os.hostname(), publicKey: installKey.publicKey });
+      json(res, 200, { ok: true, name: MACHINE_NAME, publicKey: installKey.publicKey });
     } else if (u.pathname === '/api/settings' && (req.method === 'PUT' || req.method === 'POST')) {
       if (!usersLib.canManageUsers(identity)) return json(res, 403, { error: 'only the owner or an admin can change this machine\'s settings' });
       let body = '';
@@ -17995,7 +18100,7 @@ async function handleRequest(req, res) {
       if (semanticEnabled()) scheduleSemanticSync(500); // backfill starts now
       // The browser that just opened the machine to the network stays signed
       // in: from now on this machine's own requests need the install token.
-      if (lanWanted() && !prevLan && LAN_TOKEN && isLocalRequest(req)) res.setHeader('Set-Cookie', `chattering=${encodeURIComponent(LAN_TOKEN)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+      if (lanWanted() && !prevLan && LAN_TOKEN && isLocalRequest(req)) res.setHeader('Set-Cookie', signInCookieHeader(LAN_TOKEN, req));
       json(res, 200, settingsResponse(identity));
     } else if (u.pathname === '/api/ai' || u.pathname.startsWith('/api/ai/')) {
       // Connecting this machine to an AI (design/73). Owner tier only (policy.js).
@@ -19255,6 +19360,8 @@ function startLanTls() {
 }
 
 applyLanMode(lanWanted(), () => {
+  // Listening: tell the other installs on this computer where this one is.
+  localMachines.start().catch(e => console.log('[this computer] ' + e.message));
   // The server upgrades the history store before any Pi worker opens it.
   try { checkpoints(); } catch (e) { console.error('Saved file history unavailable:', e.message); }
   fullScan().then(() => {

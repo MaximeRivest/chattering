@@ -22,6 +22,10 @@ Test the readiness logic without WSL or a browser: `powershell -NoProfile -Execu
 
 For a non-visual readiness check, run the installed `launch.ps1 -CheckOnly` from Windows PowerShell. Startup errors are also written to `startup-error.log`. Test cold startup only when no other WSL work is active: close WSL, then launch from the Desktop. Never shut down a user's WSL session merely to test this.
 
+## Beside the Windows app
+
+A PC can also have the Windows app (the `Chattering-Setup` download). The two find each other by themselves through `%LOCALAPPDATA%\Chattering\local-machines\`: the machine button of either one then offers the other ("LILLY-PC (Linux)", "LILLY-PC"), and one click switches, signed in as the owner, without pasting a link or opening either one to the network. Each keeps its own sign-in. See `design/84-one-computer-two-sides.md`.
+
 ## Reaching it from other devices
 
 The switch in Chattering settings → machines makes the server listen for the network, but on WSL that network is a private one inside the WSL virtual machine (Windows 10, or Windows 11 without mirrored networking). Windows must forward the ports in, and the WSL address changes after every restart. Once, from an **administrator** PowerShell in this folder (as seen from Windows, e.g. `\\wsl$\Ubuntu-24.04\home\lilly\chattering\windows`):
