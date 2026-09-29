@@ -63,7 +63,14 @@ function refreshCatalog() {
   for (const m of registry.getAll ? registry.getAll() : registry.getAvailable()) {
     if (!m || !m.provider || !m.baseUrl) continue;
     if (!next.has(m.provider)) next.set(m.provider, { baseUrl: String(m.baseUrl).replace(/\/+$/, ''), api: m.api || null, models: [] });
-    next.get(m.provider).models.push({ id: m.id, name: m.name || m.id, reasoning: !!m.reasoning, contextWindow: m.contextWindow, maxTokens: m.maxTokens, input: m.input, cost: m.cost });
+    // Each model keeps its own API: one provider can serve several (OpenRouter lists Anthropic models in the
+    // Anthropic format and the rest in OpenAI's). The provider's api is its most common one.
+    next.get(m.provider).models.push({ id: m.id, name: m.name || m.id, api: m.api || undefined, reasoning: !!m.reasoning, contextWindow: m.contextWindow, maxTokens: m.maxTokens, input: m.input, cost: m.cost });
+  }
+  for (const info of next.values()) {
+    const count = new Map();
+    for (const x of info.models) if (x.api) count.set(x.api, (count.get(x.api) || 0) + 1);
+    if (count.size) info.api = [...count].sort((a, b) => b[1] - a[1])[0][0];
   }
   providerBase = next;
 }
