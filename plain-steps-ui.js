@@ -1,29 +1,39 @@
 /* Work steps in plain words, on the page (plain-steps.js is the server side).
-   When settings → model turns it on, each settled group of steps that comes
-   on screen asks the server for its explanation: one sentence on the group's
-   line, one phrase on each step. The technical lines stay in the page
-   (hidden, one click away): "show commands" on an open group switches this
-   screen back, "plain words" switches it again, and the choice is kept per
-   screen. Nothing is asked for groups off screen, for work still being
-   written, or while this screen shows the technical lines.
+   When settings → model turns it on, each step gets a short phrase and each
+   finished group a sentence on its line. The technical lines stay in the
+   page (hidden, one click away): "show commands" on an open group switches
+   this screen back, "plain words" switches it again, and the choice is kept
+   per screen.
 
-   The explanation streams in: the server sends what the model has written
-   so far ('plain-steps' events), the sentence first and then each phrase,
-   and the page paints it as it comes. Asking again is only the fallback for
-   a missed event (a reconnect), so it is slow.
+   Two kinds of groups:
+   - Work being done now (the live groups of a run, and a saved group at the
+     end of a conversation that is still running): each step is asked for as
+     soon as it has finished, and the steps are explained side by side. The
+     group's line shows the latest phrase until the group is finished.
+   - Finished groups: asked for when they come on screen; the server decides
+     whether that is one call for the group or the missing phrases and a
+     sentence.
+   Phrases are kept per step, so a step explained live keeps its phrase in
+   the saved transcript. Everything streams in: the server sends what the
+   model has written so far ('plain-steps' events). Asking again is only the
+   fallback for a missed event, so it is slow.
 
-   Everything here patches the rendered transcript and is safe to run again
-   after any re-render: wireConversationReader calls apply(). */
+   Everything here patches the rendered page and is safe to run again after
+   any re-render: wireConversationReader calls apply(), the live groups
+   call live(). */
 (function () {
   'use strict';
-  const PREF = 'chattering.plainSteps.view';     // 'technical' on screens that chose it
-  const answers = new Map();   // cache key → { summary, steps: { id: phrase } }
-  const failedUntil = new Map(); // cache key → time it may be asked again
-  const waiting = new Map();   // cache key → { key, steps, tries, due }
-  const inFlight = new Set();  // cache keys in the request being sent
-  const jobs = new Map();      // the server's job token → cache keys it answers
-  const writing = new Map();   // cache key → the answer so far, while it streams
-  let sending = false, timer = 0, observer = null, observedRoot = null, offUntil = 0;
+  const PREF = 'chattering.plainSteps.view';   // 'technical' on screens that chose it
+  const phrases = new Map();    // key|step → phrase
+  const drafts = new Map();     // key|step → phrase being written
+  const sums = new Map();       // group id → sentence
+  const sumDrafts = new Map();  // group id → sentence being written
+  const jobs = new Map();       // the server's job token → group ids waiting on it
+  const asked = new Map();      // group id → { due, tries }: asked, and when to ask again
+  const failedUntil = new Map(); // group id → time it may be asked again
+  const want = new Map();       // group id → { key, steps, settled } to send
+  const sentenceAsked = new Set(); // group ids whose sentence was asked for once all phrases were in
+  let timer = 0, sending = false, observer = null, observedRoot = null, offUntil = 0;
 
   const featureOn = () => {
     const s = typeof settingsOf === 'function' ? settingsOf() : {};
@@ -32,17 +42,9 @@
   const technical = () => { try { return localStorage.getItem(PREF) === 'technical'; } catch { return false; } };
   const active = () => featureOn() && !technical();
 
-  // A group is its conversation, its first entry and exactly its steps: a
-  // group that gained a step is another question.
-  function identity(g) {
-    const key = g.dataset.msgKey, gkey = g.dataset.gkey;
-    if (!key || !gkey) return null;
-    const steps = [...new Set([...g.querySelectorAll(':scope > [data-step]')].map(el => el.dataset.step))];
-    if (!steps.length) return null;
-    return { key, steps, cache: key + '|' + gkey + '|' + steps.join(' ') };
-  }
+  // ---- the groups on the page ------------------------------------------------------
 
-  // Work at the end of a fragment may still grow while its conversation runs.
+  // A run in progress in this conversation (a saved group at its end may still grow).
   function running(key) {
     if (typeof runLedgers !== 'undefined') {
       for (const L of runLedgers.values()) if (!L.done && (L.key === key || L.fanoutRootKey === key)) return true;
@@ -50,7 +52,23 @@
     if (typeof activeRuns !== 'undefined') for (const r of activeRuns.values()) if (r.key === key) return true;
     return false;
   }
-  const settled = (g, key) => !g.hasAttribute('data-open-end') || !running(key);
+
+  // What a group is: its conversation, its steps (those finished: `ready`),
+  // and whether it is finished. Live groups carry it (live()); saved groups
+  // are read from their rows.
+  function info(g) {
+    if (g._plain) return g._plain;
+    const key = g.dataset.msgKey;
+    if (!key || !g.dataset.gkey) return null;
+    const steps = [...new Set([...g.querySelectorAll(':scope > [data-step]')].map(el => el.dataset.step))];
+    if (!steps.length) return null;
+    const settled = !g.hasAttribute('data-open-end') || !running(key);
+    return { key, steps, ready: steps, settled };
+  }
+  // A group is asked about for its finished steps; a finished group's
+  // sentence is kept under the same id.
+  const groupId = i => i.key + '|' + i.ready.join(' ');
+  const allGroups = () => document.querySelectorAll('.toolgroup[data-gkey], .toolgroup[data-live-work]');
 
   // ---- painting ------------------------------------------------------------------
 
@@ -63,90 +81,146 @@
       b.type = 'button'; b.className = 'tg-plain-switch';
       summary.appendChild(b);
     }
-    b.textContent = label; b.title = title;
+    if (b.textContent !== label) b.textContent = label;
+    b.title = title;
   }
 
-  // streaming: the answer is still being written; the sentence carries a
-  // caret, and steps without their phrase yet keep their technical line.
-  function paint(g, a, streaming = false) {
-    const detail = g.querySelector(':scope > summary .tg-detail');
-    if (detail && a.summary) {
-      if (detail.dataset.tech === undefined) detail.dataset.tech = detail.textContent;
-      if (detail.textContent !== a.summary) detail.textContent = a.summary;
-      detail.title = 'In plain words. The steps: ' + detail.dataset.tech;
-      detail.classList.add('tg-plain');
-    }
-    if (detail) {
-      detail.classList.toggle('tg-writing', streaming && !!a.summary);
-      if (streaming && !a.summary) detail.setAttribute('aria-busy', 'true'); else detail.removeAttribute('aria-busy');
-    }
-    for (const el of g.querySelectorAll(':scope > [data-step]')) {
-      const phrase = a.steps && a.steps[el.dataset.step];
-      if (!phrase) continue;
-      const host = el.matches('details') ? el.querySelector(':scope > summary') : el;
-      if (!host) continue;
-      let span = host.querySelector(':scope > .step-plain');
-      if (!span) {
-        span = document.createElement('span');
-        span.className = 'step-plain';
-        host.insertBefore(span, host.querySelector(':scope > .step-tech, :scope > .msg-file-inline'));
-      }
-      if (span.textContent !== phrase) span.textContent = phrase;
-      const tech = host.querySelector(':scope > .step-tech');
-      span.title = tech ? tech.textContent.trim() : '';
+  // The technical line of a group; live() rewrites it as the run goes on.
+  const techOf = detail => detail._t !== undefined ? detail._t : (detail.dataset.tech ?? detail.textContent);
+
+  function paintRow(el, phrase, writing) {
+    if (el.classList.contains('ls-b')) {
+      // A live step: its phrase above the head, command and output hidden.
+      let line = el.querySelector(':scope > .ls-plain');
+      if (!line) { line = document.createElement('div'); line.className = 'ls-plain'; el.prepend(line); }
+      if (line.textContent !== phrase) line.textContent = phrase;
+      line.classList.toggle('writing', writing);
       el.classList.add('has-plain');
+      return;
     }
-    g.classList.add('plain-painted');
-    switchButton(g, 'show commands', 'Show the technical steps on this screen');
+    const host = el.matches('details') ? el.querySelector(':scope > summary') : el;
+    if (!host) return;
+    let span = host.querySelector(':scope > .step-plain');
+    if (!span) {
+      span = document.createElement('span');
+      span.className = 'step-plain';
+      host.insertBefore(span, host.querySelector(':scope > .step-tech, :scope > .msg-file-inline'));
+    }
+    if (span.textContent !== phrase) span.textContent = phrase;
+    span.classList.toggle('writing', writing);
+    const tech = host.querySelector(':scope > .step-tech');
+    span.title = tech ? tech.textContent.trim() : '';
+    el.classList.add('has-plain');
+  }
+  function unpaintRow(el) {
+    el.querySelector(':scope > .ls-plain, :scope > summary > .step-plain, :scope > .step-plain')?.remove();
+    el.classList.remove('has-plain');
   }
 
+  function paint(g) {
+    const i = info(g);
+    if (!i) return;
+    const rows = g.querySelectorAll(g._plain ? '.ls-b[data-step]' : ':scope > [data-step]');
+    let latest = null, latestWriting = false, any = false;
+    for (const name of i.steps) {
+      const done = phrases.get(i.key + '|' + name), draft = !done && drafts.get(i.key + '|' + name);
+      if (done || draft) { latest = done || draft; latestWriting = !done; any = true; }
+    }
+    for (const el of rows) {
+      const k = i.key + '|' + el.dataset.step;
+      const phrase = phrases.get(k) || drafts.get(k);
+      if (phrase) paintRow(el, phrase, !phrases.has(k)); else unpaintRow(el);
+    }
+    const id = groupId(i);
+    const sentence = i.settled ? (sums.get(id) || sumDrafts.get(id)) : null;
+    const line = sentence || latest;
+    const detail = g.querySelector(':scope > summary .tg-detail');
+    if (detail) {
+      if (line) {
+        const tech = techOf(detail);
+        detail.dataset.tech = tech;
+        // A live group's own text cache (_t) keeps the technical line: its
+        // next write is skipped while that line is unchanged.
+        if (detail.textContent !== line) detail.textContent = line;
+        detail._plainTech = tech;
+        detail.title = (sentence ? 'In plain words. ' : 'Latest step, in plain words. ') + 'The steps: ' + tech;
+        detail.classList.add('tg-plain');
+        detail.classList.toggle('tg-writing', sentence ? !sums.has(id) : latestWriting);
+        detail.removeAttribute('aria-busy');
+      } else {
+        restoreDetail(detail);
+        if (asked.has(id) && !failedUntil.has(id)) detail.setAttribute('aria-busy', 'true');
+      }
+    }
+    if (any || sentence) { g.classList.add('plain-painted'); switchButton(g, 'show commands', 'Show the technical steps on this screen'); }
+    else { g.classList.remove('plain-painted'); g.querySelector(':scope > summary > .tg-plain-switch')?.remove(); }
+  }
+  function restoreDetail(detail) {
+    if (detail.dataset.tech !== undefined) {
+      const tech = detail._t !== undefined ? detail._t : detail._plainTech ?? detail.dataset.tech;
+      detail.textContent = tech;
+      detail.title = tech;
+      delete detail.dataset.tech;
+    }
+    detail.classList.remove('tg-plain', 'tg-writing');
+    detail.removeAttribute('aria-busy');
+  }
   function unpaint(g) {
     const detail = g.querySelector(':scope > summary .tg-detail');
-    if (detail) {
-      if (detail.dataset.tech !== undefined) {
-        detail.textContent = detail.dataset.tech;
-        detail.title = detail.dataset.tech;
-        delete detail.dataset.tech;
-      }
-      detail.classList.remove('tg-plain', 'tg-writing');
-      detail.removeAttribute('aria-busy');
-    }
-    for (const span of g.querySelectorAll('.step-plain')) span.remove();
-    for (const el of g.querySelectorAll('.has-plain')) el.classList.remove('has-plain');
+    if (detail) restoreDetail(detail);
+    for (const el of g.querySelectorAll('.has-plain')) unpaintRow(el);
     g.classList.remove('plain-painted');
-    const b = g.querySelector(':scope > summary > .tg-plain-switch');
-    if (b) b.remove();
+    g.querySelector(':scope > summary > .tg-plain-switch')?.remove();
   }
 
-  function busy(g, on) {
-    const detail = g.querySelector(':scope > summary .tg-detail');
-    if (!detail) return;
-    if (on) detail.setAttribute('aria-busy', 'true'); else detail.removeAttribute('aria-busy');
-  }
-
-  // Every group on the page with this cache key (the same work can show twice).
-  function eachGroup(cache, fn) {
-    for (const g of document.querySelectorAll('.toolgroup[data-gkey]:not([data-live-work])')) {
-      const id = identity(g);
-      if (id && id.cache === cache) fn(g);
-    }
+  // Repaint what an event touched, once per frame (every group of the conversation).
+  const dirty = new Set();
+  let frame = 0;
+  function repaint(key) {
+    dirty.add(key);
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      const keys = new Set(dirty); dirty.clear();
+      if (!active()) return;
+      for (const g of allGroups()) { const i = info(g); if (i && keys.has(i.key)) paint(g); }
+      after(keys);
+    });
   }
 
   // ---- asking --------------------------------------------------------------------
 
+  // What is still missing for a group: a phrase for a finished step, or (a
+  // finished group) its sentence.
+  function missing(i) {
+    if (i.ready.some(n => !phrases.has(i.key + '|' + n))) return true;
+    return i.settled && !sums.has(groupId(i));
+  }
+
+  function consider(g, { force = false } = {}) {
+    const i = info(g);
+    if (!i || !i.ready.length || !missing(i)) return;
+    const id = groupId(i);
+    if ((failedUntil.get(id) || 0) > Date.now()) return;
+    const a = asked.get(id);
+    if (a && !force && a.due > Date.now()) return;
+    want.set(id, { key: i.key, steps: i.ready, settled: i.settled });
+    schedule(force ? 30 : 120); // gather what came on screen together
+  }
+
+  // After phrases arrived: a finished group with all of them asks for its sentence.
+  function after(keys) {
+    for (const g of allGroups()) {
+      const i = info(g);
+      const id = i && groupId(i);
+      if (!i || !keys.has(i.key) || !i.settled || sums.has(id) || sentenceAsked.has(id)) continue;
+      if (i.ready.every(n => phrases.has(i.key + '|' + n)) && onScreen(g)) { sentenceAsked.add(id); consider(g, { force: true }); }
+    }
+  }
+
   function schedule(ms) {
     clearTimeout(timer);
     timer = setTimeout(send, ms);
-  }
-
-  function want(g) {
-    const id = identity(g);
-    if (!id || answers.has(id.cache) || inFlight.has(id.cache)) return;
-    if ((failedUntil.get(id.cache) || 0) > Date.now()) return;
-    if (!settled(g, id.key)) return;
-    if (!waiting.has(id.cache)) waiting.set(id.cache, { key: id.key, steps: id.steps, tries: 0, due: 0 });
-    busy(g, true);
-    schedule(120); // gather what came on screen together
   }
 
   const onScreen = g => {
@@ -158,139 +232,149 @@
 
   async function send() {
     if (sending) return;
-    if (!active()) { waiting.clear(); return; }
+    if (!active()) { want.clear(); return; }
+    // One conversation per request, at most twelve groups.
+    const first = want.values().next().value;
+    if (!first) return;
+    const batch = [...want].filter(([, w]) => w.key === first.key).slice(0, 12);
+    for (const [id] of batch) want.delete(id);
     const now = Date.now();
-    // Only what is still on screen; one conversation per request.
-    for (const [cache, w] of waiting) {
-      let seen = false;
-      eachGroup(cache, g => { if (onScreen(g)) seen = true; });
-      if (!seen) { waiting.delete(cache); eachGroup(cache, g => busy(g, false)); }
-    }
-    const due = [...waiting].filter(([, w]) => w.due <= now);
-    if (!due.length) {
-      const next = Math.min(...[...waiting.values()].map(w => w.due));
-      if (Number.isFinite(next)) schedule(Math.max(200, next - now));
-      return;
-    }
-    const key = due[0][1].key;
-    const batch = due.filter(([, w]) => w.key === key).slice(0, 12);
-    const tokens = new Map(batch.map(([cache], i) => [String(i), cache]));
+    for (const [id] of batch) { const a = asked.get(id) || { tries: 0 }; a.tries++; a.due = now + 15000; asked.set(id, a); }
     sending = true;
-    for (const [cache] of batch) inFlight.add(cache);
     let out = null, status = 0;
     try {
-      const res = await fetch('/api/steps/plain?id=' + encodeURIComponent(key), {
+      const res = await fetch('/api/steps/plain?id=' + encodeURIComponent(first.key), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ groups: batch.map(([cache, w], i) => ({ g: String(i), steps: w.steps })) }),
+        body: JSON.stringify({ groups: batch.map(([, w], n) => ({ g: String(n), steps: w.steps, settled: w.settled })) }),
       });
       status = res.status;
       out = await res.json().catch(() => null);
-    } catch { /* offline: try again later */ }
+    } catch { /* offline: asked again later */ }
     sending = false;
-    for (const [cache] of batch) inFlight.delete(cache);
     if (status === 409) {
       // Turned off on the server since this page loaded settings.
       offUntil = Date.now() + 5 * 60 * 1000;
-      for (const [cache] of batch) { waiting.delete(cache); eachGroup(cache, unpaint); }
+      for (const g of allGroups()) unpaint(g);
       return;
     }
-    const later = Date.now();
-    if (out && out.results) {
-      for (const [token, cache] of tokens) {
-        const r = out.results[token];
-        if (r) finish(cache, r);
-        else if (out.failed && out.failed[token] !== undefined) fail(cache);
-        else if (out.pending && out.pending[token]) {
-          const job = out.pending[token];
-          if (!jobs.has(job)) jobs.set(job, new Set());
-          jobs.get(job).add(cache);
-          if (out.partial && out.partial[token]) stream(cache, out.partial[token]);
-        }
+    batch.forEach(([id, w], n) => {
+      const r = out && out.groups && out.groups[String(n)];
+      const a = asked.get(id);
+      if (!r) { if (a) a.due = Date.now() + Math.min(10000, 2000 * a.tries); return; }
+      for (const [name, p] of Object.entries(r.steps || {})) { phrases.set(w.key + '|' + name, p); drafts.delete(w.key + '|' + name); }
+      if (r.summary) { sums.set(id, r.summary); sumDrafts.delete(id); }
+      for (const [name, p] of Object.entries(r.writing || {})) {
+        if (name === '') sumDrafts.set(id, p); else if (!phrases.has(w.key + '|' + name)) drafts.set(w.key + '|' + name, p);
       }
+      for (const token of r.jobs || []) { if (!jobs.has(token)) jobs.set(token, new Set()); jobs.get(token).add(id); }
+      // Nothing coming: steps not finished yet are asked for when they are
+      // (a new id); the rest is all there is for now.
+      // (Some steps cannot be explained: a command stopped before its result.)
+      if (!(r.jobs || []).length) {
+        if (missing({ key: w.key, steps: w.steps, ready: w.steps, settled: w.settled })) failedUntil.set(id, Date.now() + (w.settled ? 10 * 60 * 1000 : 60 * 1000));
+        asked.delete(id);
+      } else if (a && a.tries > 16) { failedUntil.set(id, Date.now() + 10 * 60 * 1000); asked.delete(id); }
+      repaint(w.key);
+    });
+    if (want.size) schedule(50);
+    else {
+      // The fallback for a missed event: groups still waiting ask again, slowly.
+      const next = Math.min(...[...asked.values()].map(a => a.due));
+      if (Number.isFinite(next)) setTimeout(recheck, Math.max(1000, next - Date.now()));
     }
-    // Being written: the events bring it. Asked again only in case one was
-    // missed, slowly, and given up quietly after about four minutes (the
-    // steps stay technical). A failed request is asked again sooner.
-    for (const [, cache] of tokens) {
-      const w = waiting.get(cache);
-      if (!w) continue;
-      w.tries++;
-      if (w.tries > 16) { fail(cache); continue; }
-      w.due = later + (out && out.results ? 15000 : Math.min(10000, 2000 + w.tries * 1000));
+  }
+  function recheck() {
+    const now = Date.now();
+    for (const g of allGroups()) {
+      const i = info(g);
+      const a = i && asked.get(groupId(i));
+      if (a && a.due <= now && (g._plain || onScreen(g))) consider(g);
     }
-    if (waiting.size) schedule(waiting.size > batch.length ? 50 : 2000);
   }
 
-  function finish(cache, a) {
-    answers.set(cache, a);
-    waiting.delete(cache); writing.delete(cache);
-    if (active()) eachGroup(cache, g => paint(g, a));
-  }
-  function fail(cache) {
-    failedUntil.set(cache, Date.now() + 10 * 60 * 1000);
-    waiting.delete(cache); writing.delete(cache);
-    // A group given up on keeps its technical lines.
-    eachGroup(cache, g => { if (!answers.has(cache)) unpaint(g); busy(g, false); });
-  }
-
-  // The answer so far. On e-ink a repaint costs a flash: at most one a second.
-  const einkScreen = () => typeof isEink === 'function' && isEink();
-  const painted = new Map(); // cache key → time of the last streaming paint
-  function stream(cache, a) {
-    if (answers.has(cache)) return;
-    writing.set(cache, a);
-    const last = painted.get(cache) || 0;
-    if (einkScreen() && Date.now() - last < 1000) return;
-    painted.set(cache, Date.now());
-    if (active()) eachGroup(cache, g => paint(g, a, true));
-  }
-
-  /** A 'plain-steps' event: what the model has written of a job, or its end. */
+  /** A 'plain-steps' event: what the model has written of a call, or its end. */
   function onEvent(ev) {
-    const caches = ev && jobs.get(ev.job);
-    if (!caches) return;
-    const a = { summary: ev.summary || '', steps: ev.steps || {} };
-    for (const cache of caches) {
-      if (!cache.startsWith(ev.key + '|')) continue;
-      if (ev.state === 'done') finish(cache, a);
-      else if (ev.state === 'failed') fail(cache);
-      else stream(cache, a);
+    if (!ev || !ev.key) return;
+    const done = ev.state === 'done', failed = ev.state === 'failed';
+    for (const [name, p] of Object.entries(ev.steps || {})) {
+      const k = ev.key + '|' + name;
+      if (done) { phrases.set(k, p); drafts.delete(k); } else if (!failed && !phrases.has(k)) drafts.set(k, p);
     }
-    if (ev.state === 'done' || ev.state === 'failed') jobs.delete(ev.job);
+    for (const id of jobs.get(ev.job) || []) {
+      if (!id.startsWith(ev.key + '|')) continue;
+      if (ev.summary) { if (done) { sums.set(id, ev.summary); sumDrafts.delete(id); } else if (!failed) sumDrafts.set(id, ev.summary); }
+      if (done || failed) asked.delete(id);
+      if (failed) failedUntil.set(id, Date.now() + 10 * 60 * 1000);
+    }
+    if (failed) for (const name of Object.keys(ev.steps || {})) drafts.delete(ev.key + '|' + name);
+    if (done || failed) jobs.delete(ev.job);
+    repaint(ev.key);
   }
 
-  function observe(root, g) {
+  function observe(g) {
     const view = document.getElementById('view');
-    if (!view || typeof IntersectionObserver === 'undefined') { want(g); return; }
+    if (!view || typeof IntersectionObserver === 'undefined') { consider(g); return; }
     if (!observer || observedRoot !== view) {
       if (observer) observer.disconnect();
       observedRoot = view;
+      // Kept observed: a group that comes back on screen still missing
+      // something asks again (at the slow pace).
       observer = new IntersectionObserver(entries => {
-        // Kept observed: a group scrolled away before its answer came is
-        // dropped from the wait, and asked again when it comes back.
-        for (const en of entries) if (en.isIntersecting) want(en.target);
+        for (const en of entries) if (en.isIntersecting) consider(en.target);
       }, { root: view, rootMargin: '200px 0px' });
     }
     observer.observe(g);
   }
 
-  /** Bring the steps under `root` in line with the setting and this screen's choice. */
+  /** Bring the saved groups under `root` in line with the setting and this screen's choice. */
   function apply(root) {
     if (!root) return;
     const on = featureOn(), plain = on && !technical();
     if (observer) observer.disconnect(); // the previous render's groups may be gone
     for (const g of root.querySelectorAll('.toolgroup[data-gkey]:not([data-live-work])')) {
-      const id = plain ? identity(g) : null;
-      const known = id && answers.get(id.cache);
-      if (known) { paint(g, known); continue; }
-      const sofar = id && writing.get(id.cache);
-      if (sofar) { paint(g, sofar, true); continue; }
-      unpaint(g);
-      if (!on || !identity(g)) continue;
-      if (!plain) { switchButton(g, 'plain words', 'Explain these steps in plain words on this screen'); continue; }
-      if (waiting.has(id.cache) || inFlight.has(id.cache)) busy(g, true);
-      else if ((failedUntil.get(id.cache) || 0) <= Date.now() && settled(g, id.key)) observe(root, g);
+      if (!plain) {
+        unpaint(g);
+        if (on && info(g)) switchButton(g, 'plain words', 'Explain these steps in plain words on this screen');
+        continue;
+      }
+      paint(g);
+      const i = info(g);
+      if (i && missing(i)) observe(g);
     }
+    for (const g of root.querySelectorAll('.toolgroup[data-live-work]')) if (g._plain) live(g);
+  }
+
+  /**
+   * A live group of a run (conversation-reader.js renderLiveReplyLedger),
+   * after each render: its steps from the run's blocks. A command is
+   * finished when it has its result, a thought when its message ended.
+   */
+  function live(g, key, jobId, blocks) {
+    if (key !== undefined) {
+      const steps = [], ready = [];
+      for (const b of blocks || []) {
+        const name = b.kind === 'tool' ? (b.callId ? 't:' + b.callId : null) : (b.think ? 'j:' + jobId + ':' + b.id : null);
+        if (!name) continue;
+        steps.push(name);
+        if (b.kind === 'tool' ? b.phase === 'done' : b.done) ready.push(name);
+      }
+      g._plain = { key, steps, ready, settled: false };
+    }
+    if (!g._plain) return;
+    const on = featureOn();
+    if (!on || technical()) {
+      unpaint(g);
+      if (on) switchButton(g, 'plain words', 'Explain these steps in plain words on this screen');
+      return;
+    }
+    paint(g);
+    if (document.visibilityState !== 'hidden') consider(g);
+  }
+
+  /** The rows of a live group were drawn (it was opened): their phrases. */
+  function rows(host) {
+    const g = host && host.closest('.toolgroup[data-live-work]');
+    if (g && g._plain && active()) paint(g);
   }
 
   // The switch on an open group: this screen only, kept across visits.
@@ -303,10 +387,10 @@
     try {
       if (technical()) localStorage.removeItem(PREF); else localStorage.setItem(PREF, 'technical');
     } catch {}
-    apply(view);
+    apply(document);
     // The group under the finger stays where it was.
     if (g && g.isConnected && view) view.scrollTop += g.getBoundingClientRect().top - before;
   }, true);
 
-  window.PlainSteps = { apply, onEvent, _state: { answers, waiting, failedUntil, jobs, writing } };
+  window.PlainSteps = { apply, live, rows, onEvent, _state: { phrases, drafts, sums, sumDrafts, jobs, asked, failedUntil } };
 })();

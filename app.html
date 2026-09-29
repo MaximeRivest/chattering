@@ -13928,6 +13928,9 @@ function renderLsBlocks(L, target = null) {
         : '<div class="ls-b-head"></div><pre class="ls-think"></pre><pre class="ls-text"></pre>';
       host.appendChild(el);
     }
+    // The step's name for plain words (plain-steps-ui.js): a tool call by its
+    // id, a thought by its run and block.
+    if (L.jobId) { const step = b.kind === 'tool' ? (b.callId ? 't:' + b.callId : '') : 'j:' + L.jobId + ':' + id; if (step) el.dataset.step = step; }
     const head = el.querySelector('.ls-b-head');
     if (b.kind === 'tool') {
       const phase = b.phase === 'done' ? (b.error ? '✗ failed' : '✓ done')
@@ -13945,6 +13948,7 @@ function renderLsBlocks(L, target = null) {
       setLiveText(el.querySelector('.ls-text'), '');
     }
   }
+  if (target && typeof PlainSteps !== 'undefined') PlainSteps.rows(target);
   if (pin) host.scrollTop = host.scrollHeight;
   if (!target) {
     const chip = $('lsChip');
@@ -16016,7 +16020,7 @@ function plainStepsSectionHtml() {
     </button>`;
   return `<h3>work steps in plain words</h3>
     <label class="set-check"><input id="setPlainSteps" type="checkbox"${p.on ? ' checked' : ''}> explain the agent's work steps in plain words</label>
-    <div class="set-help">For people who don't program. Each group of steps (searches, commands, files read, thinking) gets one sentence on what it was for, and each step a short phrase. The commands stay one click away: “show commands” in an open group switches that screen back, “plain words” switches it again. One model call per group, only for groups someone scrolls to, then remembered for every screen; work still running is explained when it ends. Each call sends that group's commands, the start of what they returned, and the question they answer to the model below. Results can include file contents, so pick a model you trust with them.</div>
+    <div class="set-help">For people who don't program. Each step (a search, a command, a file read, a thought) gets a short phrase, and each finished group of steps one sentence on what it was for. The commands stay one click away: “show commands” in an open group switches that screen back, “plain words” switches it again. While an agent works, each step is explained as soon as it has finished, several at once: one small call per step. A group's sentence comes when the group is finished, from its phrases. Older work is explained only when someone scrolls to it, a whole group in one call. Everything is remembered for every screen. The calls send the steps' commands, the start of what they returned, and the question they answer to the model below. Results can include file contents, so pick a model you trust with them.</div>
     <div class="set-field">
       <label>model that writes them</label>
       ${setOptionsHtml('setPlainStepsSource', [

@@ -2996,7 +2996,7 @@ function runEventForwarder(job) {
   const state = { keyOf: () => job.key, blocks, timer: null, push: null };
   liveRunTails.set(job.id, state);
   const slim = b => b.kind === 'tool'
-    ? { id: b.id, kind: 'tool', name: b.name, args: (b.args || '').slice(0, 262144), rawArgs: b.rawArgs, argsTruncated: b.argsTruncated || undefined,
+    ? { id: b.id, kind: 'tool', callId: b.callId || undefined, name: b.name, args: (b.args || '').slice(0, 262144), rawArgs: b.rawArgs, argsTruncated: b.argsTruncated || undefined,
         out: (b.out || '').slice(-4000), phase: b.phase, error: b.error || undefined, t0: b.t0 || undefined }
     : { id: b.id, kind: 'text', text: b.text || '',
         think: (b.think || '').slice(-8000), done: b.done || undefined };
@@ -6595,6 +6595,27 @@ function abortedModelCall() {
 // chosen for it (else the settings model) with thinking off, on a circuit of
 // its own, so its failures never pause notes and memory.
 const plainStepsHealth = createModelHealth({ baseCooldownMs: 5 * 60 * 1000 });
+const PLAIN_STEPS_PROGRAMS = { step: 'step_in_plain_words', summary: 'steps_summary_in_plain_words', group: 'steps_in_plain_words' };
+// Steps of the runs in progress in one conversation that its snapshot may not
+// hold yet (runEventForwarder's blocks): a command once it has its result,
+// a thought once its message has ended.
+function plainStepsLive(key) {
+  const tails = [...liveRunTails.entries()].filter(([, t]) => t.keyOf() === key);
+  return {
+    tool(callId) {
+      for (const [, t] of tails) {
+        const b = t.blocks.find(x => x.kind === 'tool' && x.callId === callId);
+        if (b) return { name: b.name, args: b.args, out: b.out, error: !!b.error, done: b.phase === 'done' };
+      }
+      return null;
+    },
+    thought(runId, blockId) {
+      const t = tails.find(([id]) => id === runId);
+      const b = t && t[1].blocks.find(x => x.id === blockId && x.kind === 'text');
+      return b ? { text: b.think || '', done: !!b.done } : null;
+    },
+  };
+}
 function plainStepsModel() {
   const p = appSettings.plainSteps || {};
   return p.provider && p.model ? { provider: p.provider, model: p.model } : null;
@@ -6617,7 +6638,7 @@ const plainSteps = require('./plain-steps.js').createPlainSteps({
   file: path.join(CACHE_DIR, 'plain-steps.json'),
   model: () => { const m = plainStepsModel(); return m ? m.provider + '/' + m.model : currentModelLabel(); },
   // Each field as the model writes it; a retry starts the answer again.
-  run: async (inputs, live) => (await aiProgram('steps_in_plain_words', inputs, {
+  run: async (program, inputs, live) => (await aiProgram(PLAIN_STEPS_PROGRAMS[program], inputs, {
     automatic: true, background: 'steps', thinking: 'off', timeoutMs: 120000,
     model: plainStepsModel() || undefined, health: plainStepsHealth,
     onEvent: e => { if (e.kind === 'text') live.text(e.field, e.text); else if (e.kind === 'retry') live.retry(); },
@@ -16233,12 +16254,12 @@ async function handleRequest(req, res) {
       try { p = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
       const groups = (Array.isArray(p.groups) ? p.groups : []).slice(0, 12)
         .filter(g => g && typeof g.g === 'string' && g.g.length <= 300 && Array.isArray(g.steps))
-        .map(g => ({ g: g.g, steps: g.steps.filter(id => typeof id === 'string').slice(0, 400) }));
-      if (!groups.length) return json(res, 200, { results: {}, pending: [], failed: {} });
+        .map(g => ({ g: g.g, settled: g.settled !== false, steps: g.steps.filter(id => typeof id === 'string').slice(0, 400) }));
+      if (!groups.length) return json(res, 200, { groups: {} });
       let ix;
       try { ix = await plainStepsIndex(key); }
       catch { return json(res, 404, { error: 'not found' }); }
-      json(res, 200, plainSteps.lookup(ix, groups, { key }));
+      json(res, 200, plainSteps.lookup(ix, groups, { key, live: plainStepsLive(key) }));
     } else if (u.pathname === '/api/conversation/media' && req.method === 'GET') {
       try {
         const media = await transcriptImage(u.searchParams.get('id'), u.searchParams.get('entry'), u.searchParams.get('path'));

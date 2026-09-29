@@ -901,6 +901,9 @@ function renderLiveReplyLedger(host, jobId, L, saved = new Map(), { expandedWork
       setLiveText(work.querySelector('.tg-detail'), names.join(' · '));
       work.querySelector('.tg-detail').title = names.join(' · ');
       work._ledger.order = unit.order; work._ledger.blocks = unit.blocks;
+      work._ledger.jobId = jobId; work._ledger.key = L.key;
+      // Plain words for each step as soon as it has finished (plain-steps-ui.js).
+      if (typeof PlainSteps !== 'undefined') PlainSteps.live(work, L.key, jobId, blocks);
       if (work.open) renderLsBlocks(work._ledger, work.querySelector('div'));
       work.ontoggle = () => { if (work.open) renderLsBlocks(work._ledger, work.querySelector('div')); };
       continue;

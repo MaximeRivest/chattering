@@ -143,5 +143,14 @@
   .toolgroup:not([open]) .tg-detail.tg-plain { display: block; max-width: none; }
   .tg-plain-switch { height: 36px; }
 }
+/* A live step once explained: its phrase, the command and its output hidden
+   (the tooltip-free way back is "show commands"). A phrase still being
+   written ends in the caret. */
+.ls-plain { font-size: 13px; line-height: 1.5; color: var(--text); padding: 2px 0; }
+.ls-b.has-plain { margin-bottom: 8px; }
+.ls-b.has-plain > :not(.ls-plain) { display: none; }
+.ls-plain.writing::after, .step-plain.writing::after { content: "▍"; margin-left: 1px; color: var(--text-faint); animation: blink 1s steps(1) infinite; }
+@media (prefers-reduced-motion: reduce) { .ls-plain.writing::after, .step-plain.writing::after { animation: none; } }
+:root[data-theme-mode="binary"] .ls-plain.writing::after, :root[data-theme-mode="binary"] .step-plain.writing::after { animation: none; }
 :root[data-theme-mode="binary"] .tg-plain-switch { border-color: var(--text); color: var(--text); }
 :root[data-theme-mode="binary"] .step-plain { color: var(--text); }
