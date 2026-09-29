@@ -3,7 +3,10 @@
 const fs = require('fs');
 const path = require('path');
 
-const BUILTIN_THEME_IDS = new Set(['dark', 'light', 'gray', 'eink']);
+const BUILTIN_THEME_IDS = new Set(['rockfrog', 'dark', 'light', 'gray', 'eink']);
+// What a device shows until someone picks a theme (design/25). 'auto', the
+// other end of the choice, follows the system's light or dark setting.
+const DEFAULT_THEME = 'rockfrog';
 const MODES = new Set(['color', 'gray', 'binary']);
 const SCHEMES = new Set(['dark', 'light']);
 const MOTIONS = new Set(['full', 'none']);
@@ -210,6 +213,7 @@ function rgbHex(rgb) {
 }
 
 function manifestThemeColors(themeId, tokensCss, dir) {
+  if (!themeId) themeId = DEFAULT_THEME;
   let declarations;
   if (themeId && !BUILTIN_THEME_IDS.has(themeId)) {
     const theme = readCustomThemes(dir).valid.find(item => item.id === themeId);
@@ -225,6 +229,7 @@ function manifestThemeColors(themeId, tokensCss, dir) {
 
 module.exports = {
   BUILTIN_THEME_IDS,
+  DEFAULT_THEME,
   REQUIRED_COLOR_TOKENS,
   defaultThemeDir,
   parseCssColor,

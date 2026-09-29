@@ -116,7 +116,15 @@ validation errors. The `/api/themes` response also includes these errors.
 `/tokens.css`. The app loads all valid user themes from `/api/themes.css` before
 body paint. This prevents a custom-theme flash.
 
-The active theme stays in browser local storage. The app copies theme
+Built-in themes: `rockfrog` (the default), `dark`, `light`, `gray`, and
+`eink`. Custom theme files cannot reuse these IDs.
+
+The active theme stays in browser local storage, one choice per device. An
+empty store means nobody has chosen, and the device shows Rockfrog, the brand's
+own light paper (since 2026-09-29; before, the default followed the system).
+`auto` is stored explicitly and follows the system's light or dark setting.
+The Android app sets `eink` on e-ink tablets and Rockfrog on phones that have
+no choice yet. The app copies theme
 capabilities to `data-theme-mode` and `data-theme-motion`. Components and JavaScript
 read capabilities instead of checking a theme name. Custom binary and gray
 themes therefore get the same behavior as built-in themes.

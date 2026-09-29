@@ -179,7 +179,9 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   await evaluate(`document.activeElement.blur();document.querySelector('.msg.user').classList.add('actions-open')`);
   assert.equal(await evaluate(actionVisibility), 'visible', 'touch reveal remains supported');
   await evaluate(`document.querySelector('.msg.user').classList.remove('actions-open')`);
-  assert.equal(await evaluate(`getComputedStyle($('agentCompose')).borderTopLeftRadius`), '18px');
+  // A fresh device shows Rockfrog, whose corners are 1.6× the base scale.
+  assert.equal(await evaluate(`document.documentElement.dataset.theme`), 'rockfrog', 'Rockfrog is the default theme');
+  assert.equal(await evaluate(`getComputedStyle($('agentCompose')).borderTopLeftRadius`), '28.8px');
   assert.equal(await evaluate(`$('agentAt').checkVisibility()`), false, 'secondary controls are hidden until requested');
   await evaluate(`$('composeTools').querySelector('summary').click()`);
   assert.equal(await evaluate(`['agentAt','agentSnip','agentTree','agentAttach','agentSlash'].every(id=>$(id).checkVisibility())`), true, 'every utility is reachable in the menu');
@@ -263,6 +265,9 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   fs.writeFileSync(path.join(os.tmpdir(), 'composer-light-sans.png'), Buffer.from(lightShot.result.data, 'base64'));
   await evaluate(`selectTheme('dark');setAppFont('theme')`);
   assert.equal(await evaluate(`getComputedStyle($('agentCompose')).borderTopLeftRadius`), '18px', 'theme switching restores rounded shapes');
+  // 'auto' is a stored choice (follow the system), distinct from no choice (the default).
+  assert.deepEqual(await evaluate(`(()=>{selectTheme('auto',false);const r=[localStorage.getItem('chattering.theme'),document.documentElement.dataset.theme??null,savedTheme()];selectTheme('dark',false);return r})()`), ['auto', null, 'auto']);
+  assert.equal(await evaluate(`(()=>{const v=localStorage.getItem('chattering.theme');localStorage.removeItem('chattering.theme');const t=savedTheme();localStorage.setItem('chattering.theme',v);return t})()`), 'rockfrog');
   // Scrolling down hides the quiet title line; scrolling up brings it back.
   await evaluate(`document.querySelector('#conversationTranscript').insertAdjacentHTML('beforeend','<div style="height:3000px"></div>')`);
   await new Promise(r => setTimeout(r, 300)); // the tail pin settles

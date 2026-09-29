@@ -198,6 +198,75 @@
   color-scheme: dark;
 }
 
+/* Rockfrog — the default (design/25). The brand's own paper, as in the deck
+   and the film (rockfrog/deck/deck.css, rockfrog/video/film.css): near-black
+   ink, one forest green used sparingly, cards lighter than the page, hairline
+   rules, soft shadows, generous corners. Inter and IBM Plex Mono apply only
+   when the device font is "Theme default" and they are installed; otherwise
+   the system fonts stand in. */
+:root[data-theme="rockfrog"] {
+  --bg: #f3f5f1;
+  --surface-1: #fbfcfa;
+  --surface-2: #eceee9;
+  --surface-3: #e1e5df;
+  --border: #dce2db;
+  --border-strong: #b7beb6;
+
+  --text: #101412;
+  --text-dim: #4f5751;
+  --text-faint: #737c75;
+
+  --red: #a4443a;
+  --yellow: #85650f;
+  --green: #377a4c;
+  --cyan: #2c6b80;
+  --blue: #3b5d97;
+  --magenta: #7a4c88;
+  --accent: var(--green);
+  --accent-strong: #2f6c42;
+  --accent-ink: #ffffff;
+
+  --ansi-0: #101412;
+  --ansi-1: #a4443a;
+  --ansi-2: #377a4c;
+  --ansi-3: #85650f;
+  --ansi-4: #3b5d97;
+  --ansi-5: #7a4c88;
+  --ansi-6: #2c6b80;
+  --ansi-7: #dce2db;
+  --ansi-8: #737c75;
+  --ansi-9: #b8574c;
+  --ansi-10: #4a8e5f;
+  --ansi-11: #9c7a1f;
+  --ansi-12: #5174b0;
+  --ansi-13: #9161a0;
+  --ansi-14: #3d8298;
+  --ansi-15: #ffffff;
+
+  --term-selection: #cfe6d4;
+  --term-selection-ink: #101412;
+  --ink: #8f281f;
+  --ink-ai: #1f3f8f;
+  --ink-halo: #ffffff;
+  --overlay: rgba(16, 20, 18, 0.28);
+  --overlay-strong: rgba(16, 20, 18, 0.40);
+  --shadow-color: rgba(16, 20, 18, 0.10);
+  --shadow-soft: rgba(16, 20, 18, 0.07);
+  --shadow: 0 1px 2px rgba(16, 20, 18, 0.04), 0 10px 30px rgba(16, 20, 18, 0.06);
+
+  --roundness: 1.6;
+  --panel-bg: #fbfcfa;
+  --panel-border: #dce2db;
+
+  --font: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --theme-mode: color;
+  --theme-motion: 1;
+  color-scheme: light;
+}
+
+
 :root[data-theme="gray"] {
   --bg: #f5f5f5;
   --surface-1: #ededed;

@@ -6,7 +6,8 @@
    answers as JSON Schema, or { missing } when nothing is published. */
 (function () {
   'use strict';
-  try { const t = localStorage.getItem('chattering.theme'); if (t) document.documentElement.dataset.theme = t; } catch {}
+  // The app's theme choice (design/25): unset means the default, 'auto' the system's.
+  try { const t = localStorage.getItem('chattering.theme') || 'rockfrog'; if (t !== 'auto') document.documentElement.dataset.theme = t; } catch {}
   const P = window.PROGRAM || {};
   const app = document.getElementById('app');
   const h = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

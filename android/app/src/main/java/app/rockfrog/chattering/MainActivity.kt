@@ -139,7 +139,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun deviceScript(): String = when {
         isEinkDevice -> "try{localStorage.setItem('chattering.theme','eink');document.documentElement.dataset.theme='eink';document.documentElement.dataset.form='eink'}catch(e){}"
-        isPhone -> "try{let t=localStorage.getItem('chattering.theme');if(!t||t==='eink'){t='light';localStorage.setItem('chattering.theme',t)}document.documentElement.dataset.theme=t;document.documentElement.dataset.form='phone'}catch(e){}"
+        isPhone -> "try{let t=localStorage.getItem('chattering.theme');if(!t||t==='eink'){t='rockfrog';localStorage.setItem('chattering.theme',t)}if(t==='auto')delete document.documentElement.dataset.theme;else document.documentElement.dataset.theme=t;document.documentElement.dataset.form='phone'}catch(e){}"
         else -> "try{document.documentElement.dataset.form='tablet'}catch(e){}"
     }
 
