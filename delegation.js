@@ -96,6 +96,18 @@ async function launchDelegation(spec, options = {}) {
   await startSupervisor(root, id, options);
   return S.readTask(root, id);
 }
+// The worker reads its mode from --prompt-mode-file, a flag the modes extension defines. A pi that has it
+// installed (~/.pi/agent/extensions/modes.ts, as setup.sh does) loads it by itself, and loading it twice would
+// define the flag twice. The one-command install never puts it there: then the worker loads Chattering's copy,
+// or pi rejects the flag and every delegated worker exits at once (found 2026-09-29 on a fresh home).
+function modeExtensionFor(options = {}) {
+  if (options.modeExtensionPath) return path.resolve(options.modeExtensionPath);
+  const env = options.env || process.env;
+  const agentDir = env.PI_CODING_AGENT_DIR || path.join(env.HOME || os.homedir(), '.pi', 'agent');
+  const ext = path.join(agentDir, 'extensions');
+  if (fs.existsSync(path.join(ext, 'modes.ts')) || fs.existsSync(path.join(ext, 'modes', 'index.ts'))) return null;
+  return path.join(__dirname, 'extensions', 'modes.ts');
+}
 function workerArgv({ sessionPath, model, thinking, title, modePath, tools, promptPath }, options = {}) {
   const argv = ['--mode', 'json', '--session', sessionPath, '--model', model, '--thinking', thinking,
     '--name', title, '-e', path.join(__dirname, 'extensions/delegation.ts'),
@@ -103,7 +115,8 @@ function workerArgv({ sessionPath, model, thinking, title, modePath, tools, prom
     '-e', path.join(__dirname, 'extensions/image-budget.ts'),
     // Before/after workspace checkpoints, so a worker's edits can be reviewed.
     '-e', path.join(__dirname, 'extensions/checkpoints.ts')];
-  if (options.modeExtensionPath) argv.push('-e', path.resolve(options.modeExtensionPath));
+  const modes = modeExtensionFor(options);
+  if (modes) argv.push('-e', modes);
   argv.push('--prompt-mode-file', modePath);
   if (tools.length) argv.push('--tools', tools.join(','));
   else argv.push('--no-tools');

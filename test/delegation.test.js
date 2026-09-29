@@ -147,6 +147,27 @@ test('detached supervisor persists exact argv, independent session, results and 
   assert.ok(fs.readFileSync(task.eventLogPath, 'utf8').includes('succeeded'));
 });
 
+// The one-command install puts no modes extension in pi's folder, and --prompt-mode-file is that
+// extension's flag: without it pi exits at once. The worker then loads Chattering's copy; a pi that has
+// its own keeps it alone (the flag must not be defined twice).
+test('workers load the modes extension exactly when pi does not have its own', async t => {
+  const f = await fixture(t);
+  const bundled = path.join(__dirname, '..', 'extensions', 'modes.ts');
+  const argsOf = async (agentDir) => {
+    const opts = { ...f.options, env: { ...f.options.env, PI_CODING_AGENT_DIR: agentDir } };
+    const task = await D.launchDelegation({ ...f.spec, prompt: 'success' }, opts);
+    await f.done(task.id);
+    return S.readJson(path.join(f.root, task.id, 'launch.json')).args;
+  };
+  const bare = path.join(f.dir, 'bare-agent'), own = path.join(f.dir, 'own-agent');
+  fs.mkdirSync(bare, { recursive: true });
+  fs.mkdirSync(path.join(own, 'extensions'), { recursive: true });
+  fs.writeFileSync(path.join(own, 'extensions', 'modes.ts'), '// the person\'s own');
+  const loaded = args => args.filter((a, i) => args[i - 1] === '-e');
+  assert.ok(loaded(await argsOf(bare)).includes(bundled), 'fresh pi: Chattering\'s modes extension is loaded');
+  assert.ok(!loaded(await argsOf(own)).includes(bundled), 'pi with its own modes extension: not loaded twice');
+});
+
 test('zero exit does not hide model errors, missing results, mode mismatch or truncation', async t => {
   const f = await fixture(t);
   for (const behavior of ['error', 'empty', 'bad-mode', 'missing-mode', 'bad-tools', 'bad-model', 'changed-snapshot', 'length', 'noise', 'nonzero']) {
