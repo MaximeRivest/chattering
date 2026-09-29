@@ -1,7 +1,13 @@
 /* Work steps in plain words, on the page (plain-steps.js is the server side).
-   On or off, in settings → model. When on, every step carries, right above
-   its command, one light sentence on what it is trying to achieve and how.
-   The command stays: read together, they teach what commands mean.
+   On or off, in settings → model. For someone who does not program, to
+   oversee what an agent does on their computer and learn how it works:
+
+   Each step reads at a glance, as a timeline: one clear sentence on what it
+   is trying to achieve and how; under it, one quiet line with the actual
+   command and how it went. Read together, they teach what commands mean.
+   That line is the door to more: it opens the whole technical view (the
+   command as written, and what came back). Nothing is hidden, only folded
+   one level down, and a person goes as deep as they like.
 
    Calm by construction:
    - A step's sentence has its line from the start (a faint "…" while it is
@@ -106,7 +112,7 @@
     }
     return say;
   }
-  function paintRow(el, key) {
+  function paintRow(el, key, meta) {
     const k = key + '|' + el.dataset.step;
     known(k);
     const say = slotOf(el);
@@ -117,9 +123,45 @@
     say.classList.toggle('pending', !s.text && !gone);
     say.classList.toggle('typing', !!s.text && !s.done);
     say.hidden = gone;
+    if (el.classList.contains('ls-b') && meta) shapeLive(el, meta);
+  }
+
+  // A live step: the sentence, then one line (glyph, command, how it went)
+  // that opens everything renderLsBlocks draws (moved inside, where its own
+  // queries still find it).
+  const GLYPH = { thinking: '◌', read: '▤', edit: '✎', write: '✎' };
+  const oneLineOf = t => { const l = String(t || '').split('\n').find(x => x.trim()) || ''; return l.length > 140 ? l.slice(0, 139) + '…' : l; };
+  function shapeLive(el, meta) {
+    let more = el.querySelector(':scope > .step-more');
+    if (!more) {
+      more = document.createElement('details');
+      more.className = 'step-more';
+      more.innerHTML = '<summary class="step-line"><span class="step-glyph"></span><code class="step-cmd"></code><span class="step-state"></span><span class="step-open"></span></summary>';
+      for (const child of [...el.children]) if (!child.classList.contains('step-say')) more.append(child);
+      el.append(more);
+    }
+    const set = (sel, text) => { const n = more.querySelector(sel); if (n.textContent !== text) n.textContent = text; };
+    const thinking = meta.kind === 'thinking';
+    set('.step-glyph', GLYPH[thinking ? 'thinking' : meta.name] || '⚙');
+    set('.step-cmd', thinking ? 'its thinking' : (meta.name === 'bash' ? '' : meta.name + ' · ') + (oneLineOf(meta.cmd) || '…'));
+    const state = thinking ? (meta.done ? '' : 'thinking…')
+      : meta.phase === 'done' ? (meta.error ? '✗ failed' : '✓') : meta.phase === 'running' ? '● running' : meta.phase === 'ready' ? 'waiting' : 'writing…';
+    set('.step-state', state);
+    const lines = meta.out ? meta.out.split('\n').filter(l => l.trim()).length : 0;
+    set('.step-open', more.open ? 'hide' : thinking ? 'read it' : lines ? 'see what came back' : 'details');
+    el.classList.toggle('step-running', !thinking && meta.phase === 'running');
+    el.classList.toggle('step-failed', !!meta.error);
+    el.classList.add('plain-row');
+    if (!more._wired) { more._wired = true; more.addEventListener('toggle', () => set('.step-open', more.open ? 'hide' : 'details')); }
+  }
+  function unshape(el) {
+    const more = el.querySelector(':scope > .step-more');
+    if (more) { for (const child of [...more.children]) if (!child.classList.contains('step-line')) el.append(child); more.remove(); }
+    el.classList.remove('plain-row', 'step-running', 'step-failed');
   }
   function clearRows(root) {
     for (const say of root.querySelectorAll('.step-say')) say.remove();
+    for (const el of root.querySelectorAll('.ls-b.plain-row')) unshape(el);
     for (const el of root.querySelectorAll('.plain-gated')) { el.classList.remove('plain-gated'); el.hidden = false; }
   }
 
@@ -145,7 +187,7 @@
     const i = info(g);
     if (!i) return;
     g.classList.add('plain-on');
-    for (const el of g.querySelectorAll(g._plain ? '.ls-b[data-step]' : ':scope > [data-step]')) paintRow(el, i.key);
+    for (const el of g.querySelectorAll(g._plain ? '.ls-b[data-step]' : ':scope > [data-step]')) paintRow(el, i.key, i.meta && i.meta.get(el.dataset.step));
     paintLine(g, i);
     if (g._plain) gate(g, i);
   }
@@ -206,7 +248,7 @@
         for (const el of document.querySelectorAll(`[data-step="${CSS.escape(name)}"]`)) {
           const g = el.closest('.toolgroup');
           const i = g && info(g);
-          if (i && i.key === key) paintRow(el, key);
+          if (i && i.key === key) paintRow(el, key, i.meta && i.meta.get(name));
         }
       }
     }
@@ -397,14 +439,15 @@
    */
   function live(g, key, jobId, blocks) {
     if (key !== undefined) {
-      const steps = [], ready = [];
+      const steps = [], ready = [], meta = new Map();
       for (const b of blocks || []) {
         const name = b.kind === 'tool' ? (b.callId ? 't:' + b.callId : null) : (b.think ? 'j:' + jobId + ':' + b.id : null);
         if (!name) continue;
         steps.push(name);
         if (b.kind === 'tool' ? b.phase && b.phase !== 'args' : b.done) ready.push(name);
+        meta.set(name, b.kind === 'tool' ? { kind: 'tool', name: b.name || 'tool', cmd: b.args, phase: b.phase, error: !!b.error, out: b.out || '' } : { kind: 'thinking', done: !!b.done });
       }
-      g._plain = { key, steps, ready, settled: false };
+      g._plain = { key, steps, ready, settled: false, meta };
     }
     if (!g._plain) return;
     if (!on()) { unpaint(g); g._gate = null; return; }

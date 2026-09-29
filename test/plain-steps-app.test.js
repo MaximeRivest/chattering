@@ -141,11 +141,17 @@ test('browser: work steps in plain words above their commands; live steps one at
   await evaluate(`open(${JSON.stringify(busy)})`);
   await until(`document.querySelector('.toolgroup[data-live-work]')?.open`, async () => 'the live group opens: ' + await evaluate(`document.getElementById('liveReplies')?.innerHTML.slice(0, 800)`));
   const liveRows = () => evaluate(`[...document.querySelectorAll('.toolgroup[data-live-work] .ls-b[data-step]')].map(el => ({ step: el.dataset.step, hidden: el.hidden,
-    say: el.querySelector('.step-say')?.textContent, head: getComputedStyle(el.querySelector('.ls-b-head')).display !== 'none' }))`);
+    say: el.querySelector('.step-say')?.textContent, cmd: el.querySelector('.step-cmd')?.textContent, state: el.querySelector('.step-state')?.textContent,
+    folded: !el.querySelector('.step-more')?.open }))`);
   await until(`document.querySelector('.toolgroup[data-live-work] .ls-b[data-step="t:call-t"] .step-say')?.textContent === 'Checking nothing broke:'`, async () => 'first sentence: ' + JSON.stringify(await liveRows()));
   const half = await liveRows();
   assert.deepEqual(half.map(x => [x.step, x.hidden]), [['t:call-t', false], ['t:call-u', true]], 'the next step waits for this sentence');
-  assert.equal(half[0].head, true, 'the command shows under its sentence');
+  // Under the sentence, one quiet line: the command and how it goes; the
+  // rest (the command box, what came back) is folded behind it.
+  assert.deepEqual([half[0].cmd, half[0].state, half[0].folded], ['npm test', '● running', true]);
+  assert.equal(await evaluate(`document.querySelector('.ls-b[data-step="t:call-t"] .step-more .st-preview') !== null`), true, 'the technical view is inside');
+  await evaluate(`document.querySelector('.ls-b[data-step="t:call-t"] .step-line').click()`);
+  await until(`document.querySelector('.ls-b[data-step="t:call-t"] .step-more').open && document.querySelector('.ls-b[data-step="t:call-t"] .st-preview').innerText.includes('npm test')`, 'one click opens it');
   fs.writeFileSync(path.join(dir, 'go-tests'), '');
   await until(`document.querySelector('.ls-b[data-step="t:call-u"]') && !document.querySelector('.ls-b[data-step="t:call-u"]').hidden`, async () => 'the next step: ' + JSON.stringify(await liveRows()));
   assert.equal(await evaluate(`document.querySelector('.ls-b[data-step="t:call-t"] .step-say').textContent`), 'Checking nothing broke: running the project tests.');
