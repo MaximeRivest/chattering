@@ -151,6 +151,7 @@ button.ghost { border-color: transparent; background: transparent; color: var(--
 button.ghost:hover { color: var(--text); background: transparent; }
 button.danger { border-color: var(--danger); color: var(--danger); background: transparent; }
 button:disabled { opacity: .4; cursor: default; background: var(--surface-1); filter: none; }
+button.primary:disabled { color: var(--text); border-color: var(--border); } /* readable on the plain background a disabled button gets */
 :is(button, input, select, [tabindex]):focus-visible { outline: none; border-color: var(--accent); }
 input[type=text], input[type=search], select { background: var(--surface-1); border: 1px solid var(--border-strong); border-radius: var(--r); height: 30px; padding: 0 10px; color: var(--text); font: var(--fs-body) var(--font); }
 input::placeholder { color: var(--text-faint); }

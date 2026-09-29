@@ -557,6 +557,18 @@ for the next ask (`chattering.ask.v1`); "default" keeps the target's own.
 - `startAgentRun` gained `thinking`: set by pi right before the prompt, in
   the same process (no second warm start). A new conversation's first
   process loads the very bundle the run sends.
+- Plain by default (2026-09-29): people who barely code saw a wall of
+  controls (a target list, review switch, chips, model, reasoning, earlier
+  asks, a run line reading "tool · read"). The box now opens with the text,
+  the microphone, one line saying whether changes wait for approval,
+  "options" and send; the rest is behind "options", remembered per device
+  (`more` in `chattering.ask.v1`). The options button's tooltip names the
+  current target, model, reasoning and review choice, so none acts unseen;
+  Alt+M and Shift+Tab open the options before their picker. The run and its
+  result speak plainly ("reading the file…", "✓ done · changed +5 −8
+  lines", "details", "stop"), the raw line in the tooltip; with options,
+  the technical lines as before. A disabled primary button (everywhere) now
+  keeps a readable word instead of white on white.
 - The ask routes check the person: the file must be theirs to see / act
   on, the continued conversation theirs to act on, and the run is theirs
   (a guest runs behind the walls). Before, a guest's ask ran as the owner.

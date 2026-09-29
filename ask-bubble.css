@@ -29,6 +29,17 @@
 .ask-head .ask-mode { flex: 0 0 auto; height: 22px; min-height: 22px; padding: 0 8px; font-size: var(--fs-micro); border: 1px solid var(--border); }
 .ask-head .ask-mode[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
 .ask-head .ask-mode[hidden] { display: none; }
+.ask-fill { flex: 1 1 auto; }
+
+/* Plain by default (.ask-simple): the text, the microphone, what will
+   happen, options, send. The rest shows with options. */
+.ask-bubble.ask-simple :is(.ask-target, .ask-mode, .ask-history, .ask-ctx, .ask-tools, .ask-think, .ask-model) { display: none; }
+.ask-bubble:not(.ask-simple) .ask-fill { display: none; }
+.ask-bubble:not(.ask-simple) .ask-hint { display: none; }
+.ask-bubble.ask-simple .ask-head { font-size: var(--fs-small, 13px); }
+.ask-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-micro); color: var(--text-dim); }
+.ask-bubble .compose-right > .ask-more { padding: 0 8px; font-size: var(--fs-micro); color: var(--text-dim); }
+.ask-bubble .compose-right > .ask-more:hover { color: var(--text); }
 
 .ask-history { display: flex; flex-direction: column; gap: 1px; font-size: var(--fs-micro); color: var(--text); }
 .ask-history[hidden] { display: none; }

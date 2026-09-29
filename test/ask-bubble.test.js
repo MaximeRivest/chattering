@@ -41,12 +41,29 @@ test('the ask box: over the text, what goes along, choices that stick, a send an
   })()`);
   assert.equal(geometry.place, 'above');
   assert.ok(geometry.bottom <= geometry.lineTop, 'the box does not cover the line it is about: ' + JSON.stringify(geometry));
-  assert.equal(await ev(`document.querySelector('.ask-where').textContent`), 'line 27 · notes.md');
   assert.equal(await ev(`helpNow()[0].label`), 'ask box');
+
+  // Plain at first: the text, the microphone, what will happen, options
+  // and send; where it goes, the model, reasoning and what goes along wait
+  // behind options, whose tooltip names them.
+  await until(`askBox && askBox.info`, 'the target did not load');
+  assert.equal(await ev(`document.querySelector('.ask-where').textContent`), 'Ask for a change · line 27');
+  const shows = sel => ev(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); return !!el && el.getClientRects().length > 0; })()`);
+  for (const sel of ['.ask-target', '.ask-mode', '.ask-ctx', '.ask-tools', '.ask-think', '.ask-model']) assert.equal(await shows(sel), false, sel + ' shows in the plain box');
+  for (const sel of ['.ask-text', '.ask-more', '.ask-send', '.ask-close']) assert.equal(await shows(sel), true, sel + ' is missing from the plain box');
+  assert.equal(await ev(`document.querySelector('.ask-hint').textContent`), 'you approve each change before it stays');
+  assert.match(await ev(`document.querySelector('.ask-more').title`), /Goes to: new conversation[\s\S]*Model: [\s\S]*Changes: shown for approval first/);
+  assert.deepEqual(await ev(`['tool · read', 'tool · edit', 'tool · bash', 'streaming · 40 chars', 'queued behind the running turn', 'starting'].map(askPlainStatus)`),
+    ['reading the file', 'writing the changes', 'running a command', 'writing', 'waiting its turn', 'starting']);
+  // Options: everything, and it stays open for the next box.
+  await ev(`document.querySelector('.ask-more').click()`);
+  assert.equal(await ev(`JSON.parse(localStorage.getItem('chattering.ask.v1')).more`), true);
+  for (const sel of ['.ask-target', '.ask-mode', '.ask-ctx', '.ask-think', '.ask-model']) assert.equal(await shows(sel), true, sel + ' does not show with options');
+  assert.equal(await shows('.ask-hint'), false, 'the options say it with the review switch');
+  assert.equal(await ev(`document.querySelector('.ask-where').textContent`), 'line 27 · notes.md');
 
   // Where it goes: no conversation worked on the file, so a new one; the
   // project memory can be switched on for it, and the choice sticks.
-  await until(`askBox && askBox.info`, 'the target did not load');
   assert.equal(await ev(`askBox.info.error || [...document.querySelector('.ask-target').options].map(o => o.value).join()`), 'new', 'no conversation worked on the file: a new one');
   assert.equal(await ev(`document.querySelector('[data-chip="memory"]').getAttribute('aria-pressed')`), 'false');
   await ev(`document.querySelector('[data-chip="memory"]').click()`);

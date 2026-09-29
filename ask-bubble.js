@@ -23,6 +23,14 @@
    (in review mode the box steps aside and the text shows the changes), and
    the next ask continues the same conversation.
 
+   Plain by default: a box to write in, the microphone, a line saying
+   whether the changes will wait for approval, and send. Everything else
+   (where it goes, review or apply, model, reasoning, what goes along,
+   images, the earlier asks) is behind "options", remembered per device;
+   the options button's tooltip names the current choices so none acts
+   unseen. The run speaks in plain words there too ("reading the file"
+   rather than "tool · read"); options shows the technical lines.
+
    Globals (fileWs, docState, the composer helpers) come from app.html and
    filesmode.js, as conversation-draft.js does. */
 'use strict';
@@ -44,6 +52,7 @@ function askPrefs() {
     model: raw && typeof raw.model === 'string' && raw.model.includes('/') ? raw.model : null,
     thinking: raw && THINKING_LEVELS.includes(raw.thinking) ? raw.thinking : null,
     review: !(raw && raw.review === false),
+    more: !!(raw && raw.more === true),
     include: { edits: inc.edits !== false, asks: inc.asks !== false, memory: inc.memory === true },
   };
 }
@@ -113,6 +122,7 @@ function askBubbleOpen(ws) {
     <div class="ask-head">
       <span class="ask-glyph" aria-hidden="true">✦</span>
       <span class="ask-where"></span>
+      <span class="ask-fill"></span>
       <select class="ask-target" aria-label="Where the request goes" title="Where the request goes: a conversation that worked on this file, or a new one"><option value="auto">finding where this goes…</option></select>
       <button type="button" class="ghost ask-mode" aria-pressed="true"></button>
       <button type="button" class="ghost ask-close" title="Close (Esc) — what you typed stays" aria-label="Close">✕</button>
@@ -136,10 +146,12 @@ function askBubbleOpen(ws) {
         <button type="button" class="agent-mic ask-mic" aria-label="Start dictation" aria-pressed="false" hidden>
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4"></rect><path d="M5 11v1a7 7 0 0 0 14 0v-1M12 19v3M8 22h8"></path></svg>
         </button>
+        <span class="ask-hint"></span>
       </div>
       <div class="compose-right">
         <button type="button" class="model-pick think-pick ask-think" aria-haspopup="menu"></button>
         <button type="button" class="model-pick ask-model"></button>
+        <button type="button" class="ghost ask-more" aria-expanded="false">options</button>
         <button type="button" class="primary ask-send">send</button>
       </div>
     </div>
@@ -153,7 +165,8 @@ function askBubbleOpen(ws) {
     images: draft.images.slice(), info: null, cleanup: [], frame: 0, sending: false,
   };
   b.ta.value = draft.text;
-  b.ta.placeholder = 'What should change here?' + (askFinePointer() ? ' Enter sends · Shift+Enter: new line' : '');
+  b.ta.placeholder = 'What should change? For example: make this shorter';
+  root.classList.toggle('ask-simple', !askPrefs().more);
   askBubbleWire(b);
   askBubblePaintWhere();
   askBubblePaintThumbs();
@@ -181,8 +194,8 @@ function askBubbleWire(b) {
     if (e.key === 'Escape') { e.preventDefault(); askBubbleClose({ refocus: true }); }
     else if (e.key === 'Enter' && (mod || (!e.shiftKey && askFinePointer()))) { e.preventDefault(); askBubbleSend(); }
     else if (modHeld(e) && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); askBubbleClose({ refocus: true }); }
-    else if (e.altKey && !mod && e.code === 'KeyM') { e.preventDefault(); q('.ask-model').click(); }
-    else if (e.key === 'Tab' && e.shiftKey && !mod && !e.altKey) { e.preventDefault(); q('.ask-think').click(); }
+    else if (e.altKey && !mod && e.code === 'KeyM') { e.preventDefault(); askBubbleMore(true); q('.ask-model').click(); }
+    else if (e.key === 'Tab' && e.shiftKey && !mod && !e.altKey) { e.preventDefault(); askBubbleMore(true); q('.ask-think').click(); }
     else if (mod && !e.altKey && e.key.toLowerCase() === 'm' && !b.mic.hidden && !b.mic.disabled) { e.preventDefault(); b.mic.click(); }
   });
   ta.addEventListener('paste', e => {
@@ -202,6 +215,7 @@ function askBubbleWire(b) {
     else askBubbleClose({ refocus: true });
   });
   q('.ask-close').onclick = () => askBubbleClose({ refocus: true });
+  q('.ask-more').onclick = () => { askBubbleMore(!askPrefs().more); ta.focus(); };
   q('.ask-mode').onclick = () => { saveAskPrefs({ review: !askPrefs().review }); askBubblePaintControls(); ta.focus(); };
   b.send.onclick = () => askBubbleSend();
   b.target.onchange = () => { ws.askChoice = b.target.value; askBubblePaintControls(); };
@@ -252,6 +266,20 @@ function askBubbleWire(b) {
     b.cleanup.push(() => ro.disconnect());
   }
   b.cleanup.push(() => cancelAnimationFrame(b.frame));
+}
+
+// Show or hide the options (remembered per device). The box keeps its
+// place: it grows away from the line it points at.
+function askBubbleMore(on) {
+  const b = askBox;
+  if (!b) return;
+  if (askPrefs().more !== on) saveAskPrefs({ more: on });
+  b.root.classList.toggle('ask-simple', !on);
+  if (!on) { b.root.querySelector('.ask-preview').hidden = true; b.root.querySelector('.ask-tools').removeAttribute('open'); }
+  askBubblePaintWhere();
+  askBubblePaintControls();
+  if (b.ws.run) askBubblePaintRun(b.ws, b.ws.runLast || {});
+  askBubblePlace();
 }
 
 // ---- where it floats ----
@@ -322,7 +350,10 @@ function askBubblePaintWhere() {
   const b = askBox;
   if (!b) return;
   const name = b.ws.path.split(/[\\/]/).pop();
-  b.root.querySelector('.ask-where').textContent = askBubbleSelection(b.ws).label + ' · ' + name;
+  const label = askBubbleSelection(b.ws).label;
+  const where = b.root.querySelector('.ask-where');
+  where.textContent = askPrefs().more ? label + ' · ' + name : 'Ask for a change · ' + label;
+  where.title = b.ws.path + (label ? ', ' + label : '');
   askBubblePaintChips();
 }
 
@@ -438,6 +469,17 @@ function askBubblePaintControls() {
     : 'The agent’s changes go straight into the text (Ctrl+Z takes them back). Click: review them first';
   b.root.querySelector('[data-ask="open"]').hidden = !key;
   b.root.querySelector('[data-ask="own-model"]').hidden = !prefs.model;
+  // Plain words for what will happen; the options' state in the tooltip.
+  const hint = b.root.querySelector('.ask-hint');
+  hint.textContent = !canReview ? '' : review ? 'you approve each change before it stays' : 'changes go straight in · ' + modKey('Z') + ' undoes';
+  hint.title = mode.title;
+  const more = b.root.querySelector('.ask-more');
+  more.setAttribute('aria-expanded', String(prefs.more));
+  more.textContent = prefs.more ? 'fewer options' : 'options';
+  const targetText = b.target.selectedOptions[0] ? b.target.selectedOptions[0].textContent.replace(/^↳\s*/, '') : '';
+  more.title = (prefs.more ? 'Hide' : 'Show') + ' the options' + (targetText ? '\nGoes to: ' + targetText : '')
+    + '\nModel: ' + (shown || (key ? 'the conversation’s own' : 'your last pick')) + ' · reasoning: ' + (prefs.thinking || 'the conversation’s own')
+    + (canReview ? '\nChanges: ' + (review ? 'shown for approval first' : 'applied directly') : '');
   askBubblePaintChips();
   askBubblePaintHistory();
   askBubblePaintSend();
@@ -552,10 +594,38 @@ function askBubblePaintRun(ws, d) {
   host.hidden = false;
   const elapsed = Math.round((Date.now() - ws.run.startedAt) / 1000);
   const model = d.model || '';
-  host.innerHTML = `<div class="fw-run"><span class="fw-run-dot ask-glyph ask-glyph-busy" aria-hidden="true">✦</span><b>${esc(ws.run.title || 'conversation')}</b><span class="dim">${esc(model)}${model ? ' · ' : ''}${elapsed}s</span><span class="fw-run-status" role="status">${esc(d.statusText || 'working…')}</span><button type="button" class="ghost" data-run-open>open</button><button type="button" class="ghost" data-run-stop>■ stop</button></div>`;
+  if (askPrefs().more) {
+    host.innerHTML = `<div class="fw-run"><span class="fw-run-dot ask-glyph ask-glyph-busy" aria-hidden="true">✦</span><b>${esc(ws.run.title || 'conversation')}</b><span class="dim">${esc(model)}${model ? ' · ' : ''}${elapsed}s</span><span class="fw-run-status" role="status">${esc(d.statusText || 'working…')}</span><button type="button" class="ghost" data-run-open>open</button><button type="button" class="ghost" data-run-stop>■ stop</button></div>`;
+  } else {
+    const raw = [ws.run.title, model, d.statusText].filter(Boolean).join(' · ');
+    host.innerHTML = `<div class="fw-run" title="${esc(raw)}"><span class="fw-run-dot ask-glyph ask-glyph-busy" aria-hidden="true">✦</span><span class="fw-run-status" role="status">${esc(askPlainStatus(d.statusText))}…</span><span class="dim">${elapsed}s</span><button type="button" class="ghost" data-run-open title="Open the conversation the agent works in">details</button><button type="button" class="ghost" data-run-stop>■ stop</button></div>`;
+  }
   host.querySelector('[data-run-open]').onclick = () => open(ws.run.key, 'bottom');
   host.querySelector('[data-run-stop]').onclick = () => fileWsAbortRun(ws);
   askBubblePaintSend();
+}
+
+// What the agent is doing, for someone who does not program. The raw line
+// ("tool · read") stays in the tooltip and in the options' view.
+function askPlainStatus(text) {
+  const s = String(text || '').trim();
+  const tool = /^tool · (.+)$/.exec(s);
+  if (tool) {
+    const name = tool[1].toLowerCase();
+    if (/read|view|cat/.test(name)) return 'reading the file';
+    if (/edit|write|patch|replace/.test(name)) return 'writing the changes';
+    if (/grep|find|search|glob|\bls\b/.test(name)) return 'looking around';
+    if (/bash|shell|exec|run/.test(name)) return 'running a command';
+    return 'working';
+  }
+  if (!s || /^(starting|running)$/.test(s)) return 'starting';
+  if (/^streaming/.test(s)) return 'writing';
+  if (/^queued/.test(s) || /queued$/.test(s)) return 'waiting its turn';
+  if (/^waiting for you/.test(s)) return 'waiting for your answer — see details';
+  if (/^retrying/.test(s)) return 'trying again';
+  if (/^finishing/.test(s)) return 'finishing';
+  if (/error/.test(s)) return 'ran into a problem — see details';
+  return 'working';
 }
 
 // The run settled: its result in the box (or a toast when the box is
@@ -579,7 +649,13 @@ function askBubbleSettled(ws, run, { status, summary, changed, undoable, reviewi
   }
   const host = b.root.querySelector('.ask-run');
   host.hidden = false;
-  host.innerHTML = `<div class="fw-run settled"><span>${esc(status)}</span><b>${esc(run.title || '')}</b><span class="fw-run-status">${esc(summary || '')}${undoable ? ' · Ctrl+Z in the text takes it back' : ''}</span><button type="button" class="ghost" data-run-open>open conversation</button>${changed ? '<button type="button" class="ghost" data-run-history>history</button>' : ''}</div>`;
+  if (askPrefs().more) {
+    host.innerHTML = `<div class="fw-run settled"><span>${esc(status)}</span><b>${esc(run.title || '')}</b><span class="fw-run-status">${esc(summary || '')}${undoable ? ' · Ctrl+Z in the text takes it back' : ''}</span><button type="button" class="ghost" data-run-open>open conversation</button>${changed ? '<button type="button" class="ghost" data-run-history>history</button>' : ''}</div>`;
+  } else {
+    const ok = status.startsWith('✓');
+    const plain = String(summary || '').replace(/^agent changed/, 'changed');
+    host.innerHTML = `<div class="fw-run settled" title="${esc(status + (run.title ? ' · ' + run.title : ''))}"><span>${ok ? '✓ done' : esc(status)}</span><span class="fw-run-status">${esc(plain)}${undoable ? ' · ' + esc(modKey('Z')) + ' undoes it' : ''}</span><button type="button" class="ghost" data-run-open title="Open the conversation the agent worked in">details</button></div>`;
+  }
   host.querySelector('[data-run-open]').onclick = () => open(run.key, 'bottom');
   const h = host.querySelector('[data-run-history]');
   if (h) h.onclick = () => liveFileHistory(ws);

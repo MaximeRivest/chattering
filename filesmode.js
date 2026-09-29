@@ -634,7 +634,7 @@ function fileWsBeginRun(ws, out, ask = {}) {
 function fileWsLockEditor(ws, lock) {
   if (!ws.editor) return;
   try { ws.editor.setReadonly(lock); } catch {}
-  if (lock) fileWsBanner(ws, 'an agent is working on this conversation — the editor is read-only until it settles, so nothing you type races its edits', [['open the conversation', () => open(ws.run.key, 'bottom')], ['stop the run', () => fileWsAbortRun(ws)]]);
+  if (lock) fileWsBanner(ws, 'an agent is changing this file — typing is paused until it finishes, so its changes and yours do not collide', [['details', () => open(ws.run.key, 'bottom')], ['stop', () => fileWsAbortRun(ws)]]);
   else fileWsBanner(ws, null);
 }
 
