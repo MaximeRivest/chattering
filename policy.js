@@ -302,6 +302,15 @@ const ROUTES = {
   '/api/access': 'guest', // see / own checked in the handler
   '/api/invites': 'owner',
   '/api/invites/revoke': 'owner',
+  // Chattering Anywhere (design/85): anyone signed in pairs their own phone
+  // and removes it; the handlers keep each person to their own phones.
+  // How this computer is reached is the owner's.
+  'GET /api/anywhere': 'guest',
+  'GET /api/anywhere/pairing': 'guest',
+  'POST /api/anywhere/pair': 'guest',
+  'POST /api/anywhere/cancel': 'guest',
+  'POST /api/anywhere/forget': 'guest',
+  'POST /api/anywhere/settings': 'owner',
   '/api/doors': 'owner',
   '/api/doors/public': 'owner',
   '/api/doors/sign-ins': 'owner',
@@ -441,6 +450,8 @@ const EVENTS = {
   index: () => () => true,
   'project-folds': () => () => true,
   users: () => () => true,
+  // A phone paired, connected or removed: the settings page asks again.
+  anywhere: () => () => true,
   // The AI accounts changed (design/73): a ping, the browser refetches.
   'ai-accounts': () => () => true,
   // Chattering's AI programs as they run (design/74): the household's, like

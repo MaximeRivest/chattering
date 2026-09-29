@@ -138,6 +138,9 @@ const DEFAULT_SETTINGS = {
   // invites for the tailnet door; never leaves the settings of the owner.
   publicDoor: false,
   tailscaleApiKey: '',
+  // Chattering Anywhere (design/85): phones reach this computer through a
+  // relay. relay: its address, '' for Rockfrog's; off: the owner's switch.
+  anywhere: { relay: '', off: false },
 };
 
 // What an install from before version 2 ran on without having saved it:
@@ -437,6 +440,7 @@ function normalizeSettings(input) {
   const guestLimits = normalizeGuestLimits(src.guestLimits);
   const publicDoor = src.publicDoor === true;
   const tailscaleApiKey = typeof src.tailscaleApiKey === 'string' ? src.tailscaleApiKey.trim().slice(0, 200) : '';
+  const anywhere = normalizeAnywhere(src.anywhere);
   // A fixed model needs both halves; half a choice is Pi's default.
   const piDefault = src.usePiDefault === true || !provider || !model;
   return {
@@ -478,7 +482,21 @@ function normalizeSettings(input) {
     guestLimits,
     publicDoor,
     tailscaleApiKey,
+    anywhere,
   };
+}
+
+// A relay is an https address (http only on this computer itself, for
+// running one beside it); anything else is no choice: the default.
+function normalizeAnywhere(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  let relay = '';
+  try {
+    const u = new URL(String(src.relay || '').trim());
+    const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(u.hostname);
+    if ((u.protocol === 'https:' || (u.protocol === 'http:' && local)) && !u.username && !u.password) relay = (u.origin + u.pathname).replace(/\/+$/, '');
+  } catch {}
+  return { relay, off: src.off === true };
 }
 
 // Whole minutes, 0 (off) or 5 to 1440. Under five minutes a model thinking

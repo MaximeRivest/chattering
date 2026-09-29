@@ -1,0 +1,35 @@
+/* Chattering Anywhere in settings → machines (design/85). */
+.any-actions { margin: var(--sp-2) 0; }
+.any-devices { display: flex; flex-direction: column; margin: var(--sp-2) 0; border-top: 1px solid var(--border); }
+.any-device { display: grid; grid-template-columns: auto 1fr auto auto; gap: var(--sp-2); align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.any-device .any-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.any-device .any-seen { font-size: var(--fs-meta); white-space: nowrap; }
+.any-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); }
+.any-device.online .any-dot { background: var(--live); box-shadow: 0 0 0 3px color-mix(in srgb, var(--live) 25%, transparent); }
+.any-relay { font-size: var(--fs-meta); }
+
+.any-dialog { width: min(420px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); overflow: auto; box-sizing: border-box; padding: 22px 22px 16px; border: 1px solid var(--border-strong); border-radius: var(--r-dialog); background: var(--bg); color: var(--text); }
+.any-dialog::backdrop { background: var(--overlay); }
+.any-dialog h2 { margin: 0 0 var(--sp-2); font-size: var(--fs-title); }
+.any-lead { margin: 0 0 var(--sp-3); }
+.any-qr { width: min(260px, 70vw); aspect-ratio: 1; margin: 0 auto var(--sp-3); border-radius: var(--r-menu); overflow: hidden; background: #fff; }
+.any-qr svg { display: block; width: 100%; height: 100%; }
+.any-qr.any-loading { background: var(--surface-2); animation: any-breathe 1.2s ease-in-out infinite; }
+@keyframes any-breathe { 50% { opacity: .5; } }
+.any-wait { display: flex; align-items: center; justify-content: center; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.any-wait .any-clock { font-variant-numeric: tabular-nums; }
+.any-pulse { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); animation: any-pulse 1.4s ease-out infinite; }
+@keyframes any-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
+.any-more { margin: 0 0 var(--sp-3); }
+.any-more summary { cursor: pointer; color: var(--text-dim); font-size: var(--fs-meta); }
+.any-more .row { display: flex; gap: var(--sp-2); align-items: center; margin-top: var(--sp-2); }
+.any-more code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.any-foot { display: flex; gap: var(--sp-3); align-items: center; justify-content: space-between; border-top: 1px solid var(--border); padding-top: var(--sp-3); }
+.any-foot .hint { font-size: var(--fs-meta); }
+.any-done { text-align: center; padding: var(--sp-3) 0; }
+.any-check { width: 64px; height: 64px; margin: 0 auto var(--sp-3); border-radius: 50%; background: var(--accent); position: relative; animation: any-pop .45s cubic-bezier(.3, 1.6, .5, 1) both; }
+.any-check::after { content: ''; position: absolute; left: 22px; top: 14px; width: 14px; height: 26px; border: solid var(--accent-ink); border-width: 0 5px 5px 0; transform: rotate(45deg); animation: any-tick .3s .2s ease-out both; }
+@keyframes any-pop { from { transform: scale(.3); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes any-tick { from { opacity: 0; transform: rotate(45deg) scale(.4); } to { opacity: 1; transform: rotate(45deg); } }
+@media (prefers-reduced-motion: reduce) { .any-check, .any-check::after, .any-pulse, .any-qr.any-loading { animation: none; } }
+[data-theme-motion="none"] .any-pulse, [data-theme-motion="none"] .any-check, [data-theme-motion="none"] .any-check::after, [data-theme-motion="none"] .any-qr.any-loading { animation: none; }

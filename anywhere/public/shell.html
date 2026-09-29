@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101412">
+<meta name="color-scheme" content="dark light">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Chattering">
+<meta name="referrer" content="no-referrer">
+<meta name="description" content="Chattering on your phone, straight from your own computer.">
+<title>Chattering</title>
+<link rel="manifest" href="/_anywhere/manifest.webmanifest">
+<link rel="icon" href="/_anywhere/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/_anywhere/apple-touch-icon.png">
+<link rel="stylesheet" href="/_anywhere/shell.css">
+</head>
+<body>
+<main id="stage" class="stage" aria-live="polite">
+  <div id="card" class="card">
+    <div class="mark" aria-hidden="true"></div>
+    <h1>Chattering</h1>
+  </div>
+  <footer class="credit">Chattering, by Rockfrog</footer>
+</main>
+<div id="pill" class="pill" role="status" hidden></div>
+<div id="sheet" class="sheet" hidden></div>
+<noscript><p class="noscript">Chattering needs JavaScript to connect to your computer.</p></noscript>
+<script src="/_anywhere/protocol.js"></script>
+<script src="/_anywhere/client.js"></script>
+<script src="/_anywhere/shell.js"></script>
+</body>
+</html>

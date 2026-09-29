@@ -1,0 +1,116 @@
+/* Chattering Anywhere, the phone's page (design/85). Chattering's own
+   colours (design/tokens.css), dark by default, paper in a light setting. */
+:root {
+  --bg: #101412; --surface: #171c19; --surface-2: #1f2521; --border: #343c36;
+  --text: #dce3dd; --dim: #98a29a; --faint: #5f6a61;
+  --accent: #7dd492; --accent-ink: #0a130c; --warn: #d3ba54; --danger: #f79d94;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root { --bg: #f6f4ee; --surface: #fffdf8; --surface-2: #efece3; --border: #dcd7ca; --text: #1d241f; --dim: #5b655d; --faint: #9aa29b; --accent: #2f8a4a; --accent-ink: #ffffff; --warn: #8a6d00; --danger: #b43c30; color-scheme: light; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 16px/1.5 var(--font); -webkit-text-size-adjust: 100%; }
+body { overflow: hidden; }
+b { font-weight: 650; }
+
+/* ---- the app, full screen, once connected ---- */
+#app { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; background: var(--bg); opacity: 0; transition: opacity .35s ease; }
+body.app-open #app { opacity: 1; }
+
+/* ---- the screens before it ---- */
+.stage { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: max(24px, env(safe-area-inset-top)) 22px max(24px, env(safe-area-inset-bottom)); overflow-y: auto; transition: opacity .3s ease; }
+.stage[hidden] { display: none; }
+.card { width: 100%; max-width: 420px; text-align: center; animation: rise .45s cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.mark { width: 76px; height: 60px; margin: 0 auto 18px; background: var(--accent); -webkit-mask: url(/_anywhere/mark.svg) center / contain no-repeat; mask: url(/_anywhere/mark.svg) center / contain no-repeat; }
+h1 { font-size: 1.45rem; line-height: 1.25; font-weight: 600; margin: 0 0 10px; letter-spacing: -.01em; }
+h1 b { color: var(--accent); font-weight: 650; }
+.lead { color: var(--dim); margin: 0 auto 20px; max-width: 34ch; }
+.credit { position: absolute; bottom: max(14px, env(safe-area-inset-bottom)); font-size: .78rem; color: var(--faint); }
+.how { text-align: left; margin: 8px auto 22px; padding: 0; list-style: none; counter-reset: how; max-width: 340px; }
+.how li { counter-increment: how; position: relative; padding: 10px 0 10px 44px; color: var(--text); }
+.how li::before { content: counter(how); position: absolute; left: 0; top: 8px; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--surface-2); border: 1px solid var(--border); color: var(--accent); font-weight: 650; font-size: .9rem; }
+.hint { color: var(--dim); font-size: .92rem; }
+
+button { font: inherit; border-radius: 12px; padding: 12px 18px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; min-height: 46px; -webkit-tap-highlight-color: transparent; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button.ghost { background: transparent; }
+button.small { min-height: 36px; padding: 6px 12px; font-size: .9rem; border-radius: 10px; }
+button:active { transform: scale(.98); }
+.actions { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.card > button.ghost.small { margin-top: 14px; color: var(--dim); }
+
+.homes { display: flex; flex-direction: column; gap: 8px; margin: 14px 0; text-align: left; }
+.home { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; }
+.home small { margin-left: auto; color: var(--faint); }
+.home.on { border-color: var(--accent); }
+.home .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); flex: none; }
+.home.on .dot { background: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 25%, transparent); }
+.home-row { display: flex; gap: 8px; align-items: center; }
+.home-row .home { flex: 1; }
+
+details.about { text-align: left; margin-top: 18px; color: var(--dim); font-size: .92rem; border-top: 1px solid var(--border); padding-top: 12px; }
+details.about summary { cursor: pointer; color: var(--text); list-style: none; }
+details.about summary::-webkit-details-marker { display: none; }
+details.about summary::before { content: '🔒'; margin-right: 8px; }
+details.about p { margin: 10px 0 0; }
+
+/* ---- the connection, drawn: a phone, a wire, a computer ---- */
+.link-art { position: relative; display: flex; align-items: center; justify-content: center; gap: 0; height: 84px; margin: 0 auto 22px; width: 250px; }
+.node { position: relative; flex: none; border: 2px solid var(--text); background: var(--surface); }
+.node.phone { width: 30px; height: 50px; border-radius: 7px; }
+.node.phone::after { content: ''; position: absolute; left: 50%; bottom: 4px; width: 8px; height: 2px; border-radius: 2px; background: var(--dim); transform: translateX(-50%); }
+.node.computer { width: 60px; height: 42px; border-radius: 6px; margin-bottom: 10px; }
+.node.computer::after { content: ''; position: absolute; left: 50%; bottom: -12px; width: 76px; height: 5px; border-radius: 0 0 5px 5px; background: var(--text); transform: translateX(-50%); }
+.node.computer.asleep { opacity: .45; }
+.node.computer.asleep::before { content: 'z'; position: absolute; right: -14px; top: -16px; color: var(--dim); font-size: .9rem; animation: zz 2.4s ease-in-out infinite; }
+@keyframes zz { 0%, 100% { opacity: .2; transform: translateY(2px); } 50% { opacity: 1; transform: translateY(-3px); } }
+.wire { position: relative; flex: 1; height: 2px; margin: 0 12px; background: repeating-linear-gradient(90deg, var(--border) 0 6px, transparent 6px 11px); }
+.wire i { position: absolute; top: -3px; left: 0; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); opacity: 0; }
+.relay .wire i, .connecting .wire i, .securing .wire i { animation: travel 1.6s ease-in-out infinite; }
+.wire i:nth-child(2) { animation-delay: .25s !important; }
+.wire i:nth-child(3) { animation-delay: .5s !important; }
+.connecting .wire i:nth-child(odd) { animation-name: travel-back; }
+@keyframes travel { 0% { left: 0; opacity: 0; } 15% { opacity: 1; } 85% { opacity: 1; } 100% { left: calc(100% - 8px); opacity: 0; } }
+@keyframes travel-back { 0% { left: calc(100% - 8px); opacity: 0; } 15% { opacity: 1; } 85% { opacity: 1; } 100% { left: 0; opacity: 0; } }
+.waiting .wire { opacity: .5; }
+.ready .wire { background: var(--accent); height: 3px; transition: background .4s; }
+.ready .node, .securing .node { border-color: var(--accent); }
+.lock { position: absolute; left: 50%; top: 50%; width: 26px; height: 26px; margin: -18px 0 0 -13px; border-radius: 50%; background: var(--accent); opacity: 0; transform: scale(.4); transition: all .35s cubic-bezier(.3, 1.6, .5, 1); display: grid; place-items: center; }
+.lock::before { content: ''; width: 9px; height: 7px; border-radius: 2px; background: var(--accent-ink); margin-top: 5px; box-shadow: 0 0 0 0 transparent; }
+.lock::after { content: ''; position: absolute; top: 5px; width: 7px; height: 7px; border: 2px solid var(--accent-ink); border-bottom: 0; border-radius: 5px 5px 0 0; }
+.securing .lock, .ready .lock { opacity: 1; transform: scale(1); }
+.paired .card { animation: rise .45s cubic-bezier(.2, .8, .2, 1) both; }
+
+.steps { list-style: none; display: flex; justify-content: center; gap: 6px; padding: 0; margin: 14px 0 0; flex-wrap: wrap; }
+.steps li { font-size: .82rem; color: var(--faint); padding: 3px 10px; border-radius: 999px; border: 1px solid transparent; transition: all .25s; }
+.steps li.done { color: var(--dim); }
+.steps li.done::before { content: '✓ '; color: var(--accent); }
+.steps li.now { color: var(--text); border-color: var(--border); background: var(--surface); }
+
+.problem h1 b, .problem.danger h1 { color: var(--text); }
+.problem.danger .mark { background: var(--danger); }
+.share-glyph { display: inline-block; width: 14px; height: 16px; border: 2px solid currentColor; border-top: 0; border-radius: 0 0 3px 3px; vertical-align: -2px; position: relative; margin: 0 2px; }
+.share-glyph::before { content: ''; position: absolute; left: 50%; top: -7px; width: 2px; height: 11px; background: currentColor; transform: translateX(-50%); }
+
+/* ---- the pill: connected, reconnecting — out of the way ---- */
+.pill { position: fixed; left: 50%; top: max(10px, env(safe-area-inset-top)); z-index: 10; transform: translate(-50%, -140%); max-width: calc(100% - 24px); padding: 8px 14px; border-radius: 999px; background: color-mix(in srgb, var(--surface) 92%, transparent); border: 1px solid var(--border); color: var(--text); font-size: .88rem; box-shadow: 0 6px 24px rgba(0, 0, 0, .25); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); transition: transform .35s cubic-bezier(.2, .9, .2, 1); display: flex; align-items: center; gap: 8px; }
+.pill.show { transform: translate(-50%, 0); }
+.pill::before { content: ''; width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--accent); }
+.pill.wait::before { background: var(--warn); animation: blink 1.2s ease-in-out infinite; }
+@keyframes blink { 50% { opacity: .3; } }
+.pill-text { min-width: 0; }
+.pill button { margin-left: 6px; min-height: 30px; padding: 4px 12px; border-radius: 999px; font-size: .85rem; background: var(--accent); color: var(--accent-ink); border: 0; }
+
+/* ---- the sheet: this phone's computers ---- */
+.sheet { position: fixed; inset: 0; z-index: 20; background: rgba(0, 0, 0, .45); display: flex; align-items: flex-end; justify-content: center; opacity: 0; transition: opacity .25s; }
+.sheet.show { opacity: 1; }
+.sheet-card { width: 100%; max-width: 480px; background: var(--surface); border: 1px solid var(--border); border-bottom: 0; border-radius: 20px 20px 0 0; padding: 20px 20px max(20px, env(safe-area-inset-bottom)); transform: translateY(30px); transition: transform .3s cubic-bezier(.2, .9, .2, 1); max-height: 85vh; overflow-y: auto; }
+.sheet.show .sheet-card { transform: none; }
+.sheet h2 { margin: 0 0 6px; font-size: 1.1rem; }
+.sheet-card > button { width: 100%; margin-top: 12px; }
+.noscript { padding: 2em; text-align: center; }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }

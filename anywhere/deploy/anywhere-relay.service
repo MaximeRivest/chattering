@@ -1,0 +1,27 @@
+# The Chattering Anywhere relay as a systemd service (not NixOS; there, use
+# nixos.nix). /etc/chattering-anywhere.env holds one line, the secret coturn
+# also has:   TURN_SECRET=<openssl rand -hex 32>
+[Unit]
+Description=Chattering Anywhere relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=PORT=8790
+Environment=HOST=127.0.0.1
+Environment=TRUST_PROXY=1
+Environment=TURN_URLS=turn:anywhere.rockfrog.ai:3478?transport=udp,turn:anywhere.rockfrog.ai:3478?transport=tcp,turns:anywhere.rockfrog.ai:5349?transport=tcp
+EnvironmentFile=/etc/chattering-anywhere.env
+ExecStart=/usr/bin/node /opt/chattering-anywhere/anywhere/relay.js
+DynamicUser=yes
+Restart=always
+RestartSec=2
+# It keeps nothing: a read-only system, no state directory.
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+NoNewPrivileges=yes
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

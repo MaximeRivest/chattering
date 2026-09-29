@@ -1,8 +1,9 @@
 {
   "name": "chattering-runtime",
   "private": true,
-  "description": "The Pi runtime Chattering is tested with and ships in its downloads. npm ci here installs exactly the locked versions.",
+  "description": "The Pi runtime Chattering is tested with, and the WebRTC component phones connect through (node-datachannel, design/85); both ship in its downloads. npm ci here installs exactly the locked versions.",
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.87.1"
+    "@earendil-works/pi-coding-agent": "0.87.1",
+    "node-datachannel": "0.33.4"
   }
 }

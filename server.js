@@ -5966,6 +5966,39 @@ async function connectMachine(link) {
   return { name, url: parsed.url, registeredBack, why, myUrl };
 }
 
+// ---- Chattering Anywhere (design/85): a phone reaches this computer from
+// anywhere, through a relay that carries only encrypted data. A paired phone
+// holds a credential of the person who paired it; its requests replay
+// against this server's own port as that person, marked forwarded.
+const anywhereLib = require('./anywhere-home.js');
+let anywhereTimer = null;
+const anywhere = anywhereLib.createAnywhereHome({
+  dataDir: DATA_DIR, appDir: __dirname,
+  relayUrl: () => (appSettings.anywhere && appSettings.anywhere.relay) || anywhereLib.DEFAULT_RELAY,
+  enabled: () => !(appSettings.anywhere && appSettings.anywhere.off),
+  homeName: () => HOST_NAME,
+  localTarget: () => ({ host: !HOST || HOST === '0.0.0.0' || HOST === '::' || isLoopback(HOST) ? '127.0.0.1' : HOST, port: PORT }),
+  issueCredential: (userId, label) => {
+    const { secret, credential } = usersLib.issueCredential(roster, userId, { kind: 'invite', label });
+    saveRoster();
+    broadcast({ type: 'users', users: publicUsers(), groups: roster.groups });
+    return { secret, credentialId: credential.id };
+  },
+  credentialAlive: (userId, id) => { const u = usersLib.findUser(roster, userId); return !!(u && !u.disabled && u.credentials.some(c => c.id === id)); },
+  revokeCredential: (userId, id) => { try { usersLib.revokeCredential(roster, userId, id); saveRoster(); broadcast({ type: 'users', users: publicUsers(), groups: roster.groups }); } catch {} },
+  userOf: id => { const u = usersLib.findUser(roster, id); return u ? { id: u.id, name: u.name } : null; },
+  // A ping; the settings page asks again (the list is filtered per person).
+  onChange: () => { clearTimeout(anywhereTimer); anywhereTimer = setTimeout(() => broadcast({ type: 'anywhere' }), 150); },
+  log: m => console.error(m),
+});
+async function anywhereResponse(identity) {
+  const st = anywhere.status();
+  const manages = usersLib.canManageUsers(identity);
+  const me = identity && identity.user ? identity.user.id : null;
+  return { ...st, homeId: await anywhere.homeId(), manages, owner: usersLib.isOwnerTier(identity), me,
+    devices: manages ? st.devices : st.devices.filter(d => d.user && d.user.id === me) };
+}
+
 // The doors as tailscale reports them, plus what the settings say. Cached
 // for five seconds: the settings page and the invite dialog both ask.
 let doorsCache = { at: 0, value: null };
@@ -16260,6 +16293,8 @@ async function handleRequest(req, res) {
       '/collab-client.js': { file: 'collab-client.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/people.js': { file: 'people.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/people.css': { file: 'people.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+      '/anywhere-ui.js': { file: 'anywhere-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/anywhere-ui.css': { file: 'anywhere-ui.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/file-viewers.js': { file: 'file-viewers.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/file-viewers.css': { file: 'file-viewers.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/html-preview.js': { file: 'html-preview.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
@@ -17805,6 +17840,8 @@ async function handleRequest(req, res) {
         } else throw Object.assign(new Error('unknown users operation'), { status: 404 });
         usersLib.saveRoster(USERS_FILE, roster);
         broadcast({ type: 'users', users: publicUsers(), groups: roster.groups });
+        // A phone whose person or credential just went goes with them.
+        anywhere.prune();
         json(res, 200, { ...out, users: publicUsers(), groups: roster.groups });
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/project-id' && req.method === 'GET') {
@@ -17885,6 +17922,48 @@ async function handleRequest(req, res) {
         else if (!peer.projects.some(x => x.id === projectId)) syncEngine.addProjectToPeer(peer.id, { id: projectId, name: rec.name, right: 'act' });
         const landed = await syncEngine.importItems(peer, projectId, Array.isArray(p.items) ? p.items : []);
         json(res, 200, { ok: true, landed });
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/anywhere' && req.method === 'GET') {
+      json(res, 200, await anywhereResponse(identity));
+    } else if (u.pathname === '/api/anywhere/pairing' && req.method === 'GET') {
+      // The settings page watches its code until the phone arrives.
+      const s = anywhere.pairingState(u.searchParams.get('id'));
+      if (!s || (s.userId !== identity.user.id && !usersLib.canManageUsers(identity))) return json(res, 404, { error: 'this code is no longer showing' });
+      json(res, 200, { id: s.id, expiresAt: s.expiresAt, paired: s.paired });
+    } else if ((u.pathname === '/api/anywhere/pair' || u.pathname === '/api/anywhere/cancel' || u.pathname === '/api/anywhere/forget' || u.pathname === '/api/anywhere/settings') && req.method === 'POST') {
+      let body = '';
+      for await (const chunk of req) { body += chunk; if (body.length > 16 * 1024) return json(res, 413, { error: 'too large' }); }
+      try {
+        const p = JSON.parse(body || '{}');
+        const op = u.pathname.slice('/api/anywhere/'.length);
+        if (op === 'pair') {
+          const st = anywhere.status();
+          if (!st.available) return json(res, 503, { error: st.why });
+          if (!st.enabled) return json(res, 409, { error: 'Anywhere is turned off on this computer. The owner turns it on in settings → machines.' });
+          const code = await anywhere.pair(identity.user.id);
+          return json(res, 200, { ...code, svg: anywhereLib.qrSvg(code.url) });
+        }
+        if (op === 'cancel') { anywhere.cancelPairing(String(p.id || ''), usersLib.canManageUsers(identity) ? null : identity.user.id); return json(res, 200, { ok: true }); }
+        if (op === 'forget') {
+          const d = anywhere.status().devices.find(x => x.id === String(p.id || ''));
+          if (!d) return json(res, 404, { error: 'no such phone' });
+          if (d.user.id !== identity.user.id && !usersLib.canManageUsers(identity)) return json(res, 403, { error: 'only its person or an administrator removes a phone' });
+          anywhere.forget(d.id);
+          return json(res, 200, await anywhereResponse(identity));
+        }
+        if (op === 'settings') {
+          if (!usersLib.isOwnerTier(identity)) return json(res, 403, { error: 'only the owner changes how this computer is reached' });
+          const next = { ...(appSettings.anywhere || {}) };
+          if ('off' in p) next.off = p.off === true;
+          if ('relay' in p) next.relay = String(p.relay || '');
+          const normalized = settingsLib.normalizeSettings({ ...appSettings, anywhere: next });
+          if ('relay' in p && String(p.relay || '').trim() && !normalized.anywhere.relay) return json(res, 400, { error: 'A relay address starts with https:// (http:// only for this computer itself).' });
+          appSettings = normalized;
+          saveAppSettings();
+          anywhere.refresh();
+          return json(res, 200, await anywhereResponse(identity));
+        }
+        json(res, 404, { error: 'unknown anywhere operation' });
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/doors' && req.method === 'GET') {
       // The doors through Tailscale as they stand right now (design/56).
@@ -19153,6 +19232,7 @@ let shuttingDown = false;
 async function shutdownGracefully() {
   if (shuttingDown) return;
   shuttingDown = true;
+  try { anywhere.stop(); } catch {}
   clearInterval(delegationTimer);
   clearInterval(recoveryTimer);
   delegationCoordinator.stop();

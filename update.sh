@@ -16,6 +16,13 @@ else
   git log --oneline "$before..$after" | sed 's/^/  /'
 fi
 
+# The locked runtime (Pi, and the WebRTC component phones connect through,
+# design/85): installed again when its lock changed, or when a part is missing.
+if [ -f runtime/package-lock.json ] && { ! git diff --quiet "$before" "$after" -- runtime/package-lock.json 2>/dev/null || [ ! -d runtime/node_modules/node-datachannel ]; }; then
+  echo "installing the runtime (runtime/package-lock.json)…"
+  npm ci --prefix runtime --omit=dev --no-audit --no-fund
+fi
+
 # Keep the modes extension in step with the repo copy (install when missing).
 PI_EXT_DIR="$HOME/.pi/agent/extensions"
 if [ -f extensions/modes.ts ]; then
