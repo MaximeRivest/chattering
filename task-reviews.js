@@ -33,10 +33,10 @@ function findPair(rows, call) {
   const after = rows.filter(r => r.call === call && r.run === before?.run && r.id > before?.id && ['after', 'after-error'].includes(r.phase)).at(-1);
   return { before, after };
 }
-function checkpointRef(cp, row, file) {
+async function checkpointRef(cp, row, file) {
   if (!row?.snapshot || !within(row.root, file)) return null;
   const rel = path.relative(row.root, file).split(path.sep).join('/');
-  const item = cp.snapshot(row.snapshot).manifest.find(f => f.path === rel);
+  const item = (await cp.snapshot(row.snapshot)).manifest.find(f => f.path === rel);
   // Omission from a Git-filtered manifest is not proof of physical absence.
   return item && !item.unavailable ? { kind: 'checkpoint', snapshot: row.snapshot, path: rel, label: 'Workspace observation', at: row.finished } : null;
 }
@@ -73,14 +73,14 @@ async function fileDescriptor(service, loc, args, rows, tools, overrides) {
   const direct = related.filter(t => ['write', 'edit', 'multiedit'].includes(t.name));
   const pairs = related.map(t => ({ tool: t, ...findPair(rows, t.id) }));
   for (const pair of pairs) {
-    const before = targetRef(cp, pair.before, loc) || checkpointRef(cp, pair.before, loc.path);
-    const after = targetRef(cp, pair.after, loc) || checkpointRef(cp, pair.after, loc.path);
+    const before = targetRef(cp, pair.before, loc) || await checkpointRef(cp, pair.before, loc.path);
+    const after = targetRef(cp, pair.after, loc) || await checkpointRef(cp, pair.after, loc.path);
     f.oldRef ||= before; if (after) f.nextRef = after;
   }
   // Never use a later before-snapshot to stand in for a missing initial state.
   const firstPair = pairs[0], lastPair = pairs.at(-1);
-  f.oldRef = firstPair ? targetRef(cp, firstPair.before, loc) || checkpointRef(cp, firstPair.before, loc.path) : null;
-  f.nextRef = lastPair ? targetRef(cp, lastPair.after, loc) || checkpointRef(cp, lastPair.after, loc.path) : null;
+  f.oldRef = firstPair ? targetRef(cp, firstPair.before, loc) || await checkpointRef(cp, firstPair.before, loc.path) : null;
+  f.nextRef = lastPair ? targetRef(cp, lastPair.after, loc) || await checkpointRef(cp, lastPair.after, loc.path) : null;
   const firstTime = Date.parse(related[0]?.ts || ''), lastTime = Math.max(...pairs.map(p => p.after?.finished || Date.parse(p.tool.endTs || p.tool.ts || '')));
   if (service.archive && Number.isFinite(firstTime)) {
     const versions = service.archive.around ? service.archive.around(loc.path, firstTime, lastTime + 3000) : service.archive.versions(loc.path);
@@ -163,9 +163,9 @@ async function buildTaskReview(service, input) {
   const artifacts = all.filter(f => f.location.host !== 'local' || !f.location.path || f.mediaType || f.evidence !== 'explicit-tool');
   const files = all.filter(f => !artifacts.includes(f) && !f.unchanged);
   const taskPaths = new Set(all.filter(f => f.evidence === 'explicit-tool' && f.location.host === 'local' && f.location.path).map(f => f.location.path));
-  const workspaceFiles = base && head ? cp.diff(base, head).map(f => ({ ...f, livePath: path.join(root, f.path), workspace: true })) : [];
+  const workspaceFiles = base && head ? (await cp.diff(base, head)).map(f => ({ ...f, livePath: path.join(root, f.path), workspace: true })) : [];
   const otherFiles = workspaceFiles.filter(f => !taskPaths.has(path.join(root, f.path)));
-  const exclusions = head ? cp.snapshot(head).manifest.filter(f => f.unavailable).map(f => f.path) : [];
+  const exclusions = head ? (await cp.snapshot(head)).manifest.filter(f => f.unavailable).map(f => f.path) : [];
   const coverage = locations.length <= 300 && stepFiles <= 1000 && files.every(f => f.oldRef && f.nextRef && !f.unavailable);
   const stableFile = f => { const { livePath, liveDirectory, liveStatus, size, ...stable } = f; return stable; };
   const identity = digest({ schema: 2, resolver: VERSION, key: input.key, calls: input.sourceCalls || input.calls, files: files.map(stableFile), artifacts: artifacts.map(stableFile),

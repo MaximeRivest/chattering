@@ -80,7 +80,7 @@ test('experiment scopes capture ignored text, remain reversible and exclude sens
   const before = await fs.readFile(path.join(root, '.gitignore'));
   await cp.approveScope(root, path.join(root, 'scratch'));
   const recorded = await cp.capture(root);
-  const manifest = cp.snapshot(recorded.snapshot).manifest;
+  const manifest = (await cp.snapshot(recorded.snapshot)).manifest;
   assert.ok(manifest.some(f => f.path === 'scratch/wizard.py' && f.oid));
   assert.ok(!manifest.some(f => f.path === 'scratch/.env' && f.oid));
   assert.deepEqual(await fs.readFile(path.join(root, '.gitignore')), before);
@@ -105,7 +105,7 @@ test('repairs recover saved observations but preserve the original review and co
   tool.ts = new Date(now - 1000).toISOString();
   archive.observe(file, { text: 'wizard before', ts: now - 2000 });
   archive.observe(file, { text: 'wizard after', ts: now });
-  const old = reviews.create({ key: args.key, session: args.session, project: args.project, calls: args.calls, knownPaths: ['wrong/path'] });
+  const old = await reviews.create({ key: args.key, session: args.session, project: args.project, calls: args.calls, knownPaths: ['wrong/path'] });
   await reviews.comment(old.id, { text: 'Keep my original comment' });
   const r = await reviews.createTask({ ...args, repairOf: old.id });
   const data = await reviews.file(r.id, 'scratch/wizard.py');

@@ -49,10 +49,10 @@ test('storage exhaustion reports a gap without deleting existing versions', t =>
   const { archive, file } = fixture(t);
   const a = archive.observe(file, { text: 'keep me' });
   archive.budget = 1;
-  assert.throws(() => archive.observe(file, { text: 'new' }), /limit reached/);
+  assert.throws(() => archive.observe(file, { text: 'new' }), /is full/);
   assert.equal(archive.snapshot(file, a.id).content, 'keep me');
   assert.equal(archive.versions(file).length, 1);
-  assert.match(archive.error, /not captured/);
+  assert.match(archive.error, /not saved/);
 });
 test('timestamps never regress and equal times retain observation order', t => {
   const { archive, file } = fixture(t);

@@ -46,7 +46,7 @@ async function until(fn) { for (let i = 0; i < 200; i++) { if (fn()) return; awa
         const last = store.targets(targeted.find(t => t.phase === 'after').id)[0];
         assert.equal((await store.targetContent(first.location.path, first.version)).absent, true);
         assert.equal((await store.targetContent(last.location.path, last.version)).text, 'target checkpoint');
-        assert.ok(!store.snapshot(after.snapshot).manifest.some(f => f.path === 'scratch/probe.txt'), 'Target capture should not change Git ignore policy');
+        assert.ok(!(await store.snapshot(after.snapshot)).manifest.some(f => f.path === 'scratch/probe.txt'), 'Target capture should not change Git ignore policy');
       }
       toolCheckpointsVerified = true;
     } finally { store.close(); }

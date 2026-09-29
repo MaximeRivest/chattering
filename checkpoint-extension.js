@@ -12,9 +12,8 @@ function checkpointExtension(pi, options = {}) {
   let artifactCheck = { cwd: '', at: 0, any: false };
   const hasArtifacts = async cwd => {
     if (artifactCheck.cwd === cwd && Date.now() - artifactCheck.at < 10000) return artifactCheck.any;
-    store ||= options.store || new CheckpointStore();
     let any = false;
-    try { any = store.artifactScopes(await store.root(cwd)).length > 0; } catch {}
+    try { store ||= options.store || new CheckpointStore(); any = store.artifactScopes(await store.root(cwd)).length > 0; } catch {}
     artifactCheck = { cwd, at: Date.now(), any };
     return any;
   };
@@ -29,7 +28,7 @@ function checkpointExtension(pi, options = {}) {
       return result;
     } catch (e) {
       // History failure must not turn a permitted tool call into a blocked one.
-      if (warned !== e.message) { warned = e.message; ctx.ui?.notify?.('Checkpoint gap: ' + e.message, 'warning'); }
+      if (warned !== e.message) { warned = e.message; ctx.ui?.notify?.('File history did not save this step: ' + e.message, 'warning'); }
     }
   };
   pi.on('before_agent_start', async (e, ctx) => {

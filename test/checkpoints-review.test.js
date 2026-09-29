@@ -36,9 +36,9 @@ test('private checkpoints preserve staged changes, HEAD, raw bytes, modes and ig
   assert.equal((await store.content(a.snapshot, 'a & b.txt')).text, 'staged');
   assert.equal((await store.content(b.snapshot, 'a & b.txt')).text, 'after\n');
   assert.equal((await store.content(b.snapshot, odd)).text, 'new');
-  if (unix) assert.equal(store.snapshot(b.snapshot).manifest.find(f => f.path === 'a & b.txt').mode, '100755');
-  assert.ok(!store.snapshot(b.snapshot).manifest.some(f => f.path === 'secret'));
-  assert.equal(store.diff(a.snapshot, b.snapshot).length, 2);
+  if (unix) assert.equal((await store.snapshot(b.snapshot)).manifest.find(f => f.path === 'a & b.txt').mode, '100755');
+  assert.ok(!(await store.snapshot(b.snapshot)).manifest.some(f => f.path === 'secret'));
+  assert.equal((await store.diff(a.snapshot, b.snapshot)).length, 2);
   assert.deepEqual(await fs.readFile(path.join(root, '.git/index')), staged);
   assert.equal((await git(['rev-parse', 'HEAD'], { cwd: root })).toString(), head);
   const c = await store.capture(root, meta); assert.equal(c.snapshot, b.snapshot, 'identical snapshot should reuse storage');
@@ -54,14 +54,14 @@ test('deletion and unsupported files are distinct; symlinks never copy targets',
   assert.equal((await store.content(b.snapshot, 'a & b.txt')).absent, true);
   assert.match((await store.content(b.snapshot, 'link')).unavailable, /Symlink/);
   assert.match((await store.content(b.snapshot, 'binary')).unavailable, /Binary/);
-  assert.equal(store.diff(a.snapshot, b.snapshot).length, 3);
+  assert.equal((await store.diff(a.snapshot, b.snapshot)).length, 3);
 });
 test('reviews are pinned; comments bind to recorded code; live edits and delivery retries are explicit', async t => {
   const { store, root, meta, reviews } = await fixture(t);
   await store.capture(root, { ...meta, phase: 'before' });
   await fs.writeFile(path.join(root, 'a & b.txt'), 'one\nchanged\n');
   await store.capture(root, { ...meta, phase: 'after' });
-  const r = reviews.create({ key: 'key', session: meta.session, project: 'p', calls: ['call'] });
+  const r = await reviews.create({ key: 'key', session: meta.session, project: 'p', calls: ['call'] });
   assert.equal(r.coverage, true); assert.equal(r.files.length, 1);
   const comment = await reviews.comment(r.id, { path: 'a & b.txt', side: 'next', line: 2, text: 'Use a clearer name', suggestion: 'better' });
   assert.equal(comment.quote, 'changed');
@@ -76,12 +76,12 @@ test('reviews are pinned; comments bind to recorded code; live edits and deliver
   assert.throws(() => reviews.claim(preview.token), /already submitted/);
   reviews.finish(preview.token, 'sent', { key: 'target' });
   assert.equal(reviews.get(r.id).deliveries[0].status, 'sent');
-  assert.equal(reviews.create({ key: 'key', session: meta.session, project: 'p', calls: ['call'] }).id, r.id);
+  assert.equal((await reviews.create({ key: 'key', session: meta.session, project: 'p', calls: ['call'] })).id, r.id);
   await assert.rejects(reviews.file(r.id, '../secret'), /not in this/);
 });
 test('missing tool boundaries never fabricate a complete review', async t => {
   const { reviews, meta } = await fixture(t);
-  const r = reviews.create({ key: 'key', session: meta.session, project: 'p', calls: ['old'], knownPaths: ['/old/file'] });
+  const r = await reviews.create({ key: 'key', session: meta.session, project: 'p', calls: ['old'], knownPaths: ['/old/file'] });
   assert.equal(r.coverage, false); assert.equal(r.base, null);
   await reviews.comment(r.id, { path: '/old/file', text: 'Please inspect this file' });
   await assert.rejects(reviews.file(r.id, '/old/file'), /no complete/);
@@ -91,14 +91,14 @@ test('follow-up reviews retain their original and can form a combined comparison
   await store.capture(root, { ...meta, phase: 'before' });
   await fs.writeFile(path.join(root, 'a & b.txt'), 'first edit');
   await store.capture(root, { ...meta, phase: 'after' });
-  const original = reviews.create({ key: 'key', session: meta.session, project: 'p', calls: ['call'] });
+  const original = await reviews.create({ key: 'key', session: meta.session, project: 'p', calls: ['call'] });
   const second = { ...meta, run: 'second', call: 'followup', review: original.id };
   await store.capture(root, { ...second, phase: 'before' });
   await fs.writeFile(path.join(root, 'a & b.txt'), 'review addressed');
   await store.capture(root, { ...second, phase: 'after' });
-  const followup = reviews.create({ key: 'key', session: meta.session, project: 'p', calls: ['followup'] });
+  const followup = await reviews.create({ key: 'key', session: meta.session, project: 'p', calls: ['followup'] });
   assert.equal(followup.parentReview, original.id);
-  const combined = reviews.combine(original.id, followup.id);
+  const combined = await reviews.combine(original.id, followup.id);
   const file = await reviews.file(combined.id, 'a & b.txt');
   assert.equal(file.old.text, 'one\ntwo\n'); assert.equal(file.next.text, 'review addressed');
   assert.equal(reviews.get(original.id).followups[0].id, followup.id);
@@ -144,13 +144,13 @@ test('non-Git workspaces respect .gitignore without creating a working .git dire
   await fs.rm(path.join(root, '.git'), { recursive: true, force: true });
   const captured = await store.capture(root, meta);
   assert.equal(captured.error, '');
-  assert.ok(!store.snapshot(captured.snapshot).manifest.some(f => f.path === 'secret'));
+  assert.ok(!(await store.snapshot(captured.snapshot)).manifest.some(f => f.path === 'secret'));
   await assert.rejects(fs.stat(path.join(root, '.git')), { code: 'ENOENT' });
 });
 
 test('delivery sends the preview exactly once and preserves uncertainty rather than retrying', async t => {
   const { reviews, meta } = await fixture(t);
-  const r = reviews.create({ key: 'key', session: meta.session, project: 'p', calls: ['old'] });
+  const r = await reviews.create({ key: 'key', session: meta.session, project: 'p', calls: ['old'] });
   const preview = await reviews.prepare(r.id, 'target', 'Please check this');
   let sends = 0, release;
   const sending = reviews.deliver(preview.token, async packet => { sends++; assert.equal(packet.message, preview.message); await new Promise(r => release = r); return { key: packet.target }; });
@@ -171,11 +171,11 @@ test('artifact folders are versioned with their binary assets, even when ignored
   await fs.writeFile(path.join(site, 'index.html'), '<h1>one</h1>');
   await fs.writeFile(path.join(site, 'frog.png'), png);
   const before = await store.capture(root, { ...meta, phase: 'after' });
-  assert.equal(store.snapshot(before.snapshot).manifest.some(f => f.path.startsWith('site/')), false, 'ignored folders stay out until declared');
+  assert.equal((await store.snapshot(before.snapshot)).manifest.some(f => f.path.startsWith('site/')), false, 'ignored folders stay out until declared');
   const { scope } = await store.addArtifactScope(root, site);
   assert.equal(scope, await fs.realpath(site));
   const a = await store.capture(root, { ...meta, call: 'c1', phase: 'after' });
-  const files = store.snapshot(a.snapshot).manifest.filter(f => f.path.startsWith('site/'));
+  const files = (await store.snapshot(a.snapshot)).manifest.filter(f => f.path.startsWith('site/'));
   assert.deepEqual(files.map(f => f.path), ['site/frog.png', 'site/index.html']);
   assert.ok(files.every(f => f.oid), JSON.stringify(files));
   assert.deepEqual(await store.blob(a.root, files[0].oid), png);
@@ -183,6 +183,6 @@ test('artifact folders are versioned with their binary assets, even when ignored
   // A loose (target-only) capture still scans the declared folders, and only them.
   await fs.writeFile(path.join(site, 'index.html'), '<h1>two</h1>');
   const b = await store.capture(root, { ...meta, call: 'c2', phase: 'after', targetOnly: true });
-  assert.deepEqual(store.snapshot(b.snapshot).manifest.map(f => f.path), ['site/frog.png', 'site/index.html']);
+  assert.deepEqual((await store.snapshot(b.snapshot)).manifest.map(f => f.path), ['site/frog.png', 'site/index.html']);
   await assert.rejects(store.addArtifactScope(root, os.tmpdir()), /outside/);
 });

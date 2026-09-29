@@ -22,7 +22,55 @@ class FileArchive {
         reason TEXT NOT NULL DEFAULT '');
       CREATE TABLE IF NOT EXISTS archive_events (event TEXT PRIMARY KEY, path TEXT NOT NULL, before_id INTEGER, after_id INTEGER);
       CREATE INDEX IF NOT EXISTS archive_path ON archive_versions(path, id);
-      CREATE INDEX IF NOT EXISTS archive_time ON archive_versions(path, ts, id);`);
+      CREATE INDEX IF NOT EXISTS archive_time ON archive_versions(path, ts, id);
+      CREATE INDEX IF NOT EXISTS archive_sha ON archive_versions(sha);
+      CREATE TABLE IF NOT EXISTS archive_removed (id INTEGER PRIMARY KEY, before INTEGER NOT NULL);`);
+    this.filename = filename;
+  }
+  // Pages holding data. Freed pages are reused before the file grows, so
+  // they do not count against the budget even before they are given back.
+  used() {
+    const p = n => this.db.prepare('PRAGMA ' + n).get()[n];
+    return (p('page_count') - p('freelist_count')) * p('page_size');
+  }
+  // Oldest first, like saved checkpoints (design/81): above 80% of the
+  // budget, remove the oldest quarter of what may go until below 60%. Kept:
+  // the last day, each file's newest version, and versions a review with a
+  // person's work points at (`protect`).
+  async retain({ now = Date.now(), keepMs = 24 * 3600000, protect = new Set(), high = 0.8, low = 0.6 } = {}) {
+    const report = { removed: 0, before: null, protectedOverBudget: false };
+    if (this.used() < this.budget * high) return report;
+    for (let round = 0; round < 16 && this.used() > this.budget * low; round++) {
+      const newest = new Set(this.db.prepare('SELECT MAX(id) AS id FROM archive_versions GROUP BY path').all().map(r => r.id));
+      const candidates = this.db.prepare('SELECT id, ts FROM archive_versions WHERE ts<? ORDER BY ts, id').all(now - keepMs).filter(r => !newest.has(r.id) && !protect.has(r.id));
+      if (!candidates.length) { report.protectedOverBudget = true; break; }
+      const cutoff = candidates[Math.max(0, Math.ceil(candidates.length / 4) - 1)].ts, chosen = candidates.filter(r => r.ts <= cutoff);
+      for (let i = 0; i < chosen.length; i += 1000) {
+        this.db.exec('BEGIN IMMEDIATE');
+        try {
+          const tomb = this.db.prepare('INSERT OR REPLACE INTO archive_removed VALUES (?, ?)');
+          const sha = this.db.prepare('SELECT sha FROM archive_versions WHERE id=?'), drop = this.db.prepare('DELETE FROM archive_versions WHERE id=?');
+          const orphan = this.db.prepare('DELETE FROM archive_blobs WHERE sha=? AND NOT EXISTS (SELECT 1 FROM archive_versions WHERE sha=?)');
+          for (const { id } of chosen.slice(i, i + 1000)) {
+            const s = sha.get(id)?.sha; tomb.run(id, cutoff + 1); drop.run(id);
+            if (s) orphan.run(s, s);
+          }
+          this.db.exec('COMMIT');
+        } catch (e) { this.db.exec('ROLLBACK'); throw e; }
+        await new Promise(r => setImmediate(r));
+      }
+      report.removed += chosen.length; report.before = cutoff + 1;
+    }
+    await this.shrink();
+    if (this.used() + 8192 <= this.budget) this.error = null;
+    return report;
+  }
+  // Give free pages back to the disk (see sqlite-compact.js).
+  async shrink() {
+    const p = n => this.db.prepare('PRAGMA ' + n).get()[n];
+    const free = p('freelist_count') * p('page_size'), incremental = p('auto_vacuum') === 2;
+    if (free < (incremental ? 8 : 64) * 1024 * 1024) return;
+    await require('./sqlite-compact').compactDatabase(this.filename, { mode: incremental ? 'incremental' : 'convert' });
   }
   observe(file, { text = null, state = 'present', actor = 'unknown', source = 'watch', ts = Date.now(), reason = '' } = {}) {
     file = path.resolve(file);
@@ -34,9 +82,8 @@ class FileArchive {
     const last = this.db.prepare('SELECT * FROM archive_versions WHERE path = ? ORDER BY id DESC LIMIT 1').get(file);
     if (last && last.sha === sha && last.state === state && last.reason === reason) return last;
     const packed = sha && !this.db.prepare('SELECT 1 FROM archive_blobs WHERE sha = ?').get(sha) ? gzipSync(text) : null;
-    const bytes = this.db.prepare('PRAGMA page_count').get().page_count * this.db.prepare('PRAGMA page_size').get().page_size;
-    if (bytes + (packed?.length || 0) + 8192 > this.budget) {
-      this.error = 'File history storage limit reached. Existing versions are kept; new versions are not captured.';
+    if (this.used() + (packed?.length || 0) + 8192 > this.budget) {
+      this.error = 'File history is full. The oldest versions are being removed to make room; this version was not saved.';
       throw new Error(this.error);
     }
     // A backwards wall-clock adjustment must not put a new observation before
@@ -64,7 +111,10 @@ class FileArchive {
   }
   snapshot(file, id) {
     const row = this.db.prepare('SELECT v.*, b.content FROM archive_versions v LEFT JOIN archive_blobs b ON b.sha = v.sha WHERE v.path = ? AND v.id = ?').get(path.resolve(file), id);
-    if (!row) throw new Error('Saved version not found for this file');
+    if (!row) {
+      const gone = this.db.prepare('SELECT before FROM archive_removed WHERE id = ?').get(id);
+      throw new Error(gone ? `Removed to free space (saved history from before ${new Date(gone.before).toISOString().slice(0, 10)} was cleared)` : 'Saved version not found for this file');
+    }
     if (row.state === 'unavailable') throw new Error(row.reason || 'Contents were not captured');
     return { content: row.state === 'deleted' ? '' : gunzipSync(row.content, { maxOutputLength: MAX_FILE_BYTES }).toString('utf8'), exact: true, method: row.state === 'deleted' ? 'observed deletion' : 'saved observation', state: row.state, sha: row.sha };
   }

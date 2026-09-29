@@ -329,11 +329,11 @@ if (process.env.CHATTERING_NO_FILE_HISTORY !== '1') {
 }
 let checkpointStore = null, changeReviews = null;
 function checkpoints() {
-  if (!checkpointStore) checkpointStore = new (require('./checkpoint-store.js').CheckpointStore)();
+  if (!checkpointStore) checkpointStore = new (require('./checkpoint-store.js').CheckpointStore)(undefined, { owner: true });
   return checkpointStore;
 }
 function reviewServices() {
-  if (!checkpointStore) checkpointStore = new (require('./checkpoint-store.js').CheckpointStore)();
+  if (!checkpointStore) checkpointStore = new (require('./checkpoint-store.js').CheckpointStore)(undefined, { owner: true });
   if (!changeReviews) changeReviews = new (require('./change-reviews.js').ChangeReviews)(checkpointStore, { archive: fileArchive, baseURL: 'http://127.0.0.1:' + PORT });
   return changeReviews;
 }
@@ -410,11 +410,11 @@ async function conversationFamily(key) {
 // part, or everyone's files without the thousands of steps and shell
 // references (a few hundred kilobytes, not several megabytes, on a tablet).
 // The saved review keeps everything; file reads and comments use it.
-function conversationReviewView(service, review, step, scope, agentParam) {
+async function conversationReviewView(service, review, step, scope, agentParam) {
   const agent = agentParam === null || agentParam === '' || !Number.isInteger(Number(agentParam)) ? null : Number(agentParam);
   const mine = f => agent === null || (f.agents || []).includes(agent);
   const slim = ({ oldRef, nextRef, calls, ...f }) => f;
-  const shown = service.pair(review, step, scope).files.filter(f => step || mine(f)).map(slim);
+  const shown = (await service.pair(review, step, scope)).files.filter(f => step || mine(f)).map(slim);
   const steps = review.steps.filter(s => agent === null ? s.call === step : s.agent === agent)
     .map(({ taskFiles, before, after, ...s }) => ({ ...s, before: !!before, after: !!after }));
   const artifacts = review.artifacts.filter(mine).filter(f => agent !== null || f.canRead || f.mediaType);
@@ -483,8 +483,45 @@ function observeFileHistory(file, observation) {
     fileArchiveError = '';
     return version.state === 'unavailable' ? version.reason : '';
   }
-  catch (e) { fileArchiveError = e.message; console.error('File history capture:', e.message); return e.message; }
+  catch (e) { fileArchiveError = e.message; console.error('File history capture:', e.message); historyMaintenanceSoon(); return e.message; }
 }
+// Saved file history stays within its disk budgets (design/81): compaction,
+// then the oldest history when still needed. Checked a minute after start,
+// every quarter hour, and right away when a store reports it is full. Each
+// check is cheap when there is nothing to do.
+let historyMaintaining = null, historySoon = null;
+function historyMaintenance() {
+  if (historyMaintaining || process.env.CHATTERING_CHECKPOINT_MAINTENANCE === '0') return historyMaintaining;
+  historyMaintaining = (async () => {
+    let pinned = null;
+    if (process.env.CHATTERING_NO_CHECKPOINTS !== '1') {
+      try {
+        const r = await checkpoints().maintain();
+        if (!r.skipped && (r.compacted.length || r.removed.snapshots || r.migrated || r.metadata || r.errors.length))
+          console.log(`Saved file history: ${r.beforeMB} MB → ${r.afterMB} MB of ${r.limitMB} MB` + (r.removed.snapshots ? `; removed ${r.removed.snapshots} snapshots from before ${new Date(r.removed.before).toISOString().slice(0, 10)}` : '') + (r.errors.length ? `; ${r.errors.length} problem(s): ${r.errors[0]}` : ''));
+      } catch (e) { console.error('Saved file history maintenance:', e.message); }
+    }
+    // Reviews live in the checkpoint database even when capture is off.
+    try { pinned = require('./checkpoint-maintenance.js').humanReferences(checkpoints().db).archive; } catch {}
+    // Without the review database, nothing can be known to be pinned: keep
+    // the per-file history untouched rather than guess.
+    if (fileArchive && pinned) {
+      try {
+        const r = await fileArchive.retain({ protect: pinned });
+        if (r.removed) console.log(`File history: removed ${r.removed} versions from before ${new Date(r.before).toISOString().slice(0, 10)}`);
+        if (!fileArchive.error) fileArchiveError = '';
+      } catch (e) { console.error('File history maintenance:', e.message); }
+    }
+  })().finally(() => { historyMaintaining = null; });
+  return historyMaintaining;
+}
+function historyMaintenanceSoon() {
+  if (historySoon) return;
+  historySoon = setTimeout(() => { historySoon = null; historyMaintenance(); }, 2000);
+  historySoon.unref();
+}
+setTimeout(historyMaintenance, 60000).unref();
+setInterval(historyMaintenance, 15 * 60000).unref();
 let usagePricingCatalog = null;
 function pricingCatalog() {
   if (!usagePricingCatalog) usagePricingCatalog = usageLib.loadPricingCatalog();
@@ -1178,15 +1215,8 @@ async function authorizePreview(claims, abs) {
   if (claims.k && (!index[claims.k] || !keyVisible(who, claims.k))) { const e = new Error('This conversation is not shared with you.'); e.status = 403; throw e; }
   try { assertPathAccess(who, abs, 'see'); } catch (e) { e.status = 403; throw e; }
 }
-// Snapshots are immutable: parse each manifest once.
-const snapshotCache = new Map();
-function snapshotCached(id) {
-  if (snapshotCache.has(id)) { const v = snapshotCache.get(id); snapshotCache.delete(id); snapshotCache.set(id, v); return v; }
-  const snap = checkpoints().snapshot(id);
-  snapshotCache.set(id, snap);
-  if (snapshotCache.size > 64) snapshotCache.delete(snapshotCache.keys().next().value);
-  return snap;
-}
+// Snapshots are immutable; the store reads each once and keeps it a while.
+function snapshotCached(id) { return checkpoints().snapshot(id); }
 const typeViewers = new Map();
 function artifactTypeViewer(type) {
   if (!/^[a-z][a-z0-9-]{0,30}$/.test(String(type || ''))) return null;
@@ -1303,7 +1333,7 @@ async function artifactResolve(identity, params) {
   const versions = [];
   for (const b of rows) {
     let snap;
-    try { snap = snapshotCached(b.snapshot); } catch { continue; }
+    try { snap = await snapshotCached(b.snapshot); } catch { continue; }
     const sig = snapshotSignature(snap, abs, isDir);
     if (!sig) continue;
     if (versions.length && versions[versions.length - 1].sig === sig.sig) continue;
@@ -1362,7 +1392,8 @@ async function artifactBlob(identity, params, req, res) {
     return fileMedia.serveFile(req, res, { abs: file, stat }, safeMime, { maxBytes: 64 * 1024 * 1024, headers });
   }
   if (!/^[a-f0-9]{64}$/.test(version)) throw new Error('bad version');
-  const snap = snapshotCached(version);
+  let snap;
+  try { snap = await snapshotCached(version); } catch (e) { throw Object.assign(new Error(e.message), { status: 404 }); }
   const rel = path.relative(snap.root, file).split(path.sep).join('/');
   const item = snap.manifest.find(f => f.path === rel);
   if (!item || !item.oid) throw Object.assign(new Error('This file is not in that version.'), { status: 404 });
@@ -16532,8 +16563,9 @@ async function handleRequest(req, res) {
           const review = service.get(id);
           const targets = Object.entries(index).filter(([key, e]) => conversationKind(e) !== 'claude' && projectNameOf(e.cwd, key) === review.project).map(([key, e]) => ({ key, title: e.title || key }));
           const step = u.searchParams.get('step'), scope = ['other', 'branch'].includes(u.searchParams.get('scope')) ? u.searchParams.get('scope') : 'task';
-          if (review.kind === 'conversation') { json(res, 200, { ...conversationReviewView(service, review, step, scope, u.searchParams.get('agent')), targets }); return; }
-          json(res, 200, { ...review, targets, shownFiles: review.schema !== 2 && !step ? review.files : service.pair(review, step, scope).files, stepFiles: step ? service.pair(review, step, scope).files : undefined, captureScopes: review.root ? checkpointStore.scopes(review.root) : [] });
+          if (review.kind === 'conversation') { json(res, 200, { ...await conversationReviewView(service, review, step, scope, u.searchParams.get('agent')), targets }); return; }
+          const paired = review.schema !== 2 && !step ? null : await service.pair(review, step, scope);
+          json(res, 200, { ...review, targets, shownFiles: paired ? paired.files : review.files, stepFiles: step ? paired.files : undefined, captureScopes: review.root ? checkpointStore.scopes(review.root) : [] });
         } else if (u.pathname === '/api/reviews/asset' && req.method === 'GET') {
           const file = await service.localFile(id, u.searchParams.get('path'));
           if (file.size > 20 * 1024 * 1024) throw Error('Preview is limited to 20 MiB');
@@ -16569,7 +16601,7 @@ async function handleRequest(req, res) {
         } else if (u.pathname === '/api/reviews/suggest' && req.method === 'POST') {
           json(res, 200, await require('./review-repair').suggest(service, String(body.token || ''), currentModelLabel(), input => aiProgram('review_repair', { evidence: input }, { automatic: false, timeoutMs: 60000 }).then(r => r.outputs.proposals)));
         } else if (u.pathname === '/api/reviews/combine' && req.method === 'POST') {
-          json(res, 200, service.combine(body.original, body.followup));
+          json(res, 200, await service.combine(body.original, body.followup));
         } else if (u.pathname === '/api/reviews/comment' && req.method === 'POST') {
           json(res, 200, await service.comment(id, body));
         } else if (u.pathname === '/api/reviews/resolve' && req.method === 'POST') {
@@ -19198,6 +19230,8 @@ function startLanTls() {
 }
 
 applyLanMode(lanWanted(), () => {
+  // The server upgrades the history store before any Pi worker opens it.
+  try { checkpoints(); } catch (e) { console.error('Saved file history unavailable:', e.message); }
   fullScan().then(() => {
     restoreInterruptedRuns();
     watch(); watchNotes();

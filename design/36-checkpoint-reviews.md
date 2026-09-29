@@ -102,12 +102,11 @@ are stopped; a raw copy of a live SQLite database alone is not a consistent back
   The scan loop and individual Git commands have 15-second limits. Capturing
   before tools adds latency; stat/contents caching and snapshot deduplication
   reduce repeated work without interpreting Bash command strings.
-- `CHATTERING_CHECKPOINT_MB` defaults to 1024 MiB of reserved compressed blob
-  storage. SQLite metadata, Git trees/commits, journals and temporary indexes
-  are additional. This is a content budget, not a strict total disk quota.
-  Reservations are coordinated across workers. Failed writes may conservatively
-  retain reservations. No automatic pruning or manual-Git maintenance UI is
-  implemented; do not run arbitrary Git cleanup on the managed store.
+- `CHATTERING_CHECKPOINT_MB` defaults to 1024 MiB for the whole store
+  (repositories and metadata). Compaction and oldest-first removal keep it
+  there; see design/81, which supersedes the earlier "no pruning" rule. Do
+  not run arbitrary Git cleanup on the managed store: the metadata, not Git
+  refs, decides what is kept.
 - `CHATTERING_NO_CHECKPOINTS=1` disables automatic capture. Loose launch directories
   (home, `/tmp`, etc.) are not automatically scanned. Chattering-managed SDK sessions
   are instrumented; standalone terminal Pi/RPC/other agents are not automatically

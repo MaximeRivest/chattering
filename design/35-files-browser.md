@@ -62,7 +62,9 @@ visual reference; the primary history axis is recorded time, not branches.
   `CHATTERING_FILE_HISTORY_DIR` overrides the private directory,
   `CHATTERING_FILE_HISTORY_MB` changes the default 512 MiB database budget,
   and `CHATTERING_NO_FILE_HISTORY=1` disables capture. SQLite journal overhead is
-  additional to the database budget. There is no automatic pruning.
+  additional to the database budget. Above 80% of it, the oldest versions are
+  removed (design/81); each file's newest version, the last day and versions
+  a reviewed review points at stay.
 - At capacity or on capture failure, file editing continues. Save responses,
   activity notices and the history drawer report warnings; prior versions are
   kept. A binary/oversized file records an unavailable marker, not an empty file.

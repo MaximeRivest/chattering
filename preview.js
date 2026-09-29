@@ -316,7 +316,7 @@ async function readVersion(store, claims, version, abs) {
     return { stream: { abs: real, stat }, mime, immutable: false, source };
   };
   if (version === 'live') return live('live');
-  const snap = store.snapshot(version);
+  const snap = await store.snapshot(version);
   if (!inside(snap.root, claims.r) && !inside(claims.r, snap.root)) throw httpError(404, 'That version belongs to another workspace');
   const rel = path.relative(snap.root, abs).split(path.sep).join('/');
   const item = snap.manifest.find(f => f.path === rel);
