@@ -192,13 +192,14 @@ function definitions(t) {
     outputs: { recentFocus: list(), unfinished: list(), todos: list(), openQuestions: list() },
   });
 
-  // The work steps of a conversation, for someone who does not program
+  // The tool calls of a conversation, for someone who does not program
   // (plain-steps.js): above each command, what it is trying to achieve and
   // how, so that reading the two together teaches what the command means.
-  // The model reads the commands, never what they returned.
-  const plainRules = 'Say first what the step is trying to achieve, then, after a colon, how, in plain words, so that a reader who sees the command right under your sentence learns what it means. Present tense, starting with a verb in -ing. At most 20 words. No jargon; you may name a well-known tool once with a hint of what it is ("grep, a text search"). Quote a searched word or a file name only when that helps, and say what it is ("the settings page"). For a thinking step, say what the assistant is working out. Say only what the step shows. Write in the language of the request. Examples: grep -rn "startup" server.js \u2192 Finding where the app starts: searching the server code for the word \u201cstartup\u201d. npm test \u2192 Checking nothing broke: running the project\u2019s automatic tests. sed -n 1,80p design/36-changes.md \u2192 Recalling the plan: reading the first 80 lines of a design note about changes.';
+  // The model reads the commands, never what they returned. The assistant's
+  // reasoning is never rewritten: it is only context for a command's why.
+  const plainRules = 'Say first what the step is trying to achieve, then, after a colon, how, in plain words, so that a reader who sees the command right under your sentence learns what it means. Present tense, starting with a verb in -ing. At most 20 words. No jargon; you may name a well-known tool once with a hint of what it is ("grep, a text search"). Quote a searched word or a file name only when that helps, and say what it is ("the settings page"). Say only what the step shows; do not retell the assistant\u2019s reasoning. Write in the language of the request. Examples: grep -rn "startup" server.js \u2192 Finding where the app starts: searching the server code for the word \u201cstartup\u201d. npm test \u2192 Checking nothing broke: running the project\u2019s automatic tests. sed -n 1,80p design/36-changes.md \u2192 Recalling the plan: reading the first 80 lines of a design note about changes.';
   add('steps_in_plain_words', {
-    description: 'An AI assistant did some work for a person who does not program. You get what the person asked and the assistant\u2019s numbered steps: either its thinking, or a tool it used and what the tool was given. summary: one sentence of at most 25 words saying what this stretch of work tried to achieve, in terms of what the person asked. phrases: one line per numbered step, in order: the step\u2019s number, a period, a space, then one sentence about that step. ' + plainRules,
+    description: 'An AI assistant did some work for a person who does not program. You get what the person asked and the tools the assistant used, numbered, with what each tool was given. summary: one sentence of at most 25 words saying what this stretch of work tried to achieve, in terms of what the person asked. phrases: one line per numbered step, in order: the step\u2019s number, a period, a space, then one sentence about that step. ' + plainRules,
     inputs: {
       request: s('what the person asked the assistant, for context'),
       steps: s('the steps in order, each starting with its number in brackets, separated by blank lines'),
@@ -210,7 +211,7 @@ function definitions(t) {
     },
   });
   add('step_in_plain_words', {
-    description: 'An AI assistant is doing some work for a person who does not program. Write one sentence about one step of it, shown right above that step. You get what the person asked, the assistant\u2019s thought just before the step (for why it does it), and the step: either its thinking, or a tool it uses and what the tool is given. ' + plainRules,
+    description: 'An AI assistant is doing some work for a person who does not program. Write one sentence about one tool it uses, shown right above that tool\u2019s command. You get what the person asked, the assistant\u2019s thought just before the step (only for why it does it), and the step: a tool it uses and what the tool is given. ' + plainRules,
     inputs: {
       request: s('what the person asked the assistant, for context'),
       thought_before: s('the end of the assistant\u2019s thought just before this step, or "none"'),

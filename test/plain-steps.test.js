@@ -24,9 +24,10 @@ const conversation = () => ({
     { role: 'toolresult', text: 'ENOENT', tid: 'call-2', err: true, eid: 'r3' },
   ],
 });
+// A thought's entry is named too, as the page names every row: it is never described.
 const GROUP = ['k:a2', 't:call-1', 't:call-2'];
 
-test('a step, as the model reads it, as soon as it is written: its command and the thought before, never its result', () => {
+test('a tool call, as the model reads it, as soon as it is written: its command and the thought before, never its result; never a thought', () => {
   const ix = indexConversation(conversation());
   const grep = resolveStep(ix, 't:call-1');
   assert.deepEqual([grep.identity, grep.kind, grep.detail, grep.before], ['t:call-1', 'bash', 'grep -rn "startup" server.js', 'I should look at the startup code first.']);
@@ -35,13 +36,10 @@ test('a step, as the model reads it, as soon as it is written: its command and t
   const running = conversation();
   running.messages = running.messages.filter(m => m.role !== 'toolresult');
   assert.equal(resolveStep(indexConversation(running), 't:call-2').detail, '/p/server.js');
-  // A thought is kept under its text: the saved entry and the run agree.
-  const saved = resolveStep(ix, 'k:a2');
-  const live = resolveStep(ix, 'j:run:ab12:7', { thought: (run, block) => run === 'run:ab12' && block === 7 ? { text: 'I should look at the startup code first.', done: true } : null });
-  assert.equal(saved.identity, live.identity);
-  assert.match(saved.identity, /^h:[0-9a-f]{32}$/);
-  // Not written yet, or not there: nothing to describe yet.
-  assert.equal(resolveStep(ix, 'j:run:ab12:7', { thought: () => ({ text: 'half a tho', done: false }) }), null);
+  // The reasoning is never a step: it stays as it was written.
+  assert.equal(resolveStep(ix, 'k:a2'), null);
+  assert.equal(resolveStep(ix, 'j:run:ab12:7', { thought: () => ({ text: 'x', done: true }) }), null);
+  // A call of a run: once its call is written.
   assert.equal(resolveStep(ix, 't:call-9', { tool: id => id === 'call-9' ? { name: 'bash', args: 'npm te', written: false } : null }), null);
   const inRun = resolveStep(ix, 't:call-9', { tool: id => id === 'call-9' ? { name: 'bash', args: 'npm test', thought: 'Now the tests.', written: true } : null });
   assert.deepEqual([inRun.detail, inRun.before], ['npm test', 'Now the tests.']);
@@ -74,21 +72,20 @@ function service(t, { run = answer, model = () => 'small/fast', ...rest } = {}) 
   return { file, calls, make };
 }
 
-test('work being done: each finished step alone and side by side, no sentence yet', async t => {
+test('work being done: each tool call alone and side by side, no sentence yet; the thought is left alone', async t => {
   const { calls, make } = service(t);
   const steps = make();
   const first = steps.lookup(conversation(), [{ g: 'a', steps: GROUP, settled: false }], { key: 'k1' });
-  assert.equal(first.groups.a.jobs.length, 3);
+  assert.equal(first.groups.a.jobs.length, 2);
   await settle();
-  assert.deepEqual(calls.map(c => c.program), ['step', 'step', 'step'], 'three calls, started together');
-  assert.match(calls[0].inputs.step, /^thinking\nthought: I should look/);
+  assert.deepEqual(calls.map(c => c.program), ['step', 'step'], 'two calls, started together');
   assert.equal(calls[0].inputs.request, 'Why does the app open slowly?');
   const grep = calls.find(c => /grep/.test(c.inputs.step));
   assert.equal(grep.inputs.step, 'bash\ngiven: grep -rn "startup" server.js');
   assert.equal(grep.inputs.thought_before, 'I should look at the startup code first.');
   assert.doesNotMatch(JSON.stringify(calls), /startup\(\)|ENOENT/, 'no result reaches the model');
   const again = steps.lookup(conversation(), [{ g: 'a', steps: GROUP, settled: false }], { key: 'k1' }).groups.a;
-  assert.deepEqual(again, { steps: { 'k:a2': 'Worked out where to start', 't:call-1': 'Searched the code', 't:call-2': 'Tried to open the server file' }, jobs: [] });
+  assert.deepEqual(again, { steps: { 't:call-1': 'Searched the code', 't:call-2': 'Tried to open the server file' }, jobs: [] });
 });
 
 test('a finished group whose phrases are in: one small call for its sentence, reading the phrases', async t => {
@@ -100,7 +97,7 @@ test('a finished group whose phrases are in: one small call for its sentence, re
   assert.equal(settled.jobs.length, 1);
   await settle();
   assert.equal(calls.at(-1).program, 'summary');
-  assert.equal(calls.at(-1).inputs.phrases, '1. Worked out where to start\n2. Searched the code\n3. Tried to open the server file');
+  assert.equal(calls.at(-1).inputs.phrases, '1. Searched the code\n2. Tried to open the server file');
   assert.doesNotMatch(calls.at(-1).inputs.phrases, /grep/);
   assert.equal(steps.lookup(conversation(), [{ g: 'a', steps: GROUP, settled: true }], { key: 'k1' }).groups.a.summary, 'Looked for why the app starts slowly.');
   // Kept across restarts, and shared by a copy of the conversation.
@@ -108,8 +105,8 @@ test('a finished group whose phrases are in: one small call for its sentence, re
   const fork = conversation(); fork.messages[0].text = 'renamed';
   const kept = make().lookup(fork, [{ g: 'a', steps: GROUP, settled: true }], { key: 'k2' }).groups.a;
   assert.equal(kept.summary, 'Looked for why the app starts slowly.');
-  assert.equal(Object.keys(kept.steps).length, 3);
-  assert.equal(calls.length, 4);
+  assert.equal(Object.keys(kept.steps).length, 2);
+  assert.equal(calls.length, 3);
   assert.ok(fs.statSync(file).mode & 0o600);
 });
 
@@ -151,7 +148,7 @@ test('the answer streams to every conversation waiting on it, in its own step na
   const job = steps.lookup(conversation(), [{ g: 'a', steps: ['t:call-1'], settled: false }], { key: 'k1' }).groups.a.jobs[0];
   await settle();
   // Another step, asked meanwhile: a call of its own.
-  steps.lookup(conversation(), [{ g: 'b', steps: ['k:a2'], settled: false }], { key: 'k1' });
+  steps.lookup(conversation(), [{ g: 'b', steps: ['t:call-2'], settled: false }], { key: 'k1' });
   await settle();
   lives[0].text('phrase', 'Searched ');
   await new Promise(r => setTimeout(r, 5));
@@ -189,14 +186,16 @@ test('a few calls at a time, newest asked first', async t => {
   const release = [];
   const { calls, make } = service(t, { run: (program, inputs) => new Promise(r => release.push(() => r(answer(program, inputs)))), concurrency: 1 });
   const steps = make();
-  steps.lookup(conversation(), [{ g: 'old', steps: ['t:call-1'], settled: false }], { key: 'k1' });
-  steps.lookup(conversation(), [{ g: 'x', steps: ['t:call-2'], settled: false }], { key: 'k1' });
-  steps.lookup(conversation(), [{ g: 'new', steps: ['k:a2'], settled: false }], { key: 'k1' });
+  const data = conversation();
+  data.messages.push({ role: 'tool', name: 'bash', text: 'npm test', id: 'call-3', eid: 'a2' });
+  steps.lookup(data, [{ g: 'first', steps: ['t:call-1'], settled: false }], { key: 'k1' });
+  steps.lookup(data, [{ g: 'old', steps: ['t:call-2'], settled: false }], { key: 'k1' });
+  steps.lookup(data, [{ g: 'new', steps: ['t:call-3'], settled: false }], { key: 'k1' });
   await tick();
   assert.equal(calls.length, 1);
   release.shift()(); await settle();
   assert.equal(calls.length, 2);
-  assert.match(calls[1].inputs.step, /^thinking/, 'the latest request went before the older one');
+  assert.match(calls[1].inputs.step, /npm test/, 'the latest request went before the older one');
 });
 
 test('the setting: off by default; a model of its own needs both halves', () => {

@@ -6627,10 +6627,9 @@ function abortedModelCall() {
 // its own, so its failures never pause notes and memory.
 const plainStepsHealth = createModelHealth({ baseCooldownMs: 5 * 60 * 1000 });
 const PLAIN_STEPS_PROGRAMS = { step: 'step_in_plain_words', summary: 'steps_summary_in_plain_words', group: 'steps_in_plain_words' };
-// Steps of the runs in progress in one conversation that its snapshot may not
-// hold yet (runEventForwarder's blocks): a command once its call is written
-// (with the thought just before it, for its why), a thought once its message
-// has ended.
+// Tool calls of the runs in progress in one conversation that its snapshot
+// may not hold yet (runEventForwarder's blocks): a command once its call is
+// written, with the thought just before it (for its why).
 function plainStepsLive(key) {
   const tails = [...liveRunTails.entries()].filter(([, t]) => t.keyOf() === key);
   return {
@@ -6644,11 +6643,6 @@ function plainStepsLive(key) {
         return { name: b.name, args: b.args, thought, written: !!b.phase && b.phase !== 'args' };
       }
       return null;
-    },
-    thought(runId, blockId) {
-      const t = tails.find(([id]) => id === runId);
-      const b = t && t[1].blocks.find(x => x.id === blockId && x.kind === 'text');
-      return b ? { text: b.think || '', done: !!b.done } : null;
     },
   };
 }

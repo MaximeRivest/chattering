@@ -2,29 +2,31 @@
 // plain-steps.js — the work steps of a conversation, in plain words.
 //
 // An agent's work shows as folded groups of steps: "21 steps · thinking ×7 ·
-// bash ×11", and inside, one line per command or search. Useful to someone
-// who programs, a wall to someone who does not. When the owner turns this on
-// (settings → model), a small model writes, above each step, one light
-// sentence on what it is trying to achieve and how ("Finding where the app
-// starts: searching the code for the word “startup”"), and one sentence per
-// finished group. The command stays under its sentence: read together, they
-// teach what the commands mean.
+// bash ×11", and inside, one line per command or search. The commands are
+// what is daunting to someone who does not program. When the owner turns
+// this on (settings → model), a small model writes, above each tool call,
+// one light sentence on what it is trying to achieve and how ("Finding where
+// the app starts: searching the code for the word “startup”"), and one
+// sentence per finished group. The command stays under its sentence: read
+// together, they teach what the commands mean.
 //
-// A step is described by its aim, not its result: the model reads the command
-// (and the thought just before it), never what came back. So a step can be
-// described as soon as it is written, while it runs, and no file contents
-// reach the model through a command's output.
+// Only tool calls. The assistant's reasoning is already words: it is shown as
+// it was written, never rewritten or summarized, and it is not a step here.
+//
+// A tool call is described by its aim, not its result: the model reads the
+// command (and the thought just before it, for its why), never what came
+// back. So a call can be described as soon as it is written, while it runs,
+// and no file contents reach the model through a command's output.
 //
 // Two ways to get there, whichever costs less for what is on screen:
-// - Work being done now: each step on its own, as soon as it is written (a
-//   command's call is complete, a thought has ended), several at a time.
+// - Work being done now: each call on its own, as soon as it is written,
+//   several at a time.
 //   The group's sentence waits for the group to be finished; then it is one
 //   small call that reads the phrases, not the commands again.
 // - Older work scrolled to, mostly unexplained: the whole group in one call,
 //   sentence and phrases together.
-// Every phrase is kept per step (a tool call by its id, a thought by its
-// text), so a step explained live keeps its phrase in the saved transcript,
-// in forks, and on every screen.
+// Every phrase is kept per tool call (by its id, unique), so a call explained
+// live keeps its phrase in the saved transcript, in forks, and on every screen.
 //
 // The rules that keep it cheap and honest:
 // - Only what someone is looking at is explained: the browser names the steps
@@ -55,8 +57,8 @@ const SUMMARY_CHARS = 400;
 // A finished group with more unexplained steps than this is one group call.
 const GROUP_CALL_ABOVE = 3;
 
-// 't:<tool call id>', 'k:<entry id>' (a saved thought), 'j:<run>:<block>' (a thought in a run).
-const STEP_ID = /^(t:[\w.:@-]{1,200}|k:[\w.:@-]{1,200}|j:[\w:-]{1,80}:\d{1,9})$/;
+// 't:<tool call id>': the only steps described.
+const STEP_ID = /^t:[\w.:@-]{1,200}$/;
 
 // ---- what the model reads -------------------------------------------------------
 
@@ -72,10 +74,7 @@ function indexConversation(data) {
     if (!m || typeof m !== 'object') return;
     if (m.role === 'tool' && m.id) { tools.set(String(m.id), m); order.set('t:' + m.id, i); }
     else if (m.role === 'toolresult' && m.tid) results.set(String(m.tid), m);
-    else if (m.role === 'thinking' && m.eid) {
-      thinking.set(m.eid, (thinking.has(m.eid) ? thinking.get(m.eid) + '\n' : '') + String(m.text || ''));
-      if (!order.has('k:' + m.eid)) order.set('k:' + m.eid, i);
-    }
+    else if (m.role === 'thinking' && m.eid) thinking.set(m.eid, (thinking.has(m.eid) ? thinking.get(m.eid) + '\n' : '') + String(m.text || ''));
     if (m.eid && !roleOf.has(m.eid)) roleOf.set(m.eid, m.role);
     if (m.eid && m.role === 'user') { roleOf.set(m.eid, 'user'); userText.set(m.eid, String(m.text || '')); }
   });
@@ -108,42 +107,25 @@ function thoughtBefore(ix, index) {
 const tail = (s, n) => { s = oneLine(s); return s.length > n ? '…' + s.slice(-(n - 1)) : s; };
 
 /**
- * One step named by the page, as the model will read it, once it is written;
- * null while it is not (a command's call still streaming, a thought going on)
- * or when it is not in this conversation. `live` finds steps of a run in
- * progress that the snapshot does not hold yet: { tool(callId), thought(run, block) }.
- * identity: what the step's phrase is kept under (a tool call's id is unique;
- * a thought is its text, which the saved entry and the run both have).
+ * One tool call named by the page, as the model will read it, once it is
+ * written; null while it is not (its call still streaming), when it is not
+ * in this conversation, or when it is not a tool call. `live` finds calls of
+ * a run in progress that the snapshot does not hold yet: { tool(callId) }.
  */
 function resolveStep(ix, name, live = null) {
   if (typeof name !== 'string' || !STEP_ID.test(name)) return null;
-  if (name.startsWith('t:')) {
-    const id = name.slice(2), call = ix.tools.get(id);
-    if (call) {
-      const index = ix.order.get(name);
-      return { name, identity: name, kind: String(call.name || 'tool'), eid: call.eid, index,
-        detail: oneLine([call.path, call.text].filter(Boolean).join(' ')), before: tail(thoughtBefore(ix, index), THOUGHT_BEFORE) };
-    }
-    const t = live && live.tool ? live.tool(id) : null;
-    if (t && t.written) return { name, identity: name, kind: String(t.name || 'tool'), detail: oneLine(t.args), before: tail(t.thought || '', THOUGHT_BEFORE) };
-    return null;
+  const id = name.slice(2), call = ix.tools.get(id);
+  if (call) {
+    const index = ix.order.get(name);
+    return { name, identity: name, kind: String(call.name || 'tool'), eid: call.eid, index,
+      detail: oneLine([call.path, call.text].filter(Boolean).join(' ')), before: tail(thoughtBefore(ix, index), THOUGHT_BEFORE) };
   }
-  let text = null, eid = null, index;
-  if (name.startsWith('k:')) {
-    eid = name.slice(2); text = ix.thinking.get(eid); index = ix.order.get(name);
-  } else {
-    const [, run, block] = /^j:(.+):(\d+)$/.exec(name);
-    const th = live && live.thought ? live.thought(run, Number(block)) : null;
-    if (th && th.done) text = th.text;
-  }
-  if (!text || !text.trim()) return null;
-  return { name, identity: 'h:' + sha(text).slice(0, 32), kind: 'thinking', eid, index, detail: oneLine(text), before: '' };
+  const t = live && live.tool ? live.tool(id) : null;
+  if (t && t.written) return { name, identity: name, kind: String(t.name || 'tool'), detail: oneLine(t.args), before: tail(t.thought || '', THOUGHT_BEFORE) };
+  return null;
 }
 
-const stepText = (s, budget) => [
-  s.kind,
-  s.detail ? `${s.kind === 'thinking' ? 'thought' : 'given'}: ${clip(s.detail, budget)}` : '',
-].filter(Boolean).join('\n');
+const stepText = (s, budget) => [s.kind, s.detail ? `given: ${clip(s.detail, budget)}` : ''].filter(Boolean).join('\n');
 
 // The question the steps answer: that of the first saved one, else the latest.
 function requestFor(ix, steps) {

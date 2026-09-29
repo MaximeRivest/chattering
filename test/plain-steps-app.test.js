@@ -1,7 +1,8 @@
 'use strict';
 // Work steps in plain words, in the real app (a fake Pi answers):
 // - a finished group: above each command, its sentence (one small call per
-//   step, side by side), typed in; the commands stay; the group's folded line
+//   tool call, side by side), typed in; the commands stay; the reasoning is
+//   left exactly as written (no sentence, no call); the group's folded line
 //   changes once, when its sentence is complete; no switch to go back;
 // - a reload reuses what the server remembers;
 // - work being done now: the live group opens, and its steps come one at a
@@ -88,18 +89,19 @@ test('browser: work steps in plain words above their commands; live steps one at
   // Each step's sentence, above its command; the commands stay.
   const rows = () => evaluate(`[...document.querySelectorAll('.toolgroup [data-step]')].map(el => ({ step: el.dataset.step,
     say: el.querySelector('.step-say')?.textContent, command: getComputedStyle(el.querySelector('.step-tech')).display !== 'none' && el.querySelector('.step-tech').textContent }))`);
-  await until(`[...document.querySelectorAll('.toolgroup .step-say')].filter(s => s.textContent.endsWith('.') && !s.classList.contains('typing')).length === 3`, async () => 'sentences: ' + JSON.stringify(await rows()) + JSON.stringify(calls().map(c => c.program)));
+  await until(`[...document.querySelectorAll('.toolgroup .step-say')].filter(s => s.textContent.endsWith('.') && !s.classList.contains('typing')).length === 2`, async () => 'sentences: ' + JSON.stringify(await rows()) + JSON.stringify(calls().map(c => c.program)));
   const r = await rows();
   assert.deepEqual(r.map(x => x.say), [
-    'Deciding where to look first: thinking about the startup code.',
+    undefined, // the thought: as it was written
     'Finding where the app starts: searching the code for the word startup.',
     'Reading the main server file to see how it starts.',
   ]);
+  assert.match(r[0].command, /thinking · 40 chars/);
   assert.match(r[1].command, /bash · grep -rn "startup" server\.js/, 'the command is still there');
   assert.ok(r.every(x => x.command), 'every command stays');
   assert.equal(await evaluate(`document.querySelector('.tg-plain-switch')`), null, 'no switch: the setting is on or off');
   const steps = calls().filter(c => c.program === 'step_in_plain_words');
-  assert.equal(steps.length, 3);
+  assert.equal(steps.length, 2, 'one per tool call, none for the thought');
   assert.ok(Math.max(...steps.map(c => c.at)) - Math.min(...steps.map(c => c.at)) < 1500, 'side by side');
   const grep = steps.find(c => /grep/.test(c.input));
   assert.match(grep.input, /I should look at the startup code first/, 'the thought before it, for its why');
@@ -117,26 +119,28 @@ test('browser: work steps in plain words above their commands; live steps one at
   assert.equal(await evaluate(`document.querySelector('.toolgroup .tg-detail').textContent`), 'thinking · bash · read');
   fs.writeFileSync(path.join(dir, 'go-summary'), '');
   await until(`document.querySelector('.toolgroup .tg-detail').textContent === 'Looked through the code to find why the app starts slowly.'`, 'the whole sentence');
-  assert.equal(calls().length, 4);
+  assert.equal(calls().length, 3);
 
   // A reload: the server remembers; the sentences are simply there.
   await command('Page.navigate', { url: base + '/?token=' + token });
   await until(`typeof open === 'function' && typeof settingsOf === 'function' && settingsOf().plainSteps`);
   await evaluate(`open(${JSON.stringify(key)})`);
-  await until(`document.querySelector('.toolgroup .tg-detail.tg-plain') && document.querySelectorAll('.toolgroup .step-say').length === 3 && [...document.querySelectorAll('.toolgroup .step-say')].every(s => s.textContent.length > 20)`, 'plain after reload');
-  assert.equal(calls().length, 4);
+  await until(`document.querySelector('.toolgroup .tg-detail.tg-plain') && document.querySelectorAll('.toolgroup .step-say').length === 2 && [...document.querySelectorAll('.toolgroup .step-say')].every(s => s.textContent.length > 20)`, 'plain after reload');
+  assert.equal(calls().length, 3);
 
-  // Work being done: the run's first command is written and running; the
-  // second is written too. The live group opens; the second step waits until
-  // the first one's sentence is typed out.
+  // Work being done: a thought, then the run's first command, written and
+  // running; the second is written too. The live group opens; the thought is
+  // shown as written and holds nothing; the second command waits until the
+  // first one's sentence is typed out.
   const busy = 'pi:fixture/busy.jsonl';
   const runEvent = tail => {
     const ev = { type: 'run-event', jobId: 'run:e2e1', key: busy, status: 'running', statusText: 'running', startedAt: Date.now(), node: 'b1', model: 'p/big', tail };
     return evaluate(`live.onmessage({ data: ${JSON.stringify(JSON.stringify(ev))} }); 1`);
   };
   await runEvent([
-    { id: 1, kind: 'tool', callId: 'call-t', name: 'bash', args: 'npm test', out: '', phase: 'running' },
-    { id: 2, kind: 'tool', callId: 'call-u', name: 'bash', args: 'npm run lint', out: '', phase: 'ready' },
+    { id: 1, kind: 'text', text: '', think: 'Let me run the tests first.', done: true },
+    { id: 2, kind: 'tool', callId: 'call-t', name: 'bash', args: 'npm test', out: '', phase: 'running' },
+    { id: 3, kind: 'tool', callId: 'call-u', name: 'bash', args: 'npm run lint', out: '', phase: 'ready' },
   ]);
   await evaluate(`open(${JSON.stringify(busy)})`);
   await until(`document.querySelector('.toolgroup[data-live-work]')?.open`, async () => 'the live group opens: ' + await evaluate(`document.getElementById('liveReplies')?.innerHTML.slice(0, 800)`));
@@ -145,15 +149,18 @@ test('browser: work steps in plain words above their commands; live steps one at
     folded: !el.querySelector('.step-more')?.open }))`);
   await until(`document.querySelector('.toolgroup[data-live-work] .ls-b[data-step="t:call-t"] .step-say')?.textContent === 'Checking nothing broke:'`, async () => 'first sentence: ' + JSON.stringify(await liveRows()));
   const half = await liveRows();
-  assert.deepEqual(half.map(x => [x.step, x.hidden]), [['t:call-t', false], ['t:call-u', true]], 'the next step waits for this sentence');
+  assert.deepEqual(half.map(x => [x.step, x.hidden]), [['j:run:e2e1:1', false], ['t:call-t', false], ['t:call-u', true]], 'the next command waits for this sentence');
+  assert.equal(half[0].say, undefined, 'the thought gets no sentence');
+  assert.match(await evaluate(`document.querySelector('.ls-b[data-step="j:run:e2e1:1"]').innerText`), /Let me run the tests first\./, 'and shows as written');
   // Under the sentence, one quiet line: the command and how it goes; the
   // rest (the command box, what came back) is folded behind it.
-  assert.deepEqual([half[0].cmd, half[0].state, half[0].folded], ['npm test', '● running', true]);
+  assert.deepEqual([half[1].cmd, half[1].state, half[1].folded], ['npm test', '● running', true]);
   assert.equal(await evaluate(`document.querySelector('.ls-b[data-step="t:call-t"] .step-more .st-preview') !== null`), true, 'the technical view is inside');
   await evaluate(`document.querySelector('.ls-b[data-step="t:call-t"] .step-line').click()`);
   await until(`document.querySelector('.ls-b[data-step="t:call-t"] .step-more').open && document.querySelector('.ls-b[data-step="t:call-t"] .st-preview').innerText.includes('npm test')`, 'one click opens it');
   fs.writeFileSync(path.join(dir, 'go-tests'), '');
   await until(`document.querySelector('.ls-b[data-step="t:call-u"]') && !document.querySelector('.ls-b[data-step="t:call-u"]').hidden`, async () => 'the next step: ' + JSON.stringify(await liveRows()));
   assert.equal(await evaluate(`document.querySelector('.ls-b[data-step="t:call-t"] .step-say').textContent`), 'Checking nothing broke: running the project tests.');
+  assert.ok(calls().every(c => !/Let me run the tests first/.test(c.input) || c.program === 'step_in_plain_words'), 'a thought is only context for a command');
   assert.deepEqual(exceptions, []);
 });

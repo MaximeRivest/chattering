@@ -2,12 +2,16 @@
    On or off, in settings → model. For someone who does not program, to
    oversee what an agent does on their computer and learn how it works:
 
-   Each step reads at a glance, as a timeline: one clear sentence on what it
-   is trying to achieve and how; under it, one quiet line with the actual
-   command and how it went. Read together, they teach what commands mean.
+   Each tool call reads at a glance, as a timeline: one clear sentence on
+   what it is trying to achieve and how; under it, one quiet line with the
+   actual command and how it went. Read together, they teach what commands mean.
    That line is the door to more: it opens the whole technical view (the
    command as written, and what came back). Nothing is hidden, only folded
    one level down, and a person goes as deep as they like.
+
+   Only tool calls: they are what is daunting. The assistant's reasoning is
+   already words; it stays exactly as it was written, is never rewritten or
+   summarized, and never holds the stream.
 
    Calm by construction:
    - A step's sentence has its line from the start (a faint "…" while it is
@@ -67,17 +71,20 @@
     return false;
   }
 
-  // What a group is: its conversation, its steps in order, those written
-  // (`ready`: they can be described), and whether it is finished. Live groups
+  // Only tool calls are described ('t:<call id>'); thoughts are left as written.
+  const isCall = name => typeof name === 'string' && name.startsWith('t:');
+  // What a group is: its conversation, its steps in order, its tool calls
+  // written (`ready`: they can be described), and whether it is finished. Live groups
   // carry it (live()); saved groups are read from their rows.
   function info(g) {
     if (g._plain) return g._plain;
     const key = g.dataset.msgKey;
     if (!key || !g.dataset.gkey) return null;
     const steps = [...new Set([...g.querySelectorAll(':scope > [data-step]')].map(el => el.dataset.step))];
-    if (!steps.length) return null;
+    const ready = steps.filter(isCall);
+    if (!ready.length) return null;
     const settled = !g.hasAttribute('data-open-end') || !running(key);
-    return { key, steps, ready: steps, settled };
+    return { key, steps, ready, settled };
   }
   // A group is asked about for its written steps; a finished group's
   // sentence is kept under the same id.
@@ -113,6 +120,8 @@
     return say;
   }
   function paintRow(el, key, meta) {
+    // A thought: as it was written, nothing added.
+    if (!isCall(el.dataset.step)) { el.querySelector('.step-say')?.remove(); return; }
     const k = key + '|' + el.dataset.step;
     known(k);
     const say = slotOf(el);
@@ -129,7 +138,7 @@
   // A live step: the sentence, then one line (glyph, command, how it went)
   // that opens everything renderLsBlocks draws (moved inside, where its own
   // queries still find it).
-  const GLYPH = { thinking: '◌', read: '▤', edit: '✎', write: '✎' };
+  const GLYPH = { read: '▤', edit: '✎', write: '✎' };
   const oneLineOf = t => { const l = String(t || '').split('\n').find(x => x.trim()) || ''; return l.length > 140 ? l.slice(0, 139) + '…' : l; };
   function shapeLive(el, meta) {
     let more = el.querySelector(':scope > .step-more');
@@ -141,15 +150,12 @@
       el.append(more);
     }
     const set = (sel, text) => { const n = more.querySelector(sel); if (n.textContent !== text) n.textContent = text; };
-    const thinking = meta.kind === 'thinking';
-    set('.step-glyph', GLYPH[thinking ? 'thinking' : meta.name] || '⚙');
-    set('.step-cmd', thinking ? 'its thinking' : (meta.name === 'bash' ? '' : meta.name + ' · ') + (oneLineOf(meta.cmd) || '…'));
-    const state = thinking ? (meta.done ? '' : 'thinking…')
-      : meta.phase === 'done' ? (meta.error ? '✗ failed' : '✓') : meta.phase === 'running' ? '● running' : meta.phase === 'ready' ? 'waiting' : 'writing…';
-    set('.step-state', state);
+    set('.step-glyph', GLYPH[meta.name] || '⚙');
+    set('.step-cmd', (meta.name === 'bash' ? '' : meta.name + ' · ') + (oneLineOf(meta.cmd) || '…'));
+    set('.step-state', meta.phase === 'done' ? (meta.error ? '✗ failed' : '✓') : meta.phase === 'running' ? '● running' : meta.phase === 'ready' ? 'waiting' : 'writing…');
     const lines = meta.out ? meta.out.split('\n').filter(l => l.trim()).length : 0;
-    set('.step-open', more.open ? 'hide' : thinking ? 'read it' : lines ? 'see what came back' : 'details');
-    el.classList.toggle('step-running', !thinking && meta.phase === 'running');
+    set('.step-open', more.open ? 'hide' : lines ? 'see what came back' : 'details');
+    el.classList.toggle('step-running', meta.phase === 'running');
     el.classList.toggle('step-failed', !!meta.error);
     el.classList.add('plain-row');
     if (!more._wired) { more._wired = true; more.addEventListener('toggle', () => set('.step-open', more.open ? 'hide' : 'details')); }
@@ -205,7 +211,8 @@
     const now = Date.now();
     while (st.open < i.steps.length) {
       const head = i.steps[st.open - 1];
-      if (head) {
+      // A thought never holds the stream: only a tool call's sentence does.
+      if (head && isCall(head)) {
         const k = i.key + '|' + head;
         const s = shown(k);
         if (!st.since.has(head)) st.since.set(head, now);
@@ -444,8 +451,9 @@
         const name = b.kind === 'tool' ? (b.callId ? 't:' + b.callId : null) : (b.think ? 'j:' + jobId + ':' + b.id : null);
         if (!name) continue;
         steps.push(name);
-        if (b.kind === 'tool' ? b.phase && b.phase !== 'args' : b.done) ready.push(name);
-        meta.set(name, b.kind === 'tool' ? { kind: 'tool', name: b.name || 'tool', cmd: b.args, phase: b.phase, error: !!b.error, out: b.out || '' } : { kind: 'thinking', done: !!b.done });
+        if (b.kind !== 'tool') continue; // a thought: in the order, never described
+        if (b.phase && b.phase !== 'args') ready.push(name);
+        meta.set(name, { kind: 'tool', name: b.name || 'tool', cmd: b.args, phase: b.phase, error: !!b.error, out: b.out || '' });
       }
       g._plain = { key, steps, ready, settled: false, meta };
     }
@@ -456,7 +464,7 @@
       // then the stream goes on from there; the group opens once, to be read.
       const i = g._plain;
       let open = 0;
-      while (open < i.steps.length && phrases.has(i.key + '|' + i.steps[open])) { known(i.key + '|' + i.steps[open]); open++; }
+      while (open < i.steps.length && (!isCall(i.steps[open]) || phrases.has(i.key + '|' + i.steps[open]))) { if (isCall(i.steps[open])) known(i.key + '|' + i.steps[open]); open++; }
       g._gate = { open: Math.min(i.steps.length, open + 1), since: new Map() };
       if (!g.dataset.plainOpened) { g.dataset.plainOpened = '1'; g.open = true; }
     }
