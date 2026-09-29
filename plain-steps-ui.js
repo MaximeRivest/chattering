@@ -7,6 +7,11 @@
    screen. Nothing is asked for groups off screen, for work still being
    written, or while this screen shows the technical lines.
 
+   The explanation streams in: the server sends what the model has written
+   so far ('plain-steps' events), the sentence first and then each phrase,
+   and the page paints it as it comes. Asking again is only the fallback for
+   a missed event (a reconnect), so it is slow.
+
    Everything here patches the rendered transcript and is safe to run again
    after any re-render: wireConversationReader calls apply(). */
 (function () {
@@ -16,6 +21,8 @@
   const failedUntil = new Map(); // cache key → time it may be asked again
   const waiting = new Map();   // cache key → { key, steps, tries, due }
   const inFlight = new Set();  // cache keys in the request being sent
+  const jobs = new Map();      // the server's job token → cache keys it answers
+  const writing = new Map();   // cache key → the answer so far, while it streams
   let sending = false, timer = 0, observer = null, observedRoot = null, offUntil = 0;
 
   const featureOn = () => {
@@ -59,15 +66,20 @@
     b.textContent = label; b.title = title;
   }
 
-  function paint(g, a) {
+  // streaming: the answer is still being written; the sentence carries a
+  // caret, and steps without their phrase yet keep their technical line.
+  function paint(g, a, streaming = false) {
     const detail = g.querySelector(':scope > summary .tg-detail');
     if (detail && a.summary) {
       if (detail.dataset.tech === undefined) detail.dataset.tech = detail.textContent;
-      detail.textContent = a.summary;
+      if (detail.textContent !== a.summary) detail.textContent = a.summary;
       detail.title = 'In plain words. The steps: ' + detail.dataset.tech;
       detail.classList.add('tg-plain');
     }
-    if (detail) detail.removeAttribute('aria-busy');
+    if (detail) {
+      detail.classList.toggle('tg-writing', streaming && !!a.summary);
+      if (streaming && !a.summary) detail.setAttribute('aria-busy', 'true'); else detail.removeAttribute('aria-busy');
+    }
     for (const el of g.querySelectorAll(':scope > [data-step]')) {
       const phrase = a.steps && a.steps[el.dataset.step];
       if (!phrase) continue;
@@ -79,7 +91,7 @@
         span.className = 'step-plain';
         host.insertBefore(span, host.querySelector(':scope > .step-tech, :scope > .msg-file-inline'));
       }
-      span.textContent = phrase;
+      if (span.textContent !== phrase) span.textContent = phrase;
       const tech = host.querySelector(':scope > .step-tech');
       span.title = tech ? tech.textContent.trim() : '';
       el.classList.add('has-plain');
@@ -96,7 +108,7 @@
         detail.title = detail.dataset.tech;
         delete detail.dataset.tech;
       }
-      detail.classList.remove('tg-plain');
+      detail.classList.remove('tg-plain', 'tg-writing');
       detail.removeAttribute('aria-busy');
     }
     for (const span of g.querySelectorAll('.step-plain')) span.remove();
@@ -186,27 +198,65 @@
     if (out && out.results) {
       for (const [token, cache] of tokens) {
         const r = out.results[token];
-        if (r) {
-          answers.set(cache, r);
-          waiting.delete(cache);
-          if (active()) eachGroup(cache, g => paint(g, r));
-        } else if (out.failed && out.failed[token] !== undefined) {
-          failedUntil.set(cache, later + 10 * 60 * 1000);
-          waiting.delete(cache);
-          eachGroup(cache, g => busy(g, false));
+        if (r) finish(cache, r);
+        else if (out.failed && out.failed[token] !== undefined) fail(cache);
+        else if (out.pending && out.pending[token]) {
+          const job = out.pending[token];
+          if (!jobs.has(job)) jobs.set(job, new Set());
+          jobs.get(job).add(cache);
+          if (out.partial && out.partial[token]) stream(cache, out.partial[token]);
         }
       }
     }
-    // Being written, or the request failed: ask again, slower each time,
-    // and give up quietly after about three minutes (the steps stay technical).
+    // Being written: the events bring it. Asked again only in case one was
+    // missed, slowly, and given up quietly after about four minutes (the
+    // steps stay technical). A failed request is asked again sooner.
     for (const [, cache] of tokens) {
       const w = waiting.get(cache);
       if (!w) continue;
       w.tries++;
-      if (w.tries > 30) { waiting.delete(cache); failedUntil.set(cache, later + 10 * 60 * 1000); eachGroup(cache, g => busy(g, false)); continue; }
-      w.due = later + Math.min(10000, 2000 + w.tries * 1000);
+      if (w.tries > 16) { fail(cache); continue; }
+      w.due = later + (out && out.results ? 15000 : Math.min(10000, 2000 + w.tries * 1000));
     }
     if (waiting.size) schedule(waiting.size > batch.length ? 50 : 2000);
+  }
+
+  function finish(cache, a) {
+    answers.set(cache, a);
+    waiting.delete(cache); writing.delete(cache);
+    if (active()) eachGroup(cache, g => paint(g, a));
+  }
+  function fail(cache) {
+    failedUntil.set(cache, Date.now() + 10 * 60 * 1000);
+    waiting.delete(cache); writing.delete(cache);
+    // A group given up on keeps its technical lines.
+    eachGroup(cache, g => { if (!answers.has(cache)) unpaint(g); busy(g, false); });
+  }
+
+  // The answer so far. On e-ink a repaint costs a flash: at most one a second.
+  const einkScreen = () => typeof isEink === 'function' && isEink();
+  const painted = new Map(); // cache key → time of the last streaming paint
+  function stream(cache, a) {
+    if (answers.has(cache)) return;
+    writing.set(cache, a);
+    const last = painted.get(cache) || 0;
+    if (einkScreen() && Date.now() - last < 1000) return;
+    painted.set(cache, Date.now());
+    if (active()) eachGroup(cache, g => paint(g, a, true));
+  }
+
+  /** A 'plain-steps' event: what the model has written of a job, or its end. */
+  function onEvent(ev) {
+    const caches = ev && jobs.get(ev.job);
+    if (!caches) return;
+    const a = { summary: ev.summary || '', steps: ev.steps || {} };
+    for (const cache of caches) {
+      if (!cache.startsWith(ev.key + '|')) continue;
+      if (ev.state === 'done') finish(cache, a);
+      else if (ev.state === 'failed') fail(cache);
+      else stream(cache, a);
+    }
+    if (ev.state === 'done' || ev.state === 'failed') jobs.delete(ev.job);
   }
 
   function observe(root, g) {
@@ -233,6 +283,8 @@
       const id = plain ? identity(g) : null;
       const known = id && answers.get(id.cache);
       if (known) { paint(g, known); continue; }
+      const sofar = id && writing.get(id.cache);
+      if (sofar) { paint(g, sofar, true); continue; }
       unpaint(g);
       if (!on || !identity(g)) continue;
       if (!plain) { switchButton(g, 'plain words', 'Explain these steps in plain words on this screen'); continue; }
@@ -256,5 +308,5 @@
     if (g && g.isConnected && view) view.scrollTop += g.getBoundingClientRect().top - before;
   }, true);
 
-  window.PlainSteps = { apply, _state: { answers, waiting, failedUntil } };
+  window.PlainSteps = { apply, onEvent, _state: { answers, waiting, failedUntil, jobs, writing } };
 })();

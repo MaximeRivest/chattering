@@ -1,7 +1,8 @@
 'use strict';
 // Work steps in plain words, in the real app: with the setting on, a group of
 // steps on screen gets its sentence and each step its phrase from one model
-// call (a fake Pi here); "show commands" brings the technical lines back on
+// call (a fake Pi here), streamed in as the model writes them (the fake Pi
+// holds half-way until the test lets it go); "show commands" brings the technical lines back on
 // this screen, "plain words" brings the explanation back without asking the
 // model again, and a reload reuses the remembered answer.
 const { test } = require('node:test');
@@ -18,10 +19,22 @@ function fakePi(dir) {
 const fs = require('fs');
 const input = fs.readFileSync(0, 'utf8');
 fs.appendFileSync(${JSON.stringify(path.join(dir, 'calls.log'))}, JSON.stringify({ args: process.argv.slice(2), input }) + '\\n');
-const text = '<summary>\\nLooked through the code to find why the app starts slowly.\\n</summary>\\n<phrases>\\n' +
-  JSON.stringify([{ n: 1, plain: 'Worked out where to start looking' }, { n: 2, plain: 'Searched the code for the startup part' }, { n: 3, plain: 'Opened the main server file' }]) + '\\n</phrases>';
-process.stdout.write(JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop',
-  provider: 'fake', model: 'small-1', timestamp: Date.now(), usage: { input: 300, output: 60, cacheRead: 0, cacheWrite: 0, totalTokens: 360 } } }) + '\\n');
+// Written a few characters at a time; it stops at "|" until the test writes go.
+const script = '<summary>\\nLooked through the code to find why the app starts slowly.\\n</summary>\\n<phrases>\\n' +
+  '1. Worked out where to start looking\\n2. Searched the code| for the startup part\\n3. Opened the main server file\\n</phrases>';
+const hold = script.indexOf('|'), text = script.replace('|', '');
+const say = e => process.stdout.write(JSON.stringify(e) + '\\n');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+(async () => {
+  for (let i = 0; i < text.length;) {
+    if (i === hold && !fs.existsSync(${JSON.stringify(path.join(dir, 'go'))})) { await sleep(30); continue; }
+    const end = Math.min(i + 5, i < hold ? hold : text.length);
+    say({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: text.slice(i, end) } });
+    i = end; await sleep(4);
+  }
+  say({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop',
+    provider: 'fake', model: 'small-1', timestamp: Date.now(), usage: { input: 300, output: 60, cacheRead: 0, cacheWrite: 0, totalTokens: 360 } } });
+})();
 `);
   return cli;
 }
@@ -54,7 +67,17 @@ test('browser: work steps in plain words, switched per screen, remembered', { ti
   const key = 'pi:fixture/work.jsonl';
   await until(`typeof settingsOf === 'function' && settingsOf().plainSteps && settingsOf().plainSteps.on`, 'settings loaded');
   await evaluate(`open(${JSON.stringify(key)})`);
-  await until(`document.querySelector('.toolgroup[data-gkey] .tg-detail.tg-plain')`, async () => 'no plain sentence: ' + JSON.stringify(calls()));
+  await until(`document.querySelector('.toolgroup[data-gkey]')`, 'the steps');
+  await evaluate(`document.querySelector('.toolgroup').open = true`);
+  // Half-way: the sentence is written, being written, the first phrase
+  // whole, the second growing, the third step still technical.
+  await until(`document.querySelector('.toolgroup [data-step="t:call-1"] .step-plain')?.textContent === 'Searched the code'`, async () => 'not streamed: ' + JSON.stringify(calls()) + await evaluate(`document.querySelector('.toolgroup')?.outerHTML.slice(0, 1500)`));
+  const half = await evaluate(`({ summary: document.querySelector('.toolgroup .tg-detail').textContent, writing: document.querySelector('.toolgroup .tg-detail').classList.contains('tg-writing'),
+    phrases: [...document.querySelectorAll('.toolgroup [data-step]')].map(el => el.querySelector('.step-plain')?.textContent || null) })`);
+  assert.deepEqual(half, { summary: 'Looked through the code to find why the app starts slowly.', writing: true, phrases: ['Worked out where to start looking', 'Searched the code', null] });
+  fs.writeFileSync(path.join(dir, 'go'), '');
+  await until(`document.querySelectorAll('.toolgroup .step-plain').length === 3 && !document.querySelector('.tg-writing')`, 'the end of the answer');
+  await evaluate(`document.querySelector('.toolgroup').open = false`);
   assert.equal(await evaluate(`document.querySelector('.toolgroup .tg-detail').textContent`), 'Looked through the code to find why the app starts slowly.');
   assert.equal(calls().length, 1, 'one call for the group');
   const call = calls()[0];
@@ -67,6 +90,7 @@ test('browser: work steps in plain words, switched per screen, remembered', { ti
 
   // Open the group: each step carries its phrase; the command is hidden, not gone.
   await evaluate(`document.querySelector('.toolgroup').open = true`);
+  assert.equal(await evaluate(`PlainSteps._state.answers.size`), 1);
   const steps = await evaluate(`[...document.querySelectorAll('.toolgroup [data-step]')].map(el => ({ step: el.dataset.step, plain: el.querySelector('.step-plain')?.textContent, techShown: getComputedStyle(el.querySelector('.step-tech')).display !== 'none', title: el.querySelector('.step-plain')?.title }))`);
   assert.deepEqual(steps.map(s => [s.step, s.plain, s.techShown]), [
     ['k:a1', 'Worked out where to start looking', false],

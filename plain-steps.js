@@ -18,6 +18,8 @@
 // - One call per group, remembered on disk under a hash of exactly what the
 //   model read and which model read it: every screen, every person and every
 //   copy of the conversation (forks) reuses it; an edited step asks again.
+// - The answer streams: the sentence first, then a phrase per line, sent to
+//   the screens of the conversations that asked (onProgress) as it is written.
 // - A few calls at a time, newest request first (what is on screen now);
 //   a failed group waits before it is asked again, and the model's own
 //   circuit (modelhealth.js, in the caller's run) pauses everything when the
@@ -116,15 +118,31 @@ function groupInputs(ix, stepIds) {
 
 // ---- the program's answer ---------------------------------------------------------
 
+// "3. Checked the settings" → [3, 'Checked the settings']. The model may
+// keep the brackets of its input ("[3] …") or use another separator.
+const PHRASE_LINE = /^\s*[-*]?\s*\[?(\d{1,3})\]?\s*[.:)\u2013\u2014-]?\s+(.*)$/;
+const unquote = t => t.replace(/^["\u201c]+|["\u201d]+$/g, '');
+
+// The phrases of a reply, by step number. `partial`: the reply is still being
+// written, so its last line may be half a phrase (shown as it grows).
+function readPhrases(text, count, { partial = false } = {}) {
+  const steps = {};
+  const lines = String(text || '').split('\n');
+  lines.forEach((line, i) => {
+    const m = PHRASE_LINE.exec(line);
+    if (!m) return;
+    const n = Number(m[1]);
+    const whole = !partial || i < lines.length - 1;
+    const plain = clip(unquote(oneLine(m[2])), PLAIN_CHARS);
+    if (n >= 1 && n <= count && plain && (whole || plain.length >= 2)) steps[n] = plain;
+  });
+  return steps;
+}
+
 // Keep what can be shown: one sentence, and a phrase per numbered step.
 function readAnswer(outputs, ids) {
   const summary = clip(oneLine(outputs && outputs.summary), SUMMARY_CHARS);
-  const steps = {};
-  for (const s of Array.isArray(outputs && outputs.phrases) ? outputs.phrases : []) {
-    const n = Number(s && s.n);
-    const plain = clip(oneLine(s && s.plain), PLAIN_CHARS);
-    if (Number.isInteger(n) && n >= 1 && n <= ids.length && plain) steps[n] = plain;
-  }
+  const steps = readPhrases(outputs && outputs.phrases, ids.length);
   if (!summary && !Object.keys(steps).length) throw new Error('the model gave no explanation');
   return { summary, steps };
 }
@@ -134,14 +152,18 @@ function readAnswer(outputs, ids) {
 /**
  * @param {object} o
  * @param {string} o.file                where answers are kept (JSON)
- * @param {(inputs, meta) => Promise<object>} o.run  one program call → its outputs
+ * @param {(inputs, live) => Promise<object>} o.run  one program call → its
+ *   outputs; it tells `live.text(field, piece)` what the model writes and
+ *   `live.retry()` when the call starts its answer again
  * @param {() => string} o.model          the label of the model that answers now
+ * @param {(p) => void} [o.onProgress]    { key, job, summary, steps: {id: phrase}, state }
+ *   for each conversation waiting on a group: state 'writing', 'done' or 'failed'
  */
-function createPlainSteps({ file, run, model, concurrency = 2, maxEntries = 3000, maxQueue = 24, retryMs = 10 * 60 * 1000, now = Date.now } = {}) {
+function createPlainSteps({ file, run, model, onProgress = () => {}, concurrency = 2, maxEntries = 3000, maxQueue = 24, retryMs = 10 * 60 * 1000, throttleMs = 120, now = Date.now } = {}) {
   const answers = new Map();   // hash → { summary, steps: {n: plain}, at }
-  const inFlight = new Set();  // hash
+  const jobs = new Map();      // hash → a group asked and not answered yet (queued or running)
   const failures = new Map();  // hash → { until, reason }
-  let queue = [];              // newest first: { hash, inputs, ids, meta }
+  let queue = [];              // hashes, newest first
   let running = 0;
 
   try {
@@ -170,29 +192,64 @@ function createPlainSteps({ file, run, model, concurrency = 2, maxEntries = 3000
   }
 
   const hashOf = (label, inputs) => crypto.createHash('sha256').update(JSON.stringify([REVISION, label, inputs])).digest('hex');
-
-  function pump() {
-    while (running < concurrency && queue.length) {
-      const job = queue.shift();
-      if (answers.has(job.hash) || inFlight.has(job.hash)) continue;
-      running++; inFlight.add(job.hash);
-      Promise.resolve()
-        .then(() => run(job.inputs, job.meta))
-        .then(outputs => {
-          answers.set(job.hash, { ...readAnswer(outputs, job.ids), at: now() });
-          failures.delete(job.hash);
-          save();
-        }, error => {
-          // A paused model says when it can be asked again; anything else waits retryMs.
-          const until = error && error.retryAt ? Number(error.retryAt) : now() + retryMs;
-          failures.set(job.hash, { until, reason: String((error && error.message) || error || 'failed').slice(0, 300) });
-        })
-        .finally(() => { running--; inFlight.delete(job.hash); pump(); });
-    }
-  }
+  // What the page calls a job: short, and says nothing of its content.
+  const tokenOf = hash => hash.slice(0, 20);
 
   // Shown answers keyed by step id, for the browser.
   const byId = (a, ids) => ({ summary: a.summary, steps: Object.fromEntries(Object.entries(a.steps).map(([n, p]) => [ids[Number(n) - 1], p])) });
+  // The answer so far: the sentence as written, the phrases line by line.
+  const partialOf = job => ({ summary: clip(oneLine(job.text.summary), SUMMARY_CHARS), steps: readPhrases(job.text.phrases, job.count, { partial: true }) });
+  const hasPartial = job => !!(job.text.summary.trim() || job.text.phrases.trim());
+
+  // Every conversation waiting on the job hears it, in its own step ids (a
+  // fork asks the same thing under other ids). Writing is sent at most every
+  // throttleMs, with the latest text; the end is sent at once.
+  function tell(job, state, answer = null, reason = '') {
+    clearTimeout(job.timer); job.timer = null; job.toldAt = now();
+    const a = answer || partialOf(job);
+    for (const [key, ids] of job.waiters) {
+      try { onProgress({ key, job: tokenOf(job.hash), state, ...byId(a, ids), ...(reason ? { reason } : {}) }); } catch {}
+    }
+  }
+  function writing(job) {
+    if (job.timer) return;
+    const wait = Math.max(0, throttleMs - (now() - (job.toldAt || 0)));
+    job.timer = setTimeout(() => tell(job, 'writing'), wait);
+    if (job.timer.unref) job.timer.unref();
+  }
+
+  function pump() {
+    while (running < concurrency && queue.length) {
+      const job = jobs.get(queue.shift());
+      if (!job || job.running) continue;
+      if (answers.has(job.hash)) { jobs.delete(job.hash); continue; }
+      running++; job.running = true;
+      const live = {
+        text(field, piece) {
+          if (field !== 'summary' && field !== 'phrases') return;
+          job.text[field] += String(piece || '');
+          writing(job);
+        },
+        retry() { job.text = { summary: '', phrases: '' }; writing(job); },
+      };
+      Promise.resolve()
+        .then(() => run(job.inputs, live))
+        .then(outputs => {
+          const answer = { ...readAnswer(outputs, job.ids), at: now() };
+          answers.set(job.hash, answer);
+          failures.delete(job.hash);
+          save();
+          tell(job, 'done', answer);
+        }, error => {
+          // A paused model says when it can be asked again; anything else waits retryMs.
+          const until = error && error.retryAt ? Number(error.retryAt) : now() + retryMs;
+          const reason = String((error && error.message) || error || 'failed').slice(0, 300);
+          failures.set(job.hash, { until, reason });
+          tell(job, 'failed', { summary: '', steps: {} }, reason);
+        })
+        .finally(() => { running--; jobs.delete(job.hash); pump(); });
+    }
+  }
 
   /**
    * The browser names the groups on its screen: [{ g, steps: [ids] }], of
@@ -201,11 +258,13 @@ function createPlainSteps({ file, run, model, concurrency = 2, maxEntries = 3000
    * `pending` is being written (ask again soon), `failed[g]` will not be
    * tried again for now (the browser keeps the technical lines).
    */
-  function lookup(conversation, groups, meta = {}) {
+  function lookup(conversation, groups, { key = '' } = {}) {
     // A conversation's snapshot, or its index (indexConversation) kept by the caller.
     const ix = conversation && conversation.tools instanceof Map ? conversation : indexConversation(conversation || {});
     const label = model();
-    const out = { results: {}, pending: [], failed: {} };
+    // pending[g]: the job the page will hear about (onProgress); partial[g]:
+    // what is already written of it.
+    const out = { results: {}, pending: {}, partial: {}, failed: {} };
     const fresh = [];
     for (const group of groups) {
       const built = groupInputs(ix, group.steps);
@@ -219,15 +278,24 @@ function createPlainSteps({ file, run, model, concurrency = 2, maxEntries = 3000
       }
       const failed = failures.get(hash);
       if (failed && failed.until > now()) { out.failed[group.g] = failed.reason; continue; }
-      out.pending.push(group.g);
-      if (!inFlight.has(hash)) fresh.push({ hash, inputs: built.inputs, ids: built.ids, meta });
+      let job = jobs.get(hash);
+      if (!job) {
+        job = { hash, inputs: built.inputs, ids: built.ids, count: built.ids.length, waiters: new Map(), text: { summary: '', phrases: '' }, running: false, timer: null, toldAt: 0 };
+        jobs.set(hash, job);
+      }
+      job.waiters.set(key, built.ids);
+      out.pending[group.g] = tokenOf(hash);
+      if (hasPartial(job)) out.partial[group.g] = byId(partialOf(job), built.ids);
+      if (!job.running) fresh.push(hash);
     }
     if (Object.keys(out.results).length) save(); // their last use moved
     if (fresh.length) {
-      const hashes = new Set(fresh.map(j => j.hash));
+      const asked = new Set(fresh);
       // What is asked now goes first; a backlog from scrolling past is dropped
       // (the groups still on screen will ask again).
-      queue = [...fresh, ...queue.filter(j => !hashes.has(j.hash))].slice(0, maxQueue);
+      const next = [...fresh, ...queue.filter(h => !asked.has(h))];
+      for (const h of next.slice(maxQueue)) if (!jobs.get(h)?.running) jobs.delete(h);
+      queue = next.slice(0, maxQueue);
       pump();
     }
     return out;
@@ -236,4 +304,4 @@ function createPlainSteps({ file, run, model, concurrency = 2, maxEntries = 3000
   return { lookup, stats: () => ({ answers: answers.size, running, queued: queue.length, failures: failures.size }) };
 }
 
-module.exports = { createPlainSteps, indexConversation, groupInputs, readAnswer, STEP_ID, MAX_STEPS };
+module.exports = { createPlainSteps, indexConversation, groupInputs, readAnswer, readPhrases, STEP_ID, MAX_STEPS };

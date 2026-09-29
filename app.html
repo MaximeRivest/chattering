@@ -18370,6 +18370,7 @@ live.onmessage = ev => {
     return;
   }
   if (d.type === 'reading') { applyReadingEvent(d); return; }
+  if (d.type === 'plain-steps') { if (window.PlainSteps) PlainSteps.onEvent(d); return; }
   if (d.type === 'fanout-retained') {
     for (const L of runLedgers.values()) if (L.fanoutId === d.fanoutId) L.retained = true;
     if (activeRel === d.key && current) renderParallelStage();

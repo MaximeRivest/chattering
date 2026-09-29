@@ -397,6 +397,8 @@ const EVENTS = {
   // Quiet work the person should look at (design/29): the conversation's reader.
   attention: keyed,
   'fanout-settled': keyed, compaction: keyed, 'conversation-project': keyed, reading: keyed,
+  // Work steps in plain words as they are written: the conversation's readers.
+  'plain-steps': keyed,
   'voice-nav': ev => can => can.member && can.key(ev.key),
   'project-title': ev => can => can.project(ev.project),
   'file-activity': ev => can => (ev.convKey ? can.key(ev.convKey) : true) && (ev.path ? can.path(ev.path) : can.project(ev.project)),

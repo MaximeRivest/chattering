@@ -128,6 +128,10 @@
 .toolgroup > summary:has(.tg-plain) { border-radius: var(--r); }
 .toolgroup:not([open]) > summary:has(.tg-plain) { align-items: baseline; }
 .tg-detail[aria-busy="true"]::after { content: " · explaining…"; color: var(--text-faint); }
+/* Being written: a caret after the sentence, as in a live answer. */
+.tg-detail.tg-writing::after { content: "▍"; margin-left: 1px; color: var(--text-faint); animation: blink 1s steps(1) infinite; }
+@media (prefers-reduced-motion: reduce) { .tg-detail.tg-writing::after { animation: none; } }
+:root[data-theme-mode="binary"] .tg-detail.tg-writing::after { animation: none; }
 .has-plain > summary > .step-tech { display: none; }
 .step-plain { color: var(--text-dim); }
 .msg.tool.has-plain > summary, .msg.thinking.has-plain > summary { font-size: 12px; }

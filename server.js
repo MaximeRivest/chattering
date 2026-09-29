@@ -6569,7 +6569,7 @@ const aiPrograms = require('./ai-programs.js').createAiPrograms({
 // Run one of them within this call's context. `caller` goes to the log
 // (a conversation key, a project, the person); the rest is the context
 // piExec reads. Resolves with { outputs, callId, response }.
-function aiProgram(name, inputs, { automatic, background, purpose, thinking, timeoutMs, signal, person, model, health, caller = {}, onText = null } = {}) {
+function aiProgram(name, inputs, { automatic, background, purpose, thinking, timeoutMs, signal, person, model, health, caller = {}, onText = null, onEvent = null } = {}) {
   const inherited = modelCallContext.getStore() || {};
   const ctx = { ...inherited };
   // person: the id of whoever the call is for (usage and budget), when a person asked for it.
@@ -6582,7 +6582,7 @@ function aiProgram(name, inputs, { automatic, background, purpose, thinking, tim
   // The stop signal, this call's or the context's: a program's call is a
   // stream, and closing the stream is what stops it.
   const lm = ctx.model && ctx.model.provider && ctx.model.model ? ctx.model.provider + '/' + ctx.model.model : null;
-  return modelCallContext.run(ctx, () => aiPrograms.run(name, inputs, { caller: who, onText, signal: ctx.signal || null, lm }));
+  return modelCallContext.run(ctx, () => aiPrograms.run(name, inputs, { caller: who, onText, onEvent, signal: ctx.signal || null, lm }));
 }
 
 function abortedModelCall() {
@@ -6616,10 +6616,14 @@ async function plainStepsIndex(key) {
 const plainSteps = require('./plain-steps.js').createPlainSteps({
   file: path.join(CACHE_DIR, 'plain-steps.json'),
   model: () => { const m = plainStepsModel(); return m ? m.provider + '/' + m.model : currentModelLabel(); },
-  run: async inputs => (await aiProgram('steps_in_plain_words', inputs, {
+  // Each field as the model writes it; a retry starts the answer again.
+  run: async (inputs, live) => (await aiProgram('steps_in_plain_words', inputs, {
     automatic: true, background: 'steps', thinking: 'off', timeoutMs: 120000,
     model: plainStepsModel() || undefined, health: plainStepsHealth,
+    onEvent: e => { if (e.kind === 'text') live.text(e.field, e.text); else if (e.kind === 'retry') live.retry(); },
   })).outputs,
+  // To the screens of the conversation that asked (policy.js: its readers).
+  onProgress: p => broadcast({ type: 'plain-steps', ...p }),
 });
 
 let timelineTitleRunning = false;
@@ -16234,7 +16238,7 @@ async function handleRequest(req, res) {
       let ix;
       try { ix = await plainStepsIndex(key); }
       catch { return json(res, 404, { error: 'not found' }); }
-      json(res, 200, plainSteps.lookup(ix, groups));
+      json(res, 200, plainSteps.lookup(ix, groups, { key }));
     } else if (u.pathname === '/api/conversation/media' && req.method === 'GET') {
       try {
         const media = await transcriptImage(u.searchParams.get('id'), u.searchParams.get('entry'), u.searchParams.get('path'));

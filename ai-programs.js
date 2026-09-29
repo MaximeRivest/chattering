@@ -193,16 +193,18 @@ function definitions(t) {
   });
 
   // The work steps of a conversation, for someone who does not program
-  // (plain-steps.js): one group of steps per call, a small model's job.
+  // (plain-steps.js): one group of steps per call, a small model's job. The
+  // sentence comes first and the phrases line by line, so both stream in.
   add('steps_in_plain_words', {
-    description: 'An AI assistant did some work for a person who does not program. Explain one stretch of that work to them in plain words. You get what the person asked and the numbered steps: either the assistant thinking, or a tool it used, what the tool was given, and the start of what came back. summary: one sentence of at most 25 words saying what this stretch of work did and why, in terms of what the person asked. phrases: for every numbered step, keep its number and write one short phrase of at most 12 words, in the past tense, starting with a verb (Looked, Searched, Read, Checked, Changed, Ran, Worked out…). Say what the step was for, not how it was done: no commands, flags, code, paths or jargon. Name a file or a place only when that helps, and say what it is ("the settings page", "the list of past conversations"). Say plainly when a step failed or found nothing. For a thinking step, say what the assistant was working out. Describe only what the steps show; do not guess at results. Write in the language of the request.',
+    description: 'An AI assistant did some work for a person who does not program. Explain one stretch of that work to them in plain words. You get what the person asked and the numbered steps: either the assistant thinking, or a tool it used, what the tool was given, and the start of what came back. summary: one sentence of at most 25 words saying what this stretch of work did and why, in terms of what the person asked. phrases: one line per numbered step, in order: the step\u2019s number, a period, a space, then one short phrase of at most 12 words, in the past tense, starting with a verb (Looked, Searched, Read, Checked, Changed, Ran, Worked out…). Say what the step was for, not how it was done: no commands, flags, code, paths or jargon. Name a file or a place only when that helps, and say what it is ("the settings page", "the list of past conversations"). Say plainly when a step failed or found nothing. For a thinking step, say what the assistant was working out. Describe only what the steps show; do not guess at results. Write in the language of the request.',
     inputs: {
       request: s('what the person asked the assistant, for context'),
       steps: s('the steps in order, each starting with its number in brackets, separated by blank lines'),
     },
     outputs: {
       summary: s('one plain sentence, at most 25 words'),
-      phrases: t.list(t.object({ n: t.integer(), plain: s('at most 12 words, past tense, starts with a verb') }), { description: 'one entry per numbered step' }),
+      // Lines, not a JSON list: the page shows each phrase as it is written.
+      phrases: s('one line per step, like "1. Looked for …": at most 12 words, past tense, starts with a verb'),
     },
   });
 
