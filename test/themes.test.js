@@ -82,17 +82,38 @@ test('manifest colors follow built-in and custom theme backgrounds', () => {
   // No choice yet means the default, Rockfrog's paper.
   assert.deepStrictEqual(manifestThemeColors('rockfrog', tokens, dir), { backgroundColor: '#f3f5f1', themeColor: '#f3f5f1' });
   assert.deepStrictEqual(manifestThemeColors('', tokens, dir), { backgroundColor: '#f3f5f1', themeColor: '#f3f5f1' });
+  assert.deepStrictEqual(manifestThemeColors('rockfrog-light', tokens, dir), { backgroundColor: '#f3f5f1', themeColor: '#f3f5f1' });
+  assert.deepStrictEqual(manifestThemeColors('rockfrog-dark', tokens, dir), { backgroundColor: '#101412', themeColor: '#101412' });
 });
 
-test('the built-in Rockfrog theme passes the custom-theme validator', () => {
+const ruleBody = (css, selector) => {
+  const at = css.indexOf(selector + ' {');
+  assert.ok(at >= 0, 'no rule ' + selector);
+  return css.slice(at + selector.length + 2, css.indexOf('}', at));
+};
+// Capabilities live beside the tokens in tokens.css; theme files declare them as metadata.
+const tokensOnly = body => body.replace(/\s*--theme-(mode|motion):[^;]*;|\s*color-scheme:[^;]*;/g, '');
+
+test('both Rockfrog palettes pass the custom-theme validator', () => {
   const tokens = fs.readFileSync(path.join(ROOT, 'design', 'tokens.css'), 'utf8');
-  const rule = tokens.match(/:root\[data-theme="rockfrog"\] \{[^}]*\}/)[0]
-    // Capabilities live beside the tokens in tokens.css; theme files declare them as metadata.
-    .replace(/\s*--theme-(mode|motion):[^;]*;|\s*color-scheme:[^;]*;/g, '')
-    .replace('"rockfrog"', '"rockfrog-check"');
-  const css = `/* chattering-theme\nname: Rockfrog\nscheme: light\nmode: color\nmotion: full\n*/\n${rule}`;
-  assert.deepStrictEqual(validateTheme(css, 'rockfrog-check').errors, []);
+  for (const [variant, scheme] of [['rockfrog-light', 'light'], ['rockfrog-dark', 'dark']]) {
+    const body = ruleBody(tokens, `:root[data-theme="${variant}"]`);
+    assert.match(body, new RegExp(`color-scheme: ${scheme};`));
+    const css = `/* chattering-theme\nname: Rockfrog\nscheme: ${scheme}\nmode: color\nmotion: full\n*/\n:root[data-theme="check"] {${tokensOnly(body)}}`;
+    assert.deepStrictEqual(validateTheme(css, 'check').errors, [], variant);
+  }
   assert.ok(BUILTIN_THEME_IDS.has(DEFAULT_THEME) && DEFAULT_THEME === 'rockfrog');
+});
+
+test('Rockfrog following a dark system shows exactly Rockfrog dark', () => {
+  const tokens = fs.readFileSync(path.join(ROOT, 'design', 'tokens.css'), 'utf8');
+  const dark = ruleBody(tokens, ':root[data-theme="rockfrog-dark"]');
+  const media = tokens.slice(tokens.indexOf('@media (prefers-color-scheme: dark)'));
+  const following = ruleBody(media, ':root[data-theme="rockfrog"]');
+  const lines = body => body.split('\n').map(l => l.trim()).filter(Boolean);
+  assert.deepStrictEqual(lines(following), lines(dark));
+  // The light palette is the same rule for `rockfrog` and `rockfrog-light`.
+  assert.match(tokens, /:root\[data-theme="rockfrog"\],\s*:root\[data-theme="rockfrog-light"\] \{/);
 });
 
 test('tokens.css is the only core token source used by app.html', () => {

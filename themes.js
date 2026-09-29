@@ -3,10 +3,13 @@
 const fs = require('fs');
 const path = require('path');
 
-const BUILTIN_THEME_IDS = new Set(['rockfrog', 'dark', 'light', 'gray', 'eink']);
-// What a device shows until someone picks a theme (design/25). 'auto', the
-// other end of the choice, follows the system's light or dark setting.
+const BUILTIN_THEME_IDS = new Set(['rockfrog', 'rockfrog-light', 'rockfrog-dark', 'dark', 'light', 'gray', 'eink']);
+// What a device shows until someone picks a theme (design/25). It follows
+// the system's light or dark setting, as 'auto' does with the classic palettes.
 const DEFAULT_THEME = 'rockfrog';
+// Themes that follow the system, by the palette the server assumes when it
+// cannot see the system: the app sends the resolved one when it can.
+const SYSTEM_THEME_FALLBACK = { rockfrog: 'rockfrog-light' };
 const MODES = new Set(['color', 'gray', 'binary']);
 const SCHEMES = new Set(['dark', 'light']);
 const MOTIONS = new Set(['full', 'none']);
@@ -214,6 +217,7 @@ function rgbHex(rgb) {
 
 function manifestThemeColors(themeId, tokensCss, dir) {
   if (!themeId) themeId = DEFAULT_THEME;
+  themeId = SYSTEM_THEME_FALLBACK[themeId] || themeId;
   let declarations;
   if (themeId && !BUILTIN_THEME_IDS.has(themeId)) {
     const theme = readCustomThemes(dir).valid.find(item => item.id === themeId);

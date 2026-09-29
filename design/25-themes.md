@@ -116,13 +116,21 @@ validation errors. The `/api/themes` response also includes these errors.
 `/tokens.css`. The app loads all valid user themes from `/api/themes.css` before
 body paint. This prevents a custom-theme flash.
 
-Built-in themes: `rockfrog` (the default), `dark`, `light`, `gray`, and
-`eink`. Custom theme files cannot reuse these IDs.
+Built-in themes: `rockfrog` (the default), `rockfrog-light`, `rockfrog-dark`,
+`dark`, `light`, `gray`, and `eink`. Custom theme files cannot reuse these IDs.
+
+Rockfrog has two palettes: the brand's paper, and its night from the dark deck
+slides. `rockfrog` follows the system's light or dark setting with them, in
+CSS alone (a `prefers-color-scheme` block), so nothing flashes at load;
+`rockfrog-light` and `rockfrog-dark` stay put. The classic palettes work the
+same way: `auto` follows the system, `light` and `dark` stay put. Script that
+copies theme colors (diagrams, the document editor, the PWA manifest) repaints
+when the system turns, for both following themes.
 
 The active theme stays in browser local storage, one choice per device. An
-empty store means nobody has chosen, and the device shows Rockfrog, the brand's
-own light paper (since 2026-09-29; before, the default followed the system).
-`auto` is stored explicitly and follows the system's light or dark setting.
+empty store means nobody has chosen, and the device shows `rockfrog` (since
+2026-09-29; before, the default was the classic `auto`). `auto` is therefore
+stored explicitly.
 The Android app sets `eink` on e-ink tablets and Rockfrog on phones that have
 no choice yet. The app copies theme
 capabilities to `data-theme-mode` and `data-theme-motion`. Components and JavaScript

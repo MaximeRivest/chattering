@@ -203,8 +203,11 @@
    ink, one forest green used sparingly, cards lighter than the page, hairline
    rules, soft shadows, generous corners. Inter and IBM Plex Mono apply only
    when the device font is "Theme default" and they are installed; otherwise
-   the system fonts stand in. */
-:root[data-theme="rockfrog"] {
+   the system fonts stand in.
+   Three choices share these two palettes: `rockfrog` follows the system's
+   light or dark setting, `rockfrog-light` and `rockfrog-dark` stay put. */
+:root[data-theme="rockfrog"],
+:root[data-theme="rockfrog-light"] {
   --bg: #f3f5f1;
   --surface-1: #fbfcfa;
   --surface-2: #eceee9;
@@ -264,6 +267,137 @@
   --theme-mode: color;
   --theme-motion: 1;
   color-scheme: light;
+}
+
+/* Rockfrog at night: the deck's dark slides (--dark, --dark-line,
+   --dark-text, --dark-muted, --accent-light). The same forest green fills
+   buttons in both palettes; the light green is for text and marks. */
+:root[data-theme="rockfrog-dark"] {
+  --bg: #101412;
+  --surface-1: #171d19;
+  --surface-2: #1e2420;
+  --surface-3: #262d28;
+  --border: #2e3631;
+  --border-strong: #4a544d;
+
+  --text: #e9eee9;
+  --text-dim: #9aa59c;
+  --text-faint: #737e76;
+
+  --red: #eba59b;
+  --yellow: #dcc27a;
+  --green: #9fd2ab;
+  --cyan: #8ccbdc;
+  --blue: #a3b8ec;
+  --magenta: #d1a9dc;
+  --accent: var(--green);
+  --accent-strong: #377a4c;
+  --accent-ink: #ffffff;
+
+  --ansi-0: #101412;
+  --ansi-1: #c7675c;
+  --ansi-2: #5aa06d;
+  --ansi-3: #b89a45;
+  --ansi-4: #6784c4;
+  --ansi-5: #a674b4;
+  --ansi-6: #4f9fb4;
+  --ansi-7: #cfd6d0;
+  --ansi-8: #737e76;
+  --ansi-9: #eba59b;
+  --ansi-10: #9fd2ab;
+  --ansi-11: #dcc27a;
+  --ansi-12: #a3b8ec;
+  --ansi-13: #d1a9dc;
+  --ansi-14: #8ccbdc;
+  --ansi-15: #ffffff;
+
+  --term-selection: #2d4a36;
+  --term-selection-ink: #e9eee9;
+  --ink: #f29b8f;
+  --ink-ai: #a3b8ec;
+  --ink-halo: #101412;
+  --overlay: rgba(0, 0, 0, 0.50);
+  --overlay-strong: rgba(0, 0, 0, 0.60);
+  --shadow-color: rgba(0, 0, 0, 0.45);
+  --shadow-soft: rgba(0, 0, 0, 0.30);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.30), 0 10px 30px rgba(0, 0, 0, 0.35);
+
+  --roundness: 1.6;
+  --panel-bg: #171d19;
+  --panel-border: #2e3631;
+
+  --font: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --theme-mode: color;
+  --theme-motion: 1;
+  color-scheme: dark;
+}
+
+/* The same palette, for `rockfrog` when the system is dark. Kept identical
+   to the block above (test/themes.test.js checks). */
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="rockfrog"] {
+    --bg: #101412;
+    --surface-1: #171d19;
+    --surface-2: #1e2420;
+    --surface-3: #262d28;
+    --border: #2e3631;
+    --border-strong: #4a544d;
+
+    --text: #e9eee9;
+    --text-dim: #9aa59c;
+    --text-faint: #737e76;
+
+    --red: #eba59b;
+    --yellow: #dcc27a;
+    --green: #9fd2ab;
+    --cyan: #8ccbdc;
+    --blue: #a3b8ec;
+    --magenta: #d1a9dc;
+    --accent: var(--green);
+    --accent-strong: #377a4c;
+    --accent-ink: #ffffff;
+
+    --ansi-0: #101412;
+    --ansi-1: #c7675c;
+    --ansi-2: #5aa06d;
+    --ansi-3: #b89a45;
+    --ansi-4: #6784c4;
+    --ansi-5: #a674b4;
+    --ansi-6: #4f9fb4;
+    --ansi-7: #cfd6d0;
+    --ansi-8: #737e76;
+    --ansi-9: #eba59b;
+    --ansi-10: #9fd2ab;
+    --ansi-11: #dcc27a;
+    --ansi-12: #a3b8ec;
+    --ansi-13: #d1a9dc;
+    --ansi-14: #8ccbdc;
+    --ansi-15: #ffffff;
+
+    --term-selection: #2d4a36;
+    --term-selection-ink: #e9eee9;
+    --ink: #f29b8f;
+    --ink-ai: #a3b8ec;
+    --ink-halo: #101412;
+    --overlay: rgba(0, 0, 0, 0.50);
+    --overlay-strong: rgba(0, 0, 0, 0.60);
+    --shadow-color: rgba(0, 0, 0, 0.45);
+    --shadow-soft: rgba(0, 0, 0, 0.30);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.30), 0 10px 30px rgba(0, 0, 0, 0.35);
+
+    --roundness: 1.6;
+    --panel-bg: #171d19;
+    --panel-border: #2e3631;
+
+    --font: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+    --theme-mode: color;
+    --theme-motion: 1;
+    color-scheme: dark;
+  }
 }
 
 

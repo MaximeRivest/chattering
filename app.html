@@ -61,6 +61,16 @@ window.applyTheme = function (id) {
   if (id && id !== 'auto') document.documentElement.dataset.theme = id;
   else delete document.documentElement.dataset.theme;
 };
+// The palette on screen right now: 'auto' and 'rockfrog' follow the system,
+// so the PWA manifest asks for the one the system chose.
+window.systemIsLight = () => matchMedia('(prefers-color-scheme: light)').matches;
+window.themeFollowsSystem = () => { const t = document.documentElement.dataset.theme; return !t || t === 'rockfrog'; };
+window.shownTheme = function () {
+  const t = document.documentElement.dataset.theme;
+  if (!t) return window.systemIsLight() ? 'light' : 'dark';
+  if (t === 'rockfrog') return window.systemIsLight() ? 'rockfrog-light' : 'rockfrog-dark';
+  return t;
+};
 // Apply defaults even when browser storage is unavailable.
 window.setAppFont('sans');
 window.applyTheme(window.DEFAULT_THEME);
@@ -93,8 +103,7 @@ try {
   // The side-panel layout (design/42) is a device choice; the class lands
   // before first paint so the column never flashes in or out.
   document.documentElement.dataset.layout = localStorage.getItem('chattering.layout') === 'top' ? '' : 'side';
-  const manifestTheme = t !== 'auto' ? t : (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-  document.getElementById('appManifest').href = `/manifest.webmanifest?theme=${encodeURIComponent(manifestTheme)}`;
+  document.getElementById('appManifest').href = `/manifest.webmanifest?theme=${encodeURIComponent(window.shownTheme())}`;
 } catch {}
 </script>
 <style>
@@ -686,8 +695,7 @@ body:not(.home) #left, body:not(.home) #ganttResize { display: none !important; 
 #ganttBar button { flex: 0 0 auto; height: 24px; min-width: 26px; padding: 0 6px; border: 0; border-right: 1px solid var(--border); border-radius: 0; background: transparent; color: var(--text-dim); font: 12px var(--font); }
 #ganttBar button:hover { color: var(--text); background: var(--surface-2); }
 #ganttBar .gsep { width: 1px; background: var(--border); }
-#ganttDate { border: 0; border-left: 1px solid var(--border); background: transparent; color: var(--text-dim); font: 11px var(--font); padding: 0 6px; height: 24px; width: 118px; color-scheme: dark; }
-[data-theme="light"] #ganttDate { color-scheme: light; }
+#ganttDate { border: 0; border-left: 1px solid var(--border); background: transparent; color: var(--text-dim); font: 11px var(--font); padding: 0 6px; height: 24px; width: 118px; }
 #ganttDate:focus { outline: 1px solid var(--accent); outline-offset: -1px; color: var(--text); }
 #ganttProject { flex: 0 1 180px; min-width: 110px; height: 24px; border: 0; border-left: 1px solid var(--border); border-radius: 0; background: var(--surface-1); color: var(--text-dim); padding: 0 6px; font: 10px var(--font); }
 #ganttGroup { flex: 0 0 auto; height: 24px; min-width: 92px; padding: 0 7px; border: 0; border-left: 1px solid var(--border); border-right: 1px solid var(--border); border-radius: 0; background: var(--accent-strong); color: var(--accent-ink); font: 10px var(--font); }
@@ -3157,20 +3165,25 @@ $('zenExit').onclick = () => setZen(false);
 $('gRecenter').onclick = () => jumpToNow();
 
 // Phone: the search rests as one magnifier button; tap opens the field.
-const BUILTIN_THEMES = new Set(['rockfrog', 'dark', 'light', 'gray', 'eink']);
+const BUILTIN_THEMES = new Set(['rockfrog', 'rockfrog-light', 'rockfrog-dark', 'dark', 'light', 'gray', 'eink']);
 function themeToken(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 function themeMode() { return document.documentElement.dataset.themeMode || themeToken('--theme-mode') || 'color'; }
 function syncActiveTheme() {
   if (window.chatteringSyncTheme) window.chatteringSyncTheme();
-  const selected = document.documentElement.dataset.theme
-    || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
-  const href = `/manifest.webmanifest?theme=${encodeURIComponent(selected)}`;
+  const href = `/manifest.webmanifest?theme=${encodeURIComponent(window.shownTheme())}`;
   if ($('appManifest').getAttribute('href') !== href) $('appManifest').setAttribute('href', href);
 }
+// Every choice is stored, 'auto' included: an empty store means nobody has
+// chosen yet, and shows the default.
 function selectTheme(t, repaint = true) {
   t = t || 'auto';
   try { localStorage.setItem('chattering.theme', t); } catch {}
   window.applyTheme(t);
+  themeRepaint(repaint);
+}
+// Everything that copies theme colors in script follows a palette change,
+// whether a choice or the system turning light or dark.
+function themeRepaint(repaint = true) {
   syncActiveTheme();
   refreshMermaidTheme();
   // An open document editor re-derives its dark flag and inline tokens.
@@ -3178,8 +3191,6 @@ function selectTheme(t, repaint = true) {
   if (!repaint) return;
   renderTabList();
   if (current && $('conversationTranscript')) renderConv();
-// Every choice is stored, 'auto' included: an empty store means nobody has
-// chosen yet, and shows the default.
 }
 
 // ---- mermaid diagrams (```mermaid fences, everywhere markdown renders) ----
@@ -3352,7 +3363,8 @@ new MutationObserver(() => {
 // Custom themes: the runtime stylesheet is always loaded; the <select> is
 // painted only while the appearance pane is on screen.
 let customThemeCatalog = { themes: [], invalid: [] };
-const BUILTIN_THEME_OPTIONS = [['rockfrog', 'Rockfrog'], ['auto', 'auto (system light or dark)'], ['dark', 'dark'], ['light', 'light'], ['gray', 'grayscale'], ['eink', 'e-ink (black/white)']];
+const BUILTIN_THEME_OPTIONS = [['rockfrog', 'Rockfrog (follows system light or dark)'], ['rockfrog-light', 'Rockfrog light'], ['rockfrog-dark', 'Rockfrog dark'],
+  ['auto', 'classic (follows system light or dark)'], ['light', 'classic light'], ['dark', 'classic dark'], ['gray', 'grayscale'], ['eink', 'e-ink (black/white)']];
 function paintThemeSelect() {
   const sel = $('themeSel');
   if (!sel) return;
@@ -3382,7 +3394,7 @@ async function loadCustomThemes() {
 loadCustomThemes();
 try {
   matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
-    if (!document.documentElement.dataset.theme) syncActiveTheme();
+    if (window.themeFollowsSystem()) themeRepaint();
   });
 } catch {}
 document.addEventListener('click', e => {

@@ -268,6 +268,23 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   // 'auto' is a stored choice (follow the system), distinct from no choice (the default).
   assert.deepEqual(await evaluate(`(()=>{selectTheme('auto',false);const r=[localStorage.getItem('chattering.theme'),document.documentElement.dataset.theme??null,savedTheme()];selectTheme('dark',false);return r})()`), ['auto', null, 'auto']);
   assert.equal(await evaluate(`(()=>{const v=localStorage.getItem('chattering.theme');localStorage.removeItem('chattering.theme');const t=savedTheme();localStorage.setItem('chattering.theme',v);return t})()`), 'rockfrog');
+  // Rockfrog follows the system: paper by day, the deck's night by night, and
+  // the installed app's color with it. The fixed variants ignore the system.
+  const palette = `[getComputedStyle(document.body).backgroundColor,getComputedStyle(document.documentElement).colorScheme,$('appManifest').getAttribute('href')]`;
+  const scheme = async value => { await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value }] }, sid); await new Promise(r => setTimeout(r, 50)); };
+  await evaluate(`selectTheme('rockfrog',false)`);
+  await scheme('light');
+  assert.deepEqual(await evaluate(palette), ['rgb(243, 245, 241)', 'light', '/manifest.webmanifest?theme=rockfrog-light']);
+  await scheme('dark');
+  assert.deepEqual(await evaluate(palette), ['rgb(16, 20, 18)', 'dark', '/manifest.webmanifest?theme=rockfrog-dark'], 'the system turning dark repaints Rockfrog');
+  assert.equal(await evaluate(`getComputedStyle($('agentCompose')).borderTopLeftRadius`), '28.8px', 'dark keeps the Rockfrog shape');
+  await evaluate(`selectTheme('rockfrog-light',false)`);
+  assert.equal(await evaluate(`getComputedStyle(document.body).backgroundColor`), 'rgb(243, 245, 241)', 'Rockfrog light stays light');
+  await scheme('light');
+  await evaluate(`selectTheme('rockfrog-dark',false)`);
+  assert.equal(await evaluate(`getComputedStyle(document.body).backgroundColor`), 'rgb(16, 20, 18)', 'Rockfrog dark stays dark');
+  await send('Emulation.setEmulatedMedia', { features: [] }, sid);
+  await evaluate(`selectTheme('dark',false)`);
   // Scrolling down hides the quiet title line; scrolling up brings it back.
   await evaluate(`document.querySelector('#conversationTranscript').insertAdjacentHTML('beforeend','<div style="height:3000px"></div>')`);
   await new Promise(r => setTimeout(r, 300)); // the tail pin settles
