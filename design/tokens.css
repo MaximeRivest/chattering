@@ -269,52 +269,60 @@
   color-scheme: light;
 }
 
-/* Rockfrog at night: the deck's dark slides (--dark, --dark-line,
-   --dark-text, --dark-muted, --accent-light). The same forest green fills
-   buttons in both palettes; the light green is for text and marks. */
+/* Rockfrog at night: the deck's dark page (#101412) and its green-gray.
+   The same forest green fills buttons in both palettes.
+   Levels are set by APCA (the WCAG 3 candidate contrast model), not WCAG 2:
+   WCAG 2 overrates light text on dark, so a palette that passes it can still
+   read weak. Each role reads about as it does in Rockfrog light:
+   text Lc 90 (not higher: brighter text on near-black glows, notably for
+   astigmatic eyes), secondary text 76, faint 60 (APCA's floor for readable
+   text); accents all at Lc 70, one OKLCH lightness for every hue, moderate
+   chroma, so no hue shouts and none sits above secondary text; borders
+   Lc 15 and 30, since shadows do not show on dark; surfaces step up in
+   even OKLCH lightness. test/themes.test.js keeps these levels. */
 :root[data-theme="rockfrog-dark"] {
   --bg: #101412;
-  --surface-1: #171d19;
-  --surface-2: #1e2420;
-  --surface-3: #262d28;
-  --border: #2e3631;
-  --border-strong: #4a544d;
+  --surface-1: #1a1f1b;
+  --surface-2: #232824;
+  --surface-3: #2d332e;
+  --border: #4f5650;
+  --border-strong: #727a73;
 
-  --text: #e9eee9;
-  --text-dim: #9aa59c;
-  --text-faint: #737e76;
+  --text: #e1e6e1;
+  --text-dim: #c9d0ca;
+  --text-faint: #adb4ae;
 
-  --red: #eba59b;
-  --yellow: #dcc27a;
-  --green: #9fd2ab;
-  --cyan: #8ccbdc;
-  --blue: #a3b8ec;
-  --magenta: #d1a9dc;
+  --red: #f9b2a7;
+  --yellow: #dbc183;
+  --green: #99d1a4;
+  --cyan: #7dd0e3;
+  --blue: #a9c4fc;
+  --magenta: #e0b5ea;
   --accent: var(--green);
   --accent-strong: #377a4c;
   --accent-ink: #ffffff;
 
   --ansi-0: #101412;
-  --ansi-1: #c7675c;
-  --ansi-2: #5aa06d;
-  --ansi-3: #b89a45;
-  --ansi-4: #6784c4;
-  --ansi-5: #a674b4;
-  --ansi-6: #4f9fb4;
-  --ansi-7: #cfd6d0;
-  --ansi-8: #737e76;
-  --ansi-9: #eba59b;
-  --ansi-10: #9fd2ab;
-  --ansi-11: #dcc27a;
-  --ansi-12: #a3b8ec;
-  --ansi-13: #d1a9dc;
-  --ansi-14: #8ccbdc;
+  --ansi-1: #d08176;
+  --ansi-2: #63a471;
+  --ansi-3: #b09348;
+  --ansi-4: #7896d5;
+  --ansi-5: #b685c0;
+  --ansi-6: #38a3b9;
+  --ansi-7: #c9d0ca;
+  --ansi-8: #878e89;
+  --ansi-9: #f9b2a7;
+  --ansi-10: #99d1a4;
+  --ansi-11: #dbc183;
+  --ansi-12: #a9c4fc;
+  --ansi-13: #e0b5ea;
+  --ansi-14: #7dd0e3;
   --ansi-15: #ffffff;
 
-  --term-selection: #2d4a36;
-  --term-selection-ink: #e9eee9;
-  --ink: #f29b8f;
-  --ink-ai: #a3b8ec;
+  --term-selection: #29452f;
+  --term-selection-ink: #e1e6e1;
+  --ink: #feb0a5;
+  --ink-ai: #a8c4fe;
   --ink-halo: #101412;
   --overlay: rgba(0, 0, 0, 0.50);
   --overlay-strong: rgba(0, 0, 0, 0.60);
@@ -323,8 +331,8 @@
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.30), 0 10px 30px rgba(0, 0, 0, 0.35);
 
   --roundness: 1.6;
-  --panel-bg: #171d19;
-  --panel-border: #2e3631;
+  --panel-bg: #1a1f1b;
+  --panel-border: #4f5650;
 
   --font: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
@@ -339,47 +347,47 @@
 @media (prefers-color-scheme: dark) {
   :root[data-theme="rockfrog"] {
     --bg: #101412;
-    --surface-1: #171d19;
-    --surface-2: #1e2420;
-    --surface-3: #262d28;
-    --border: #2e3631;
-    --border-strong: #4a544d;
+    --surface-1: #1a1f1b;
+    --surface-2: #232824;
+    --surface-3: #2d332e;
+    --border: #4f5650;
+    --border-strong: #727a73;
 
-    --text: #e9eee9;
-    --text-dim: #9aa59c;
-    --text-faint: #737e76;
+    --text: #e1e6e1;
+    --text-dim: #c9d0ca;
+    --text-faint: #adb4ae;
 
-    --red: #eba59b;
-    --yellow: #dcc27a;
-    --green: #9fd2ab;
-    --cyan: #8ccbdc;
-    --blue: #a3b8ec;
-    --magenta: #d1a9dc;
+    --red: #f9b2a7;
+    --yellow: #dbc183;
+    --green: #99d1a4;
+    --cyan: #7dd0e3;
+    --blue: #a9c4fc;
+    --magenta: #e0b5ea;
     --accent: var(--green);
     --accent-strong: #377a4c;
     --accent-ink: #ffffff;
 
     --ansi-0: #101412;
-    --ansi-1: #c7675c;
-    --ansi-2: #5aa06d;
-    --ansi-3: #b89a45;
-    --ansi-4: #6784c4;
-    --ansi-5: #a674b4;
-    --ansi-6: #4f9fb4;
-    --ansi-7: #cfd6d0;
-    --ansi-8: #737e76;
-    --ansi-9: #eba59b;
-    --ansi-10: #9fd2ab;
-    --ansi-11: #dcc27a;
-    --ansi-12: #a3b8ec;
-    --ansi-13: #d1a9dc;
-    --ansi-14: #8ccbdc;
+    --ansi-1: #d08176;
+    --ansi-2: #63a471;
+    --ansi-3: #b09348;
+    --ansi-4: #7896d5;
+    --ansi-5: #b685c0;
+    --ansi-6: #38a3b9;
+    --ansi-7: #c9d0ca;
+    --ansi-8: #878e89;
+    --ansi-9: #f9b2a7;
+    --ansi-10: #99d1a4;
+    --ansi-11: #dbc183;
+    --ansi-12: #a9c4fc;
+    --ansi-13: #e0b5ea;
+    --ansi-14: #7dd0e3;
     --ansi-15: #ffffff;
 
-    --term-selection: #2d4a36;
-    --term-selection-ink: #e9eee9;
-    --ink: #f29b8f;
-    --ink-ai: #a3b8ec;
+    --term-selection: #29452f;
+    --term-selection-ink: #e1e6e1;
+    --ink: #feb0a5;
+    --ink-ai: #a8c4fe;
     --ink-halo: #101412;
     --overlay: rgba(0, 0, 0, 0.50);
     --overlay-strong: rgba(0, 0, 0, 0.60);
@@ -388,8 +396,8 @@
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.30), 0 10px 30px rgba(0, 0, 0, 0.35);
 
     --roundness: 1.6;
-    --panel-bg: #171d19;
-    --panel-border: #2e3631;
+    --panel-bg: #1a1f1b;
+    --panel-border: #4f5650;
 
     --font: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
     --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;

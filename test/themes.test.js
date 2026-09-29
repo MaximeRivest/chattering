@@ -105,6 +105,36 @@ test('both Rockfrog palettes pass the custom-theme validator', () => {
   assert.ok(BUILTIN_THEME_IDS.has(DEFAULT_THEME) && DEFAULT_THEME === 'rockfrog');
 });
 
+// APCA-W3 0.1.9 (the WCAG 3 candidate): polarity-aware lightness contrast.
+function apca(text, bg) {
+  const Y = h => { const [r, g, b] = [1, 3, 5].map(i => (parseInt(h.slice(i, i + 2), 16) / 255) ** 2.4); return 0.2126729 * r + 0.7151522 * g + 0.0721750 * b; };
+  const clamp = y => y > 0.022 ? y : y + (0.022 - y) ** 1.414;
+  const t = clamp(Y(text)), b = clamp(Y(bg));
+  const s = b > t ? (b ** 0.56 - t ** 0.57) * 1.14 : (b ** 0.65 - t ** 0.62) * 1.14;
+  return Math.abs(s) < 0.1 ? 0 : Math.abs(s) * 100 - 2.7;
+}
+
+test('Rockfrog text stays readable by APCA, in both palettes', () => {
+  const tokens = fs.readFileSync(path.join(ROOT, 'design', 'tokens.css'), 'utf8');
+  for (const variant of ['rockfrog-light', 'rockfrog-dark']) {
+    const body = ruleBody(tokens, `:root[data-theme="${variant}"]`);
+    const v = name => body.match(new RegExp(`${name}:\\s*(#[0-9a-f]{6});`, 'i'))[1];
+    const lc = name => apca(v(name), v('--bg'));
+    assert.ok(lc('--text') >= 88, `${variant} text Lc ${lc('--text').toFixed(0)}`);
+    assert.ok(lc('--text-dim') >= 74, `${variant} secondary text Lc ${lc('--text-dim').toFixed(0)}`);
+    assert.ok(lc('--text-faint') >= 58, `${variant} faint text Lc ${lc('--text-faint').toFixed(0)}`);
+    const accents = ['--red', '--yellow', '--green', '--cyan', '--blue', '--magenta'].map(lc);
+    assert.ok(Math.min(...accents) >= 60, `${variant} accents readable: ${accents.map(x => x.toFixed(0))}`);
+    // Colored words never outshout secondary text.
+    assert.ok(Math.max(...accents) <= lc('--text-dim'), `${variant} accents under secondary text`);
+    if (variant === 'rockfrog-dark') {
+      assert.ok(lc('--text') <= 93, 'dark text is not so bright it glows');
+      assert.ok(Math.max(...accents) - Math.min(...accents) <= 3, 'dark accents share one lightness');
+      assert.ok(lc('--border') >= 13, 'dark borders stay visible without shadows');
+    }
+  }
+});
+
 test('Rockfrog following a dark system shows exactly Rockfrog dark', () => {
   const tokens = fs.readFileSync(path.join(ROOT, 'design', 'tokens.css'), 'utf8');
   const dark = ruleBody(tokens, ':root[data-theme="rockfrog-dark"]');

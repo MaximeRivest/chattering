@@ -120,7 +120,10 @@ Built-in themes: `rockfrog` (the default), `rockfrog-light`, `rockfrog-dark`,
 `dark`, `light`, `gray`, and `eink`. Custom theme files cannot reuse these IDs.
 
 Rockfrog has two palettes: the brand's paper, and its night from the dark deck
-slides. `rockfrog` follows the system's light or dark setting with them, in
+slides. The dark levels come from APCA, the WCAG 3 candidate contrast
+model, because WCAG 2 overrates light text on dark: each role (text,
+secondary, faint, accents, borders) reads about as it does in the light
+palette (see the comment in `design/tokens.css`). `rockfrog` follows the system's light or dark setting with them, in
 CSS alone (a `prefers-color-scheme` block), so nothing flashes at load;
 `rockfrog-light` and `rockfrog-dark` stay put. The classic palettes work the
 same way: `auto` follows the system, `light` and `dark` stay put. Script that
