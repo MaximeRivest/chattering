@@ -116,10 +116,10 @@ word; tones become weight.
   Painting the side list never asks. One computation per conversation at a
   time on the server; a second request waits for the first.
 - **The Made view opens items where they already open.** A file in the
-  review screen, an artifact in the artifact panel, a file in the file
-  view. *Cost:* the review and the file view replace the conversation (Back
-  returns), and opening an artifact closes the Made list (one right panel
-  at a time, design/67). Design/81 (the pair) is where these open beside.
+  review screen, an artifact in the artifact panel, a file (↗) beside the
+  conversation (design/83, since the same day: the panel's "← Made" goes
+  back to the list). *Cost:* the review still replaces the conversation
+  (Back returns); it is a whole screen of its own.
 
 ## Limits, said plainly
 

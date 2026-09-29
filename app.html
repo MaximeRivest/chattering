@@ -2523,8 +2523,8 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <link rel="stylesheet" href="/voice-commands.css">
 <script src="/ask-bubble.js"></script>
 <link rel="stylesheet" href="/ask-bubble.css">
-<script src="/ask-panel.js"></script>
-<link rel="stylesheet" href="/ask-panel.css">
+<script src="/pair.js"></script>
+<link rel="stylesheet" href="/pair.css">
 <script src="/collab-client.js"></script>
 <script src="/people.js"></script>
 <link rel="stylesheet" href="/people.css">
@@ -2628,10 +2628,13 @@ function setRouteKind(kind) {
   // Leaving a document flushes its pending autosave and destroys the editor,
   // or parks it when the side list keeps it (a notebook run here, design/68).
   // The file workspace does the same when it swaps one document for another.
-  if (kind !== 'file' && kind !== 'files-project' && typeof docState !== 'undefined' && docState) leaveDocument();
+  // A file placed beside a conversation (design/83) stays through a move to
+  // a conversation: the panel it sits in decides (it follows its conversation).
+  const besideFile = kind === 'conversation' && typeof fileWs !== 'undefined' && fileWs && fileWs.placement === 'beside';
+  if (kind !== 'file' && kind !== 'files-project' && !besideFile && typeof docState !== 'undefined' && docState) leaveDocument();
   // The file workspace (files mode) owns an editor too: leaving it saves
   // the draft and destroys the editor. Re-entering rebuilds from scratch.
-  if (kind !== 'file' && kind !== 'files-project' && typeof fileWs !== 'undefined' && fileWs) closeFileWorkspace();
+  if (kind !== 'file' && kind !== 'files-project' && !besideFile && typeof fileWs !== 'undefined' && fileWs) closeFileWorkspace();
   viewKind = kind;
   queueMicrotask(() => delegationUI.visibilityChanged());
   // The column follows the page: the current row, "new here", the project
@@ -4498,7 +4501,7 @@ async function renderAgentsPop(refetch) {
   // Files kept open (open-files.js, design/77): under the conversations,
   // above the processes nobody listed.
   const openFiles = OpenFiles.sectionHtml({ markHtml, typingHtml, isOpen: OpenFiles.sectionOpen(),
-    currentPath: viewKind === 'file' && typeof fileWs !== 'undefined' && fileWs ? fileWs.path : null });
+    currentPath: typeof fileWs !== 'undefined' && fileWs && (viewKind === 'file' || fileWs.placement === 'beside') ? fileWs.path : null });
   $('agentsLegacy').innerHTML = openFiles +
     (otherRows ? `<details class="ag-notifications ag-others"${agentIdleOpen ? ' open' : ''}><summary>Other processes<span class="ag-notify-count">${otherCount}</span></summary>${otherRows}</details>` : '') + recoverySection;
   renderPresenceMarks();
@@ -4733,6 +4736,13 @@ $('rightFileList').onclick = $('agentsPop').onclick = async e => {
     return;
   }
   const fileRow = e.target.closest('.ag-file[data-path]');
+  // From the right panel, beside the conversation on screen, a file opens in
+  // the same column (design/83), and ← goes back to the list.
+  if (fileRow && e.currentTarget === $('rightFileList') && window.Pair && viewKind === 'conversation' && activeRel && !phoneLayout()) {
+    e.stopPropagation();
+    Pair.openFile(fileRow.dataset.path, { key: activeRel, project: fileRow.dataset.project || null, fromList: true });
+    return;
+  }
   if (fileRow) {
     e.stopPropagation();
     if (sideLayoutOn()) setAgentsKbd(false); else toggleAgents(false);
@@ -6262,27 +6272,33 @@ async function wholeFileDiffRowsAsync(oldText, newText) {
 // The default for transcript file links: show ONLY the clicked tool call's
 // change plus a fast editor for the current disk file. The conversation-wide
 // keyframe history is an explicit opt-in button (it is allowed to be slow).
-async function openToolCallFile(key, pathValue, ts, anchor, callId) {
+// host: the artifact panel's body, beside the conversation (design/83);
+// else the page, with a route of its own.
+async function openToolCallFile(key, pathValue, ts, anchor, callId, { host = null } = {}) {
   const hash = 'filecall=' + [key, callId || '', pathValue || '', ts || '', anchor || ''].map(encodeURIComponent).join('&');
-  setRoute('file', hash);
-  $('view').innerHTML = `<div class="quick-file-view"><header class="qf-head"><button id="qfBack" class="cr-quiet">← Conversation</button><h1>${esc(shortFilePath(pathValue || ''))}</h1></header><div class="qf-body"><p class="cr-diff-notice">Loading this change…</p></div></div>`;
-  $('qfBack').onclick = () => returnToConversationFile(key, pathValue, anchor || ts, callId);
+  if (!host) setRoute('file', hash);
+  const root = host || $('view');
+  root.innerHTML = `<div class="quick-file-view${host ? ' beside' : ''}"><header class="qf-head"><button id="qfBack" class="cr-quiet">← Conversation</button><h1>${esc(shortFilePath(pathValue || ''))}</h1></header><div class="qf-body"><p class="cr-diff-notice">Loading this change…</p></div></div>`;
+  const shell = root.querySelector('.quick-file-view');
+  root.querySelector('#qfBack').onclick = () => returnToConversationFile(key, pathValue, anchor || ts, callId);
   lastQuickFile = { key, path: pathValue || '', ts: ts || '', anchor: anchor || '', call: callId || '' };
   let data;
   try {
     const q = new URLSearchParams({ id: key, call: callId || '', ts: ts || '', path: pathValue || '' });
     data = await (await fetch('/api/conversation/file-event?' + q)).json();
   } catch { data = { error: 'network failure' }; }
-  if (viewKind !== 'file' || !$('qfBack')) return; // the user already navigated away
+  // The user already went elsewhere (another page, another thing beside).
+  if (host ? !shell.isConnected : viewKind !== 'file' || !$('qfBack')) return;
+  const openCurrent = () => host && window.Pair ? Pair.openFile(pathValue, { key }) : openLiveFile(pathValue, { project: currentProjectName(), back: key });
   if (data.error) {
     // Nothing recorded for this call (an old transcript, a failed tool).
     // Say so where the user is, and offer the file itself.
-    const body = $('view').querySelector('.qf-body');
+    const body = shell.querySelector('.qf-body');
     if (body) body.innerHTML = `<div class="empty">${esc(data.error)}<div class="hint"><button id="qfOpenLive">Open the current file</button></div></div>`;
-    if ($('qfOpenLive')) $('qfOpenLive').onclick = () => openLiveFile(pathValue, { project: currentProjectName(), back: key });
+    if (shell.querySelector('#qfOpenLive')) shell.querySelector('#qfOpenLive').onclick = openCurrent;
     return;
   }
-  renderQuickFileView(data, { key, pathValue: pathValue || data.path, ts, anchor, call: callId || '' });
+  renderQuickFileView(data, { key, pathValue: pathValue || data.path, ts, anchor, call: callId || '', host: root });
 }
 
 // Context reconstruction without any extra request: the response already
@@ -6347,7 +6363,7 @@ function quickFileHunksHtml(data, lang) {
 }
 
 function renderQuickFileView(data, ctx) {
-  const view = $('view').querySelector('.quick-file-view');
+  const view = (ctx.host || $('view')).querySelector('.quick-file-view');
   if (!view) return;
   const lang = fileHighlightLang(data.relativePath || data.path);
   const editable = data.disk && data.disk.editable;
@@ -6357,9 +6373,11 @@ function renderQuickFileView(data, ctx) {
       <button id="qfHistory" title="Every recorded version of this file">History</button>
       <button id="qfEdit" class="primary"${editable ? '' : ' disabled'} title="${esc(editable ? 'Edit the current on-disk file (not a snapshot)' : (data.disk && data.disk.note) || 'the current file is not readable')}">Edit file</button></header>
     <div class="qf-body">${quickFileHunksHtml(data, lang)}</div>`;
-  $('qfBack').onclick = () => returnToConversationFile(ctx.key, ctx.pathValue, ctx.anchor || ctx.ts, ctx.call);
-  $('qfHistory').onclick = () => openLiveFile(data.path, { project: currentProjectName(), back: currentHash, to: 'current' });
-  if (editable) $('qfEdit').onclick = () => renderQuickFileEditor(data, ctx);
+  const q = sel => view.querySelector(sel);
+  q('#qfBack').onclick = () => returnToConversationFile(ctx.key, ctx.pathValue, ctx.anchor || ctx.ts, ctx.call);
+  q('#qfHistory').onclick = () => openLiveFile(data.path, { project: currentProjectName(), back: currentHash, to: 'current' });
+  // Beside the conversation, "Edit file" puts the file itself there instead.
+  if (editable) q('#qfEdit').onclick = () => ctx.host && ctx.host !== $('view') && window.Pair ? Pair.openFile(data.disk.path, { key: ctx.key }) : renderQuickFileEditor(data, ctx);
 }
 
 function renderQuickFileEditor(data, ctx) {
@@ -9608,6 +9626,8 @@ function closeFileActionMenu() {
 
 function viewFileChange(ctx) {
   if (!ctx.change) return;
+  // Beside the conversation it came from (design/83), unless asked full page.
+  if (!ctx.page && window.Pair && viewKind === 'conversation' && ctx.key === activeRel) return Pair.openChange(ctx);
   rememberConversationFileReturn(ctx.button);
   openToolCallFile(ctx.key, ctx.path, ctx.ts, ctx.anchor, ctx.call);
 }
@@ -9637,9 +9657,13 @@ async function openPathInApp(ctx, quiet = false) {
   // Only a link inside the open conversation carries a return point.
   // ctx.key is the last active conversation even on project pages.
   const fromConversation = viewKind === 'conversation' && ctx.key === activeRel ? ctx.key : null;
-  if (fromConversation) rememberConversationFileReturn(ctx.button);
   const line = Number((String(ctx.path).match(/:(\d+)(?::\d+)?$/) || [])[1]) || null;
-  openLiveFile(info.path, { project: s ? projectOf(s) : currentProjectName(), back: fromConversation || currentHash, line });
+  const project = s ? projectOf(s) : currentProjectName();
+  // From the conversation on screen, a file opens beside it (design/83):
+  // the conversation stays; full page is the menu's, or Shift+click.
+  if (fromConversation && !ctx.page && window.Pair) return Pair.openFile(info.path, { key: fromConversation, line, project });
+  if (fromConversation) rememberConversationFileReturn(ctx.button);
+  openLiveFile(info.path, { project, back: fromConversation || currentHash, line });
   return true;
 }
 
@@ -9703,7 +9727,8 @@ function handleFileControlClick(e, button) {
   if (Date.now() < fileClickSuppressedUntil) return;
   const ctx = fileControlContext(button);
   if (e.ctrlKey || e.metaKey) return runNativePathAction(ctx, 'open');
-  primaryFileAction(ctx);
+  // Shift: full page, in place of the conversation (as before design/83).
+  primaryFileAction(e.shiftKey ? { ...ctx, page: true } : ctx);
 }
 
 function openFileActionMenu(ctx, x, y) {
@@ -9713,9 +9738,16 @@ function openFileActionMenu(ctx, x, y) {
   menu.setAttribute('role', 'menu');
   const image = FILE_IMAGE_PATH.test(ctx.path), preview = FILE_PREVIEW_PATH.test(ctx.path);
   const items = [];
-  if (ctx.change && !preview) items.push(['View this change', () => viewFileChange(ctx)]);
-  items.push([image ? 'Open image in Chattering' : 'Open current file in Chattering', () => openPathInApp(ctx)]);
-  if (ctx.change && preview) items.push(['View this change', () => viewFileChange(ctx)]);
+  // From the conversation on screen, things open beside it; full page is one item away.
+  const beside = !!window.Pair && viewKind === 'conversation' && ctx.key === activeRel;
+  const change = () => {
+    items.push([beside ? 'View this change beside' : 'View this change', () => viewFileChange(ctx)]);
+    if (beside) items.push(['View this change full page', () => viewFileChange({ ...ctx, page: true })]);
+  };
+  if (ctx.change && !preview) change();
+  items.push([image ? 'Open image in Chattering' : beside ? 'Open the file beside' : 'Open current file in Chattering', () => openPathInApp(ctx)]);
+  if (beside && !image) items.push(['Open the file full page', () => openPathInApp({ ...ctx, page: true })]);
+  if (ctx.change && preview) change();
   // Keep it under Open files without leaving the page (open-files.js).
   const kept = isFullPath(ctx.path) && OpenFiles.isKept(ctx.path);
   items.push([kept ? 'Let go from Open files' : 'Keep open in the side list', () => keepPathOpen(ctx, !kept)]);
@@ -9806,7 +9838,8 @@ document.addEventListener('pointerover', e => {
   const b = e.target && e.target.closest ? e.target.closest('[data-file-diff], [data-transcript-path]') : null;
   if (!b || b.dataset.fileHinted) return;
   const ctx = fileControlContext(b);
-  b.title = `${ctx.change ? (FILE_PREVIEW_PATH.test(ctx.path) ? 'Click: preview file' : 'Click: view this change') : 'Click: open in Chattering'}\nCtrl-click: open with system application\nRight-click: more file actions\n${ctx.path}`;
+  const beside = !!window.Pair && viewKind === 'conversation' && ctx.key === activeRel;
+  b.title = `${ctx.change ? (FILE_PREVIEW_PATH.test(ctx.path) ? 'Click: preview file' : 'Click: view this change') : 'Click: open in Chattering'}${beside ? ' beside the conversation\nShift-click: full page' : ''}\nCtrl-click: open with system application\nRight-click: more file actions\n${ctx.path}`;
   b.dataset.fileHinted = '1';
 });
 
@@ -17136,8 +17169,8 @@ window.chatteringBack = () => {
   const tools = document.querySelector('.compose-tools[open]');
   if (tools) { tools.open = false; return true; }
   if (phoneSheetOpen()) { closePhoneSheets(); return true; }
-  // The conversation beside a file (ask-panel.js): a sheet on a phone.
-  if (window.AskPanel && AskPanel.showing()) { AskPanel.close({ refocus: true }); return true; }
+  // What sits beside the conversation, over it on a phone (pair.js): it steps aside.
+  if (window.Pair && Pair.back()) return true;
   // Dialogs built on the fly (review the context, pick a project…) listen
   // for Escape on themselves; the fixed ones are handled at the document.
   const overlay = [...document.querySelectorAll('.overlay')].find(o => !o.hidden && getComputedStyle(o).display !== 'none');
@@ -17791,6 +17824,13 @@ function helpNow() {
     return sections;
   }
 
+  // Something beside the conversation (design/83): which side is wide.
+  if (window.Artifacts && Artifacts.state() && !Artifacts.floating()) {
+    sections.push({ label: 'beside', keys: [
+      ['alt+\\', window.Pair && Pair.overlay() ? 'the conversation / what is beside it' : 'swap which side is wide'],
+      ['shift+click', 'a file or change in the conversation: full page instead of beside'],
+    ] });
+  }
   // Open panels sit on top of the view.
   if (settingsOpen) sections.push({ label: 'settings', keys: [['esc / ,', 'back to where you were']] });
   if (!$('filtersPop').hidden) sections.push({ label: 'filters', keys: [['esc / f', 'close the filters']] });
@@ -18559,8 +18599,6 @@ live.onmessage = ev => {
   // reconcileTranscript() only reloads the view the user is already reading,
   // and only when the bytes on disk are newer than the ones on screen.
   reconcileTranscript(d);
-  // The conversation beside an open file (ask-panel.js) follows it too.
-  if (window.AskPanel) AskPanel.conversationUpdated(d);
 };
 
 // Elapsed tick for run cards: 1 Hz text patches (no animation), and only a

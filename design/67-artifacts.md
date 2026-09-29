@@ -49,6 +49,12 @@ Decisions taken while building, with their reasons:
   instead of landing on the list. The head wraps by the
   panel's own width (a container query), not the window's.
 
+**Since design/83 (2026-09-29)** the panel is also where a conversation's
+files open beside it: the file view itself (kind `document`), one step's
+change (kind `change`), and a Markdown or text artifact at its current
+version in the real editor instead of a read-only page (older versions
+stay pages to read). ⇄ swaps which side is wide; see design/83.
+
 ## Finding artifacts later (the library)
 
 No store and no scan. Each conversation's index entry carries its artifacts

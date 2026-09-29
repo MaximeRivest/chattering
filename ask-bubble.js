@@ -377,10 +377,19 @@ async function askBubbleLoadTarget(b) {
   if (info.error) { b.target.innerHTML = `<option value="auto">⚠ ${esc(info.error)}</option>`; return askBubblePaintControls(); }
   const options = [];
   const seen = new Set();
+  // Side by side with a conversation (design/83): that one, on screen.
+  const beside = ws.placement === 'beside' && ws.besideKey ? ws.besideKey : null;
+  if (beside) {
+    const c = (info.candidates || []).find(x => x.key === beside);
+    const s = typeof sessions !== 'undefined' ? sessions.find(x => x.key === beside) : null;
+    const title = (c && c.title) || (s && (s.title || s.timelineTitle)) || 'the conversation beside';
+    options.push(`<option value="${esc(beside)}">↳ continues “${esc(title)}” (beside)</option>`);
+    seen.add(beside);
+  }
   // The conversation of the last ask from this box comes first: the next
   // request continues where that one left off.
   const last = ws.askLast || null;
-  if (last && !(info.candidates || []).some(c => c.key === last.key)) {
+  if (last && !seen.has(last.key) && !(info.candidates || []).some(c => c.key === last.key)) {
     options.push(`<option value="${esc(last.key)}">↳ continues “${esc(last.title || 'the last ask')}” (last ask)</option>`);
     seen.add(last.key);
   }
@@ -393,7 +402,7 @@ async function askBubbleLoadTarget(b) {
   b.target.innerHTML = options.join('') || '<option value="auto">no conversation can take this</option>';
   const origin = typeof fbConversationHash === 'function' ? fbConversationHash(ws.back) : null;
   const values = [...b.target.options].map(o => o.value);
-  const wanted = [ws.askChoice, last && last.key, origin, info.continue && info.continue.key, 'new'];
+  const wanted = [beside, ws.askChoice, last && last.key, origin, info.continue && info.continue.key, 'new'];
   b.target.value = wanted.find(v => v && values.includes(v)) || values[0] || 'auto';
   ws.askChoice = b.target.value;
   askBubblePaintControls();
@@ -472,7 +481,7 @@ function askBubblePaintControls() {
     : 'The agent’s changes go straight into the text (Ctrl+Z takes them back). Click: review them first';
   b.root.querySelector('[data-ask="open"]').hidden = !key;
   // An existing conversation (not a new one): it can be read beside the text.
-  b.root.querySelector('.ask-convo').hidden = !key || typeof AskPanel === 'undefined' || AskPanel.showing(key);
+  b.root.querySelector('.ask-convo').hidden = !key || (typeof Pair !== 'undefined' && Pair.showsConversation(key));
   b.root.querySelector('[data-ask="own-model"]').hidden = !prefs.model;
   // Plain words for what will happen; the options' state in the tooltip.
   const hint = b.root.querySelector('.ask-hint');
@@ -567,8 +576,7 @@ async function askBubbleSend() {
 }
 
 /**
- * Send an ask about the open file, from the box or from the conversation
- * panel beside the text (ask-panel.js): the same choices (model, reasoning,
+ * Send an ask about the open file: the box's choices (model, reasoning,
  * review or apply, what goes along), the selection at send time, and the
  * file's agent lifecycle (the editor locks, the changes are captured for
  * review). target: a conversation key, 'new' or 'auto'. Returns the
@@ -606,16 +614,19 @@ async function askSubmit(ws, { prompt, images = [], target = 'auto' }) {
   return out;
 }
 
-// ---- the conversation beside the text (ask-panel.js) ----
+// ---- the conversation beside the text (pair.js, design/83) ----
 
-// "details", "open", "conversation": the conversation opens in the panel
-// beside the text, not in place of it. The box steps aside (its draft kept):
-// the panel says everything it said, and more.
+// "details", "open", "conversation": the file and its conversation side by
+// side (the real conversation, beside the file, which keeps its place), not
+// the conversation in place of the file. Already side by side: the
+// conversation's newest words come into view. The box steps aside (its
+// draft kept): the conversation says everything it said, and more.
 function askShowConversation(key) {
   if (!key) return;
-  if (typeof AskPanel === 'undefined' || !fileWs) return open(key, 'bottom');
+  if (typeof Pair === 'undefined' || !fileWs) return open(key, 'bottom');
   askBubbleClose({ refocus: false });
-  AskPanel.open(fileWs, key, { focus: true });
+  if (Pair.showsConversation(key)) return Pair.focusConversation();
+  Pair.withConversation(fileWs, key);
 }
 
 // ---- the run ----
@@ -678,7 +689,7 @@ function askBubbleSettled(ws, run, { status, summary, changed, undoable, reviewi
   const b = askBox;
   if (!b || b.ws !== ws) {
     // The panel beside the text already says all of it.
-    if (typeof AskPanel !== 'undefined' && AskPanel.showing(run.key)) return;
+    if (typeof Pair !== 'undefined' && Pair.showsConversation(run.key)) return;
     const words = excerpt ? ' · \u201c' + (excerpt.length > 120 ? excerpt.slice(0, 119) + '\u2026' : excerpt) + '\u201d' : '';
     toast(status + (summary ? ' · ' + summary : '') + (undoable ? ' · ' + modKey('Z') + ' in the text takes it back' : '') + words,
       () => askShowConversation(run.key), status.startsWith('✗') ? 'err' : undefined);

@@ -233,10 +233,12 @@ function fileWsCloseEditor({ keepDraft = true, park = false } = {}) {
 function closeFileWorkspace() {
   if (!fileWs) return;
   if (typeof askBubbleClose === 'function') askBubbleClose({ refocus: false });
-  if (typeof AskPanel !== 'undefined') AskPanel.leave(fileWs);
+  const ws = fileWs;
   fileWsCloseEditor({ park: true });
-  clearInterval(fileWs.runTick);
+  clearInterval(ws.runTick);
   fileWs = null;
+  // A file beside a conversation (design/83): the panel that held it goes too.
+  if (ws.placement === 'beside' && typeof Pair !== 'undefined') Pair.released(ws);
 }
 // ---- a code or text file kept open (open-files.js, design/77) ----
 // Leaving it parks its editor: the element leaves the page but the editor
@@ -403,7 +405,7 @@ function fileWsAiOptions(ws) {
 // ---- write mode: code (CodeMirror from the same vendored bundle) ----
 // The header stays whatever happens to the file, so Back always works.
 function fileWsOpenFailed(ws, label, detail = '') {
-  const host = $('view').querySelector('.doc-editor-host');
+  const host = document.querySelector('#ffCompare .doc-editor-host');
   if (!host) return;
   host.innerHTML = `<div class="empty">${esc(label)}${detail ? `<div class="hint">${esc(detail)}</div>` : ''}</div>`;
   if ($('liveBack')) $('liveBack').onclick = () => liveFileGoBack(ws);
@@ -605,8 +607,7 @@ function fileWsAfterMount(ws, opts) {
   ws.line = null;
   liveFileAfterMount(ws);
   if (/\.html?$/i.test(ws.path)) liveFileEnableHTML(ws, opts);
-  // The conversation beside the text comes back with the file (ask-panel.js).
-  if (typeof AskPanel !== 'undefined') AskPanel.restore(ws);
+  if (typeof liveFilePlaced === 'function') liveFilePlaced(ws);
 }
 
 // ---- an agent working on this file (asked from the ask box, ask-bubble.js) ----
@@ -630,7 +631,6 @@ function fileWsBeginRun(ws, out, ask = {}) {
   } else if (ask.mode === 'review') ws.run.ask.mode = 'apply';
   fileWsLockEditor(ws, true);
   fileWsPaintRun(ws, { statusText: out.queued ? 'queued behind the running turn' : 'starting' });
-  if (typeof AskPanel !== 'undefined') AskPanel.runBegan(ws);
   clearInterval(ws.runTick);
   ws.runTick = setInterval(() => { if (fileWs === ws && ws.run) fileWsPaintRun(ws, ws.runLast || {}); else clearInterval(ws.runTick); }, 1000);
 }
@@ -656,9 +656,6 @@ async function fileWsAbortRun(ws) {
 // SSE run-event for the run this workspace started.
 
 function fileWsRunEvent(d) {
-  // The conversation beside the text follows every run of its conversation,
-  // this file's or not (a reply typed on another screen).
-  if (typeof AskPanel !== 'undefined') AskPanel.runEvent(d);
   const ws = fileWs;
   if (!ws || !ws.run) return;
   if (d.jobId !== ws.run.jobId && d.key !== ws.run.key) return;

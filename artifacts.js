@@ -277,7 +277,23 @@
     const shown = !!state;
     document.body.classList.toggle('artifact-open', shown && !floating);
     document.body.classList.toggle('artifact-float', shown && floating);
+    if (window.Pair) Pair.apply();
     if (!pane) return;
+    // Something live beside the conversation: a file in the editor (a file,
+    // or a document artifact at its current version) or a change. It is
+    // not floated or reloaded; it goes full page.
+    const editing = !!state && (state.kind === 'document' || !!state.editing);
+    const live = editing || (!!state && state.kind === 'change');
+    pane.classList.toggle('art-live', live);
+    pane.querySelector('[data-art-act="float"]').hidden = live;
+    pane.querySelector('[data-art-act="page"]').hidden = !editing;
+    pane.querySelector('[data-art-act="full"]').hidden = live;
+    pane.querySelector('[data-art-act="reload"]').hidden = live;
+    // A file has its own ✦ Ask (the change box); the panel's "mention it" is for the rest.
+    pane.querySelector('[data-art-act="ask"]').hidden = editing;
+    const list = pane.querySelector('[data-art-act="list"]');
+    list.hidden = !(state && state.fromList && LIST_NAMES[state.fromList]);
+    if (!list.hidden) { list.textContent = '← ' + LIST_NAMES[state.fromList]; list.title = 'Back to ' + LIST_NAMES[state.fromList]; }
     const btn = pane.querySelector('[data-art-act="float"]');
     btn.textContent = floating ? '⇥' : '⧉';
     btn.title = floating ? 'Put back beside the conversation' : 'Float: a small window that stays while you read on';
@@ -313,6 +329,7 @@
       <div class="art-float-grip" role="separator" aria-label="Resize the floating window" tabindex="0"></div>
       <div class="art-head">
         <button type="button" class="art-close" data-art-act="close" title="Close the artifact panel" aria-label="Close">✕</button>
+        <button type="button" class="art-list" data-art-act="list" hidden></button>
         <div class="art-titles"><b class="art-title"></b><small class="art-sub"></small></div>
         <span class="art-versions" role="group" aria-label="Versions">
           <button type="button" data-art-act="older" aria-label="Older version">‹</button>
@@ -324,6 +341,8 @@
           <button type="button" data-art-act="reload" title="Reload" aria-label="Reload">↻</button>
           <a class="art-newtab" target="_blank" rel="noopener noreferrer" title="Open in its own browser tab" aria-label="Open in a new tab">↗</a>
           <button type="button" data-art-act="float"></button>
+          <button type="button" data-art-act="page" hidden title="Open it full page, in place of the conversation (the editor moves as it is)">full page</button>
+          <button type="button" data-art-act="tilt" aria-pressed="false">⇄</button>
           <button type="button" data-art-act="full" title="Full screen" aria-label="Full screen">⤢</button>
         </span>
       </div>
@@ -333,6 +352,9 @@
     pane.addEventListener('click', e => {
       const act = e.target.closest('[data-art-act]')?.dataset.artAct;
       if (act === 'close') closePanel();
+      else if (act === 'list') backToList();
+      else if (act === 'tilt') { if (window.Pair) Pair.toggle(); }
+      else if (act === 'page') toPage();
       else if (act === 'reload') render(true);
       else if (act === 'float') setFloating(!floating);
       else if (act === 'full') { const b = pane.querySelector('.art-body'); (b.requestFullscreen ? b.requestFullscreen() : Promise.reject()).catch(() => pane.classList.toggle('art-max')); }
@@ -390,21 +412,64 @@
     if (state && state.key) localStorage.removeItem(stateKey(state.key));
     hidePanel();
   }
+  // ← Made / Files: the list this was opened from, in the same column.
+  const LIST_NAMES = { made: 'Made', files: 'Files', artifacts: 'Artifacts', programs: 'Programs' };
+  function backToList() {
+    const view = state && state.fromList;
+    closePanel();
+    if (view && typeof setRightFiles === 'function' && typeof rightFilesMode !== 'undefined') {
+      if (typeof rightFilesView !== 'undefined' && LIST_NAMES[view]) { try { rightFilesView = view; } catch {} }
+      setRightFiles(rightFilesMode, true);
+    }
+  }
+  // "full page": the file leaves the panel for the page, as it is.
+  function toPage() {
+    const file = state && (state.kind === 'document' ? state.path : state.editing);
+    if (!file) return;
+    if (typeof fileWsToPage === 'function' && typeof fileWs !== 'undefined' && fileWs && fileWs.path === file && fileWs.placement === 'beside') fileWsToPage(fileWs);
+    else if (typeof openLiveFile === 'function') openLiveFile(file, { project: state.project || null });
+  }
+  // What the panel shows beside a conversation, kept for when it comes back.
+  function remember(key, spec) {
+    if (!key || !spec) return;
+    try { localStorage.setItem(stateKey(key), JSON.stringify(spec)); } catch {}
+  }
+  function savedSpec(spec) {
+    if (spec.kind === 'files') return { path: spec.path, title: spec.title, type: spec.type };
+    if (spec.kind === 'document') return { kind: 'document', path: spec.path, title: spec.title, project: spec.project || null };
+    return null;
+  }
   // spec: { kind: 'files', key, path, title, type }, { kind: 'html', key,
   // title, html, site } or { kind: 'media', key, title, src } (a picture).
   // opts.float: open floating (else it keeps the mode it is in).
   async function openPanel(spec, opts = {}) {
     ensurePane();
     await loadConfig().catch(() => {});
-    state = { ...spec, version: null, resolved: null };
-    if (opts.float != null) floating = !!opts.float;
+    const before = state;
+    // The same thing again (a card clicked twice, a conversation coming back):
+    // keep what is on screen, the editor above all.
+    const same = before && before.kind === spec.kind && before.key === spec.key && (before.path || '') === (spec.path || '')
+      && (before.call || '') === (spec.call || '') && spec.kind !== 'html' && spec.kind !== 'media';
+    // A list in the right column was open: this replaces it, and ← goes back to it.
+    const listOpen = typeof rightFilesOpen !== 'undefined' && rightFilesOpen && document.body.classList.contains('file-side-open');
+    const fromList = spec.fromList || listOpen ? (typeof rightFilesView !== 'undefined' ? rightFilesView : 'files') : (same ? before.fromList : null);
+    // A file shown before is let go (closed, or parked if kept) unless it is the one shown next.
+    const keeps = p => spec.kind === 'document' && spec.path === p;
+    if (window.Pair && before && before.kind === 'document' && !keeps(before.path)) Pair.release(before);
+    else if (window.Pair && before && before.editing && !same && !keeps(before.editing)) Pair.release({ kind: 'document', path: before.editing });
+    state = same ? { ...before, ...spec, fromList, version: before.version, resolved: before.resolved } : { ...spec, fromList, version: null, resolved: null };
+    // The editor and a change live beside the conversation, never floating.
+    if (spec.kind === 'document' || spec.kind === 'change') floating = false;
+    else if (opts.float != null) floating = !!opts.float;
     // One right-hand panel at a time: docked, the artifact replaces the Files
     // list (which opens again over it from its own button). Floating, it
     // takes no column and both stay.
     if (!floating) closeRightFiles();
-    if (spec.kind === 'files' && spec.key) localStorage.setItem(stateKey(spec.key), JSON.stringify({ path: spec.path, title: spec.title, type: spec.type }));
+    const saved = spec.key && savedSpec(spec);
+    if (saved) remember(spec.key, saved);
     applyMode();
-    await render(true);
+    if (window.Pair && !floating) Pair.opened();
+    await render(!same);
   }
   function stepVersion(dir) {
     const r = state && state.resolved;
@@ -436,6 +501,22 @@
       if (!reload && body.firstChild) return;
       if (paneBridge) { paneBridge.dispose(); paneBridge = null; }
       body.innerHTML = `<div class="art-media"><img alt="${escHtml(state.title || '')}" src="${escHtml(state.src || '')}"></div>`;
+      return;
+    }
+    if (state.kind === 'document') {
+      vs.hidden = true; newtab.hidden = true;
+      pane.querySelector('.art-sub').textContent = shortPath(state.path);
+      pane.querySelector('.art-sub').title = state.path;
+      if (paneBridge) { paneBridge.dispose(); paneBridge = null; }
+      if (window.Pair) Pair.mountDocument(body, state);
+      return;
+    }
+    if (state.kind === 'change') {
+      vs.hidden = true; newtab.hidden = true;
+      pane.querySelector('.art-sub').textContent = 'this step’s change · ' + shortPath(state.path);
+      if (!reload && body.querySelector('.quick-file-view')) return;
+      if (paneBridge) { paneBridge.dispose(); paneBridge = null; }
+      if (typeof openToolCallFile === 'function') openToolCallFile(state.key, state.path, state.ts, state.anchor, state.call, { host: body });
       return;
     }
     if (state.kind === 'html') {
@@ -478,6 +559,23 @@
     else if (version && version.missing) { banner.hidden = false; banner.textContent = `${version.missing} file${version.missing === 1 ? ' was' : 's were'} not captured in this version (before the folder was an artifact); the disk's copy is shown for ${version.missing === 1 ? 'it' : 'them'}.`; }
     else if (shown === 'live' && r.versions.length && !r.live.same) { banner.hidden = false; banner.textContent = 'Shown as it is on disk now; it changed after the last version in this conversation.'; }
     else if (shown !== 'live' && r.live.exists && !r.live.same && shown === r.show) { banner.hidden = false; banner.textContent = 'Shown as it was at this point of the conversation. The files on disk are different now.'; }
+    // The current version of a document or text file opens in the real
+    // editor (design/83); an older one stays a page to read, with the way
+    // to the current one.
+    const lastId = r.versions.length ? r.versions[r.versions.length - 1].id : null;
+    const current = r.exists && !r.isDir && (shown === 'live' || (r.live.same && shown === lastId));
+    if (['markdown', 'text'].includes(r.kind)) {
+      if (current && window.Pair) {
+        if (!(typeof fileWs !== 'undefined' && fileWs && fileWs.placement === 'beside' && fileWs.path === r.path && fileWs.frame && fileWs.frame.parentElement === body)) {
+          body.dataset.version = shown;
+          Pair.mountDocument(body, { key: state.key, path: r.path, project: null });
+        }
+        if (state.editing !== r.path) { state.editing = r.path; applyMode(); }
+        return;
+      }
+      if (state.editing && window.Pair) { Pair.release({ kind: 'document', path: state.editing }); state.editing = null; applyMode(); }
+      if (banner.hidden && r.exists) { banner.hidden = false; banner.textContent = 'An earlier version, to read. The version on disk opens in the editor.'; }
+    }
     const same = before && before.cap === r.cap && body.dataset.version === shown && body.firstChild;
     if (same && !reload) return;
     body.dataset.version = shown;
@@ -523,7 +621,9 @@
     if (!box || !state) return;
     const r = state.resolved;
     const where = !r ? '' : (state.version || r.show) === 'live' ? ' (as it is on disk now)' : ` (version ${r.versions.findIndex(v => v.id === (state.version || r.show)) + 1} of ${r.versions.length})`;
-    const ref = state.kind === 'files' ? `About the artifact ${r ? r.relPath : state.path}${where}: `
+    const ref = state.kind === 'document' ? `About the file ${state.path}: `
+      : state.kind === 'change' ? `About this change to ${state.path}: `
+      : state.kind === 'files' ? `About the artifact ${r ? r.relPath : state.path}${where}: `
       : state.kind === 'media' ? `About the image ${state.title}: `
       : `About the ${state.source === 'code' ? 'code preview' : 'widget'} "${state.title}": `;
     box.value = box.value ? box.value.replace(/\s*$/, '') + '\n\n' + ref : ref;
@@ -562,16 +662,25 @@
       // A new artifact landed while this conversation is open: show it.
       const fresh = calls.filter(m => !known.has(m.id));
       const last = fresh[fresh.length - 1];
-      if (last) return openPanel({ kind: 'files', key: d.key, path: last.artifact.path, title: last.artifact.title, type: last.artifact.type });
-    } else if (!state || state.key !== d.key) {
+      if (last) {
+        const spec = { kind: 'files', key: d.key, path: last.artifact.path, title: last.artifact.title, type: last.artifact.type };
+        // Never in place of a file being edited beside: it is offered instead.
+        if (state && state.key === d.key && (state.kind === 'document' || state.editing) && !(state.editing && state.editing === last.artifact.path)) {
+          if (typeof toast === 'function') toast('◧ New: ' + (last.artifact.title || last.artifact.path) + ' — open it beside', () => openPanel(spec));
+          return;
+        }
+        return openPanel(spec);
+      }
+    }
+    if (!state || state.key !== d.key) {
       // Reopen what was open in this conversation last time.
       let saved = null;
       try { saved = JSON.parse(localStorage.getItem(stateKey(d.key)) || 'null'); } catch {}
-      if (saved && saved.path) return openPanel({ kind: 'files', key: d.key, ...saved });
+      if (saved && saved.path) return openPanel({ kind: saved.kind === 'document' ? 'document' : 'files', key: d.key, ...saved });
       if (state && state.key !== d.key) hidePanel();
       return;
     }
-    if (state && state.key === d.key && state.kind === 'files') render(false);
+    if (state && state.key === d.key && state.kind === 'files' && !state.editing) render(false);
   }
   // The head moved (a card, an arrow, the tree): the version follows.
   function onHeadChange() {
@@ -581,14 +690,31 @@
   // Closing a floating window ends it; the next artifact opens docked.
   function hidePanel() {
     if (paneBridge) { paneBridge.dispose(); paneBridge = null; }
+    const was = state;
+    state = null; floating = false;
+    if (was && window.Pair) {
+      if (was.kind === 'document') Pair.release(was);
+      else if (was.editing) Pair.release({ kind: 'document', path: was.editing });
+    }
+    document.body.classList.remove('artifact-open', 'artifact-float');
+    if (pane) { pane.querySelector('.art-body').replaceChildren(); pane.classList.remove('art-max', 'art-live'); }
+    if (window.Pair) Pair.closed();
+  }
+  // The file beside closed by itself (another file opened in its place):
+  // the panel goes too, without closing it a second time.
+  function hideFor(st) {
+    if (state !== st) return;
     state = null; floating = false;
     document.body.classList.remove('artifact-open', 'artifact-float');
-    if (pane) { pane.querySelector('.art-body').replaceChildren(); pane.classList.remove('art-max'); }
+    if (pane) { pane.querySelector('.art-body').replaceChildren(); pane.classList.remove('art-max', 'art-live'); }
+    if (window.Pair) Pair.closed();
   }
   // A floating window stays over the next page too.
   function onLeaveConversation() { if (state && !floating) { const keep = state.key; hidePanel(); if (keep) seenArtifacts.delete(keep); } }
 
-  window.Artifacts = { wire, openPanel, closePanel, onConversation, onHeadChange, onLeaveConversation, previewOrigin, hostContext, codePage, setFloating, state: () => state, floating: () => floating };
+  const shortPath = p => typeof shortFilePath === 'function' ? shortFilePath(p) : String(p || '').replace(/^\/home\/[^/]+/, '~');
+
+  window.Artifacts = { wire, openPanel, closePanel, hideFor, remember, onConversation, onHeadChange, onLeaveConversation, previewOrigin, hostContext, codePage, setFloating, state: () => state, floating: () => floating };
 })();
 
 /* ---- the artifact library (design/67) --------------------------------------

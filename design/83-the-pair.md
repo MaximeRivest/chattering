@@ -1,6 +1,6 @@
-# 81 — The pair: a conversation and what it made, side by side
+# 83 — The pair: a conversation and what it made, side by side
 
-*2026-09-29. A study, not a decision; it ends with the decisions it needs.
+*2026-09-29. A study, then built the same day (below); the study follows as written.
 Asked by Maxime after the ask box's "details" panel (design/80): "it feels
 risky to create another conversation view … something responsive, almost
 what we have on the phone, side by side and integrated with Markdown — and
@@ -10,6 +10,45 @@ how the artifacts work; we have to integrate all these pieces together."*
 
 This is design/78's step 4 ("the pair, both ways"), made concrete against
 the code as it is today.
+
+## As built (2026-09-29)
+
+Maxime: "go do it all at once, all the way, remove the in-betweens." The
+decisions below were taken as recommended (P1–P5), in one change.
+
+| Piece | Where |
+|---|---|
+| The tilt (talking / working), the conversation's width while working, the pill, the ways in (`openFile`, `openChange`, `withConversation`), mounting and letting go of the file | `pair.js`, `pair.css` |
+| The panel's kinds `document` (the file view, placed in the panel) and `change` (one step's change); a text or Markdown artifact at its current version in the editor; ⇄ swap, full page, ← Made / Files; per-conversation memory of a file | `artifacts.js` |
+| The file view's frame as one movable element (`liveFileFrame`), placed beside (`openLiveFileBeside`), moved full page (`fileWsToPage`), "☷ Conversation beside" in its head | `live-file.js` |
+| A file placed beside survives a move between conversations' routes; files and changes clicked in the conversation open beside (Shift+click and the menu: full page); the change view renders into any host; the right Files list opens beside; Alt+\ in the help | `app.html` |
+| The ask box: in a pair it sends to the conversation on screen; "details" / "conversation" bring the conversation beside the file | `ask-bubble.js` |
+| Alt+P pins the file beside; voice commands know it is there | `open-files.js`, `voice-commands.js` |
+| Removed: design/80's panel (`ask-panel.js`, `ask-panel.css`, its test) | — |
+| Test: the whole journey in a browser | `test/pair.test.js` |
+
+Differences from the study, and why:
+
+- **The address does not carry the pair** (`&beside=` was proposed). A
+  conversation remembers what was beside it (the artifact panel's
+  per-conversation memory, extended to files), so Back, Forward, a reload
+  and coming back to the conversation all reopen it. *Cost:* a link shared
+  with someone else opens the conversation without the file beside it. The
+  router was being changed by another session at the same moment; the
+  memory needed no change to it.
+- **Coming back to a conversation reopens what was beside it** every time,
+  not only on the first visit of the page (the artifact panel did that only
+  once per page load). Closing it with ✕ forgets it.
+- **A new artifact never replaces a file being edited beside**: it is
+  offered in a notice ("◧ New: … — open it beside") instead.
+- **The panel's own "Ask"** (a mention of the thing in the conversation's
+  message box) is hidden for a file, whose head has ✦ Ask (the change box);
+  two "Ask" buttons with different meanings side by side confused.
+- **History is a full-page view**: from a file beside, History moves the
+  file full page first.
+- **The narrow and phone behaviour**: over the conversation, ⇄ reads
+  "☷ conversation" and steps the panel aside; a pill with the file's name
+  (top right) brings it back; Android's back button steps it aside too.
 
 ## What exists (read in the code, 2026-09-29)
 

@@ -194,12 +194,14 @@ function liveFileHead(ws) {
     ${/\.html?$/i.test(ws.path) ? '<div class="lf-html-switch" role="group" aria-label="HTML view"><button id="htmlSource" aria-pressed="true">Source</button><button id="htmlPreview" aria-pressed="false">Preview</button></div>' : ''}
     <button id="docReload" hidden title="Reload the current disk file">Reload</button>
     <button id="liveHistory" class="lf-wide" title="Recorded versions of this file: read one, or compare two">History</button>
+    <button id="liveWithConv" class="lf-wide lf-page-only" title="This file with its conversation beside it: the conversation that opened it or last worked on it">☷ Conversation beside</button>
     <button id="liveAsk" class="lf-wide" title="Ask an agent for a change here: a box opens over the text · ${modKey('K')}">✦ Ask</button>
     ${md ? '<button id="docRun" class="lf-wide" title="Run the cell at the cursor · Ctrl+Enter">▶ Run</button>' : ''}
     <button id="${md ? 'docSave' : 'fwSave'}" ${md ? '' : 'disabled'} title="Save to disk · Ctrl+S">Save</button>
     <details class="live-more"><summary aria-label="Editor options">⋯</summary><div>
       <button id="liveHistoryMenu" class="lf-narrow">History</button>
       <button id="liveAskMenu" class="lf-narrow">✦ Ask for a change (${modKey('K')})</button>
+      <button id="liveWithConvMenu" class="lf-narrow lf-page-only">☷ Its conversation beside</button>
       ${md ? '<button id="docRunMenu" class="lf-narrow">▶ Run this cell</button>' : ''}
       ${typeof OpenFiles !== 'undefined' ? `<button data-keep-menu="${fgAttr(ws.path)}">${esc(OpenFiles.menuLabel(ws.path))}</button>` : ''}
       ${ws.project ? '<button id="liveBrowse">Browse this folder</button>' : ''}
@@ -219,7 +221,50 @@ function liveFileNameHtml(ws) {
   const keep = typeof OpenFiles !== 'undefined' ? OpenFiles.keepButtonHtml(ws.path, ws.project || '', { id: 'fileKeep' }) : '';
   return `<span class="lf-name"><b id="ffTitle" title="${fgAttr(ws.path)}">${esc(liveFileLabel(ws))}</b>${keep}</span>`;
 }
+// The file view's frame: one element that holds the head, banners and the
+// editor. It lives in the page (#view) or beside a conversation (the
+// artifact panel, design/83), and moves between them as it is.
+function liveFileFrame() {
+  const frame = document.createElement('section');
+  frame.className = 'files-ws live-file-view';
+  frame.innerHTML = '<div id="ffCompare" class="live-file-body"></div>';
+  return frame;
+}
+// Where the frame is now: controls that only make sense on the page (← back,
+// "with its conversation") hide beside a conversation, and the other way.
+function liveFilePlaced(ws) {
+  if (!ws || !ws.frame) return;
+  const beside = ws.placement === 'beside';
+  ws.frame.classList.toggle('beside', beside);
+  ws.editor?.view?.requestMeasure?.();
+  if (typeof askBubblePlace === 'function') askBubblePlace();
+}
+// Beside → the page: the same editor, full page, with ← back to its conversation.
+function fileWsToPage(ws) {
+  if (!ws || fileWs !== ws || !ws.frame) return;
+  const key = ws.besideKey;
+  ws.frame.remove();
+  ws.placement = 'page';
+  ws.besideKey = null;
+  if (key) ws.back = key;
+  if (key && typeof Artifacts !== 'undefined') { try { localStorage.removeItem('chattering.artifact.v1:' + key); } catch {} }
+  setRoute('file', fileWsHash(ws), { project: ws.project || (typeof scopeFileProject === 'function' ? scopeFileProject(ws) : undefined) });
+  $('view').replaceChildren(ws.frame);
+  if ($('liveBack')) { $('liveBack').onclick = () => liveFileGoBack(ws); const label = $('liveBack').querySelector('.lf-wide'); if (label) label.textContent = liveBackLabel(ws).slice(2); }
+  liveFilePlaced(ws);
+  try { ws.editor?.focus?.(); } catch {}
+}
+
 async function openLiveFile(pathValue, opts = {}) {
+  // Beside a conversation (design/83): the panel is the host, the route stays
+  // the conversation's.
+  if (opts.beside) return openLiveFileBeside(pathValue, opts);
+  // The file beside the conversation, asked for full page: it moves.
+  if (fileWs && fileWs.placement === 'beside' && fileWs.path === String(pathValue) && fileWs.frame && !opts.reviewRef && !opts.to && !opts.from) {
+    fileWsToPage(fileWs);
+    if (opts.line && fileWs.editor?.gotoLine) { try { fileWs.editor.gotoLine(opts.line); } catch {} }
+    return;
+  }
   const seq = ++fileWsSeq;
   // A conversation fetch/render that began before this navigation must not
   // paint over the file when it eventually finishes.
@@ -238,14 +283,37 @@ async function openLiveFile(pathValue, opts = {}) {
     ? Object.assign(parked.ws, visit, { project: opts.project || parked.ws.project || null, touched: { ...visit.touched, repoRoot: opts.root || parked.ws.touched?.repoRoot || '' } })
     : { path: String(pathValue), project: opts.project || null, kind: fileWsKind(pathValue), editor: null, sha: null, dirty: false, saving: false,
       ...visit, reviewRef: opts.reviewRef || null, reviewData: opts.reviewData || null };
+  ws.placement = 'page';
+  ws.besideKey = null;
   fileWs = ws;
   setRoute('file', fileWsHash(ws), { project: ws.project || (typeof scopeFileProject === 'function' ? scopeFileProject(ws) : undefined) });
-  $('view').innerHTML = '<section class="files-ws live-file-view"><div id="ffCompare" class="live-file-body"></div></section>';
+  $('view').replaceChildren(ws.frame = liveFileFrame());
   if (parked) return fileWsResumeCode(ws, parked, opts);
   // A link may name recorded versions (to=, from=): open straight into history.
   if (opts.to || opts.from) return liveFileHistory(ws, { to: opts.to || null, from: opts.from || null });
   await fileWsMountBody(ws, opts);
 }
+// The file in the artifact panel beside a conversation: the same workspace
+// and editor as full page, without a route of its own. One file workspace at
+// a time, as always: the one shown before is closed (or parked, if kept).
+async function openLiveFileBeside(pathValue, opts) {
+  const { host, key } = opts.beside;
+  const seq = ++fileWsSeq;
+  closeFileWorkspace();
+  const parked = typeof OpenFiles !== 'undefined' ? OpenFiles.takeCode(String(pathValue)) : null;
+  const visit = { focused: true, mode: 'write', seq, line: opts.line || null, back: key,
+    touched: { repoRoot: '', sessions: [], commits: [] }, browserContext: null, row: null, recentOpened: false, placement: 'beside', besideKey: key };
+  const ws = parked
+    ? Object.assign(parked.ws, visit, { project: opts.project || parked.ws.project || null })
+    : { path: String(pathValue), project: opts.project || null, kind: fileWsKind(pathValue), editor: null, sha: null, dirty: false, saving: false, ...visit, reviewRef: null, reviewData: null };
+  fileWs = ws;
+  host.replaceChildren(ws.frame = liveFileFrame());
+  liveFilePlaced(ws);
+  if (parked) return fileWsResumeCode(ws, parked, opts);
+  await fileWsMountBody(ws, opts);
+  if (fileWs === ws) liveFilePlaced(ws);
+}
+
 // Images share file navigation, but never mount an editor, drafts or save actions.
 // Fetch as a blob so access errors remain readable and reload bypasses the cache.
 async function liveFileMountImage(ws) {
@@ -339,6 +407,7 @@ function liveFileAfterMount(ws) {
   $('liveBack').onclick = () => liveFileGoBack(ws);
   for (const id of ['liveHistory', 'liveHistoryMenu']) $(id).onclick = () => liveFileHistory(ws);
   for (const id of ['liveAsk', 'liveAskMenu']) $(id).onclick = () => fileWsToggleAsk(true);
+  for (const id of ['liveWithConv', 'liveWithConvMenu']) if ($(id)) $(id).onclick = e => { e.currentTarget.closest('details')?.removeAttribute('open'); if (typeof Pair !== 'undefined') Pair.withConversation(ws); };
   if ($('liveBrowse')) $('liveBrowse').onclick = () => liveFileBrowseFolder(ws);
   // The help follows the view: it lists this file's keys, the editor's own included.
   $('liveKeys').onclick = e => { e.currentTarget.closest('details')?.removeAttribute('open'); toggleHelpOverlay(); };
@@ -520,11 +589,12 @@ function liveHistoryHead(ws) {
 }
 async function liveFileHistory(ws, selection = {}) {
   if (fileWs !== ws) return;
+  if (ws.placement === 'beside') fileWsToPage(ws);
   const ticket = ws.historyRequest = (ws.historyRequest || 0) + 1;
   if (ws.editor) fileWsCloseEditor();
   ws.mode = 'history';
   ws.historySel = selection;
-  const view = $('view').querySelector('.live-file-view');
+  const view = ws.frame && ws.frame.isConnected ? ws.frame : $('view').querySelector('.live-file-view');
   if (!view) return;
   view.classList.add('history');
   view.innerHTML = liveHistoryHead(ws) + '<div class="live-history"><aside id="fwHistoryDrawer" class="fw-history-drawer" aria-label="File history">Loading recorded versions…</aside><main id="lfHistoryMain" class="lf-history-main"></main></div>';

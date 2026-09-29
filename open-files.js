@@ -490,7 +490,9 @@ const OpenFiles = (() => {
     // Alt+P on an open file, in its text or anywhere on the page.
     document.addEventListener('keydown', e => {
       if (e.code !== 'KeyP' || !e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.repeat) return;
-      if (typeof viewKind === 'undefined' || viewKind !== 'file' || typeof fileWs === 'undefined' || !fileWs) return;
+      // A file on the page, or beside a conversation (design/83) while its text has the keyboard.
+      if (typeof fileWs === 'undefined' || !fileWs || typeof viewKind === 'undefined') return;
+      if (viewKind !== 'file' && !(fileWs.placement === 'beside' && e.target.closest && e.target.closest('#artifactPane'))) return;
       if (e.target.closest && e.target.closest('dialog, .modal, [role="dialog"]')) return;
       e.preventDefault();
       toggleCurrent();

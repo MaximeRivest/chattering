@@ -1,0 +1,84 @@
+/* The pair (pair.js, design/83): a conversation and what it made, side by
+   side, in the app's right column (the artifact panel, artifacts.css).
+
+   --pair-overlay says where the two cannot both fit and the panel lies over
+   the conversation instead (the same widths as artifacts.css): pair.js reads
+   it, so the breakpoints live here only. */
+@media (max-width: 700px) { body { --pair-overlay: 1; } }
+@media (min-width: 701px) and (max-width: 1040px) { body.side-layout:not(.side-fold) { --pair-overlay: 1; } }
+@media (min-width: 701px) and (max-width: 760px) { body.side-layout.side-fold { --pair-overlay: 1; } }
+@media (max-width: 900px) { body:not(.side-layout) { --pair-overlay: 1; } }
+
+/* ---- over the conversation: one side at a time ---- */
+body.artifact-open.pair-talk-hidden > #artifactPane { display: none !important; }
+#pairPill {
+  position: fixed; z-index: 49; top: 58px; right: 12px; max-width: min(60vw, 320px);
+  min-height: 34px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--r-pill, 999px);
+  background: var(--surface-1); color: var(--text); box-shadow: 0 2px 12px var(--shadow-color);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-meta);
+}
+#pairPill[hidden] { display: none; }
+@media (pointer: coarse) { #pairPill { min-height: 42px; } }
+
+/* ---- working: the thing wide, the conversation narrow on its right ----
+   The two swap grid columns (the elements stay where they are in the page,
+   so the editor and the conversation keep everything). --pair-conv is the
+   conversation's width, dragged at the panel's right edge, per device. */
+body.side-layout.artifact-open.pair-swap:not(.file-side-open) { --pair-col: clamp(360px, var(--pair-conv, 440px), calc(100vw - var(--side-w, 288px) - 480px)); --right-w: var(--pair-col); }
+body.side-layout.artifact-open.pair-swap:not(.file-side-open) > #artifactPane { grid-column: 2; border-left: 0; border-right: 1px solid var(--panel-border, var(--border)); }
+body.side-layout.artifact-open.pair-swap:not(.file-side-open) > header,
+body.side-layout.artifact-open.pair-swap:not(.file-side-open) > main { grid-column: 3; }
+body.side-layout.artifact-open.pair-swap:not(.file-side-open) .composer-dock { left: calc(100% - var(--right-w)); right: 0; width: calc(var(--right-w) - 24px); }
+body.side-layout.artifact-open.pair-swap:not(.file-side-open) > #filesToggle { right: 12px; }
+/* The top-bar layout: the page makes room on the side of the panel. */
+@media (min-width: 901px) {
+  body:not(.side-layout).artifact-open { --art-top: clamp(320px, var(--art-w, 46vw), calc(100vw - 420px)); --pair-col: clamp(360px, var(--pair-conv, 440px), calc(100vw - 480px)); }
+  /* The top bar keeps the whole width (it holds the app's controls); the
+     panel starts under it (--pair-top, measured by pair.js). */
+  body:not(.side-layout).artifact-open > #artifactPane { top: var(--pair-top, 44px); width: var(--art-top); box-shadow: none; }
+  body:not(.side-layout).artifact-open > main { margin-right: var(--art-top); }
+  body:not(.side-layout).artifact-open.pair-swap > #artifactPane { left: 0; right: auto; width: calc(100vw - var(--pair-col)); border-left: 0; border-right: 1px solid var(--panel-border, var(--border)); }
+  body:not(.side-layout).artifact-open.pair-swap > main { margin-right: 0; margin-left: calc(100vw - var(--pair-col)); }
+}
+/* The panel's edges: the left one sizes the panel while talking; the right
+   one sizes the conversation while working. */
+.pair-grip { display: none; }
+body.pair-swap #artifactPane .art-resize { display: none; }
+body.pair-swap #artifactPane .pair-grip { display: block; position: absolute; right: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 2; }
+.pair-grip:focus-visible { outline: 2px solid var(--accent); }
+/* The voice button and its pill float bottom right: beside the panel while
+   talking, not over its controls. */
+@media (min-width: 1041px) {
+  body.side-layout.artifact-open:not(.pair-swap):not(.file-side-open) #voiceDock { right: calc(var(--art-col) + 12px); }
+}
+
+/* ---- the file view and a change, in the panel ---- */
+#artifactPane .art-body > .live-file-view { position: absolute; inset: 0; height: auto; min-height: 0; }
+#artifactPane .live-file-view .live-file-head { padding-left: 8px; padding-right: 8px; }
+.live-file-view.beside #liveBack, .live-file-view.beside .lf-page-only { display: none !important; }
+/* The panel's head names the file; the file's head keeps its pin and actions. */
+.live-file-view.beside #ffTitle { display: none; }
+.live-file-view.beside .live-file-head .lf-name { flex: 0 0 auto; min-width: 0; }
+/* Beside, the head has less to hold (no ← back, no name): it folds later. */
+@container lfhead (max-width: 780px) {
+  .live-file-view.beside .live-file-head .lf-wide { display: revert; }
+  .live-file-view.beside .live-file-head .lf-narrow { display: none; }
+}
+@container lfhead (max-width: 500px) {
+  .live-file-view.beside .live-file-head .lf-wide { display: none; }
+  .live-file-view.beside .live-file-head .lf-narrow { display: block; }
+}
+#artifactPane .art-body > .quick-file-view { position: absolute; inset: 0; height: auto; min-height: 0; overflow: auto; padding: 0 12px 24px; }
+.quick-file-view.beside #qfBack { display: none; }
+.quick-file-view.beside .qf-head h1 { display: none; } /* the panel's head names it */
+.quick-file-view.beside .qf-head #qfHistory { margin-left: auto; }
+/* The panel's own head, above the file's: what it is and where; the file's
+   head below carries the file's actions. */
+#artifactPane.art-live .art-head { min-height: 44px; }
+.art-head .art-list { flex: 0 0 auto; min-height: 30px; padding: 0 8px; background: transparent; border: 1px solid var(--border); color: var(--text-dim); font-size: 13px; }
+.art-head .art-list[hidden], .art-tools [hidden] { display: none; }
+.art-tools [data-art-act="tilt"][aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+
+/* E-ink: no shadow, solid lines. */
+:root[data-theme-mode="binary"] #pairPill { box-shadow: none; border: 2px solid var(--text); background: var(--bg); }
+:root[data-theme-mode="binary"] body.pair-swap #artifactPane { border-right: 2px solid var(--text); }

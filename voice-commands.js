@@ -1372,7 +1372,8 @@ function voiceWrite(text) {
 function voiceScreen() {
   if (settingsOpen) return 'the settings';
   if (viewKind === 'file' && typeof fileWs !== 'undefined' && fileWs) return 'a file open in the editor: ' + fileWs.path.split(/[\\/]/).pop() + (voiceAskOpen() ? ', with the ask box open' : '');
-  if (viewKind === 'conversation' && current) return 'a conversation: ' + (current.title || 'untitled') + ', with its message box';
+  if (viewKind === 'conversation' && current) return 'a conversation: ' + (current.title || 'untitled') + ', with its message box'
+    + (typeof fileWs !== 'undefined' && fileWs && fileWs.placement === 'beside' ? ', and beside it the file ' + fileWs.path.split(/[\\/]/).pop() + ' open in the editor' : '');
   return viewKind === 'home' ? 'the home page (the timeline of conversations)' : viewKind || 'the app';
 }
 

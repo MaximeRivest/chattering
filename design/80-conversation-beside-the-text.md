@@ -1,8 +1,15 @@
 # 80 — The conversation beside the text
 
-Status: **built** 2026-09-29 (`ask-panel.js`, `ask-panel.css`,
-`test/ask-panel.test.js`). Follows the plain ask box (design/33 §12,
-"plain by default").
+Status: **replaced the same day by design/83 (the pair)**, 2026-09-29. The
+panel drew a second, simplified view of a conversation beside a file
+(`ask-panel.js`). Maxime: "it feels risky, dangerous, to create another
+conversation view". Right: every change to how conversations read would
+have had to be made twice, and it already lacked artifacts, widgets,
+delegation cards and answer groups. It was removed; the file and the real
+conversation now sit side by side (design/83). What stays from this note:
+the ask box's settled line with the agent's first words, `askSubmit` (one
+send path), and the file head that folds by its own width. The rest is
+kept below as the record of what was tried and why it went.
 
 ## The moment this serves
 
