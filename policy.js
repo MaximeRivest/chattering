@@ -90,6 +90,8 @@ const ROUTES = {
   '/api/conversation/compact': 'guest',
   '/api/conversation/models': 'guest',
   '/api/conversation/reading': 'guest',
+  // Work steps in plain words: the model reads only this conversation's steps.
+  'POST /api/steps/plain': see('id'),
   '/api/conversation/send': 'guest',
   '/api/conversation/act': 'guest',
   '/api/node/send': 'guest',

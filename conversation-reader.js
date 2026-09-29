@@ -396,6 +396,7 @@ function wireConversationReader() {
   const view = $('view'), key = current.key;
   trackViewWidth(view);
   if (typeof ensureNotebookCards === 'function') ensureNotebookCards(key);
+  if (window.PlainSteps) PlainSteps.apply(view);
   view.querySelectorAll('[data-step-review]').forEach(b => b.onclick = () => { const d = parseChoiceToken(b.dataset.stepReview, 'review button'); if (d) openStepReview(d); });
   view.querySelectorAll('[data-answer-version]').forEach(button => button.onclick = () => {
     const box = button.closest('[data-rewrite-choice]'), choice = button.dataset.answerVersion;
@@ -762,7 +763,9 @@ function transcriptFragmentHtml(d, messages, { after = new Map(), before = new M
     }
     turn = { calls: [], files: new Set(), groups: 0, steps: 0 };
   };
-  const flush = () => {
+  // end: the work closes the fragment, so while its run goes on it may
+  // still grow (plain-steps-ui.js waits for it to settle).
+  const flush = (end = false) => {
     if (!work.length) return;
     const key = work[0].eid || work[0].ts;
     const names = new Map(), files = new Map();
@@ -775,7 +778,7 @@ function transcriptFragmentHtml(d, messages, { after = new Map(), before = new M
     const links = [...files].map(([path, m]) => `<button class="tg-file" data-file-diff="${esc(path)}" data-file-ts="${esc(m.ts || '')}" data-file-anchor="${esc(m.ts || '')}" data-file-call="${esc(m.id || '')}">${esc(path.split(/[\\/]/).pop())}</button>`).join(' ');
     const opened = toolGroupOpen.get(d.key + '|' + key) ?? readerState(d.key).work?.[key];
     const count = [...names.values()].reduce((a, b) => a + b, 0);
-    out.push(`<details class="toolgroup" data-msg-key="${esc(d.key)}" data-gkey="${esc(key)}"${opened ? ' open' : ''}><summary><span class="tg-label"><span class="tg-count">${count} ${count === 1 ? 'step' : 'steps'}</span><span class="tg-detail" title="${esc(tally)}">${esc(tally)}</span></span>${files.size <= 3 ? links : ''}</summary>${work.map(m => msgBlock(m, hl, m.eid === exact, q, indexes.get(m._source), d.key)).join('')}</details>`);
+    out.push(`<details class="toolgroup" data-msg-key="${esc(d.key)}" data-gkey="${esc(key)}"${end ? ' data-open-end' : ''}${opened ? ' open' : ''}><summary><span class="tg-label"><span class="tg-count">${count} ${count === 1 ? 'step' : 'steps'}</span><span class="tg-detail" title="${esc(tally)}">${esc(tally)}</span></span>${files.size <= 3 ? links : ''}</summary>${work.map(m => msgBlock(m, hl, m.eid === exact, q, indexes.get(m._source), d.key)).join('')}</details>`);
     const reviewCalls = [...new Set(work.filter(m => m.role === 'tool' && m.id).map(m => m.id))];
     if (reviewCalls.length) {
       turn.groups++; turn.steps += reviewCalls.length;
@@ -828,7 +831,7 @@ function transcriptFragmentHtml(d, messages, { after = new Map(), before = new M
     }
     if (msgs[i + 1]?.eid !== m.eid && after.has(m.eid)) { flush(); out.push(after.get(m.eid)); }
   }
-  flush();
+  flush(true);
   endTurn();
   return out.join('');
 }

@@ -5036,11 +5036,14 @@ memoryModelHealth.setIdentity(currentModelLabel());
 // that starts such work checks first; piExec (every AI program's Pi call) checks again as the last
 // line, so a path nobody gated still cannot send anything.
 function backgroundAllowed(kind) {
+  // Plain-language steps are their own switch (settings → model): turning
+  // it on is the consent, and it names the model it sends to.
+  if (kind === 'steps') return !!(appSettings.plainSteps && appSettings.plainSteps.on);
   const b = appSettings.backgroundAi || {};
   return !!b.decidedAt && b[kind] === true;
 }
 function backgroundRefusal(kind) {
-  const e = new Error(kind === 'names' ? 'automatic names are off (settings → model)' : 'automatic memory is off (settings → model)');
+  const e = new Error(kind === 'names' ? 'automatic names are off (settings → model)' : kind === 'steps' ? 'steps in plain words are off (settings → model)' : 'automatic memory is off (settings → model)');
   e.code = 'BACKGROUND_AI_OFF';
   return e;
 }
@@ -6464,14 +6467,20 @@ async function piExec({ system, input, signal: ownSignal = null, onDelta = null,
   // "no" is not a model failure.
   const background = ctx.background || (automatic ? 'memory' : null);
   if (background && !backgroundAllowed(background)) throw backgroundRefusal(background);
+  // A call may go to another model than the settings one (ctx.model:
+  // { provider, model }), with its own health (ctx.health): that model
+  // failing must not pause notes and memory, nor the other way round.
+  const health = ctx.health || memoryModelHealth;
+  const own = ctx.model && ctx.model.provider && ctx.model.model ? ctx.model : null;
   const tmp = path.join(os.tmpdir(), 'chattering-system-' + process.pid + '-' + Math.random().toString(36).slice(2) + '.md');
   fs.writeFileSync(tmp, String(system || ''), { mode: 0o600 });
   let permit = null;
   let carry = '';
   try {
-    memoryModelHealth.setIdentity(currentModelLabel());
-    permit = memoryModelHealth.begin({ automatic });
-    const pi = runtimeLib.piCommand([...piArgs(ctx.thinking ? { thinking: ctx.thinking } : null), '--mode', 'json', '--system-prompt', tmp]);
+    health.setIdentity(own ? own.provider + '/' + own.model : currentModelLabel());
+    permit = health.begin({ automatic });
+    const overrides = { ...(ctx.thinking ? { thinking: ctx.thinking } : {}), ...(own ? { usePiDefault: false, provider: own.provider, model: own.model } : {}) };
+    const pi = runtimeLib.piCommand([...piArgs(Object.keys(overrides).length ? overrides : null), '--mode', 'json', '--system-prompt', tmp]);
     const result = await execFileWithActivityTimeout(
       execFile,
       pi.file,
@@ -6502,7 +6511,7 @@ async function piExec({ system, input, signal: ownSignal = null, onDelta = null,
     }
     if (!finalMessage) throw new Error(String(result.stderr || '').trim() || 'pi gave no answer');
     if (finalMessage.stopReason === 'error') throw Object.assign(new Error(finalMessage.errorMessage || 'the model call failed'), { stderr: '' });
-    memoryModelHealth.success(permit);
+    health.success(permit);
     // JSON mode gives the final provider usage: these no-session calls join
     // the cost reports under the program's name.
     if (finalMessage.usage) {
@@ -6521,12 +6530,12 @@ async function piExec({ system, input, signal: ownSignal = null, onDelta = null,
     return finalMessage;
   } catch (error) {
     if (signal && signal.aborted) {
-      memoryModelHealth.release(permit);
+      health.release(permit);
       throw abortedModelCall();
     }
     if (permit) {
       error.modelCallFailure = true;
-      memoryModelHealth.failure(permit, error);
+      health.failure(permit, error);
     }
     if (error.code === 'MODEL_CALLS_PAUSED' || error.code === 'MODEL_ACTIVITY_TIMEOUT') throw error;
     const message = String(error.stderr || '').trim() || error.message;
@@ -6560,18 +6569,20 @@ const aiPrograms = require('./ai-programs.js').createAiPrograms({
 // Run one of them within this call's context. `caller` goes to the log
 // (a conversation key, a project, the person); the rest is the context
 // piExec reads. Resolves with { outputs, callId, response }.
-function aiProgram(name, inputs, { automatic, background, purpose, thinking, timeoutMs, signal, person, caller = {}, onText = null } = {}) {
+function aiProgram(name, inputs, { automatic, background, purpose, thinking, timeoutMs, signal, person, model, health, caller = {}, onText = null } = {}) {
   const inherited = modelCallContext.getStore() || {};
   const ctx = { ...inherited };
   // person: the id of whoever the call is for (usage and budget), when a person asked for it.
-  for (const [k, v] of Object.entries({ automatic, background, thinking, timeoutMs, signal, person })) if (v !== undefined) ctx[k] = v;
+  // model, health: another model than the settings one, and its own circuit (piExec).
+  for (const [k, v] of Object.entries({ automatic, background, thinking, timeoutMs, signal, person, model, health })) if (v !== undefined) ctx[k] = v;
   ctx.purpose = purpose || name;
   const who = { ...caller };
   for (const [k, v] of Object.entries(who)) if (v === undefined || v === null || v === '') delete who[k];
   if (ctx.automatic) who.automatic = true;
   // The stop signal, this call's or the context's: a program's call is a
   // stream, and closing the stream is what stops it.
-  return modelCallContext.run(ctx, () => aiPrograms.run(name, inputs, { caller: who, onText, signal: ctx.signal || null }));
+  const lm = ctx.model && ctx.model.provider && ctx.model.model ? ctx.model.provider + '/' + ctx.model.model : null;
+  return modelCallContext.run(ctx, () => aiPrograms.run(name, inputs, { caller: who, onText, signal: ctx.signal || null, lm }));
 }
 
 function abortedModelCall() {
@@ -6579,6 +6590,37 @@ function abortedModelCall() {
   e.code = 'ABORTED';
   return e;
 }
+
+// Work steps in plain words (plain-steps.js, settings → model): the model
+// chosen for it (else the settings model) with thinking off, on a circuit of
+// its own, so its failures never pause notes and memory.
+const plainStepsHealth = createModelHealth({ baseCooldownMs: 5 * 60 * 1000 });
+function plainStepsModel() {
+  const p = appSettings.plainSteps || {};
+  return p.provider && p.model ? { provider: p.provider, model: p.model } : null;
+}
+// The page asks again every few seconds while a group is being written: the
+// few conversations on screens keep their parsed steps until they change.
+const plainStepsIndexes = new Map(); // key → { mtimeMs, size, ix }
+async function plainStepsIndex(key) {
+  const file = cachePathFor(key);
+  const st = await fsp.stat(file);
+  const have = plainStepsIndexes.get(key);
+  if (have && have.mtimeMs === st.mtimeMs && have.size === st.size) return have.ix;
+  const ix = require('./plain-steps.js').indexConversation(JSON.parse(await fsp.readFile(file, 'utf8')));
+  plainStepsIndexes.delete(key);
+  plainStepsIndexes.set(key, { mtimeMs: st.mtimeMs, size: st.size, ix });
+  while (plainStepsIndexes.size > 4) plainStepsIndexes.delete(plainStepsIndexes.keys().next().value);
+  return ix;
+}
+const plainSteps = require('./plain-steps.js').createPlainSteps({
+  file: path.join(CACHE_DIR, 'plain-steps.json'),
+  model: () => { const m = plainStepsModel(); return m ? m.provider + '/' + m.model : currentModelLabel(); },
+  run: async inputs => (await aiProgram('steps_in_plain_words', inputs, {
+    automatic: true, background: 'steps', thinking: 'off', timeoutMs: 120000,
+    model: plainStepsModel() || undefined, health: plainStepsHealth,
+  })).outputs,
+});
 
 let timelineTitleRunning = false;
 let timelineTitleAgain = false;
@@ -16047,6 +16089,7 @@ async function handleRequest(req, res) {
       '/artifacts.css': { file: 'artifacts.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/streaming-tool.js': { file: 'streaming-tool.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/conversation-reader.js': { file: 'conversation-reader.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/plain-steps-ui.js': { file: 'plain-steps-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/conversation-reader.css': { file: 'conversation-reader.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/conversation-draft.js': { file: 'conversation-draft.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/conversation-draft.css': { file: 'conversation-draft.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
@@ -16172,6 +16215,26 @@ async function handleRequest(req, res) {
       data.reading = readingFor(key, identity);
       data.speedCalibration = usersLib.canManageUsers(identity) ? speedCalibrationOfMessages(data.messages) : {};
       json(res, 200, data);
+    } else if (u.pathname === '/api/steps/plain' && req.method === 'POST') {
+      // Work steps in plain words (plain-steps.js). The page names the groups
+      // on its screen by their step ids; what the model reads is taken from
+      // this conversation, which the policy gate already let this person see.
+      const key = u.searchParams.get('id');
+      if (!appSettings.plainSteps || !appSettings.plainSteps.on) return json(res, 409, { error: 'steps in plain words are off (settings → model)' });
+      if (!key || !index[key]) return json(res, 404, { error: 'not found' });
+      if (!keyVisible(identity, key)) return json(res, 403, { error: 'This is not shared with you.' });
+      let body = '';
+      for await (const chunk of req) { body += chunk; if (body.length > 65536) return json(res, 413, { error: 'too many steps at once' }); }
+      let p;
+      try { p = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
+      const groups = (Array.isArray(p.groups) ? p.groups : []).slice(0, 12)
+        .filter(g => g && typeof g.g === 'string' && g.g.length <= 300 && Array.isArray(g.steps))
+        .map(g => ({ g: g.g, steps: g.steps.filter(id => typeof id === 'string').slice(0, 400) }));
+      if (!groups.length) return json(res, 200, { results: {}, pending: [], failed: {} });
+      let ix;
+      try { ix = await plainStepsIndex(key); }
+      catch { return json(res, 404, { error: 'not found' }); }
+      json(res, 200, plainSteps.lookup(ix, groups));
     } else if (u.pathname === '/api/conversation/media' && req.method === 'GET') {
       try {
         const media = await transcriptImage(u.searchParams.get('id'), u.searchParams.get('entry'), u.searchParams.get('path'));
@@ -17819,6 +17882,10 @@ async function handleRequest(req, res) {
       const listed = (modelsCache.models.length ? modelsCache : await listPiModels()).models;
       if (!parsed.usePiDefault && parsed.provider && parsed.model && listed.length && !settingsLib.findModel(listed, parsed.provider, parsed.model)) {
         return json(res, 400, { error: 'unknown model: ' + parsed.provider + '/' + parsed.model });
+      }
+      const ps = parsed.plainSteps;
+      if (ps && ps.provider && ps.model && listed.length && !settingsLib.findModel(listed, ps.provider, ps.model)) {
+        return json(res, 400, { error: 'unknown model for steps in plain words: ' + ps.provider + '/' + ps.model });
       }
       const prevSemTarget = (appSettings.semanticUrl || '') + '|' + semNs();
       const prevLan = lanWanted();

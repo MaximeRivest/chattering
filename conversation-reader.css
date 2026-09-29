@@ -119,3 +119,25 @@
 :root[data-theme-mode="binary"] .rd-card[aria-current="true"] { border-width: 3px; }
 :root[data-theme-mode="binary"] .rd-cards { scroll-behavior: auto; }
 :root[data-theme-mode="binary"] .rd-paths, :root[data-theme-mode="binary"] .reader-destination { border-color: var(--text); }
+
+/* ---- work steps in plain words (plain-steps-ui.js) ----
+   The plain sentence takes the group's line and may wrap: it is read, not
+   scanned. Each step shows its phrase; the technical text stays in the page
+   (the phrase's tooltip, the open step, "show commands"). */
+.tg-detail.tg-plain { white-space: normal; max-width: 64ch; overflow: visible; text-overflow: clip; font-size: 12px; line-height: 1.45; color: var(--text); }
+.toolgroup > summary:has(.tg-plain) { border-radius: var(--r); }
+.toolgroup:not([open]) > summary:has(.tg-plain) { align-items: baseline; }
+.tg-detail[aria-busy="true"]::after { content: " · explaining…"; color: var(--text-faint); }
+.has-plain > summary > .step-tech { display: none; }
+.step-plain { color: var(--text-dim); }
+.msg.tool.has-plain > summary, .msg.thinking.has-plain > summary { font-size: 12px; }
+.toolline.has-plain > .step-plain { margin-right: 6px; }
+.tg-plain-switch { margin-left: auto; flex: 0 0 auto; height: 22px; padding: 0 8px; border: 1px solid var(--border); border-radius: var(--r-pill); background: transparent; color: var(--text-dim); font-size: 11px; }
+.tg-plain-switch:hover { color: var(--text); border-color: var(--border-strong); }
+.toolgroup:not([open]) > summary > .tg-plain-switch { display: none; }
+@media (max-width: 650px) {
+  .toolgroup:not([open]) .tg-detail.tg-plain { display: block; max-width: none; }
+  .tg-plain-switch { height: 36px; }
+}
+:root[data-theme-mode="binary"] .tg-plain-switch { border-color: var(--text); color: var(--text); }
+:root[data-theme-mode="binary"] .step-plain { color: var(--text); }

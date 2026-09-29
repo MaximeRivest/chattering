@@ -2481,6 +2481,7 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <script src="/conversation-flow.js"></script>
 <script src="/conversation-tree.js"></script>
 <script src="/conversation-reader.js"></script>
+<script src="/plain-steps-ui.js"></script>
 <script src="/artifacts.js"></script>
 <link rel="stylesheet" href="/programs.css">
 <script src="/programs-ui.js"></script>
@@ -9808,7 +9809,9 @@ function msgBlock(m, hl, keepOpen = false, q = '', copyIndex = -1, messageKey = 
   if (m.role === 'thinking') {
     // Reasoning row (everything view): folded to one line, expand to read.
     const anchor = m.ts ? ` data-ts="${esc(m.ts)}"` : '';
-    return `<details class="msg thinking"${anchor}${idxAttr}${keepOpen ? ' open' : ''}><summary>◌ thinking · ${m.text.length} chars</summary><div class="think-body">${hl(m.text)}</div></details>`;
+    // data-step / .step-tech: plain-steps-ui.js puts a plain phrase here.
+    const step = m.eid ? ` data-step="k:${esc(m.eid)}"` : '';
+    return `<details class="msg thinking"${anchor}${idxAttr}${step}${keepOpen ? ' open' : ''}><summary>◌ <span class="step-tech">thinking · ${m.text.length} chars</span></summary><div class="think-body">${hl(m.text)}</div></details>`;
   }
   const label = m.role === 'tool' ? `<span class="tname">${esc(m.name || '?')}</span>`
     : m.role === 'toolresult' ? 'result' : m.role;
@@ -9828,7 +9831,7 @@ function msgBlock(m, hl, keepOpen = false, q = '', copyIndex = -1, messageKey = 
     return `<details class="msg toolresult"${idxAttr}${keepOpen ? ' open' : ''}><summary>↳ result${lines ? ` · ${lines} line${lines > 1 ? 's' : ''}` : ''}${imageLabel}</summary><div class="tool-out">${toolTextHtml(m.text, m.paths, hl)}${messageMediaHtml(m.images, messageKey)}</div></details>`;
   }
   if (m.role === 'tool') {
-    const toolAnchor = m.ts ? ` data-ts="${esc(m.ts)}"` : '';
+    const toolAnchor = (m.ts ? ` data-ts="${esc(m.ts)}"` : '') + (m.id ? ` data-step="t:${esc(m.id)}"` : '');
     const res = m._result || null;
     if (isFileWriteTool(m)) {
       const mark = res ? (res.err ? '<span class="tstat err" title="the edit failed">✗</span>' : '<span class="tstat ok" title="the edit applied">✓</span>') : '';
@@ -9845,7 +9848,7 @@ function msgBlock(m, hl, keepOpen = false, q = '', copyIndex = -1, messageKey = 
     // Bash-created files (redirects, tee, heredocs) link into the same
     // whole-file view as write/edit calls — mined server-side (m.writes).
     const writeLinks = (m.writes || []).map(p => ` <button class="msg-file" data-file-diff="${esc(p)}" data-file-ts="${esc(m.ts || '')}" data-file-anchor="${esc(m.ts || '')}" data-file-call="${esc(m.id || '')}" title="Open this file change\n${esc(p)}">▤ ${esc(shortFilePath(p))}</button>`).join('');
-    return `<details class="msg tool"${toolAnchor}${idxAttr}${keepOpen ? ' open' : ''}><summary>⚙ <span class="tname">${esc(m.name || '?')}</span>${hint ? ' · ' + esc(hint) : ''}${first ? ` <span class="res-first">→ ${esc(first.slice(0, 60))}</span>` : ''}${structuredPath}${fileLink}${writeLinks}</summary><div class="tool-out">${toolTextHtml(m.text, m.paths, hl)}</div>${resFold}</details>`;
+    return `<details class="msg tool"${toolAnchor}${idxAttr}${keepOpen ? ' open' : ''}><summary>⚙ <span class="step-tech"><span class="tname">${esc(m.name || '?')}</span>${hint ? ' · ' + esc(hint) : ''}${first ? ` <span class="res-first">→ ${esc(first.slice(0, 60))}</span>` : ''}</span>${structuredPath}${fileLink}${writeLinks}</summary><div class="tool-out">${toolTextHtml(m.text, m.paths, hl)}</div>${resFold}</details>`;
   }
   if (m.role === 'user' || m.role === 'assistant') {
     const anchor = m.ts ? ` data-ts="${esc(m.ts)}"` : '';
@@ -15969,6 +15972,7 @@ function paneModel() {
       <button type="button" id="setSimplifyPromptSave">Save prompt</button>
       <button type="button" id="setSimplifyPromptReset">Restore default</button>
     </details>
+    ${plainStepsSectionHtml()}
     <h3>interrupted conversations</h3>
     <label class="set-check"><input id="setAutoResumeNetwork" type="checkbox"${s.autoResumeNetwork ? ' checked' : ''}> resume connection failures automatically</label>
     <div class="set-help">Off by default. The host checks the provider connection twice before resuming saved work, one conversation at a time. Up to 3 attempts within 24 hours. No automatic recovery for deliberate stops, login or usage limits, changed conversations, delegated work, or parallel answers. Continues the saved conversation rather than repeating your original prompt; uncertain tool actions can still be repeated. Disable this at any time to stop waiting retries. Already-running work is not stopped.</div>
@@ -15986,6 +15990,46 @@ function paneModel() {
       <select id="setQuietMinutes">${quietMinutesOptions(s.quietMinutes)}</select>
       <div class="set-help">Long work is fine: nothing is ever stopped. When a running conversation or delegated worker says nothing for this long (a test that never ends, a hung connection), the agent that started it is woken with what it is waiting on and what its processes are doing, so it can decide. When no agent can be told (your own conversations, a terminal, a parent that is out of usage), you are: the row says “quiet”, the phone notifies, and this machine plays a short tone unless finish sounds are off. Reminders repeat at 3, 9, then every 9 times this long while it stays quiet. Each reminder to an agent is one model turn.</div>
     </div>`;
+}
+
+// Work steps in plain words (plain-steps.js, plain-steps-ui.js).
+function plainStepsSectionHtml() {
+  const s = settingsOf(), p = s.plainSteps || {};
+  const own = !!(p.provider && p.model);
+  const resolved = (settingsState && settingsState.resolved) || {};
+  const picker = `<button type="button" class="set-picker" id="setPlainStepsPick" title="Choose a model from pi's catalog">
+      <span class="set-picker-main"><b>${esc(modelLabelOf(p.provider, p.model))}</b></span>
+      <span class="set-picker-act">change ▾</span>
+    </button>`;
+  return `<h3>work steps in plain words</h3>
+    <label class="set-check"><input id="setPlainSteps" type="checkbox"${p.on ? ' checked' : ''}> explain the agent's work steps in plain words</label>
+    <div class="set-help">For people who don't program. Each group of steps (searches, commands, files read, thinking) gets one sentence on what it was for, and each step a short phrase. The commands stay one click away: “show commands” in an open group switches that screen back, “plain words” switches it again. One model call per group, only for groups someone scrolls to, then remembered for every screen; work still running is explained when it ends. Each call sends that group's commands, the start of what they returned, and the question they answer to the model below. Results can include file contents, so pick a model you trust with them.</div>
+    <div class="set-field">
+      <label>model that writes them</label>
+      ${setOptionsHtml('setPlainStepsSource', [
+        { value: 'same', name: 'the model above', desc: 'Now: ' + (resolved.label || 'pi’s default') + ', with thinking off. A large model is slower and costs more per group.' },
+        { value: 'own', name: 'a small fast model', desc: 'Recommended. The phrases are short, so a small model writes a group in seconds, for a fraction of the cost.', child: picker },
+      ], own ? 'own' : 'same')}
+    </div>`;
+}
+
+function bindPlainSteps(root) {
+  const p = () => settingsOf().plainSteps || { on: false, provider: '', model: '' };
+  const pickFor = anchor => openModelPicker(anchor, { selected: p().provider ? [p().provider + '/' + p().model] : [] }, ([m]) => {
+    if (m) saveSettings({ plainSteps: { ...p(), provider: m.provider, model: m.modelId } }, 'plain-words steps: ' + modelLabelOf(m.provider, m.modelId));
+  });
+  $('setPlainSteps').onchange = async () => {
+    await saveSettings({ plainSteps: { ...p(), on: $('setPlainSteps').checked } }, $('setPlainSteps').checked ? 'work steps: in plain words' : 'work steps: technical');
+    if (window.PlainSteps) PlainSteps.apply($('view'));
+  };
+  if ($('setPlainStepsPick')) $('setPlainStepsPick').onclick = () => pickFor($('setPlainStepsPick'));
+  bindOptions(root, 'setPlainStepsSource', v => {
+    if (v === 'same') return saveSettings({ plainSteps: { ...p(), provider: '', model: '' } }, 'plain-words steps: the model above');
+    // Nothing changes until a model is picked: the choice shown stays the saved one.
+    renderSettings();
+    const option = document.querySelector('input[name=setPlainStepsSource][value="own"]');
+    pickFor(option ? option.closest('label') : document.body);
+  });
 }
 
 // The quiet-work choices; a value set elsewhere (the file, the API) is kept
@@ -16032,6 +16076,7 @@ function bindPaneModel(root) {
     saveSettings({ quietMinutes: m }, m ? 'quiet work reported after ' + $('setQuietMinutes').selectedOptions[0].textContent : 'quiet work not reported');
   };
   $('setSimplifyAnswers').onchange = () => saveSettings({ simplifyAnswers: $('setSimplifyAnswers').checked }, 'simpler answers updated');
+  bindPlainSteps(root);
   $('setArtifactLibraries').onchange = () => saveSettings({ artifactNetwork: $('setArtifactLibraries').checked ? 'libraries' : 'open' }, 'artifact pages updated');
   bindOptions(root, 'setModelSource', v => {
     if (v === 'pi') return saveSettings({ usePiDefault: true, provider: '', model: '' }, 'model: pi’s default');
@@ -16479,6 +16524,8 @@ async function loadSettings() {
   renderMachineBtn();
   applyCapabilities();
   if (settingsOpen) renderSettings();
+  // Settings arrive after a first transcript may be on screen.
+  if (window.PlainSteps && viewKind === 'conversation') PlainSteps.apply($('view'));
   // An install's first open: the welcome takes home once settings say so.
   if (window.Welcome && Welcome.wanted() && viewKind === 'home') render();
   maybeAskBackgroundAi();

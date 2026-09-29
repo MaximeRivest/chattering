@@ -88,6 +88,11 @@ const DEFAULT_SETTINGS = {
   // One same-model editing pass after a human-facing SDK reply.
   simplifyAnswers: true,
   simplifyPrompt: DEFAULT_SIMPLIFY_PROMPT,
+  // Work steps in plain words (plain-steps.js), for readers who do not
+  // program. Off until the owner turns it on: each group of steps someone
+  // looks at is one call. provider/model: the model that writes them, best a
+  // small fast one; empty: the model above (notes and titles).
+  plainSteps: { on: false, provider: '', model: '' },
   autoResumeNetwork: false,
   resumePrompt: DEFAULT_RESUME_PROMPT,
   // Running work whose output has not moved for this many minutes is
@@ -384,6 +389,14 @@ function normalizeUsageBilling(raw) {
   return { providerModes, monthlyFees };
 }
 
+// A model of its own needs both halves; half a choice is the settings model.
+function normalizePlainSteps(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const provider = String(src.provider || '').trim(), model = String(src.model || '').trim();
+  const own = MODEL_NAME.test(provider) && MODEL_NAME.test(model);
+  return { on: src.on === true, provider: own ? provider : '', model: own ? model : '' };
+}
+
 function normalizeSettings(input) {
   const src = input && typeof input === 'object' ? input : {};
   const thinking = THINKING_LEVELS.includes(src.thinking) ? src.thinking : DEFAULT_SETTINGS.thinking;
@@ -408,6 +421,7 @@ function normalizeSettings(input) {
   const previewBase = /^https:\/\/(?:\{id\}\.)?[a-z0-9.-]+(?::\d+)?$/i.test(String(src.previewBase || '').trim()) ? String(src.previewBase).trim() : '';
   const simplifyAnswers = src.simplifyAnswers !== false;
   const simplifyPrompt = typeof src.simplifyPrompt === 'string' && src.simplifyPrompt.trim() ? src.simplifyPrompt : DEFAULT_SIMPLIFY_PROMPT;
+  const plainSteps = normalizePlainSteps(src.plainSteps);
   const autoResumeNetwork = src.autoResumeNetwork === true;
   const resumePrompt = typeof src.resumePrompt === 'string' && src.resumePrompt.trim() ? src.resumePrompt.trim().slice(0, 4000) : DEFAULT_RESUME_PROMPT;
   const quietMinutes = normalizeQuietMinutes(src.quietMinutes);
@@ -448,6 +462,7 @@ function normalizeSettings(input) {
     programsRecordAgents,
     simplifyAnswers,
     simplifyPrompt,
+    plainSteps,
     autoResumeNetwork,
     resumePrompt,
     quietMinutes,
