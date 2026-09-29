@@ -2,6 +2,15 @@
 .live-file-body { flex:1; min-height:0; }
 .live-file-view .doc-view { height:100%; margin:0; min-height:0; }
 .live-file-head { display:flex; align-items:center; flex-wrap:wrap; gap:9px; min-height:38px; height:auto; padding:5px 8px; border-bottom:1px solid var(--border); background:var(--bg); }
+/* The head folds History, Ask and Run under ⋯ by its own width, not the
+   window's: a panel beside the text (ask-panel.css, the Files list) narrows
+   the file without narrowing the window, and the row must not wrap over the
+   text. Measured: the full row needs about 780px with the files square. */
+.live-file-head { container:lfhead / inline-size; }
+@container lfhead (max-width: 780px) {
+  .live-file-view .live-file-head .lf-wide { display:none; }
+  .live-file-view .live-file-head .lf-narrow { display:block; }
+}
 .live-file-head #ffTitle { flex:1; min-width:100px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
 /* The name and the pin that keeps the file open (open-files.js): together
    they take the room the name alone took; the name shortens first. */

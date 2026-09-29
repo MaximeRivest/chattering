@@ -125,6 +125,7 @@ function askBubbleOpen(ws) {
       <span class="ask-fill"></span>
       <select class="ask-target" aria-label="Where the request goes" title="Where the request goes: a conversation that worked on this file, or a new one"><option value="auto">finding where this goes…</option></select>
       <button type="button" class="ghost ask-mode" aria-pressed="true"></button>
+      <button type="button" class="ghost ask-convo" hidden title="The conversation with the agent about this file, beside the text">conversation</button>
       <button type="button" class="ghost ask-close" title="Close (Esc) — what you typed stays" aria-label="Close">✕</button>
     </div>
     <div class="ask-history" hidden></div>
@@ -215,6 +216,7 @@ function askBubbleWire(b) {
     else askBubbleClose({ refocus: true });
   });
   q('.ask-close').onclick = () => askBubbleClose({ refocus: true });
+  q('.ask-convo').onclick = () => { const key = askBubbleTargetKey(); if (key) askShowConversation(key); };
   q('.ask-more').onclick = () => { askBubbleMore(!askPrefs().more); ta.focus(); };
   q('.ask-mode').onclick = () => { saveAskPrefs({ review: !askPrefs().review }); askBubblePaintControls(); ta.focus(); };
   b.send.onclick = () => askBubbleSend();
@@ -229,6 +231,7 @@ function askBubbleWire(b) {
   q('[data-ask="preview"]').onclick = () => menu(() => askBubblePreview());
   q('[data-ask="image"]').onclick = () => menu(() => q('.ask-files').click());
   q('[data-ask="open"]').onclick = () => menu(() => { const key = askBubbleTargetKey(); if (key) open(key, 'bottom'); });
+  q('[data-ask="open"]').textContent = 'Open the conversation’s own page';
   q('[data-ask="own-model"]').onclick = () => menu(() => { saveAskPrefs({ model: null }); askBubblePaintControls(); ta.focus(); });
   q('.ask-files').onchange = e => { askBubbleAddImages(e.target.files); e.target.value = ''; };
 
@@ -468,6 +471,8 @@ function askBubblePaintControls() {
   mode.title = review ? 'The agent’s changes show in the text to accept, reject or edit first. Click: apply them directly'
     : 'The agent’s changes go straight into the text (Ctrl+Z takes them back). Click: review them first';
   b.root.querySelector('[data-ask="open"]').hidden = !key;
+  // An existing conversation (not a new one): it can be read beside the text.
+  b.root.querySelector('.ask-convo').hidden = !key || typeof AskPanel === 'undefined' || AskPanel.showing(key);
   b.root.querySelector('[data-ask="own-model"]').hidden = !prefs.model;
   // Plain words for what will happen; the options' state in the tooltip.
   const hint = b.root.querySelector('.ask-hint');
@@ -544,9 +549,37 @@ async function askBubbleSend() {
   const prompt = b.ta.value.trim();
   if (!prompt) return toast('write what should change first');
   if (ws.run) return toast('an agent is already working on this file — wait, or stop it');
+  b.sending = true;
+  askBubblePaintSend();
+  const out = await askSubmit(ws, { prompt, images: b.images, target: b.target.value || 'auto' });
+  b.sending = false;
+  if (askBox === b) askBubblePaintSend();
+  if (!out) return;
+  askDrafts.delete(ws.path);
+  if (askBox === b) {
+    b.ta.value = '';
+    b.images = [];
+    askBubbleGrow();
+    askBubblePaintThumbs();
+    b.root.querySelector('.ask-preview').hidden = true;
+    askBubbleLoadTarget(b); // the new conversation, and this ask, in the lists
+  }
+}
+
+/**
+ * Send an ask about the open file, from the box or from the conversation
+ * panel beside the text (ask-panel.js): the same choices (model, reasoning,
+ * review or apply, what goes along), the selection at send time, and the
+ * file's agent lifecycle (the editor locks, the changes are captured for
+ * review). target: a conversation key, 'new' or 'auto'. Returns the
+ * server's answer once the run has begun, or null (said in a toast).
+ */
+async function askSubmit(ws, { prompt, images = [], target = 'auto' }) {
+  if (!ws || !prompt) return null;
+  if (ws.run) { toast('an agent is already working on this file — wait, or stop it'); return null; }
   const prefs = askPrefs();
   const body = {
-    path: ws.path, project: ws.project, prompt, target: b.target.value || 'auto', include: prefs.include,
+    path: ws.path, project: ws.project, prompt, target, include: prefs.include,
     ...askBubbleSelection(ws).body,
   };
   if (prefs.model) body.models = [askModelOf(prefs.model)];
@@ -555,34 +588,34 @@ async function askBubbleSend() {
     prompt, mode: prefs.review && ws.editor && ws.editor.review ? 'review' : 'apply',
     model: prefs.model, thinking: prefs.thinking, include: prefs.include, selection: { line: body.line || null, range: body.range || null },
   };
-  b.sending = true;
-  askBubblePaintSend();
   let out;
   try {
     // The agent must read what you see: unsaved text goes to disk first.
     if (ws.kind === 'code' && ws.dirty) await fileWsSaveCode(ws);
     if (ws.kind === 'md' && docState && docState.dirty) await autosaveDocument();
     body.images = [];
-    for (const img of b.images) body.images.push(await shrinkAgentImage(img));
+    for (const img of images) body.images.push(await shrinkAgentImage(img));
     out = await postJson('/api/files/ask', body);
   } catch (e) { out = { error: e.message || 'network failure' }; }
-  b.sending = false;
-  if (fileWs !== ws) return;
-  if (askBox === b) askBubblePaintSend();
-  if (out.error) return errToast(out.error);
+  if (fileWs !== ws) return null;
+  if (out.error) { errToast(out.error); return null; }
   ws.askLast = { key: out.key, title: out.title || (out.created ? 'the new conversation' : 'the conversation') };
   ws.askChoice = out.key;
-  askDrafts.delete(ws.path);
-  if (askBox === b) {
-    b.ta.value = '';
-    b.images = [];
-    askBubbleGrow();
-    askBubblePaintThumbs();
-    b.root.querySelector('.ask-preview').hidden = true;
-  }
   fileWsBeginRun(ws, out, ask);
   for (const note of out.notes || []) toast(note);
-  if (askBox === b) askBubbleLoadTarget(b); // the new conversation, and this ask, in the lists
+  return out;
+}
+
+// ---- the conversation beside the text (ask-panel.js) ----
+
+// "details", "open", "conversation": the conversation opens in the panel
+// beside the text, not in place of it. The box steps aside (its draft kept):
+// the panel says everything it said, and more.
+function askShowConversation(key) {
+  if (!key) return;
+  if (typeof AskPanel === 'undefined' || !fileWs) return open(key, 'bottom');
+  askBubbleClose({ refocus: false });
+  AskPanel.open(fileWs, key, { focus: true });
 }
 
 // ---- the run ----
@@ -595,12 +628,12 @@ function askBubblePaintRun(ws, d) {
   const elapsed = Math.round((Date.now() - ws.run.startedAt) / 1000);
   const model = d.model || '';
   if (askPrefs().more) {
-    host.innerHTML = `<div class="fw-run"><span class="fw-run-dot ask-glyph ask-glyph-busy" aria-hidden="true">✦</span><b>${esc(ws.run.title || 'conversation')}</b><span class="dim">${esc(model)}${model ? ' · ' : ''}${elapsed}s</span><span class="fw-run-status" role="status">${esc(d.statusText || 'working…')}</span><button type="button" class="ghost" data-run-open>open</button><button type="button" class="ghost" data-run-stop>■ stop</button></div>`;
+    host.innerHTML = `<div class="fw-run"><span class="fw-run-dot ask-glyph ask-glyph-busy" aria-hidden="true">✦</span><b>${esc(ws.run.title || 'conversation')}</b><span class="dim">${esc(model)}${model ? ' · ' : ''}${elapsed}s</span><span class="fw-run-status" role="status">${esc(d.statusText || 'working…')}</span><button type="button" class="ghost" data-run-open title="The conversation, beside the text">open</button><button type="button" class="ghost" data-run-stop>■ stop</button></div>`;
   } else {
     const raw = [ws.run.title, model, d.statusText].filter(Boolean).join(' · ');
-    host.innerHTML = `<div class="fw-run" title="${esc(raw)}"><span class="fw-run-dot ask-glyph ask-glyph-busy" aria-hidden="true">✦</span><span class="fw-run-status" role="status">${esc(askPlainStatus(d.statusText))}…</span><span class="dim">${elapsed}s</span><button type="button" class="ghost" data-run-open title="Open the conversation the agent works in">details</button><button type="button" class="ghost" data-run-stop>■ stop</button></div>`;
+    host.innerHTML = `<div class="fw-run" title="${esc(raw)}"><span class="fw-run-dot ask-glyph ask-glyph-busy" aria-hidden="true">✦</span><span class="fw-run-status" role="status">${esc(askPlainStatus(d.statusText))}…</span><span class="dim">${elapsed}s</span><button type="button" class="ghost" data-run-open title="What the agent is doing, beside the text">details</button><button type="button" class="ghost" data-run-stop>■ stop</button></div>`;
   }
-  host.querySelector('[data-run-open]').onclick = () => open(ws.run.key, 'bottom');
+  host.querySelector('[data-run-open]').onclick = () => askShowConversation(ws.run.key);
   host.querySelector('[data-run-stop]').onclick = () => fileWsAbortRun(ws);
   askBubblePaintSend();
 }
@@ -632,7 +665,7 @@ function askPlainStatus(text) {
 // closed); the next ask continues the same conversation. Changes to
 // review: the box steps aside (its draft kept), the cursor goes to the
 // first change, and the panel under the text carries the decisions.
-function askBubbleSettled(ws, run, { status, summary, changed, undoable, reviewing }) {
+function askBubbleSettled(ws, run, { status, summary, changed, undoable, reviewing, excerpt = null }) {
   if (reviewing) {
     askBubbleClose({ refocus: false });
     const editor = ws.editor;
@@ -644,19 +677,26 @@ function askBubbleSettled(ws, run, { status, summary, changed, undoable, reviewi
   }
   const b = askBox;
   if (!b || b.ws !== ws) {
-    toast(status + (summary ? ' · ' + summary : '') + (undoable ? ' · Ctrl+Z in the text takes it back' : ''), null, status.startsWith('✗') ? 'err' : undefined);
+    // The panel beside the text already says all of it.
+    if (typeof AskPanel !== 'undefined' && AskPanel.showing(run.key)) return;
+    const words = excerpt ? ' · \u201c' + (excerpt.length > 120 ? excerpt.slice(0, 119) + '\u2026' : excerpt) + '\u201d' : '';
+    toast(status + (summary ? ' · ' + summary : '') + (undoable ? ' · ' + modKey('Z') + ' in the text takes it back' : '') + words,
+      () => askShowConversation(run.key), status.startsWith('✗') ? 'err' : undefined);
     return;
   }
   const host = b.root.querySelector('.ask-run');
   host.hidden = false;
+  // The agent's own first words: usually all a person wants to know
+  // ("I shortened the intro"), without opening anything.
+  const said = excerpt ? `<div class="ask-said" title="${esc(excerpt)}">\u201c${esc(excerpt)}\u201d</div>` : '';
   if (askPrefs().more) {
-    host.innerHTML = `<div class="fw-run settled"><span>${esc(status)}</span><b>${esc(run.title || '')}</b><span class="fw-run-status">${esc(summary || '')}${undoable ? ' · Ctrl+Z in the text takes it back' : ''}</span><button type="button" class="ghost" data-run-open>open conversation</button>${changed ? '<button type="button" class="ghost" data-run-history>history</button>' : ''}</div>`;
+    host.innerHTML = `<div class="fw-run settled"><span>${esc(status)}</span><b>${esc(run.title || '')}</b><span class="fw-run-status">${esc(summary || '')}${undoable ? ' · Ctrl+Z in the text takes it back' : ''}</span><button type="button" class="ghost" data-run-open title="The conversation, beside the text">open conversation</button>${changed ? '<button type="button" class="ghost" data-run-history>history</button>' : ''}</div>${said}`;
   } else {
     const ok = status.startsWith('✓');
     const plain = String(summary || '').replace(/^agent changed/, 'changed');
-    host.innerHTML = `<div class="fw-run settled" title="${esc(status + (run.title ? ' · ' + run.title : ''))}"><span>${ok ? '✓ done' : esc(status)}</span><span class="fw-run-status">${esc(plain)}${undoable ? ' · ' + esc(modKey('Z')) + ' undoes it' : ''}</span><button type="button" class="ghost" data-run-open title="Open the conversation the agent worked in">details</button></div>`;
+    host.innerHTML = `<div class="fw-run settled" title="${esc(status + (run.title ? ' · ' + run.title : ''))}"><span>${ok ? '✓ done' : esc(status)}</span><span class="fw-run-status">${esc(plain)}${undoable ? ' · ' + esc(modKey('Z')) + ' undoes it' : ''}</span><button type="button" class="ghost" data-run-open title="The whole answer and the steps, beside the text">details</button></div>${said}`;
   }
-  host.querySelector('[data-run-open]').onclick = () => open(run.key, 'bottom');
+  host.querySelector('[data-run-open]').onclick = () => askShowConversation(run.key);
   const h = host.querySelector('[data-run-history]');
   if (h) h.onclick = () => liveFileHistory(ws);
   askBubblePaintSend();

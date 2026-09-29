@@ -59,6 +59,10 @@
 .ask-bubble .compose-tools.menu-down .compose-tools-menu { bottom: auto; top: calc(100% + 8px); }
 .ask-bubble .compose-tools-menu > button { height: auto; min-height: 32px; }
 
+/* The ask box's settled line: the agent's own first words. */
+.ask-bubble .ask-said { margin: 2px 2px 0; font-size: var(--fs-meta); color: var(--text); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ask-head .ask-convo { flex: 0 0 auto; height: 22px; min-height: 22px; padding: 0 6px; font-size: var(--fs-micro); color: var(--text-dim); }
+.ask-head .ask-convo[hidden] { display: none; }
 .ask-run[hidden], .ask-preview[hidden] { display: none; }
 .ask-preview .fw-preview { max-height: 32vh; }
 .ask-bubble .fw-run .ask-glyph-busy { color: var(--accent); animation: ask-pulse .9s ease-in-out infinite alternate; }

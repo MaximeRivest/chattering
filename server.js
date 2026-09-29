@@ -16094,6 +16094,8 @@ async function handleRequest(req, res) {
       '/voice-commands.js': { file: 'voice-commands.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/voice-commands.css': { file: 'voice-commands.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/ask-bubble.css': { file: 'ask-bubble.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+      '/ask-panel.js': { file: 'ask-panel.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/ask-panel.css': { file: 'ask-panel.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/collab-client.js': { file: 'collab-client.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/people.js': { file: 'people.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/people.css': { file: 'people.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },

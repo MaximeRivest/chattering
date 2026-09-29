@@ -569,6 +569,11 @@ for the next ask (`chattering.ask.v1`); "default" keeps the target's own.
   lines", "details", "stop"), the raw line in the tooltip; with options,
   the technical lines as before. A disabled primary button (everywhere) now
   keeps a readable word instead of white on white.
+- The conversation beside the text (2026-09-29, design/80): "details",
+  "open", the box's "conversation" link and the locked editor's banner open
+  the ask's conversation in a panel beside the file instead of in its place;
+  the box's settled line carries the agent's first words. The panel's reply
+  box sends through the box's own path (`askSubmit`).
 - The ask routes check the person: the file must be theirs to see / act
   on, the continued conversation theirs to act on, and the run is theirs
   (a guest runs behind the walls). Before, a guest's ask ran as the owner.

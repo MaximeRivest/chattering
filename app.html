@@ -2521,6 +2521,8 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <link rel="stylesheet" href="/voice-commands.css">
 <script src="/ask-bubble.js"></script>
 <link rel="stylesheet" href="/ask-bubble.css">
+<script src="/ask-panel.js"></script>
+<link rel="stylesheet" href="/ask-panel.css">
 <script src="/collab-client.js"></script>
 <script src="/people.js"></script>
 <link rel="stylesheet" href="/people.css">
@@ -17119,6 +17121,8 @@ window.chatteringBack = () => {
   const tools = document.querySelector('.compose-tools[open]');
   if (tools) { tools.open = false; return true; }
   if (phoneSheetOpen()) { closePhoneSheets(); return true; }
+  // The conversation beside a file (ask-panel.js): a sheet on a phone.
+  if (window.AskPanel && AskPanel.showing()) { AskPanel.close({ refocus: true }); return true; }
   // Dialogs built on the fly (review the context, pick a project…) listen
   // for Escape on themselves; the fixed ones are handled at the document.
   const overlay = [...document.querySelectorAll('.overlay')].find(o => !o.hidden && getComputedStyle(o).display !== 'none');
@@ -18539,6 +18543,8 @@ live.onmessage = ev => {
   // reconcileTranscript() only reloads the view the user is already reading,
   // and only when the bytes on disk are newer than the ones on screen.
   reconcileTranscript(d);
+  // The conversation beside an open file (ask-panel.js) follows it too.
+  if (window.AskPanel) AskPanel.conversationUpdated(d);
 };
 
 // Elapsed tick for run cards: 1 Hz text patches (no animation), and only a
