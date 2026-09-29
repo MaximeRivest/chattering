@@ -5,8 +5,10 @@
 //   left exactly as written (no sentence, no call); the group's folded line
 //   changes once, when its sentence is complete; no switch to go back;
 // - a reload reuses what the server remembers;
-// - work being done now: the live group opens, and its steps come one at a
-//   time, each sentence typed in above its command before the next step shows.
+// - work being done now: the live group stays folded (a box opens only when
+//   the reader opens it), its folded line carrying the newest whole sentence;
+//   opened, its steps come one at a time, each sentence typed in above its
+//   command before the next step shows.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -129,9 +131,9 @@ test('browser: work steps in plain words above their commands; live steps one at
   assert.equal(calls().length, 3);
 
   // Work being done: a thought, then the run's first command, written and
-  // running; the second is written too. The live group opens; the thought is
-  // shown as written and holds nothing; the second command waits until the
-  // first one's sentence is typed out.
+  // running; the second is written too. The live group stays folded until the
+  // reader opens it; then the thought is shown as written and holds nothing;
+  // the second command waits until the first one's sentence is typed out.
   const busy = 'pi:fixture/busy.jsonl';
   const runEvent = tail => {
     const ev = { type: 'run-event', jobId: 'run:e2e1', key: busy, status: 'running', statusText: 'running', startedAt: Date.now(), node: 'b1', model: 'p/big', tail };
@@ -143,7 +145,13 @@ test('browser: work steps in plain words above their commands; live steps one at
     { id: 3, kind: 'tool', callId: 'call-u', name: 'bash', args: 'npm run lint', out: '', phase: 'ready' },
   ]);
   await evaluate(`open(${JSON.stringify(busy)})`);
-  await until(`document.querySelector('.toolgroup[data-live-work]')?.open`, async () => 'the live group opens: ' + await evaluate(`document.getElementById('liveReplies')?.innerHTML.slice(0, 800)`));
+  await until(`document.querySelector('.toolgroup[data-live-work]')`, async () => 'the live group: ' + await evaluate(`document.getElementById('liveReplies')?.innerHTML.slice(0, 800)`));
+  // Folded; while no step's sentence is whole (they are held half-way), its
+  // line keeps the technical words: half a sentence never shows there.
+  await until(`[...PlainSteps._state.drafts.keys()].some(k => k.endsWith('|t:call-t'))`, 'the first sentence is being written');
+  assert.equal(await evaluate(`document.querySelector('.toolgroup[data-live-work]').open`), false, 'the live group does not open by itself');
+  assert.equal(await evaluate(`document.querySelector('.toolgroup[data-live-work] .tg-detail').textContent`), 'thinking · bash');
+  await evaluate(`document.querySelector('.toolgroup[data-live-work] > summary').click()`);
   const liveRows = () => evaluate(`[...document.querySelectorAll('.toolgroup[data-live-work] .ls-b[data-step]')].map(el => ({ step: el.dataset.step, hidden: el.hidden,
     say: el.querySelector('.step-say')?.textContent, cmd: el.querySelector('.step-cmd')?.textContent, state: el.querySelector('.step-state')?.textContent,
     folded: !el.querySelector('.step-more')?.open }))`);
@@ -161,6 +169,14 @@ test('browser: work steps in plain words above their commands; live steps one at
   fs.writeFileSync(path.join(dir, 'go-tests'), '');
   await until(`document.querySelector('.ls-b[data-step="t:call-u"]') && !document.querySelector('.ls-b[data-step="t:call-u"]').hidden`, async () => 'the next step: ' + JSON.stringify(await liveRows()));
   assert.equal(await evaluate(`document.querySelector('.ls-b[data-step="t:call-t"] .step-say').textContent`), 'Checking nothing broke: running the project tests.');
+  // Folded again, its line carries the newest step's whole sentence, the
+  // steps in its title.
+  await evaluate(`document.querySelector('.toolgroup[data-live-work] > summary').click()`);
+  await until(`(() => { const d = document.querySelector('.toolgroup[data-live-work] .tg-detail.tg-plain'), p = PlainSteps._state.phrases;
+    const newest = p.get(${JSON.stringify(busy)} + '|t:call-u') || p.get(${JSON.stringify(busy)} + '|t:call-t');
+    return d && newest && d.textContent === newest && d.title === 'The steps: thinking · bash'; })()`,
+    async () => 'the folded line: ' + await evaluate(`document.querySelector('.toolgroup[data-live-work] > summary').textContent`));
+  assert.equal(await evaluate(`document.querySelector('.toolgroup[data-live-work]').open`), false);
   assert.ok(calls().every(c => !/Let me run the tests first/.test(c.input) || c.program === 'step_in_plain_words'), 'a thought is only context for a command');
   assert.deepEqual(exceptions, []);
 });

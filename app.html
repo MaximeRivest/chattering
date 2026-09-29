@@ -13729,7 +13729,7 @@ function revealTranscriptHit(view, scroll) {
 // and scroll position stable while tokens land. The card never grabs focus
 // and only follows the bottom when the user is already pinned there.
 const activeRuns = new Map();   // jobId → latest run-event (with tail blocks)
-const toolGroupOpen = new Map(); // conversation + group key → fold choice survives re-renders
+const toolGroupOpen = new Map(); // conversation + box name → open on this screen now (conversation-reader.js stepsFoldOpen)
 
 // Steps folds. The open line is sticky (CSS), so folding can happen from
 // any depth. Two details make that feel right:
@@ -13754,13 +13754,12 @@ function wireToolGroups(view) {
     if (summary) toolGroupStick.observe(summary);
     if (g.dataset.tgWired) continue;
     g.dataset.tgWired = '1';
-    g.addEventListener('toggle', () => {
-      const key = g.dataset.msgKey || activeRel;
-      toolGroupOpen.set(key + '|' + g.dataset.gkey, g.open);
-      readerState(key).work = readerState(key).work || {};
-      readerState(key).work[g.dataset.gkey] = g.open;
-      saveReaderState(key);
-    });
+    // Live boxes keep their own memory (renderLiveReplyLedger).
+    const gkey = g.dataset.liveWork ? null : g.dataset.gkey;
+    const key = () => g.dataset.msgKey || activeRel;
+    // Any open or close is what this screen shows now; only a person's
+    // click below is kept for next time.
+    if (gkey) g.addEventListener('toggle', () => stepsFoldSeen(key(), gkey, g.open));
     if (!summary) continue;
     summary.title = 'Fold or show these steps · the line stays at the top while you read them';
     summary.addEventListener('click', e => {
@@ -13768,6 +13767,8 @@ function wireToolGroups(view) {
       e.preventDefault();
       const before = summary.getBoundingClientRect().top;
       g.open = !g.open;
+      // A real click or Enter, not a script's (voice keeps its own, see voice-commands.js).
+      if (gkey && e.isTrusted) stepsFoldChosen(key(), gkey, g.open);
       const delta = summary.getBoundingClientRect().top - before;
       if (Math.abs(delta) > 1) view.scrollTop += delta;
     });
@@ -13778,6 +13779,26 @@ function wireToolGroups(view) {
 // once the session file re-indexes, so the browser keeps its own append-only
 // copy per run. The open live strip renders from here — the full story.
 let liveOpen = false;
+// The full live stream is opened for the run on screen, not for the runs
+// after it: a new run (the next message's answer) starts with it closed, as
+// does another conversation. A finished run stays open until the reader
+// closes it. Opened while waiting for the model, it takes the run that
+// answers; the parallel answers of one send count as that one run.
+let liveOpenFor = null; // { key, jobs: Set of job ids, fanouts: Set of fanout ids }
+function closeLiveStream() { liveOpen = false; liveOpenFor = null; }
+function liveStreamStays(runs) {
+  if (!liveOpenFor) liveOpenFor = { key: activeRel, jobs: new Set(), fanouts: new Set() };
+  const f = liveOpenFor;
+  if (f.key !== activeRel) return false;
+  const waiting = !f.jobs.size;
+  for (const r of runs) {
+    if (f.jobs.has(r.jobId)) continue;
+    if (!waiting && !(r.fanoutId && f.fanouts.has(r.fanoutId))) return false;
+    f.jobs.add(r.jobId);
+    if (r.fanoutId) f.fanouts.add(r.fanoutId);
+  }
+  return true;
+}
 const runLedgers = new Map(); // jobId → { key, order[], blocks: Map(id → block), done }
 
 function ledgerAbsorb(r) {
@@ -14229,6 +14250,7 @@ function updateLiveStrip(runs) {
     && Date.now() - (window._sendPendingAt || 0) < 20000;
   const live = runs.length > 0;
   const r = live ? runs[runs.length - 1] : null;
+  if (liveOpen && !liveStreamStays(runs)) closeLiveStream();
   // A finished run freezes on the open wall until the reader closes it.
   let frozenL = null;
   if (!live && liveOpen) {
@@ -14285,7 +14307,13 @@ function updateLiveStrip(runs) {
   line.setAttribute('aria-expanded', String(liveOpen));
   line.title = liveOpen ? 'Close the full stream' : 'Open the full live stream of this run';
   line.onclick = () => {
-    liveOpen = !liveOpen;
+    if (liveOpen) closeLiveStream();
+    else {
+      // Closed, the line shows only while a run works or a message waits
+      // for one (none yet: the stream takes the run that answers).
+      liveOpen = true;
+      liveOpenFor = { key: activeRel, jobs: new Set(runs.map(x => x.jobId)), fanouts: new Set(runs.map(x => x.fanoutId).filter(Boolean)) };
+    }
     window._lsLast = 0; // Surface switches are immediate, including on e-ink.
     renderRunCards();
     if (liveOpen) { const h = $('lsBlocks'); if (h) h.scrollTop = h.scrollHeight; }
@@ -14331,6 +14359,10 @@ async function open(rel, scroll, routeHash = null, { fromList = false } = {}) {
     // it into the next one (a leaked flag streams every keystroke to a PTY).
     window._agentLiveOn = false;
     window._agentLiveText = '';
+    // Boxes the app opened on the last screen, and its open live stream,
+    // end with it; boxes a person opened are kept (readerState().steps).
+    toolGroupOpen.clear();
+    closeLiveStream();
     window._ctxTouched = false;
     window._agentContext = [];
     const hash = routeHash || (typeof scroll === 'string' && scroll.startsWith('entry:')
@@ -15203,9 +15235,10 @@ async function openAfterBranch(key) {
       // A branch on a work box must not look like one thin folded line —
       // that reads as "it picked the wrong box". Unfold the ringed block and
       // everything inside it, and remember the choice across re-renders.
+      // Only for this visit: the app opened it, the reader did not.
       if (last.tagName === 'DETAILS') {
         last.open = true;
-        if (last.dataset.gkey) toolGroupOpen.set(activeRel + '|' + last.dataset.gkey, true);
+        if (last.dataset.gkey) stepsFoldSeen(activeRel, last.dataset.gkey, true);
       }
       last.querySelectorAll('details').forEach(d => { d.open = true; });
       last.scrollIntoView({ block: 'nearest' });
@@ -18031,6 +18064,7 @@ function helpNow() {
     if ($('matchHud')) keys.unshift(['n / shift+n', 'next / previous search match']);
     if (lastQuickFile && lastQuickFile.key === activeRel) keys.push(['t', 'reopen the last file view']);
     keys.push(['↑ ↓ / pgup pgdn', 'scroll']);
+    keys.push(['x / X', 'fold / unfold all the steps (and every other fold) — click one to open just it']);
     keys.push(['← →', 'conversation / project / home']);
     keys.push(['T', 'tree — walk branches, forks, and parallel replies']);
     if ($('agentMic') && !$('agentMic').hidden) keys.push(['m', 'start / stop dictation']);

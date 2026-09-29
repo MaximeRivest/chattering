@@ -18,10 +18,13 @@
      being asked for), so nothing below it moves when the words arrive.
    - Words are typed in at a steady reading pace, whatever pieces the
      network brings them in.
-   - A group's folded line changes once, when its sentence is complete.
+   - A finished group's folded line changes once, when its sentence is complete.
 
-   Work being done now (the live groups of a run) is one more step of the
-   stream: the group opens, and its steps come on screen one at a time. A
+   Work being done now (the live groups of a run) stays folded, like all
+   steps: a box opens when the reader opens it, never by itself. Its folded
+   line carries the newest step's sentence, whole, as each one is complete,
+   so the work reads at a glance without opening anything. Opened, it is one
+   more step of the stream: its steps come on screen one at a time. A
    step appears, its sentence is typed above it, then the next step appears.
    The agent is never held back, only what is shown; a sentence that is slow
    to come (a slow or failing model) holds the next step a few seconds at
@@ -171,10 +174,18 @@
     for (const el of root.querySelectorAll('.plain-gated')) { el.classList.remove('plain-gated'); el.hidden = false; }
   }
 
+  // The newest step with its whole sentence: a live group's folded line.
+  function newestSentence(i) {
+    for (let n = i.steps.length - 1; n >= 0; n--) {
+      const p = isCall(i.steps[n]) && phrases.get(i.key + '|' + i.steps[n]);
+      if (p) return p;
+    }
+    return null;
+  }
   function paintLine(g, i) {
     const detail = g.querySelector(':scope > summary .tg-detail');
-    if (!detail || !i.settled) return;
-    const sentence = sums.get(groupId(i));
+    if (!detail) return;
+    const sentence = i.settled ? sums.get(groupId(i)) : g._plain ? newestSentence(i) : null;
     if (!sentence) return;
     if (detail.dataset.tech === undefined) detail.dataset.tech = detail.textContent;
     if (detail.textContent !== sentence) detail.textContent = sentence;
@@ -461,12 +472,12 @@
     if (!on()) { unpaint(g); g._gate = null; return; }
     if (!g._gate) {
       // First seen on this screen: what is already described shows at once,
-      // then the stream goes on from there; the group opens once, to be read.
+      // then the stream goes on from there. The group stays as the reader
+      // left it (folded unless they opened it).
       const i = g._plain;
       let open = 0;
       while (open < i.steps.length && (!isCall(i.steps[open]) || phrases.has(i.key + '|' + i.steps[open]))) { if (isCall(i.steps[open])) known(i.key + '|' + i.steps[open]); open++; }
       g._gate = { open: Math.min(i.steps.length, open + 1), since: new Map() };
-      if (!g.dataset.plainOpened) { g.dataset.plainOpened = '1'; g.open = true; }
     }
     paint(g);
     if (document.visibilityState !== 'hidden') consider(g);

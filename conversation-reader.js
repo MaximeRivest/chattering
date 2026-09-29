@@ -6,7 +6,7 @@
    saved per person on the server, so every screen of that person agrees.
    Tree structure lives in ConversationTree (conversation-tree.js). */
 const CT = globalThis.ConversationTree;
-const readerStates = new Map();   // key → this device's reading UI: scroll positions, open work folds
+const readerStates = new Map();   // key → this device's reading UI: scroll positions, boxes of steps a person opened
 const readerSessions = new Map(); // key → session snapshot of another conversation shown here
 const readerLiveMessages = new Map();
 const readerDrafts = new Map();
@@ -24,13 +24,42 @@ function readerState(key) {
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem('chattering.reader.v2:' + key) || '{}') || {}; } catch {}
     const state = { revision: saved.revision };
-    for (const name of ['positions', 'work']) state[name] = Object.assign(Object.create(null), saved[name] && typeof saved[name] === 'object' && !Array.isArray(saved[name]) ? saved[name] : {});
+    // `steps` replaced `work` (2026-09-29): `work` also kept the boxes the
+    // app opened by itself, under names two boxes could share. It is left
+    // behind, and dropped at the next save.
+    for (const name of ['positions', 'steps']) state[name] = Object.assign(Object.create(null), saved[name] && typeof saved[name] === 'object' && !Array.isArray(saved[name]) ? saved[name] : {});
     readerStates.set(key, state);
   }
   return readerStates.get(key);
 }
 function saveReaderState(key) {
   try { localStorage.setItem('chattering.reader.v2:' + key, JSON.stringify(readerState(key))); } catch {}
+}
+
+// Boxes of steps (a reply's tool calls and thinking) are closed unless a
+// person opens one, and opening one opens only that one: not the others,
+// not the ones still to come. Two memories:
+// - toolGroupOpen (app.html): what is open on this screen now, whoever
+//   opened it (a person, a search hit, a return from a file, X). It keeps a
+//   box as it is through re-renders, and is forgotten when the reader moves
+//   to another conversation.
+// - readerState(key).steps: the boxes a person opened by hand, kept on this
+//   device. The app's own openings are never kept; any close forgets.
+// A box's name (gkey) is its first tool call, which is unique in a
+// conversation and the same while the work is live and once it is saved.
+function stepsFoldOpen(key, gkey) {
+  return toolGroupOpen.get(key + '|' + gkey) ?? !!readerState(key).steps[gkey];
+}
+function stepsFoldSeen(key, gkey, open) {
+  if (!gkey) return;
+  toolGroupOpen.set(key + '|' + gkey, open);
+  const kept = readerState(key).steps;
+  if (!open && kept[gkey]) { delete kept[gkey]; saveReaderState(key); }
+}
+function stepsFoldChosen(key, gkey, open) {
+  if (!gkey) return;
+  stepsFoldSeen(key, gkey, open);
+  if (open) { readerState(key).steps[gkey] = true; saveReaderState(key); }
 }
 
 // ---- the shared reading: head, routes, shown answer versions ------------
@@ -848,6 +877,25 @@ function maintainReaderLanding(apply) {
 
 // Every answer, whether ordinary, compared, or included together, uses this
 // fragment renderer. Tools and their matching results never cross paths.
+//
+// A box of steps is named by its first tool call ('t:<call id>'). A box
+// with no call (thinking only) is named by its first message: the entry and
+// the message's place in it, since one saved entry can hold thinking,
+// words and calls that land in different boxes.
+const entryPlaces = new WeakMap(); // d.messages → message → its place among its entry's messages
+function stepsBoxKey(d, work) {
+  const call = work.find(m => m.role === 'tool' && m.id);
+  if (call) return 't:' + call.id;
+  let places = entryPlaces.get(d.messages);
+  if (!places) {
+    places = new Map();
+    const seen = new Map();
+    for (const m of d.messages) { const n = seen.get(m.eid) || 0; places.set(m, n); seen.set(m.eid, n + 1); }
+    entryPlaces.set(d.messages, places);
+  }
+  const first = work[0];
+  return (first.eid || first.ts) + '#' + (places.get(first._source) ?? 0);
+}
 function transcriptFragmentHtml(d, messages, { after = new Map(), before = new Map(), replacements = new Map(), skip = new Set(), q = '', exact = null } = {}) {
   const indexes = new Map(d.messages.map((m, i) => [m, i]));
   const pairs = ConversationFlow.rewritePairs(messages);
@@ -881,7 +929,6 @@ function transcriptFragmentHtml(d, messages, { after = new Map(), before = new M
   // still grow (plain-steps-ui.js waits for it to settle).
   const flush = (end = false) => {
     if (!work.length) return;
-    const key = work[0].eid || work[0].ts;
     const names = new Map(), files = new Map();
     for (const m of work) {
       const name = m.role === 'thinking' || m.role === 'assistant' ? 'thinking' : m.name || 'tool';
@@ -889,8 +936,9 @@ function transcriptFragmentHtml(d, messages, { after = new Map(), before = new M
       for (const path of (isFileWriteTool(m) ? [m.path] : m.writes || [])) files.set(path, m);
     }
     const tally = [...names].map(([n, count]) => n + (count > 1 ? ' ×' + count : '')).join(' · ');
+    const key = stepsBoxKey(d, work);
     const links = [...files].map(([path, m]) => `<button class="tg-file" data-file-diff="${esc(path)}" data-file-ts="${esc(m.ts || '')}" data-file-anchor="${esc(m.ts || '')}" data-file-call="${esc(m.id || '')}">${esc(path.split(/[\\/]/).pop())}</button>`).join(' ');
-    const opened = toolGroupOpen.get(d.key + '|' + key) ?? readerState(d.key).work?.[key];
+    const opened = stepsFoldOpen(d.key, key);
     const count = [...names.values()].reduce((a, b) => a + b, 0);
     out.push(`<details class="toolgroup" data-msg-key="${esc(d.key)}" data-gkey="${esc(key)}"${end ? ' data-open-end' : ''}${opened ? ' open' : ''}><summary><span class="tg-label"><span class="tg-count">${count} ${count === 1 ? 'step' : 'steps'}</span><span class="tg-detail" title="${esc(tally)}">${esc(tally)}</span></span>${files.size <= 3 ? links : ''}</summary>${work.map(m => msgBlock(m, hl, m.eid === exact, q, indexes.get(m._source), d.key)).join('')}</details>`);
     const reviewCalls = [...new Set(work.filter(m => m.role === 'tool' && m.id).map(m => m.id))];
@@ -981,7 +1029,16 @@ function liveReplyUnits(L) {
   return units;
 }
 
-function renderLiveReplyLedger(host, jobId, L, saved = new Map(), { expandedWork = false } = {}) {
+// The name a live box will have once saved: its first tool call (see
+// stepsBoxKey), so a box opened while the work is done stays open after.
+function liveStepsBoxKey(blocks) {
+  const call = [...blocks.values()].find(b => b.kind === 'tool' && b.callId);
+  return call ? 't:' + call.callId : null;
+}
+
+// Live boxes are closed like saved ones (the reader opens what they want to
+// watch), in the transcript and in the open live stream alike.
+function renderLiveReplyLedger(host, jobId, L, saved = new Map()) {
   const selection = window.getSelection();
   let previous = null;
   const place = el => {
@@ -1005,21 +1062,40 @@ function renderLiveReplyLedger(host, jobId, L, saved = new Map(), { expandedWork
         work.className = 'toolgroup'; work.dataset.liveWork = token;
         work.innerHTML = '<summary><span class="tg-label"><span class="tg-count"></span><span class="tg-detail"></span></span></summary><div class="ls-flow"></div>';
         work._ledger = { order: [], blocks: new Map() };
+        const firstKey = liveStepsBoxKey(unit.blocks);
+        if (firstKey && stepsFoldOpen(L.key, firstKey)) work.open = true;
+        // A person's click (or Enter on the line) is kept; the summary's
+        // own default action then does the toggling.
+        work.querySelector(':scope > summary').addEventListener('click', e => {
+          if (!e.isTrusted) return;
+          stepsFoldChosen(work._ledger.key, liveStepsBoxKey(work._ledger.blocks), !work.open);
+        });
       }
       place(work);
-      if (expandedWork) work.open = true;
+      // The same box can be on two surfaces (the transcript and the open
+      // live stream): both follow what is open on this screen.
+      const boxKey = liveStepsBoxKey(unit.blocks);
+      const want = boxKey ? toolGroupOpen.get(L.key + '|' + boxKey) : undefined;
+      if (want !== undefined && want !== work.open) work.open = want;
       const blocks = [...unit.blocks.values()];
       const names = [...new Set(blocks.map(b => b.kind === 'tool' ? b.name || 'tool' : 'thinking'))];
       const working = blocks.some(b => b.kind === 'tool' ? b.phase !== 'done' : !b.done);
       setLiveText(work.querySelector('.tg-count'), (working && !L.done ? '◌ ' : '') + blocks.length + (blocks.length === 1 ? ' step' : ' steps'));
-      setLiveText(work.querySelector('.tg-detail'), names.join(' · '));
-      work.querySelector('.tg-detail').title = names.join(' · ');
+      const detail = work.querySelector('.tg-detail');
+      setLiveText(detail, names.join(' · '));
+      detail.title = names.join(' · ');
+      // Steps in plain words may hold a sentence on this line (plain-steps-ui.js):
+      // the technical words it restores when turned off stay current.
+      if (detail.dataset.tech !== undefined) detail.dataset.tech = names.join(' · ');
       work._ledger.order = unit.order; work._ledger.blocks = unit.blocks;
       work._ledger.jobId = jobId; work._ledger.key = L.key;
       // Plain words for each step as soon as it has finished (plain-steps-ui.js).
       if (typeof PlainSteps !== 'undefined') PlainSteps.live(work, L.key, jobId, blocks);
       if (work.open) renderLsBlocks(work._ledger, work.querySelector(':scope > .ls-flow'));
-      work.ontoggle = () => { if (work.open) renderLsBlocks(work._ledger, work.querySelector(':scope > .ls-flow')); };
+      work.ontoggle = () => {
+        stepsFoldSeen(L.key, liveStepsBoxKey(work._ledger.blocks), work.open);
+        if (work.open) renderLsBlocks(work._ledger, work.querySelector(':scope > .ls-flow'));
+      };
       continue;
     }
     let el = host.querySelector(`[data-live-reply="${CSS.escape(token)}"]`);
@@ -1058,7 +1134,7 @@ function renderOpenLiveStream(L, jobId) {
     host.scrollTop = 0;
   }
   const pin = host.scrollHeight - host.scrollTop - host.clientHeight < 40;
-  renderLiveReplyLedger(host, jobId, L, new Map(), { expandedWork: true });
+  renderLiveReplyLedger(host, jobId, L, new Map());
   if (pin) host.scrollTop = host.scrollHeight;
 }
 

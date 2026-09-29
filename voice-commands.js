@@ -647,7 +647,10 @@ function voicePress(id) {
 
 // ---- folding ----
 // Folds are opened and closed through their own headings (a click), as
-// by hand: the app remembers a fold where the click handler records it.
+// by hand. A box of steps opened by voice is kept for next time only when
+// it was asked for by itself ("open it"), as a click would be; opening them
+// all, or pointing at one, lasts for this visit (conversation-reader.js
+// stepsFoldChosen).
 function voiceSetDetails(d, open) {
   if (d.open === open) return false;
   const s = d.querySelector(':scope > summary');
@@ -669,7 +672,11 @@ function voiceFold({ how = 'open', what = 'this' }) {
     const el = voiceFocusOrLast();
     if (!el) throw new Error('nothing is highlighted');
     if (!voiceFocus()) voiceSetFocus(el);
-    if (el.matches('details')) { voiceSetDetails(el, open); return (open ? 'opened ' : 'closed ') + 'it'; }
+    if (el.matches('details')) {
+      voiceSetDetails(el, open);
+      if (el.matches('.toolgroup[data-gkey]') && typeof stepsFoldChosen === 'function') stepsFoldChosen(el.dataset.msgKey || activeRel, el.dataset.gkey, open);
+      return (open ? 'opened ' : 'closed ') + 'it';
+    }
     const unfold = el.querySelector(':scope > .unfold');
     if (open && unfold) { unfold.click(); return 'showing the whole message'; }
     if (open) return 'the message is already whole';

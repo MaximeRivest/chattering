@@ -252,7 +252,12 @@ test('real app surfaces follow the theme together, including nested painted edge
       ['2',{id:'2',kind:'tool',name:'bash',phase:'done',args:JSON.stringify({command:'node --test test/live-strip.test.js'}),out:'4 tests passed. No failures.'}],
       ['3',{id:'3',kind:'text',done:false,think:'Now I’m checking the light, dark, and e-ink themes, including a narrow screen.'}]
     ])};
-    renderLiveReplyLedger(workPreview.querySelector('.ls-blocks'),'preview',previewLedger,new Map(),{expandedWork:true});`);
+    // Live boxes open only when the reader opens one: opened here, the
+    // next render draws its steps.
+    const lsHost=workPreview.querySelector('.ls-blocks');
+    renderLiveReplyLedger(lsHost,'preview',previewLedger,new Map());
+    lsHost.querySelectorAll('.toolgroup').forEach(g=>g.open=true);
+    renderLiveReplyLedger(lsHost,'preview',previewLedger,new Map());`);
   for (const width of [1200, 390]) {
     await size(width, 900);
     for (const theme of ['light', 'dark', 'eink']) {
@@ -282,7 +287,9 @@ test('real app surfaces follow the theme together, including nested painted edge
   assert.deepEqual(await evaluate(`(()=>{
     workPreview.innerHTML='<div class="transcript"></div>';
     const host=workPreview.querySelector('.transcript');
-    renderLiveReplyLedger(host,'preview-inline',previewLedger,new Map(),{expandedWork:true});
+    renderLiveReplyLedger(host,'preview-inline',previewLedger,new Map());
+    host.querySelectorAll('.toolgroup').forEach(g=>g.open=true);
+    renderLiveReplyLedger(host,'preview-inline',previewLedger,new Map());
     const flow=host.querySelector('.toolgroup > .ls-flow');
     return [!!flow, !!flow?.querySelector('.ls-think'), host.scrollWidth<=host.clientWidth,
       [...host.querySelectorAll('pre')].every(p=>p.scrollWidth<=p.clientWidth+1)];
