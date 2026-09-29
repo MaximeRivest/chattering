@@ -171,5 +171,77 @@ test('one head: side-by-side answers, instant moves, versions, shared head, phon
   await until(`document.querySelector('.tnode.here')`, 'tree here marker');
   const here = await evaluate(`document.querySelector('.tnode.here').dataset.tn`);
   assert.ok([head].includes(here), `here ${here} / head ${head}`);
+
+  // Continue here, then send: the prompt and its streaming answer sit right
+  // below the point sent from — through re-renders and reloads — and never
+  // after the older path that also continues from there. Once the run's
+  // question is saved, the head follows it onto the new path.
+  await evaluate(`open(${JSON.stringify(key)}, 'bottom')`);
+  const continueA0 = `document.querySelector(${JSON.stringify(`[data-reader-continue-at*='"id":"a0"']`)})`;
+  await until(`viewKind === 'conversation' && ${continueA0}`, 'the conversation again');
+  // The message menu's "continue here" on the opening answer.
+  await evaluate(`${continueA0}.click(); 1`);
+  await until(`document.getElementById('readerDestination')`, 'continue here');
+  const startedAt = Date.now();
+  const job = { id: 'run:e2e1', type: 'agent-run', key, status: 'running', startedAt, model: 'p/m-one' };
+  await evaluate(`(async () => { const real = window.fetch;
+    window.fetch = async (url, opts) => String(url).includes('/api/node/send') ? new Response(JSON.stringify({ ok: true, job: ${JSON.stringify(job)} }), { status: 202 }) : real(url, opts);
+    try { await headlessSendFromComposer(document.createElement('button'), 'NEW BRANCH QUESTION'); } finally { window.fetch = real; } })()`);
+  const runEvent = extra => evaluate(`live.onmessage({ data: ${JSON.stringify(JSON.stringify({ type: 'run-event', jobId: job.id, key, status: 'running', statusText: 'running', startedAt, node: 'a0', model: 'p/m-one', ...extra }))} }); 1`);
+  await runEvent({ tail: [{ id: 1, kind: 'text', text: 'STREAMED NEW ANSWER' }] });
+  const placement = () => evaluate(`(() => { const t = document.getElementById('conversationTranscript'), live = document.getElementById('liveReplies');
+    const run = live.querySelector('[data-reply-run]');
+    return { old: t.innerText.includes('Which design is better'), last: [...t.querySelectorAll('.msg[data-eid]')].pop()?.dataset.eid,
+      live: run && !run.hidden ? run.innerText.replace(/\\s+/g, ' ') : null, note: !!document.getElementById('readerDestination'),
+      follows: readingOf(current.key).follow?.from || null }; })()`);
+  const streaming = async label => {
+    await until(`document.querySelector('#liveReplies [data-reply-run]:not([hidden])')?.innerText.includes('STREAMED NEW ANSWER')`, label);
+    const p = await placement();
+    assert.equal(p.old, false, label + ': the older path is not shown');
+    assert.equal(p.last, 'a0', label + ': the transcript ends where the message was sent from');
+    assert.match(p.live, /NEW BRANCH QUESTION[\s\S]*STREAMED NEW ANSWER/, label + ': the prompt, then its answer');
+    assert.equal(p.note, false, label + ': no "starts a new path" note while it is written');
+    assert.equal(p.follows, 'a0', label);
+  };
+  await streaming('while it streams');
+  // What used to move it: any re-render of the transcript during the run.
+  await evaluate(`rerenderReading(null)`);
+  await streaming('after a re-render');
+  await evaluate(`open(${JSON.stringify(key)}, 'preserve')`);
+  await streaming('after a reload of the conversation');
+  // Every screen of this person follows the same message: the server holds it.
+  for (let i = 0; i < 40; i++) {
+    const r = (await (await fetch(base + '/api/session?id=' + encodeURIComponent(key), { headers: auth })).json()).reading;
+    if (r && r.follow && r.follow.from === 'a0' && r.exact && r.head === 'a0') break;
+    assert.ok(i < 39, 'server reading: ' + JSON.stringify(r));
+    await new Promise(r => setTimeout(r, 50));
+  }
+  // The run writes its question and answer (after pi's branch anchor), and ends.
+  const now = n => new Date(startedAt + n).toISOString();
+  fs.appendFileSync(path.join(dir, 'chat.jsonl'), [
+    { type: 'label', id: 'anc1', parentId: 'a0', timestamp: now(5), targetId: 'a0' },
+    { type: 'message', id: 'nq', parentId: 'anc1', timestamp: now(10), message: { role: 'user', content: [{ type: 'text', text: 'NEW BRANCH QUESTION' }] } },
+    { type: 'message', id: 'na', parentId: 'nq', timestamp: now(20), message: { role: 'assistant', content: [{ type: 'text', text: 'STREAMED NEW ANSWER' }], model: 'm-one', provider: 'p' } },
+  ].map(JSON.stringify).join('\n') + '\n');
+  for (let i = 0; i < 200; i++) {
+    const d = await (await fetch(base + '/api/session?id=' + encodeURIComponent(key), { headers: auth })).json();
+    if (d.messages.some(m => m.eid === 'na' || m._eid === 'na')) break;
+    assert.ok(i < 199, 'the server indexed the run');
+    await new Promise(r => setTimeout(r, 50));
+  }
+  await runEvent({ tail: [{ id: 1, kind: 'text', text: 'STREAMED NEW ANSWER', done: true }] });
+  await runEvent({ status: 'done', statusText: 'settled', final: true, finishedAt: Date.now(), tail: undefined });
+  // The settled transcript lands by itself (the reader is at the end).
+  await until(`document.getElementById('conversationTranscript').innerText.includes('NEW BRANCH QUESTION')`, async () => 'the new path: ' + JSON.stringify(await placement()));
+  body = await text();
+  assert.match(body, /Opening answer[\s\S]*NEW BRANCH QUESTION[\s\S]*STREAMED NEW ANSWER/);
+  assert.doesNotMatch(body, /Which design is better/);
+  assert.equal(await evaluate(`document.querySelectorAll('#liveReplies [data-live-prompt]').length`), 0, 'the saved question replaces the prompt');
+  assert.equal(await evaluate(`(document.getElementById('conversationTranscript').innerText + document.getElementById('liveReplies').innerText).split('STREAMED NEW ANSWER').length - 1`), 1, 'the answer shows once');
+  assert.deepEqual(await evaluate(`({ head: headOf(current), follow: readingOf(current.key).follow || null, exact: readingOf(current.key).exact })`), { head: 'na', follow: null, exact: false });
+  // The next message continues the new path.
+  assert.equal((await captureSend('Next')).node, 'na');
+  // The older path is still one choice away (another question asked there).
+  assert.match(await evaluate(`document.querySelector('.rd-versions')?.innerText || ''`), /\d\/2/);
   assert.deepEqual(exceptions.filter(e => !/ResizeObserver/.test(e)), []);
 });

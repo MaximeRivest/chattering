@@ -29,6 +29,17 @@ constraint (Maxime, 2026-09-23); readable history is.
 - Parallel runs stream as the same cards; the card you click is where the
   conversation continues when they land.
 - The tree view lights the head's path; clicking a box moves the head.
+- A send follows its own message (2026-09-28). Until the run's question is
+  saved, the head stays exactly on the point sent from, and the prompt and
+  its live answer show right below it. Once the question is saved, the head
+  moves onto it. The reading's `follow` (`from`, `since`/`until` on the server
+  clock, `prefer`, `jobs`) is saved with the head, so reloads and the
+  person's other screens agree. A live run also ends every reader's newest
+  path where it continues (`live` stops, never saved). Before this, a send
+  released an exact head at once. The stale snapshot then descended into the
+  older path, and the stream showed after it until a page refresh.
+  Tests: `conversation-tree.test.js`, and `one-tree-app.test.js` (fails on
+  the old code).
 - Pi 0.87 custom turns: `pisdk-custom.js` prepares them with the SDK's new
   structured prompt options (delegation callbacks were failing on 0.87 too).
 

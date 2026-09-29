@@ -400,7 +400,7 @@ test('resumed web activity and surviving workers keep cancellation live and say 
 test('real agent busy-key function includes terminal tasks with web or worker activity', () => {
   const html = fs.readFileSync(require.resolve('../app.html'), 'utf8');
   const start = html.indexOf('function agentBusyKeys() {');
-  const code = html.slice(start, html.indexOf('\nfunction finishedUnreadSessions()', start));
+  const code = html.slice(start, html.indexOf('\nfunction finishedUnreadSessions(', start));
   const index = D.indexTasks([task('web', { status: 'succeeded', sessionActive: true }),
     task('worker', { status: 'lost', workerAlive: true }), task('done', { status: 'succeeded' })]);
   const context = vm.createContext({ runningKeys: [], activeRuns: new Map(), agentsProcs: [],

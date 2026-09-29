@@ -245,7 +245,7 @@ test('real app surfaces follow the theme together, including nested painted edge
   await evaluate(`gallery.remove();
     window.workPreview=document.createElement('div');
     workPreview.style.cssText='position:fixed;inset:0;z-index:150;background:var(--bg);padding:24px;overflow:auto';
-    workPreview.innerHTML='<h2 style="margin-bottom:20px">Live work</h2><div class="ls-full"><div class="ls-blocks"></div></div>';
+    workPreview.innerHTML='<h2 style="margin-bottom:20px">Live work</h2><div class="ls-full"><div class="ls-blocks ls-flow"></div></div>';
     document.body.append(workPreview);
     window.previewLedger={key:current.key,order:['1','2','3'],blocks:new Map([
       ['1',{id:'1',kind:'text',done:true,think:('First I’ll check how the panel fits into the conversation. The headings should stay easy to find, while the details have enough space to read comfortably.\\n\\n').repeat(14),text:'The panel can use one frame, with quieter sections inside it.'}],
@@ -277,6 +277,16 @@ test('real app surfaces follow the theme together, including nested painted edge
       await shot('thinking-panel-tools-' + theme + '-' + width);
     }
   }
+  // The same work opened inside the transcript (not the dock) must wrap too:
+  // long thinking lines once ran off the right edge there.
+  assert.deepEqual(await evaluate(`(()=>{
+    workPreview.innerHTML='<div class="transcript"></div>';
+    const host=workPreview.querySelector('.transcript');
+    renderLiveReplyLedger(host,'preview-inline',previewLedger,new Map(),{expandedWork:true});
+    const flow=host.querySelector('.toolgroup > .ls-flow');
+    return [!!flow, !!flow?.querySelector('.ls-think'), host.scrollWidth<=host.clientWidth,
+      [...host.querySelectorAll('pre')].every(p=>p.scrollWidth<=p.clientWidth+1)];
+  })()`), [true, true, true, true], 'inline live work wraps inside the transcript');
   // Standalone folds keep joined header corners, without clipping menus.
   await evaluate(`selectTheme('light');workPreview.innerHTML='<details class="toolgroup" open><summary>3 steps · thinking</summary><div>Details</div></details>'`);
   assert.deepEqual(await evaluate(`(()=>{const g=workPreview.querySelector('.toolgroup'),s=getComputedStyle(g.querySelector('summary'));return [getComputedStyle(g).overflow,s.borderTopLeftRadius,s.borderBottomLeftRadius]})()`), ['visible', '5px', '0px']);

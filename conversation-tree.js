@@ -110,8 +110,10 @@
     return out.reverse();
   }
   // Where reading lands below a node: the route last read there, else the
-  // newest continuation all the way down.
-  function descend(T, id, routes) {
+  // newest continuation all the way down. `stops`: nodes whose newest
+  // continuation is still being written (a run whose question is not saved
+  // yet) — reading ends there, right above that live answer.
+  function descend(T, id, routes, stops = null) {
     if (id == null || !T.rows.has(id)) return id;
     const seen = new Set();
     let n = id;
@@ -119,6 +121,7 @@
       seen.add(n);
       const remembered = routes && routes[n];
       if (remembered && remembered !== n && T.rows.has(remembered) && contains(T, n, remembered)) { n = remembered; continue; }
+      if (stops && stops.has(n)) break;
       const k = kids(T, n);
       if (!k.length) break;
       n = k[k.length - 1];
@@ -127,17 +130,65 @@
   }
   function descendNewest(T, id) { return descend(T, id, null); }
   function validHead(T, head) { return head != null && T.rows.has(head); }
+
+  // ---- a message on its way ----------------------------------------------
+  // A send continues from a node, and the run writes its question there a
+  // moment later. Until then the question exists only on screen. Times are
+  // the run's start and end on the server's clock, the clock that stamps the
+  // entries too; a question counts when it was written inside that window.
+  function firstTs(T, id) {
+    let min = Infinity;
+    for (const m of rowsOf(T, id)) { const t = Date.parse(m.ts); if (t < min) min = t; }
+    return min;
+  }
+  // The first question written under `from` (null: at the root) since `since`.
+  function questionAfter(T, from, since, until = null) {
+    if (from === undefined || !Number.isFinite(since) || (from != null && !T.rows.has(from))) return null;
+    for (const c of kids(T, from)) {
+      if (!isQuestion(T, c)) continue;
+      const t = firstTs(T, c);
+      if (t >= since && (until == null || t <= until)) return c;
+    }
+    return null;
+  }
+  // Where a followed send lands once its question is saved: that question,
+  // or the preferred model's answer to it (several models answered at once).
+  function followTarget(T, follow) {
+    if (!follow) return null;
+    const q = questionAfter(T, follow.from ?? null, follow.since, follow.until ?? null);
+    if (q == null || !follow.prefer) return q;
+    const prefer = follow.prefer;
+    const answer = kids(T, q).find(a => packageOf(T, a).some(id => rowsOf(T, id).some(m => m.role === 'assistant' && m.model
+      && (m.model === prefer || (m.provider && m.provider + '/' + m.model === prefer)))));
+    return answer ?? q;
+  }
+  // Nodes a live run continues whose question is not saved yet.
+  function liveStops(T, live) {
+    const out = new Set();
+    for (const l of live || []) if (l && l.from != null && T.rows.has(l.from) && questionAfter(T, l.from, l.since) == null) out.add(l.from);
+    return out;
+  }
+
   // The head a reader sees: an exact head stays where it was put (a branch
   // point); otherwise it follows the conversation as it grows below it.
+  // state.follow: a send from the head, followed onto its own new path as
+  // soon as its question is saved (never onto an older path under the head).
+  // state.live: runs being written now ({ from, since }), not saved state.
   function effectiveHead(T, state) {
     const s = state || {};
-    if (validHead(T, s.head)) return s.exact ? s.head : descend(T, s.head, s.routes);
+    const stops = liveStops(T, s.live);
+    const followed = followTarget(T, s.follow);
+    if (followed != null) return descend(T, followed, s.routes, stops);
+    if (validHead(T, s.head)) return s.exact ? s.head : descend(T, s.head, s.routes, stops);
+    // No head chosen: the file's end, cut where a live answer continues.
+    if (stops.size) for (const n of path(T, T.leafNode)) if (stops.has(n)) return n;
     return T.leafNode;
   }
   // Move the head, remembering the route just left at every point it passed.
+  // A move is a choice: it ends any follow of a send.
   function moveHead(T, state, target, { exact = false } = {}) {
-    const s = state || {};
-    const old = effectiveHead(T, s);
+    const { follow, live, groups, ...s } = state || {};
+    const old = effectiveHead(T, state);
     const routes = { ...(s.routes || {}) };
     // Remember the route only where the conversation divides: at a branch
     // point and at each of its alternatives.
@@ -145,7 +196,7 @@
       if (a === old) continue;
       if (kids(T, a).length > 1 || kids(T, nodeParentOf(T, a)).length > 1) { delete routes[a]; routes[a] = old; }
     }
-    const head = target == null ? T.leafNode : exact ? target : descend(T, target, routes);
+    const head = target == null ? T.leafNode : exact ? target : descend(T, target, routes, liveStops(T, live));
     return { ...s, head, exact: !!exact, routes: pruneRoutes(T, routes) };
   }
   function pruneRoutes(T, routes, max = 400) {
@@ -393,5 +444,5 @@
   }
 
   return { operation, transport, cleanText, build, kids, rowsOf, isQuestion, contains, path, descend, effectiveHead,
-    moveHead, sendNode, answersOf, packageOf, columnsOf, questionGroup, questionVersions, layout, answerAt, nodeParentOf };
+    moveHead, sendNode, questionAfter, followTarget, answersOf, packageOf, columnsOf, questionGroup, questionVersions, layout, answerAt, nodeParentOf };
 });

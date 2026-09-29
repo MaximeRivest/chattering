@@ -61,14 +61,17 @@ function setReadingLocal(key, r) {
   try { localStorage.setItem('chattering.reading.v1:' + key, JSON.stringify(r)); } catch {}
 }
 const readingSaveTimers = new Map();
+// Only the saved fields: what is on screen right now (live runs, answer
+// groups being written) is derived again on every render, never stored.
 function saveReading(key, r) {
-  const next = { ...r, at: Date.now() };
+  const next = { head: r.head ?? null, exact: !!r.exact, routes: r.routes || {}, cols: r.cols || {}, at: Date.now() };
+  if (r.follow) next.follow = r.follow;
   setReadingLocal(key, next);
   clearTimeout(readingSaveTimers.get(key));
   readingSaveTimers.set(key, setTimeout(() => {
     readingSaveTimers.delete(key);
     const conn = typeof peopleState !== 'undefined' ? peopleState.conn : null;
-    postJsonMethod('/api/conversation/reading', 'PUT', { id: key, head: next.head ?? null, exact: !!next.exact, routes: next.routes || {}, cols: next.cols || {}, conn })
+    postJsonMethod('/api/conversation/reading', 'PUT', { id: key, head: next.head, exact: next.exact, routes: next.routes, cols: next.cols, follow: next.follow || null, conn })
       .catch(() => {}); // Offline: the local copy still reads correctly; the next move saves again.
   }, 250));
   return next;
@@ -81,7 +84,45 @@ function applyReadingEvent(ev) {
   setReadingLocal(ev.key, ev.reading);
   if (current?.key === ev.key && viewKind === 'conversation') rerenderReading(null);
 }
-function headOf(d) { return d ? CT.effectiveHead(treeFor(d), readingOf(d.key)) : null; }
+function headOf(d) { return d ? CT.effectiveHead(treeFor(d), readingView(d)) : null; }
+// The reading as it stands on screen: the saved one, plus the runs being
+// written in this conversation right now.
+function readingView(d) { return { ...readingOf(d.key), live: liveContinuations(d) }; }
+// Where each run in progress continues the conversation: { from, since }.
+// Answers written again to a question stream inside its group instead, and a
+// run that ended without writing anything continues nothing.
+function liveContinuations(d) {
+  if (typeof runLedgers === 'undefined') return [];
+  const T = treeFor(d), out = [], fans = new Map();
+  for (const L of runLedgers.values()) {
+    if (L.intent?.question || (L.done && !L.order.length)) continue;
+    if (L.fanoutId) {
+      if (L.fanoutRootKey !== d.key || L.fanoutNode == null) continue;
+      const f = fans.get(L.fanoutId) || { raw: L.fanoutNode, since: Infinity };
+      f.since = Math.min(f.since, Number(L.startedAt));
+      fans.set(L.fanoutId, f);
+    } else if (L.key === d.key && L.node != null) out.push({ from: originNode(T, L.node), since: Number(L.startedAt) });
+  }
+  for (const f of fans.values()) out.push({ from: originNode(T, f.raw), since: f.since });
+  return out.filter(l => l.from !== undefined && Number.isFinite(l.since));
+}
+// The message node a run continues from; undefined when this snapshot does
+// not hold that entry (it cannot be placed yet).
+function originNode(T, raw) {
+  if (raw == null || !T.parent.has(raw)) return undefined;
+  return nodeOfRaw(T, raw);
+}
+// Where a run's live answer belongs. Once its question is saved: under that
+// question, so on screen only when the path goes through it. Before that:
+// right after the node it continues, so only when the reading ends there —
+// never after an older path below that node.
+function liveRunPlace(t, raw, since) {
+  if (!t || raw == null) return { show: true, question: null };
+  const from = originNode(t.tree, raw);
+  if (from === undefined) return { show: true, question: null };
+  const question = CT.questionAfter(t.tree, from, Number(since));
+  return { show: question != null ? t.onPath.has(question) : t.leaf === from, question };
+}
 // Ancestry of the visible path, in the shape older callers read.
 function computeTrace(d) {
   if (!d || !d.entryParents) return null;
@@ -109,10 +150,10 @@ async function moveReading(key, target, { exact = false, anchor = null, cols = n
   rememberConversationDraft();
   const d = key === current?.key ? current : readerSessions.get(key);
   if (!d || !d.entryParents) {
-    saveReading(key, { ...readingOf(key), head: target, exact });
+    saveReading(key, { ...readingOf(key), head: target, exact, follow: null });
     return open(key, anchor ? 'flow:' + anchor : 'bottom');
   }
-  let r = CT.moveHead(treeFor(d), readingOf(key), target, { exact });
+  let r = CT.moveHead(treeFor(d), readingView(d), target, { exact });
   if (cols) r = { ...r, cols: { ...(r.cols || {}), ...cols } };
   saveReading(key, r);
   if (key === current?.key && viewKind === 'conversation') await rerenderReading(anchor);
@@ -241,12 +282,13 @@ function wrapBlock(sig, html) { return `<div class="rd-block" data-rd="${esc(sig
 async function prepareConversationReading(d, scroll) {
   readerSessions.set(d.key, d);
   adoptServerReading(d);
+  settleFollow(d);
   applyPendingFollow(d);
   const T = treeFor(d);
   const entry = typeof scroll === 'string' && scroll.startsWith('entry:') ? scroll.slice(6)
     : typeof scroll === 'string' && scroll.startsWith('hit:') ? d.messages[Number(scroll.slice(4))]?.eid : null;
   if (entry && T.rows.has(entry) && !CT.path(T, headOf(d)).includes(entry)) {
-    saveReading(d.key, CT.moveHead(T, readingOf(d.key), entry));
+    saveReading(d.key, CT.moveHead(T, readingView(d), entry));
   }
   const L = CT.layout(T, layoutState(d));
   const q = typeof scroll === 'string' && scroll.startsWith('hit:') ? transcriptQuery : '';
@@ -262,7 +304,8 @@ let renderedLayout = null;
 function layoutState(d) {
   const groups = [];
   for (const L of runLedgers.values()) if (!L.done && L.key === d.key && L.intent && L.intent.question) groups.push(L.intent.question);
-  return groups.length ? { ...readingOf(d.key), groups } : readingOf(d.key);
+  const view = readingView(d);
+  return groups.length ? { ...view, groups } : view;
 }
 function forkOriginHtml(d) {
   const parent = d.parentSession && typeof sessions !== 'undefined' ? sessions.find(s => s.relPath && d.parentSession.endsWith(s.relPath)) : null;
@@ -322,6 +365,9 @@ function readerSendAllowed() {
 function readerDestinationHtml(d) {
   if (!d || !d.entryParents) return '';
   const r = readingOf(d.key), T = treeFor(d), head = headOf(d);
+  // A sent message is on its way from here, or its answer landed and is not
+  // loaded yet (a send reloads first): what follows is that answer.
+  if (r.follow && (r.follow.until == null || (typeof transcriptNewer === 'function' && transcriptNewer(sessions.find(s => s.key === d.key), d)))) return '';
   if (!r.exact || head == null || !CT.kids(T, head).length) return '';
   return `<div class="reader-destination" id="readerDestination" role="status"><span>Your next message starts a new path here. What came after stays saved.</span><button type="button" data-reader-end>Go to the end</button></div>`;
 }
@@ -337,16 +383,19 @@ function wireDestination() {
 // A regeneration, merge or parallel run writes its answer where the reader
 // cannot point yet. When it lands, the head moves to it — unless the person
 // moved elsewhere meanwhile.
-const pendingFollows = new Map(); // key → { origin, known, at, prefer, jobIds }
+const pendingFollows = new Map(); // key → { origin, known, place, prefer, jobIds }
+// Where the person reads, as a choice: a head saved again unchanged (the
+// server's copy of the same move, stamped by its own clock) is no move.
+function readingPlace(key) { const r = readingOf(key); return JSON.stringify([r.head ?? null, !!r.exact]); }
 function expectAnswer(key, { origin, prefer = null, jobIds = [] }) {
   const d = key === current?.key ? current : null;
   const T = d && treeFor(d);
-  pendingFollows.set(key, { origin, known: T ? T.parent.size : 0, at: readingOf(key).at || 0, prefer, jobIds, started: Date.now() });
+  pendingFollows.set(key, { origin, known: T ? T.parent.size : 0, place: readingPlace(key), prefer, jobIds, started: Date.now() });
 }
 function applyPendingFollow(d) {
   const p = pendingFollows.get(d.key);
   if (!p) return;
-  if ((readingOf(d.key).at || 0) !== p.at) { pendingFollows.delete(d.key); return; } // the person moved on
+  if (readingPlace(d.key) !== p.place) { pendingFollows.delete(d.key); return; } // the person moved on
   const T = treeFor(d);
   const fresh = [...T.parent.keys()].filter(id => T.order.get(id) >= p.known && T.rows.has(id));
   const under = fresh.filter(id => { for (let n = id, seen = new Set(); n != null && !seen.has(n); n = T.parent.get(n)) { if (n === p.origin) return true; seen.add(n); } return false; });
@@ -357,8 +406,73 @@ function applyPendingFollow(d) {
   // Settled only when none of its runs is still writing.
   if ([...activeRuns.values()].some(r => p.jobIds.includes(r.jobId) && r.status === 'running')) return;
   pendingFollows.delete(d.key);
-  const next = CT.moveHead(T, readingOf(d.key), target);
+  const next = CT.moveHead(T, readingView(d), target);
   saveReading(d.key, next);
+}
+
+// ---- following a sent message onto its new path --------------------------
+// A send continues from the head. Its question is written by the run a
+// moment later, so the snapshot on screen does not hold it yet. Until it
+// does, the head stays exactly where the message was sent from: the prompt
+// and its live answer show right below it, never after an older path that
+// continues from the same point. Once the question is saved, the head moves
+// onto it and follows the answer as it lands (CT.effectiveHead resolves it
+// the moment a snapshot holds it; settleFollow then saves that move).
+// The follow is part of the saved reading: a reload, or this person's other
+// screens, follow the same message. Moving the head anywhere ends it.
+//   from     the message node the send continues (null: the start)
+//   since    the runs' start, on the server clock that stamps the entries
+//   until    the runs' end, once known: nothing written later is followed
+//   prefer   several models at once: the answer to land on (a card click)
+//   jobs     the runs
+// expectHead: follow only when the head is still there (undefined: the
+// action itself moves the head there, as asking an edited question does).
+function followSend(key, { from, node = null, jobs, prefer = null, prompt = '', expectHead }) {
+  const ids = [], starts = [];
+  for (const j of jobs || []) {
+    const jobId = j.jobId || j.id;
+    if (!jobId) continue;
+    ids.push(jobId);
+    const startedAt = Number(j.startedAt);
+    if (Number.isFinite(startedAt)) starts.push(startedAt);
+    // The run's ledger from the start: the prompt shows with its answer, and
+    // the run counts as live before its first event arrives. An event may
+    // have won the race; a finished run is never seeded as running again.
+    if (!runLedgers.has(jobId)) {
+      const seed = { ...j, jobId, key: j.key || key, status: 'running', statusText: 'starting', tail: [] };
+      if (!j.fanoutId && node != null) seed.node = node;
+      if (Number.isFinite(startedAt)) seed.startedAt = startedAt;
+      activeRuns.set(jobId, seed); ledgerAbsorb(seed);
+    }
+    const L = runLedgers.get(jobId);
+    if (L && prompt) L.prompt = { text: prompt, ts: new Date().toISOString() };
+  }
+  if (!ids.length || !starts.length || from === undefined) return;
+  const d = key === current?.key ? current : readerSessions.get(key);
+  if (!d || !d.entryParents) return;
+  if (expectHead !== undefined && headOf(d) !== expectHead) return; // the person moved on while it was sent
+  saveReading(key, { ...readingOf(key), head: from, exact: true, follow: { from, since: Math.min(...starts), until: null, prefer, jobs: ids } });
+}
+// The runs of a follow ended: questions written after that are not its own.
+function followRunEnded(ev) {
+  const key = ev.fanoutRootKey || ev.key, r = readingOf(key), f = r.follow;
+  if (!f || f.until != null || !Array.isArray(f.jobs) || !f.jobs.includes(ev.jobId)) return;
+  const ends = f.jobs.map(id => { const L = runLedgers.get(id); return L && L.done ? Number(L.finishedAt) : NaN; });
+  if (!ends.every(Number.isFinite)) return;
+  saveReading(key, { ...r, follow: { ...f, until: Math.max(...ends) } });
+}
+// Several models at once: the card clicked while they write is where the
+// conversation continues when they land.
+function followPrefer(key, prefer) {
+  const r = readingOf(key);
+  if (r.follow && r.follow.prefer !== prefer) saveReading(key, { ...r, follow: { ...r.follow, prefer } });
+}
+// A snapshot that holds the followed question: the head moves onto it.
+function settleFollow(d) {
+  const r = readingOf(d.key);
+  if (!r.follow) return;
+  const T = treeFor(d), target = CT.followTarget(T, r.follow);
+  if (target != null) saveReading(d.key, CT.moveHead(T, readingView(d), target));
 }
 
 // ---- wiring ---------------------------------------------------------------
@@ -889,7 +1003,7 @@ function renderLiveReplyLedger(host, jobId, L, saved = new Map(), { expandedWork
       if (!work) {
         work = document.createElement('details');
         work.className = 'toolgroup'; work.dataset.liveWork = token;
-        work.innerHTML = '<summary><span class="tg-label"><span class="tg-count"></span><span class="tg-detail"></span></span></summary><div></div>';
+        work.innerHTML = '<summary><span class="tg-label"><span class="tg-count"></span><span class="tg-detail"></span></span></summary><div class="ls-flow"></div>';
         work._ledger = { order: [], blocks: new Map() };
       }
       place(work);
@@ -904,8 +1018,8 @@ function renderLiveReplyLedger(host, jobId, L, saved = new Map(), { expandedWork
       work._ledger.jobId = jobId; work._ledger.key = L.key;
       // Plain words for each step as soon as it has finished (plain-steps-ui.js).
       if (typeof PlainSteps !== 'undefined') PlainSteps.live(work, L.key, jobId, blocks);
-      if (work.open) renderLsBlocks(work._ledger, work.querySelector('div'));
-      work.ontoggle = () => { if (work.open) renderLsBlocks(work._ledger, work.querySelector('div')); };
+      if (work.open) renderLsBlocks(work._ledger, work.querySelector(':scope > .ls-flow'));
+      work.ontoggle = () => { if (work.open) renderLsBlocks(work._ledger, work.querySelector(':scope > .ls-flow')); };
       continue;
     }
     let el = host.querySelector(`[data-live-reply="${CSS.escape(token)}"]`);
@@ -963,11 +1077,15 @@ function renderLiveReplies() {
     let run = host.querySelector(`[data-reply-run="${CSS.escape(jobId)}"]`);
     // Regenerations and merges stream inside their answer group instead.
     if (L.intent && L.intent.question) { run?.remove(); continue; }
-    // A reply to another path shows when that path is read.
-    const origin = L.node && t ? nodeOfRaw(t.tree, L.node) : null;
-    if (origin && !t.onPath.has(origin)) { if (run) run.hidden = true; continue; }
+    // A reply shows where it continues the path being read, nowhere else.
+    const place = liveRunPlace(t, L.node, L.startedAt);
+    if (!place.show) { if (run) run.hidden = true; continue; }
+    // A run that ended without writing its question sent nothing: no prompt
+    // stays on screen as if it had been asked.
+    if (L.done && !L.order.length && place.question == null) { run?.remove(); continue; }
     if (!run) {
       run = document.createElement('div'); run.dataset.replyRun = jobId;
+      run.innerHTML = '<div data-live-body></div>';
       host.appendChild(run);
     }
     const saved = savedLiveReplies(L, current.messages);
@@ -976,8 +1094,21 @@ function renderLiveReplies() {
     // Live text belongs to one visible surface: the open stream or the
     // transcript. Both are projections of this conversation's same ledger.
     run.hidden = liveOpen && selectedLiveStream()[1] === L;
-    if (!run.hidden) renderLiveReplyLedger(run, jobId, L, saved);
+    // The prompt sent from this screen, until the saved question replaces it.
+    renderLivePrompt(run, L.prompt, place.question == null);
+    if (!run.hidden) renderLiveReplyLedger(run.querySelector(':scope > [data-live-body]'), jobId, L, saved);
   }
+}
+// The words just sent, drawn as the question they become when saved.
+function renderLivePrompt(host, prompt, show) {
+  let el = host.querySelector(':scope > [data-live-prompt]');
+  if (!prompt || !show) { el?.remove(); return; }
+  if (el && el.dataset.livePrompt === prompt.ts) return;
+  const template = document.createElement('template');
+  template.innerHTML = msgBlock({ role: 'user', text: prompt.text, ts: prompt.ts }, esc, true);
+  const next = template.content.firstElementChild;
+  next.dataset.livePrompt = prompt.ts;
+  if (el) el.replaceWith(next); else host.prepend(next);
 }
 
 function captureLiveReplyHandoff(d) {
@@ -1029,10 +1160,13 @@ function renderReaderParallel(stage, entries) {
   const runId = entries[0]?.[1].fanoutId;
   const t = current && computeTrace(current);
   const origin = entries[0]?.[1].fanoutNode;
-  const at = origin && t ? nodeOfRaw(t.tree, origin) : null;
-  const offPath = at && t && !t.onPath.has(at);
+  // The answers stream right after the point they continue, when the reading
+  // ends there; once saved into the conversation, the saved group shows them.
+  const since = Math.min(...entries.map(([, L]) => Number(L.startedAt)).filter(Number.isFinite));
+  const place = liveRunPlace(t, origin, since);
+  const elsewhere = !place.show || place.question != null;
   const settled = entries.length && entries.every(([, L]) => L.done) && !entries.some(([, L]) => L.retained);
-  if (!entries.length || offPath || (settled && stage.dataset.settling === runId)) { stage.hidden = true; return; }
+  if (!entries.length || elsewhere || (settled && stage.dataset.settling === runId)) { stage.hidden = true; return; }
   stage.hidden = false;
   const layout = cardLayoutFor(entries.length);
   if (stage.dataset.fanout !== runId || stage.dataset.layout !== layout) {
@@ -1040,7 +1174,7 @@ function renderReaderParallel(stage, entries) {
     stage.dataset.layout = layout;
     stage.className = 'parallel-stage rd-answers rd-live-group';
     stage.dataset.flowAnchor = 'live:' + runId;
-    stage.innerHTML = `<div class="rd-answers-bar"><span class="rd-count">${entries.length} answers · being written</span>${layoutSwitchHtml(layout)}<span class="rd-spacer"></span></div><div class="rd-cards" role="list"></div><div class="rd-live-note" role="status"></div>`;
+    stage.innerHTML = `<div class="rd-live-prompt"></div><div class="rd-answers-bar"><span class="rd-count">${entries.length} answers · being written</span>${layoutSwitchHtml(layout)}<span class="rd-spacer"></span></div><div class="rd-cards" role="list"></div><div class="rd-live-note" role="status"></div>`;
     stage.querySelectorAll('[data-rd-layout]').forEach(b => b.onclick = () => {
       localStorage.setItem('chattering.cards.layout', b.dataset.rdLayout);
       stage.dataset.layout = ''; renderParallelStage(); rerenderReading(null);
@@ -1049,6 +1183,7 @@ function renderReaderParallel(stage, entries) {
   stage.dataset.layout = layout;
   stage.setAttribute('data-layout', layout);
   stage.style.setProperty('--cols', String(entries.length));
+  renderLivePrompt(stage.querySelector('.rd-live-prompt'), entries.map(([, L]) => L.prompt).find(Boolean), true);
   const chosen = parallelChoices.get(runId) ?? 0;
   const host = stage.querySelector('.rd-cards');
   for (const [i, [jobId, L]] of entries.entries()) {
@@ -1063,8 +1198,7 @@ function renderReaderParallel(stage, entries) {
         const sel = window.getSelection();
         if (sel && !sel.isCollapsed && card.contains(sel.anchorNode)) return;
         parallelChoices.set(runId, i);
-        const p = pendingFollows.get(activeRel);
-        if (p) p.prefer = L.model ? L.model.split(/[\\/]/).pop() : null;
+        followPrefer(activeRel, L.model ? L.model.split(/[\\/]/).pop() : null);
         renderParallelStage();
       };
       card.querySelector('.rd-stop').onclick = async e => {

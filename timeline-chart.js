@@ -730,12 +730,17 @@
       const { g, title, path } = node;
       for (const attr of [...g.attributes]) if (attr.name.startsWith('data-')) g.removeAttribute(attr.name);
       setAttributes(g, { class: mark.className || 'tmark', tabindex: 0, ...mark.attributes });
-      title.textContent = mark.title || '';
+      // Text is only written when it changed: a new data object with the
+      // same words must not dirty the page (on e-ink, a screen refresh).
+      // `title` may be a getter the caller computes lazily: read it once.
+      const tip = mark.title || '';
+      if (title.textContent !== tip) title.textContent = tip;
       path.style.fill = mark.color?.fill || '';
       if (!node.glyph) {
         path.style.stroke = mark.color?.stroke || '';
         node.line.style.stroke = mark.color?.stroke || '';
-        node.text.textContent = mark.label || '';
+        const label = mark.label || '';
+        if (node.text.textContent !== label) node.text.textContent = label;
         node.dot.setAttribute('class', 'livedot' + (mark.working ? '' : ' idle'));
         node.dot.style.display = mark.live || mark.working ? '' : 'none';
         node.active.style.display = mark.active ? '' : 'none';

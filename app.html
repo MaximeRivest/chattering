@@ -1289,6 +1289,10 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
 :root[data-theme-mode="binary"] .msg.folded::after { background: var(--bg); height: 24px; }
 .msg .unfold { position: absolute; right: 14px; bottom: 6px; z-index: 1; height: 20px; padding: 0 6px; border: 0; background: transparent; color: var(--text-faint); font-size: 11px; cursor: pointer; }
 .msg .unfold:hover { color: var(--text); text-decoration: underline; background: transparent; }
+/* very long message: only its opening is built until asked (messageBodyHtml) */
+.msg .msg-show-all { display: block; margin: 12px 0 0; padding: 6px 10px; border: 1px dashed var(--border); border-radius: var(--r); background: transparent; color: var(--text-dim); font-size: var(--fs-meta); cursor: pointer; white-space: normal; text-align: left; }
+.msg .msg-show-all:hover { color: var(--text); border-style: solid; }
+.msg .msg-plain { font-family: var(--font-mono); font-size: 0.92em; }
 /* model-change bar: a quiet rule line where the serving model switches */
 .modelbar { display: flex; align-items: center; gap: 10px; margin: 4px 0; padding: 0 14px; color: var(--text-faint); font-size: var(--fs-micro); }
 .modelbar::before, .modelbar::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
@@ -1521,7 +1525,10 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
 .ls-abort:hover { color: var(--danger); border-color: var(--danger); background: transparent; }
 .ls-full { position: relative; border: 1px solid var(--border-strong); border-radius: var(--r); background: var(--surface-1); overflow: hidden; }
 .ls-blocks { max-height: 65vh; min-height: 120px; overflow-y: auto; padding: 12px; scroll-padding-top: 44px; font-size: 12px; line-height: 1.6; overscroll-behavior: contain; }
-.ls-blocks pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-family: inherit; }
+/* Content of a run's steps, wherever it is drawn: the dock's live pane or an
+   opened steps box in the transcript. Long lines must wrap in both. */
+.ls-flow { min-width: 0; }
+.ls-flow pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; }
 .ls-b { margin: 0 0 18px; min-width: 0; overflow-wrap: anywhere; }
 .ls-b:last-child { margin-bottom: 0; }
 .ls-b-head { font-size: 11px; font-weight: 600; color: var(--text-dim); margin-bottom: 8px; }
@@ -2289,7 +2296,7 @@ body.side-layout.conv.chrome-min #floatHead > * { pointer-events: none; }
 .msg-actions button:hover { background: var(--surface-2); text-decoration: none; }
 .file-action-menu button { border-radius: var(--r-sm); }
 /* A reading-font choice must not turn code or terminal output proportional. */
-.md pre, .md code, .tool-out, .ls-blocks pre:not(.ls-think) { font-family: var(--font-mono); }
+.md pre, .md code, .tool-out, .ls-flow pre:not(.ls-think) { font-family: var(--font-mono); }
 @media (max-width: 700px), (max-height: 700px) and (pointer: coarse) {
   .composer-dock { width: calc(100% - 16px); bottom: 8px; margin: 0 auto; }
   .agent-compose-row { overflow: visible; gap: 4px; }
@@ -2849,7 +2856,7 @@ function dispatchHash(h, { restore = false } = {}) {
     try {
       const route = JSON.parse(h.slice(5));
       if (typeof route.key !== 'string' || (route.leaf != null && typeof route.leaf !== 'string')) throw Error();
-      if (route.leaf) saveReading(route.key, { ...readingOf(route.key), head: route.leaf, exact: !!route.exact });
+      if (route.leaf) saveReading(route.key, { ...readingOf(route.key), head: route.leaf, exact: !!route.exact, follow: null });
       if (viewKind === 'file' && conversationFileReturn?.key === route.key)
         return returnToConversationFile(route.key, conversationFileReturn.path, conversationFileReturn.ts, conversationFileReturn.call, h);
       return open(route.key, restore ? 'restore' : route.anchor ? 'flow:' + route.anchor : 'restore', h);
@@ -2927,7 +2934,14 @@ window.uiAudit = function uiAudit(root) {
   return bad;
 };
 
-function fmtDate(ts) { return ts ? new Date(ts).toLocaleString() : '?'; }
+// One formatter, the same fields toLocaleString() prints: building its
+// locale data on every call made thousands of dates a real cost.
+const DATE_TIME_FORMAT = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' });
+function fmtDate(ts) {
+  if (!ts) return '?';
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? 'Invalid Date' : DATE_TIME_FORMAT.format(d);
+}
 function fmtDateShort(ts) {
   if (!ts) return '?';
   const d = new Date(ts);
@@ -3531,7 +3545,9 @@ function setTicker(key, title, kind = 'update') {
   const t = $('ticker');
   t.className = 'k-' + kind;
   renderTicker();
-  t.classList.remove('flash'); void t.offsetWidth; t.classList.add('flash');
+  // Restarting the flash forces a layout of the whole page; skip it where
+  // there is no motion to restart (e-ink, reduced motion, hidden page).
+  if (listMotionOn()) { t.classList.remove('flash'); void t.offsetWidth; t.classList.add('flash'); }
 }
 // What happened in this session? Diff the old entry against the update.
 function updateKind(old, d, isNew) {
@@ -3798,18 +3814,20 @@ async function loadAgentRecovery() {
 // Unread replies in the side list (design/59): a finished, unread reply of
 // a conversation a person opened. A conversation nobody opened here does
 // not count, whatever it did.
-function finishedUnreadSessions() {
+function finishedUnreadSessions(listed = listedSessions()) {
   const busy = agentBusyKeys(), byKey = delegationTaskByKey();
   const interrupted = new Set(agentsRecovery.interrupted.map(r => r.key));
-  return listedSessions().filter(s => agentUnreadAt(s) && !interrupted.has(s.key) && !busy.has(s.key) && delegatedNeedsPerson(s, byKey))
+  return listed.filter(s => agentUnreadAt(s) && !interrupted.has(s.key) && !busy.has(s.key) && delegatedNeedsPerson(s, byKey))
     .sort((a, b) => agentUnreadAt(b) - agentUnreadAt(a));
 }
 // Listed conversations the assistant is working in right now.
-function workingListedKeys() {
+function workingListedKeys(listed = listedSessions()) {
   const busy = agentBusyKeys();
-  return new Set(listedSessions().filter(s => busy.has(s.key)).map(s => s.key));
+  return new Set(listed.filter(s => busy.has(s.key)).map(s => s.key));
 }
-function markAgentRead(key, at = Date.now()) {
+// live: called from a stream update, so the header and side list repaint
+// with the next batched live paint instead of at once.
+function markAgentRead(key, at = Date.now(), { live = false } = {}) {
   if (!key) return;
   const s = sessions.find(item => item.key === key);
   const readAt = Math.max(Number(at) || 0, Date.now(), Number(s && s.mtimeMs) || 0,
@@ -3818,8 +3836,8 @@ function markAgentRead(key, at = Date.now()) {
   delete agentReadState.finished[key];
   delete agentReadState.flagged[key];
   saveAgentReadState();
-  updateActiveBtn();
-  renderAgentsPopSoon();
+  if (live) liveRepaintSoon();
+  else { updateActiveBtn(); renderAgentsPopSoon(); }
   // Every read reaches the server; it owns the clock and the other devices.
   queueAgentReadPush(key, readAt);
 }
@@ -3840,13 +3858,14 @@ document.addEventListener('visibilitychange', () => {
 });
 
 function updateActiveBtn() {
-  const unread = finishedUnreadSessions();
+  const listed = listedSessions();
+  const unread = finishedUnreadSessions(listed);
   const attention = new Set(unread.map(s => s.key));
   agentsRecovery.interrupted.forEach(r => attention.add(r.key));
   // The signals follow the list: work in a conversation nobody opened here
   // is not shown, so it must not pulse either.
-  const working = workingListedKeys().size > 0;
-  $('activeBtn').hidden = attention.size === 0 && !working && !listedSessions().length && !delegationUI.index().tasks.some(DelegationUI.isLive);
+  const working = workingListedKeys(listed).size > 0;
+  $('activeBtn').hidden = attention.size === 0 && !working && !listed.length && !delegationUI.index().tasks.some(DelegationUI.isLive);
   // The number is an inbox count. Its reserved slot stays empty when clear,
   // so activity changes never move the other header controls.
   $('activeGlyph').textContent = working ? '⚉' : '⚇';
@@ -5604,10 +5623,14 @@ function renderTimeline() {
     const src = s.source || 'claude';
     const project = rowProject || projectOf(s);
     const fam = s._famMembers || null;
-    const famTip = fam ? `\n⤑ ${fam.length} linked branches (fan-out / forks — one conversation family):\n` + fam.slice(0, 8).map(m => '• ' + (m.title || '(untitled)')).join('\n') + (fam.length > 8 ? `\n… ${fam.length - 8} more` : '') : '';
     const shortTitle = String(s.timelineTitle || fallbackTimelineTitle(s)).slice(0, 10) + (fam ? ' ⤑' + fam.length : '');
-    const clusterTitles = clusterId ? '\n\n' + members.slice(0, 12).map(r => '• ' + (r.s.title || '(untitled)')).join('\n') + (members.length > 12 ? `\n… ${members.length - 12} more` : '') : '';
-    const tip = `${s.title || s.timelineTitle || '(untitled)'}\nProject: ${project}\nSource: ${src}\n${fmtDate(s.firstTs)} → ${fmtDate(s.lastTs)}\n${s.userCount || 0} user · ${s.assistantCount || 0} assistant${$('densityTools').checked ? ' · tool calls included' : ''}${isWorking(s) ? '\n● working now' : isActive(s) ? '\n○ active in the last 5 min' : ''}${famTip}${clusterTitles}`;
+    // The tooltip is written only for marks the chart draws (a few dozen of
+    // thousands), when it draws them: see the `title` getter below.
+    const tip = () => {
+      const famTip = fam ? `\n⤑ ${fam.length} linked branches (fan-out / forks — one conversation family):\n` + fam.slice(0, 8).map(m => '• ' + (m.title || '(untitled)')).join('\n') + (fam.length > 8 ? `\n… ${fam.length - 8} more` : '') : '';
+      const clusterTitles = clusterId ? '\n\n' + members.slice(0, 12).map(r => '• ' + (r.s.title || '(untitled)')).join('\n') + (members.length > 12 ? `\n… ${members.length - 12} more` : '') : '';
+      return `${s.title || s.timelineTitle || '(untitled)'}\nProject: ${project}\nSource: ${src}\n${fmtDate(s.firstTs)} → ${fmtDate(s.lastTs)}\n${s.userCount || 0} user · ${s.assistantCount || 0} assistant${$('densityTools').checked ? ' · tool calls included' : ''}${isWorking(s) ? '\n● working now' : isActive(s) ? '\n○ active in the last 5 min' : ''}${famTip}${clusterTitles}`;
+    };
     const live = clusterId ? members.some(r => isActive(r.s)) : (isActive(s) || (fam || []).some(isActive));
     const work = clusterId ? members.some(r => isWorking(r.s)) : (isWorking(s) || (fam || []).some(isWorking));
     return {
@@ -5616,7 +5639,7 @@ function renderTimeline() {
       className: `tmark${famIsActive(s) ? ' active' : ''}${s.key && selected.has(s.key) ? ' selected' : ''}${project === rowHlProject ? ' rowhl' : ''}`,
       row, start, end, y: LABEL_H + (lane + 0.5) * layout.laneHeight,
       laneHeight: layout.laneHeight, bins, fat: !!clusterId, color,
-      title: tip, label: shortTitle, live, working: work, active: famIsActive(s),
+      get title() { return tip(); }, label: shortTitle, live, working: work, active: famIsActive(s),
     };
   });
   // Home lenses: notes and epics are direct marks on the project rows.
@@ -5743,7 +5766,7 @@ window.addEventListener('resize', () => {
 // times (sessions, notes, epics, repos, stats, folds each arrived and drew);
 // now those land in one frame. renderNow() is for the few callers that
 // must read the fresh DOM right after (focus into a new input).
-let renderQueued = false;
+let renderQueued = false, renderNowCost = 0;
 function render() {
   if (renderQueued) return;
   renderQueued = true;
@@ -5752,10 +5775,12 @@ function render() {
 function renderNow() {
   renderQueued = false;
   if (tab !== 'conv') return;
+  const t0 = performance.now();
   updateActiveBtn();
   $('count').textContent = shown.length + ' conversations';
   renderTimeline();
   renderSelbar();
+  renderNowCost = performance.now() - t0;
 }
 
 function renderSelbar() {
@@ -9879,6 +9904,73 @@ document.addEventListener('pointerover', e => {
   b.dataset.fileHinted = '1';
 });
 
+// ---- very long messages ----
+// A pasted log of 5 MB used to become ~70,000 page elements the moment its
+// conversation opened: 40 s on a slow tablet, and enough memory for a weak
+// device to kill the app. A message longer than LONG_MESSAGE_CHARS (far past
+// any written answer: ~15,000 words) shows its opening; the rest is built
+// only when asked for, and past LONG_MESSAGE_MARKDOWN_MAX as plain text (one
+// text node, no formatting) instead of Markdown. Copy, read aloud and edit
+// work from the stored message, so they always get the whole text.
+const LONG_MESSAGE_CHARS = 100000;
+const LONG_MESSAGE_PREVIEW_CHARS = 10000;
+const LONG_MESSAGE_MARKDOWN_MAX = 300000;
+function longMessageCut(text) {
+  const nl = text.lastIndexOf('\n', LONG_MESSAGE_PREVIEW_CHARS);
+  return nl > LONG_MESSAGE_PREVIEW_CHARS / 2 ? nl : LONG_MESSAGE_PREVIEW_CHARS;
+}
+function countLines(text) {
+  let n = 1;
+  for (let i = text.indexOf('\n'); i >= 0; i = text.indexOf('\n', i + 1)) n++;
+  return n;
+}
+function countWords(text) {
+  let n = 0, inWord = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    const space = c === 32 || (c >= 9 && c <= 13) || c === 160;
+    if (!space && !inWord) n++;
+    inWord = !space;
+  }
+  return n;
+}
+function fmtTextSize(chars) {
+  return chars >= 1e6 ? (chars / 1e6).toFixed(1) + ' MB' : Math.round(chars / 1e3) + ' KB';
+}
+// The body of a person's or the assistant's message. A search hit past the
+// opening shows the whole message, while it can still be Markdown.
+function messageBodyHtml(text, q = '', copyIndex = -1) {
+  const s = String(text ?? '');
+  if (s.length <= LONG_MESSAGE_CHARS) return mdRender(s, q);
+  const cut = longMessageCut(s);
+  if (q && s.length <= LONG_MESSAGE_MARKDOWN_MAX) {
+    const qr = termRegex(q, 'i');
+    if (qr && !qr.test(s.slice(0, cut)) && qr.test(s)) return mdRender(s, q);
+  }
+  const rest = s.length - cut;
+  return mdRender(s.slice(0, cut), q) +
+    `<button type="button" class="msg-show-all" data-msg-index="${copyIndex}" title="Only the opening of this very long message is shown, so the conversation stays quick to open">` +
+    `… show the whole message · ${countLines(s).toLocaleString()} lines · ${fmtTextSize(s.length)}${s.length > LONG_MESSAGE_MARKDOWN_MAX ? ' · as plain text' : ''} (${fmtTextSize(rest)} more)</button>`;
+}
+function showWholeMessage(btn) {
+  const message = readerMessage(btn);
+  const md = btn.closest('.md');
+  if (!message || !md) return;
+  const text = String(message.text ?? '');
+  const msg = md.closest('.msg');
+  if (text.length > LONG_MESSAGE_MARKDOWN_MAX) {
+    const plain = document.createElement('div');
+    plain.className = 'msg-plain';
+    plain.textContent = text;
+    md.replaceChildren(plain);
+  } else {
+    md.innerHTML = mdRender(text, '');
+    wireTranscriptPathCandidates(md, msg?.dataset.msgKey || activeRel);
+  }
+  // Asked for the whole message: the height fold would hide it again.
+  if (msg) { msg.classList.remove('folded', 'can-fold'); msg.querySelector(':scope > .unfold')?.remove(); }
+}
+
 function msgBlock(m, hl, keepOpen = false, q = '', copyIndex = -1, messageKey = activeRel, versionSwitch = null) {
   // data-i: the message's index in the cached array — the anchor a search
   // hit lands on (renderConv scroll 'hit:N').
@@ -9947,7 +10039,7 @@ function msgBlock(m, hl, keepOpen = false, q = '', copyIndex = -1, messageKey = 
   if (m.role === 'user' || m.role === 'assistant') {
     const anchor = m.ts ? ` data-ts="${esc(m.ts)}"` : '';
     const full = (m.origin === 'delegation' ? '<div class="role" title="The parent conversation wrote this brief. No person typed it."><span>↰ brief from the parent conversation</span></div>' : '') +
-      `<div class="md">${mdRender(m.text, q)}</div>${messageMediaHtml(m.images, messageKey)}`;
+      `<div class="md">${messageBodyHtml(m.text, q, copyIndex)}</div>${messageMediaHtml(m.images, messageKey)}`;
     const actions = `<div class="msg-actions" aria-label="Message actions">` +
       (m.role === 'assistant' ? speedLabelHtml(m) : '') +
       `<button type="button" class="msg-copy" data-msg-index="${copyIndex}" title="Copy the message Markdown">copy</button>` +
@@ -9960,7 +10052,7 @@ function msgBlock(m, hl, keepOpen = false, q = '', copyIndex = -1, messageKey = 
       (copyIndex >= 0 && !ConversationFlow.transport(m) && m.eid ? `<button type="button" data-reader-continue-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Use this conversation context. Files on disk are not rewound.">continue here</button><button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Copy the conversation through this message into a separate conversation">fork</button>` : '') +
       (copyIndex >= 0 && m.role === 'user' ? `<button type="button" class="msg-snippet" data-msg-index="${copyIndex}" title="Save this message as a snippet you can insert later">snippet</button>` : '') +
       (copyIndex >= 0 && !ConversationFlow.transport(m) ? `</div></details>` : '') + `</div>`;
-    const words = m.text.split(/\s+/).length;
+    const words = m.text.length > LONG_MESSAGE_CHARS ? countWords(m.text) : m.text.split(/\s+/).length;
     return `<div class="msg ${m.role}${keepOpen ? '' : ' can-fold'}" tabindex="0" data-words="${words}"${anchor}${idxAttr}>${role}${full}${actions}</div>`;
   }
   return `<div class="msg ${m.role}"${idxAttr}>${role}${hl(m.text)}</div>`;
@@ -10389,6 +10481,12 @@ $('view').addEventListener('mouseup', () => {
 });
 
 $('view').addEventListener('click', async e => {
+  const showAll = e.target.closest('.msg-show-all');
+  if (showAll) {
+    e.stopPropagation();
+    showWholeMessage(showAll);
+    return;
+  }
   const readBtn = e.target.closest('.msg-read');
   if (readBtn) {
     e.stopPropagation();
@@ -10511,11 +10609,14 @@ async function openTranscriptEditor(btn) {
       // own answer follows, and the original wording stays one arrow away.
       const T = treeFor(current), parent = T.parent.get(d.eid || current.messages[i].eid);
       if (parent == null) { save.disabled = false; save.textContent = 'save and ask'; return errToast('The first question cannot be reworded in place yet. Fork to ask it differently.'); }
-      const run = await postJson('/api/node/send', { id: key, node: parent, prompt: ta.value, models: pickedModels, images: [] });
+      const asked = ta.value, headBefore = headOf(current);
+      const run = await postJson('/api/node/send', { id: key, node: parent, prompt: asked, models: pickedModels, images: [] });
       if (!run || run.error) { save.disabled = false; save.textContent = 'save and ask'; return errToast('Could not ask the edited question: ' + (run?.error || 'no answer')); }
       close();
-      expectAnswer(key, { origin: parent, jobIds: run.job ? [run.job.id] : [] });
-      echoUserPrompt(ta.value);
+      // Read from the point it is asked at: the new wording and its answer
+      // stream there, and the head moves onto them once saved (followSend).
+      followSend(key, { from: nodeOfRaw(T, parent), node: parent, jobs: run.runs || (run.job ? [run.job] : []), prompt: asked, expectHead: headBefore });
+      if (current?.key === key && viewKind === 'conversation') await rerenderReading(null);
       toast('Asking the edited question. The original wording stays saved.');
       return;
     }
@@ -11467,7 +11568,7 @@ function agentComposerHtml(d) {
   if (!['claude', 'pi', 'pi-remote'].includes(d.source)) return '';
   return `<div class="composer-dock" id="composerDock" data-conversation-key="${esc(d.key)}">
     <div class="live-strip" id="liveStrip" hidden>
-      <div class="ls-full" id="lsFull" hidden><div class="ls-blocks" id="lsBlocks"></div><button type="button" class="ls-livechip" id="lsChip" hidden>⤓ live</button></div>
+      <div class="ls-full" id="lsFull" hidden><div class="ls-blocks ls-flow" id="lsBlocks"></div><button type="button" class="ls-livechip" id="lsChip" hidden>⤓ live</button></div>
       <div class="ls-row">
         <button type="button" class="ls-line" id="lsLine" aria-expanded="false" title="Open the full live stream of this run"><span id="lsSum"></span></button>
         <button type="button" class="ls-abort" id="lsAbort" hidden title="Stop this run. The session file keeps what already landed.">abort</button>
@@ -11628,12 +11729,23 @@ async function headlessSendFromComposer(btn, promptOverride) {
     hideSlashPop();
   }
   const models = fanModels();
+  // Where this message goes is decided on the conversation as it is now. A
+  // reply that finished while the reader was scrolled up is not on screen
+  // yet (the transcript waits for them to come back down): load it first,
+  // or the message would continue from before that reply.
+  if (current?.key === key && viewKind === 'conversation' && !hasLiveRun(key) && transcriptNewer(sessions.find(s => s.key === key), current)) {
+    await open(key, 'preserve');
+    if (current?.key !== key || activeRel !== key) return errToast('Not sent: another conversation opened while this one reloaded.');
+    if (!btn.isConnected && $('agentRun')) btn = $('agentRun');
+  }
   // The next message continues from the head. While a reply is being written
   // on the path you read, a single-model send joins that turn as a follow-up.
   const trace = current && computeSendTrace(current);
   const running = [...activeRuns.values()].find(r => r.key === key && r.status === 'running' && !r.fanoutId);
   const runningHere = running && trace && (!running.node || trace.onPath.has(nodeOfRaw(trace.tree, running.node)));
   const node = runningHere && models.length < 2 ? null : sendNodeFor(current);
+  // The message node the new question will hang under: the head.
+  const from = node == null || !trace ? undefined : trace.leaf ?? null;
   btn.disabled = true;
   btn.textContent = 'starting…';
   // Show the strip now: the heartbeat is already on it.
@@ -11653,29 +11765,35 @@ async function headlessSendFromComposer(btn, promptOverride) {
   btn.textContent = agentRunLabel();
   if (!out) return clearSendPending(key);
   if (out.error) { clearSendPending(key); return errToast('send failed: ' + out.error); }
-  if (key === activeRel && viewKind === 'conversation') echoUserPrompt(prompt);
-  if (fromBox && ta) {
-    ta.value = '';
+  const here = key === activeRel && viewKind === 'conversation' && current?.key === key;
+  // A follow-up joins the turn being written; it has no run of its own.
+  if (out.queued && here) echoUserPrompt(prompt);
+  // The composer that sent it (a reload before sending replaced the first).
+  const box = ta && ta.isConnected ? ta : $('agentText')?.closest('[data-conversation-key]')?.dataset.conversationKey === key ? $('agentText') : null;
+  if (fromBox) {
     readerDrafts.delete(key);
-    autoGrowCompose();
     window._agentImages = [];
     renderAgentThumbs();
+  }
+  if (fromBox && box) {
+    box.value = '';
+    autoGrowCompose();
     // The reply streams in below: rest the composer. Blur everywhere — on
     // desktop a focused textarea would swallow the navigation shortcuts.
-    ta.blur();
+    box.blur();
     updateComposeMin();
   }
-  // The head follows the new message: an exact branch point now continues.
-  if (current?.key === key && readingOf(key).exact) saveReading(key, { ...readingOf(key), exact: false });
   if (out.queued) { toast('queued into the running turn — pi picks it up as a follow-up (session model)'); return true; }
-  if (Array.isArray(out.runs) && out.runs.length) expectAnswer(key, { origin: node, prefer: (models[0] && models[0].modelId) || null, jobIds: out.runs.map(r => r.jobId) });
-  // Seed the shared stage before the first SSE delta. Every later event carries
-  // the same fan-out identity, so reload/reconnect can rebuild it too.
-  if (Array.isArray(out.runs)) for (const r of out.runs) {
-    const seed = { ...r, key: r.key, status: 'running', statusText: 'starting', startedAt: Date.now(), tail: [] };
-    activeRuns.set(r.jobId, seed); ledgerAbsorb(seed);
-  }
-  if (Array.isArray(out.runs)) renderRunCards();
+  // The head stays on the point this was sent from, the prompt and its live
+  // answer right below it; the head moves onto the new question once it is
+  // saved (followSend). Several models: the first one's answer, unless
+  // another card is clicked while they write.
+  const fanned = Array.isArray(out.runs) && out.runs.length > 0;
+  followSend(key, { from, node, jobs: fanned ? out.runs : out.job ? [out.job] : [], prefer: fanned ? (models[0] && models[0].modelId) || null : null, prompt, expectHead: from });
+  if (here) {
+    await rerenderReading(null);
+    $('view').scrollTop = $('view').scrollHeight;
+  } else renderRunCards();
   toast(out.runs ? out.runs.length + ' models are answering side by side' : 'running · ' + ((out.job && out.job.model) || (models[0] && models[0].modelId) || 'session model'));
   return true;
 }
@@ -18539,6 +18657,7 @@ live.onmessage = ev => {
       const doneL = runLedgers.get(d.jobId);
       if (doneL) { doneL.done = true; doneL.status = d.status; }
       activeRuns.delete(d.jobId);
+      followRunEnded(d);
       // The run ended: one settled refresh now, after all live thinking and
       // tool changes stayed inside the fixed pane. The server indexed the
       // file before it sent this event, so the session entry already carries
@@ -18561,8 +18680,9 @@ live.onmessage = ev => {
       }
     } else { activeRuns.set(d.jobId, d); ledgerAbsorb(d); }
     if (viewKind === 'conversation' && (activeRel === d.key || activeRel === d.fanoutRootKey)) renderRunCards();
-    updateLiveBadges();
-    renderAgentsPopSoon();
+    // A streaming reply sends many events a second; the header and the side
+    // list follow in the next batched live paint.
+    liveRepaintSoon();
     return;
   }
   if (d.type === 'agents') {
@@ -18620,28 +18740,73 @@ live.onmessage = ev => {
   // session rows, ticker noise, or recent-agent rows.
   if (d.hiddenFanout) {
     const i = sessions.findIndex(s => s.key === d.key);
-    if (i >= 0) { sessions.splice(i, 1); if (tab === 'conv') applyFilter(); }
-    updateLiveBadges(); renderAgentsPopSoon();
+    if (i >= 0) sessions.splice(i, 1);
+    liveRepaintSoon({ list: true });
     return;
   }
   relatedCache.delete(d.key);
   ctxMeterCache.delete(d.key);
-  if (d.key === activeRel && current) refreshCtxMeter(current);
+  if (d.key === activeRel) livePending.ctx = true;
   const i = sessions.findIndex(s => s.key === d.key);
   const kind = updateKind(i >= 0 ? sessions[i] : null, d, i < 0);
   if (i >= 0) sessions[i] = { ...sessions[i], ...d };
   else sessions.unshift({ ...d });
-  if (d.key === activeRel && viewKind === 'conversation' && !document.hidden) markAgentRead(d.key, d.mtimeMs);
-  sessions.sort((a, b) => (b.lastTs || '').localeCompare(a.lastTs || ''));
-  if (tab === 'conv') applyFilter();
-  setTicker(d.key, d.title, kind);
-  updateLiveBadges();
-  renderAgentsPopSoon();
+  if (d.key === activeRel && viewKind === 'conversation' && !document.hidden) markAgentRead(d.key, d.mtimeMs, { live: true });
+  livePending.ticker = { key: d.key, title: d.title, kind };
+  liveRepaintSoon({ list: true });
   // The open conversation may have grown. The app never navigates by itself:
   // reconcileTranscript() only reloads the view the user is already reading,
   // and only when the bytes on disk are newer than the ones on screen.
   reconcileTranscript(d);
 };
+
+// ---- live repaint budget ----
+// An agent at work sends several updates a second. Each one used to re-sort
+// every conversation, rebuild the whole home chart, the header count, the
+// side list and the ticker, and refetch the context meter: on a slow single
+// core that kept half the processor busy while nobody touched anything, and
+// on e-ink every pass refreshed the screen. Updates now merge their data at
+// once and paint together: the first after a quiet moment right away, then
+// at most once a second (every five on e-ink), and never more often than
+// keeps the repaint under a tenth of this device's time. `list` asks for the
+// conversation list and the home chart as well (a conversation changed);
+// without it only the header signals and the side list repaint (a run moved).
+const LIVE_PAINT_MS = 1000, LIVE_PAINT_EINK_MS = 5000, LIVE_PAINT_SHARE = 0.1;
+const livePending = { ticker: null, ctx: false, list: false };
+let livePaintTimer = null, livePaintLast = 0, livePaintCost = 0, livePaintDirty = false;
+function liveRepaintSoon({ list = false } = {}) {
+  livePaintDirty = true;
+  if (list) livePending.list = true;
+  if (livePaintTimer) return;
+  const gap = Math.max(isEink() ? LIVE_PAINT_EINK_MS : LIVE_PAINT_MS, livePaintCost / LIVE_PAINT_SHARE);
+  livePaintTimer = setTimeout(liveRepaint, Math.max(0, livePaintLast + gap - Date.now()));
+}
+function liveRepaint() {
+  livePaintTimer = null;
+  if (document.hidden) return; // stays dirty; painted when the page shows again
+  livePaintDirty = false;
+  const t0 = performance.now();
+  const list = livePending.list;
+  livePending.list = false;
+  if (list) sessions.sort((a, b) => (b.lastTs || '').localeCompare(a.lastTs || ''));
+  const ticker = livePending.ticker;
+  livePending.ticker = null;
+  if (ticker) setTicker(ticker.key, ticker.title, ticker.kind);
+  if (livePending.ctx) {
+    livePending.ctx = false;
+    if (current && current.key === activeRel) refreshCtxMeter(current);
+  }
+  const chart = list && tab === 'conv';
+  if (chart) applyFilter(); // the chart draws on the next frame; renderNow() times itself
+  else updateLiveBadges();
+  clearTimeout(agentsPopT);
+  renderAgentsPop(false);
+  // A decaying peak: a cheap signals-only paint must not hide what the last
+  // chart rebuild cost on this device.
+  livePaintCost = Math.max(performance.now() - t0 + (chart ? renderNowCost : 0), livePaintCost * 0.8);
+  livePaintLast = Date.now();
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && livePaintDirty) liveRepaintSoon(); });
 
 // Elapsed tick for run cards: 1 Hz text patches (no animation), and only a
 // fifth of that on e-ink, where every repaint costs a refresh.

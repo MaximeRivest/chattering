@@ -1221,12 +1221,28 @@ function readingUserId(identity) {
 }
 function readingFor(key, identity) {
   const r = readingState[key] && readingState[key][readingUserId(identity)];
-  return r ? { head: r.head || null, exact: !!r.exact, routes: r.routes || {}, cols: r.cols || {}, at: r.at || 0 } : null;
+  return r ? { head: r.head || null, exact: !!r.exact, routes: r.routes || {}, cols: r.cols || {}, follow: r.follow || null, at: r.at || 0 } : null;
+}
+// A sent message the head follows onto its new path once its question is
+// saved (conversation-tree.js followTarget): the node it continues, the runs
+// and their start and end on this server's clock, the answer to prefer.
+function cleanReadingFollow(f) {
+  if (f == null) return null;
+  if (typeof f !== 'object' || Array.isArray(f)) throw new Error('bad follow');
+  const from = f.from == null ? null : String(f.from);
+  const since = Number(f.since), until = f.until == null ? null : Number(f.until);
+  const prefer = f.prefer == null ? null : String(f.prefer);
+  if ((from != null && !READING_ID.test(from)) || !Number.isFinite(since) || since <= 0 || (until != null && !Number.isFinite(until))
+    || (prefer != null && (prefer.length > 200 || /[\u0000-\u001f]/.test(prefer)))) throw new Error('bad follow');
+  const jobs = Array.isArray(f.jobs) ? f.jobs.slice(0, 16).map(String).filter(id => READING_ID.test(id)) : [];
+  return { from, since, until, prefer, jobs };
 }
 function saveReading(key, identity, body) {
   const head = body.head == null ? null : String(body.head);
   if (head != null && !READING_ID.test(head)) throw new Error('bad head');
   const record = { head, exact: !!body.exact, routes: cleanReadingMap(body.routes, 400), cols: cleanReadingMap(body.cols, 200), at: Date.now() };
+  const follow = cleanReadingFollow(body.follow);
+  if (follow) record.follow = follow;
   const uid = readingUserId(identity);
   readingState[key] = { ...(readingState[key] || {}), [uid]: record };
   saveReadingSoon();
@@ -3808,7 +3824,7 @@ async function startFanOut(key, { node, models, message, images, force, context,
     const fanout = { id: fanoutId, rootKey: key, node: node || null, index, count: models.length };
     markFanoutFork(forked.key, fanout);
     const job = await startAgentRun(forked.key, { provider: m.provider, modelId: m.modelId, message, images, force, fanout, context: contextItems, principal, input, coauthors });
-    runs.push({ key: forked.key, jobId: job.id, model: m.provider + '/' + m.modelId,
+    runs.push({ key: forked.key, jobId: job.id, model: m.provider + '/' + m.modelId, startedAt: job.startedAt,
       fanoutId, fanoutRootKey: key, fanoutNode: node || null, fanoutIndex: index, fanoutCount: models.length });
   }
   return runs;
