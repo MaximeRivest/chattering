@@ -6,7 +6,9 @@ const { execFileSync } = require('node:child_process');
 const root = process.argv[2];
 const app = path.resolve(__dirname, '../..');
 const cwd = process.env.WEB_POLICY_PROJECT;
-assert.ok(cwd && cwd.startsWith(process.env.HOME + path.sep));
+assert.ok(cwd && cwd.startsWith(root + path.sep));
+assert.ok(process.env.HOME.startsWith(root + path.sep));
+assert.equal(process.env.USERPROFILE, process.env.HOME);
 const agent = process.env.PI_CODING_AGENT_DIR;
 const provider = path.join(app, 'test/fixtures/web-policy-provider.ts');
 // Test-owned contract allows this regression to run on pristine upstream too.
@@ -24,11 +26,36 @@ async function until(check) { for (let i = 0; i < 400; i++) { if (check()) retur
 (async () => {
   assert.deepEqual(Object.keys(process.env).filter(k => /(?:API_KEY|ACCESS_TOKEN|AUTH_TOKEN|AWS_|GOOGLE_APPLICATION_CREDENTIALS)/.test(k)), []);
   const { isLooseCwd } = require('../../projectfolds.js');
-  assert.equal(isLooseCwd(cwd), false, 'positive checkpoint project is not a general temporary folder');
+  assert.equal(isLooseCwd(cwd), true, 'owned temporary project stays loose; only declared artifacts may be scanned');
   assert.equal(isLooseCwd(path.join(process.env.TMPDIR, 'project')), true, 'general temporary folders stay loose');
   fs.mkdirSync(cwd, { recursive: true });
-  execFileSync('/usr/bin/git', ['init', '--quiet', cwd]);
-  put(path.join(cwd, 'widget.html'), '<p>fixture</p>');
+  assert.equal(cwd, fs.realpathSync.native(cwd));
+  execFileSync(process.env.WEB_POLICY_GIT, ['init', '--quiet', cwd]);
+  const artifactFolder = path.join(cwd, 'fixture-artifact');
+  put(path.join(artifactFolder, 'widget.html'), '<p>fixture</p>');
+  put(path.join(cwd, 'not-an-artifact.txt'), 'must not be scanned');
+  const { CheckpointStore } = require('../../checkpoint-store.js');
+  const { checkpointExtension } = require('../../checkpoint-extension.js');
+  const store = new CheckpointStore();
+  try {
+    const checkpointRoot = await store.root(cwd);
+    assert.deepEqual(store.artifactScopes(checkpointRoot), []);
+    // Actual production hook/store, no allowLoose: an unscoped loose folder
+    // must not create boundaries, even with an existing eligible artifact file.
+    const handlers = new Map();
+    checkpointExtension({ on: (name, fn) => handlers.set(name, fn) }, { store });
+    const ctx = { cwd, sessionManager: { getSessionFile: () => 'loose-unscoped' } };
+    await handlers.get('before_agent_start')({ prompt: 'unscoped' }, ctx);
+    await handlers.get('agent_settled')({}, ctx);
+    await handlers.get('session_shutdown')({}, ctx);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM checkpoint_boundaries').get().n, 0);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM checkpoint_snapshots').get().n, 0);
+    // Seed only our existing subfolder through the native store API BEFORE
+    // any runtime run; the offline declaration response does not register it.
+    const registered = await store.addArtifactScope(cwd, artifactFolder);
+    assert.equal(registered.root, checkpointRoot);
+    assert.deepEqual(store.artifactScopes(checkpointRoot), [registered.scope]);
+  } finally { store.close(); }
   // Context discovery remains normal even outside the source ancestry. These
   // sentinels prove global, ancestor and project context survives both policies.
   const sentinelContexts = [
@@ -103,15 +130,26 @@ async function until(check) { for (let i = 0; i < 400; i++) { if (check()) retur
     const tools = runtimes.at(-1).session.getAllTools().map(t => t.name).sort();
     for (const name of ['delegate', 'delegation_status', 'delegation_control', 'delegation_resume', 'delegation_review', 'chattering_search', 'chattering_show', 'chattering_memory', 'chattering_read', 'chattering_list', 'artifact', 'show']) assert.ok(tools.includes(name), name);
     await engine.piHeadlessRun({ ...target('minimal'), sessionPath: minimal.file }, { message: 'fixture-artifacts' }).done;
-    assert.ok(log().some(e => e.artifact?.session === minimal.file));
+    assert.ok(log().some(e => e.artifact?.session === minimal.file && e.artifact.path === 'fixture-artifact/widget.html'));
     const entries = SDK.SessionManager.open(minimal.file).getEntries();
     assert.deepEqual(entries.filter(e => e.type === 'message' && e.message.role === 'toolResult').map(e => [e.message.toolName, e.message.isError]).sort(), [['artifact', false], ['show', false]]);
     assert.ok(log().find(e => e.request)?.request.systemPrompt.includes('fixture append retained'));
     for (const file of sentinelContexts) assert.ok(log().find(e => e.request).request.systemPrompt.includes(file.content.trim()));
     const { DatabaseSync } = require('node:sqlite');
     const checkpointDb = new DatabaseSync(path.join(process.env.CHATTERING_CHECKPOINT_DIR, 'metadata.sqlite'), { readOnly: true });
-    const boundaries = checkpointDb.prepare('SELECT tool,phase,error FROM checkpoint_boundaries WHERE session=? ORDER BY id').all(minimal.file);
+    const boundaries = checkpointDb.prepare('SELECT tool,phase,error,snapshot FROM checkpoint_boundaries WHERE session=? ORDER BY id').all(minimal.file);
     checkpointDb.close();
+    const captured = new CheckpointStore();
+    let checkpointArtifactFiles;
+    try {
+      for (const boundary of boundaries) {
+        assert.ok(boundary.snapshot, 'every boundary captures the registered artifact');
+        const snapshot = await captured.snapshot(boundary.snapshot);
+        checkpointArtifactFiles = snapshot.manifest.map(f => f.path);
+        assert.deepEqual(checkpointArtifactFiles, ['fixture-artifact/widget.html']);
+        assert.equal((await captured.blob(snapshot.root, snapshot.manifest[0].oid)).toString(), '<p>fixture</p>');
+      }
+    } finally { captured.close(); }
     assert.deepEqual(boundaries.map(b => [b.tool, b.phase]).sort(), [
       ['', 'run-before'], ['', 'run-settled'], ['artifact', 'before'], ['artifact', 'after'], ['show', 'before'], ['show', 'after'],
     ].sort());
@@ -270,7 +308,8 @@ async function until(check) { for (let i = 0; i < 400; i++) { if (check()) retur
       modeFailures: ['fresh', 'persisted'], rpc: ['minimal', 'all', 'mode-errors', 'artifacts', 'active/idle-policy'],
       rpcBuiltin: '<inline:llama.cpp>', terminal: 'CLI discovery (no PTY)', unanticipatedExtensionErrors: 0,
       expectedStartupErrors: 2, expectedRuntimeErrors: 1, expectedAmbientLoadErrors: 1,
-      runtimeRecovery: 'dispose-before-healthy-prompt', checkpointsPreserved: true, sentinelContexts: sentinelContexts.length };
+      runtimeRecovery: 'dispose-before-healthy-prompt', checkpointsPreserved: true,
+      looseUnscopedCapture: false, checkpointArtifactFiles, sentinelContexts: sentinelContexts.length };
   } finally {
     rpc.stopAllWarmSessions(); await engine.dispose();
     assert.deepEqual(engine.listWarmSessions(), []);

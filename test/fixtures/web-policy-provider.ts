@@ -9,7 +9,7 @@ export default function(pi: any) {
     const url = String(input);
     if (url === 'http://127.0.0.1:1/api/artifacts/declare') {
       record({ artifact: JSON.parse(options.body) });
-      return new Response(JSON.stringify({ kind: 'web', path: 'widget.html', urls: ['fixture://widget'] }));
+      return new Response(JSON.stringify({ kind: 'web', path: 'fixture-artifact/widget.html', urls: ['fixture://widget'] }));
     }
     throw new Error('Unexpected network request: ' + url);
   };
@@ -33,7 +33,7 @@ export default function(pi: any) {
         const toolDone = context.messages.at(-1)?.role === 'toolResult';
         const content = text === 'fixture-artifacts' && !toolDone ? [
           { type: 'toolCall', id: 'show-fixture', name: 'show', arguments: { html: '<p>fixture</p>', title: 'Fixture' } },
-          { type: 'toolCall', id: 'artifact-fixture', name: 'artifact', arguments: { path: 'widget.html', title: 'Fixture' } },
+          { type: 'toolCall', id: 'artifact-fixture', name: 'artifact', arguments: { path: 'fixture-artifact/widget.html', title: 'Fixture' } },
         ] : [{ type: 'text', text: 'offline fixture complete' }];
         const output: any = { role: 'assistant', api: model.api, provider: model.provider, model: model.id,
           content, stopReason: toolDone || text !== 'fixture-artifacts' ? 'stop' : 'toolUse', timestamp: Date.now(),
