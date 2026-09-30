@@ -325,4 +325,19 @@ test('the relay: only a key\'s holder registers as a home; TURN credentials cotu
   assert.equal((await get('/_anywhere/..%2frelay.js')).status, 404);
   assert.equal((await get('/x', { 'Sec-Fetch-Dest': 'iframe' })).status, 503, 'never the shell inside itself');
   assert.equal((await get('/healthz')).text, 'ok\n');
+  // What scanners send in the first minutes online (one of these ended the
+  // process): answered, and the relay is still there after.
+  const raw = p => new Promise(resolve => {
+    const s = require('net').connect(port, '127.0.0.1', () => s.write('GET ' + p + ' HTTP/1.1\r\nHost: relay\r\nConnection: close\r\n\r\n'));
+    let out = ''; s.on('data', d => out += d); s.on('close', () => resolve(out.split('\r\n')[0])); s.on('error', () => resolve('error'));
+  });
+  for (const p of ['//%2e%2e%2f%2eenv', '//evil.example/x', '///', '//[', '/%', '*', 'http://x/', '/_anywhere/%00', '/%2e%2e/%2e%2e/etc/passwd']) {
+    assert.match(await raw(p), /^HTTP\/1\.1 (200|400|404|405)/, p);
+  }
+  const upgradeOdd = await new Promise(resolve => {
+    const s = require('net').connect(port, '127.0.0.1', () => s.write('GET //%2e%2e HTTP/1.1\r\nHost: relay\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: x\r\nSec-WebSocket-Version: 13\r\n\r\n'));
+    let out = ''; s.on('data', d => out += d); s.on('close', () => resolve(out.split('\r\n')[0]));
+  });
+  assert.match(upgradeOdd, /404/);
+  assert.equal((await get('/healthz')).text, 'ok\n', 'still up');
 });

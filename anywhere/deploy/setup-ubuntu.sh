@@ -187,6 +187,13 @@ write /etc/caddy/Caddyfile 0644 root:root <<EOF && CADDY_CHANGED=1 || CADDY_CHAN
 	admin off
 	# Certificates from Let's Encrypt only (the domain's CAA records say so too).
 	acme_ca https://acme-v02.api.letsencrypt.org/directory
+	# Caddy's own messages (certificates, start, stop) stay; the kinds that
+	# carry a visitor's address do not: a request that failed, the proxy's
+	# errors, and Go's TLS handshake errors ("from 1.2.3.4").
+	log default {
+		output stderr
+		exclude http.log.error http.handlers.reverse_proxy http.stdlib
+	}
 }
 
 $DOMAIN {
@@ -210,13 +217,21 @@ systemctl enable caddy >/dev/null 2>&1
 [ "$CADDY_CHANGED" = 1 ] && systemctl restart caddy || systemctl start caddy
 
 say "coturn: TURN for phones with no direct path; never towards this machine or a private network; no logs"
-PUB4=$(ip -4 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1)
-PUB6=$(ip -6 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1)
+# The server's public addresses: those on the default route's interface
+# (never tailscale0's 100.x and fd7a: ones, also "global" to the kernel).
+WAN=$(ip -o route show default | awk '{for (i=1;i<NF;i++) if ($i=="dev") print $(i+1); exit}')
+PUB4=$(ip -4 -o addr show dev "$WAN" scope global | awk '{print $4}' | cut -d/ -f1 | head -1)
+PUB6=$(ip -6 -o addr show dev "$WAN" scope global | awk '{print $4}' | cut -d/ -f1 | head -1)
 install -d -m 0750 -o root -g turnserver /etc/coturn/tls
 write /etc/turnserver.conf 0640 root:turnserver <<EOF || true
 # Chattering Anywhere (written by setup-ubuntu.sh; edit there).
 realm=$DOMAIN
 server-name=$DOMAIN
+# The public addresses only: not loopback, not the Tailscale ones.
+${PUB4:+listening-ip=$PUB4}
+${PUB6:+listening-ip=$PUB6}
+${PUB4:+relay-ip=$PUB4}
+${PUB6:+relay-ip=$PUB6}
 listening-port=3478
 tls-listening-port=5349
 fingerprint

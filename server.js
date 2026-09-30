@@ -139,6 +139,16 @@ function requestIp(req) {
 // check every tailnet device would skip the token and gain the local-only
 // file powers. A genuinely local client that sends the header only
 // demotes itself, so nothing can escalate this way.
+// The address a request asks for, as a URL on a fixed origin. Whatever the
+// request line holds: "//%2e%2e%2f.env" and the like (scanners send them)
+// are not valid relative to a base, and new URL threw before sign-in, which
+// ended the process and every agent run in it. Read as a path, they are
+// just paths that match nothing.
+function requestUrl(req) {
+  const raw = String((req && req.url) || '/');
+  try { return new URL('http://x' + (raw.startsWith('/') ? raw : '/' + raw)); }
+  catch { return new URL('http://x/'); }
+}
 function isLocalRequest(req) {
   const ip = requestIp(req);
   if (ip !== '127.0.0.1' && ip !== '::1') return false;
@@ -15700,7 +15710,7 @@ function voiceListenUpgrade(req, socket, head) {
   if (!identity) return refuseUpgrade(socket, 401, 'Unauthorized');
   if (voiceRefusal(identity)) return refuseUpgrade(socket, 403, 'Forbidden');
   if (!speechUrl()) return refuseUpgrade(socket, 503, 'Service Unavailable');
-  const u = new URL(req.url, 'http://x');
+  const u = requestUrl(req);
   const conn = acceptWebSocket(req, socket, head, { maxPayload: 1024 * 1024 });
   if (!conn) return;
   const send = event => { try { conn.send(JSON.stringify(event)); } catch {} };
@@ -15974,7 +15984,12 @@ function sendValidated(req, res, type, cacheControl, text) {
   sendBody(req, res, 200, { 'Content-Type': type, 'Cache-Control': cacheControl, ETag: etag }, text);
 }
 
-const server = http.createServer((req, res) => requestContext.run({ req }, () => handleRequest(req, res)));
+// A request that fails where nothing caught it answers 500; it never ends
+// the process (an unhandled rejection would, with every agent run in it).
+const server = http.createServer((req, res) => requestContext.run({ req }, () => handleRequest(req, res)).catch(e => {
+  console.error('[request] ' + String(req.method) + ' ' + String(req.url).slice(0, 200) + ': ' + (e && e.message));
+  try { if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end(); } catch {}
+}));
 // The names this machine answers to (authguard.hostAllowed): anything else
 // in a Host header is a page that is not ours, even when the address is.
 function allowedHostOptions() {
@@ -15983,7 +15998,7 @@ function allowedHostOptions() {
   return { hostnames: [os.hostname(), HOST_NAME], extra };
 }
 async function handleRequest(req, res) {
-  const u = new URL(req.url, 'http://x');
+  const u = requestUrl(req);
   if (!authGuard.hostAllowed(req.headers.host, allowedHostOptions())) {
     res.writeHead(421, { 'Content-Type': 'text/plain; charset=utf-8' });
     return res.end('This Chattering does not answer to that name. Add it to CHATTERING_ALLOWED_HOSTS if it is yours.');
@@ -19272,7 +19287,7 @@ process.on('SIGINT', () => { shutdownGracefully(); });
 // the browser connects to this same-origin path and the server pipes bytes
 // both ways. No frame parsing: a relay only needs the raw TCP stream.
 function speechStreamUpgrade(req, socket, head) {
-  const u = new URL(req.url, 'http://x');
+  const u = requestUrl(req);
   if (u.pathname !== '/api/speech/stream') { socket.destroy(); return; }
   if (!identifyRequest(req)) {
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
@@ -19316,7 +19331,7 @@ function speechStreamUpgrade(req, socket, head) {
 // cannot type into it.
 const { acceptWebSocket, refuseUpgrade } = require('./wsserver.js');
 async function collabUpgrade(req, socket, head) {
-  const u = new URL(req.url, 'http://x');
+  const u = requestUrl(req);
   const identity = identifyRequest(req);
   if (!identity) return refuseUpgrade(socket, 401, 'Unauthorized');
   const name = decodeURIComponent(u.pathname.slice('/api/collab/'.length));
@@ -19366,7 +19381,11 @@ collab.on('leave', ev => broadcast({ type: 'collab-people', name: ev.name, peopl
 // One dispatcher for WebSocket upgrades, on the plain and the TLS listener.
 // The same gate as HTTP routes (policy.js): a socket is a route too.
 function upgradeRequest(req, socket, head) {
-  const u = new URL(req.url, 'http://x');
+  try { upgradeRequestInner(req, socket, head); }
+  catch (e) { console.error('[upgrade] ' + String(req.url).slice(0, 200) + ': ' + (e && e.message)); try { socket.destroy(); } catch {} }
+}
+function upgradeRequestInner(req, socket, head) {
+  const u = requestUrl(req);
   if (!authGuard.hostAllowed(req.headers.host, allowedHostOptions())) return refuseUpgrade(socket, 421, 'Misdirected Request');
   const identity = identifyRequest(req);
   if (!identity) return refuseUpgrade(socket, 401, 'Unauthorized');

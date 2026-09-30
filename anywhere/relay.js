@@ -108,8 +108,21 @@ function createRelay(opts = {}) {
     'Cross-Origin-Opener-Policy': 'same-origin',
     'Permissions-Policy': 'interest-cohort=()',
   };
+  // The path of a request, whatever it sends: an address like
+  // "//%2e%2e%2f.env" (scanners probe with them) is not a valid URL relative
+  // to a base, and new URL threw inside the request handler, which ended
+  // the process. Read as a path on a fixed origin, it is just a path.
+  function pathOf(raw) {
+    const s = String(raw || '/');
+    try { return new URL('http://relay' + (s.startsWith('/') ? s : '/' + s)); } catch { return null; }
+  }
   function serve(req, res) {
-    const u = new URL(req.url, 'http://relay');
+    try { serveInner(req, res); }
+    catch { try { if (!res.headersSent) res.writeHead(400, { 'Content-Type': 'text/plain' }); res.end('bad request\n'); } catch {} }
+  }
+  function serveInner(req, res) {
+    const u = pathOf(req.url);
+    if (!u) { res.writeHead(400, { 'Content-Type': 'text/plain' }); return res.end('bad request\n'); }
     if (u.pathname === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); return res.end('ok\n'); }
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET, HEAD' }); return res.end(); }
     let name = u.pathname;
@@ -148,8 +161,11 @@ function createRelay(opts = {}) {
   };
 
   function onUpgrade(req, socket, head) {
-    const u = new URL(req.url, 'http://relay');
-    if (u.pathname !== '/signal') return refuseUpgrade(socket, 404, 'Not Found');
+    try { onUpgradeInner(req, socket, head); } catch { try { socket.destroy(); } catch {} }
+  }
+  function onUpgradeInner(req, socket, head) {
+    const u = pathOf(req.url);
+    if (!u || u.pathname !== '/signal') return refuseUpgrade(socket, 404, 'Not Found');
     const addr = addressOf(req);
     if ((perAddress.get(addr) || 0) >= LIMITS.perAddress) return refuseUpgrade(socket, 429, 'Too Many Requests');
     const conn = acceptWebSocket(req, socket, head, { maxPayload: LIMITS.message });
