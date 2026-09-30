@@ -81,6 +81,51 @@ cd chattering
 The script checks Node 22+, installs a systemd user service, starts it,
 and prints the next steps. There are no npm dependencies.
 
+**Optional memory controls for `setup.sh`.**
+
+By default, setup emits no memory controls, preserving existing behavior
+(including any administrator, parent-slice or local drop-in limits). To opt in,
+set `CHATTERING_MEMORY_HIGH` and/or `CHATTERING_MEMORY_MAX` when running setup:
+
+```bash
+# Example only: choose limits for your workload and machine, not a universal default.
+CHATTERING_MEMORY_HIGH=2G CHATTERING_MEMORY_MAX=4G ./setup.sh
+```
+
+Each nonempty value must be positive integer bytes, optionally suffixed with
+`K`, `M`, `G` or `T` (powers of 1024), or a percentage from `0.01%` to `100%`
+with at most two decimal places. Byte values must be below
+18446744073709551615 (systemd's infinity sentinel). Empty/unset values omit
+the corresponding directive. If both are set, high must not exceed max:
+byte sizes are compared after conversion, percentages numerically. Mixed
+percentage/byte pairs are rejected because their ordering depends on the
+target machine's RAM. Invalid settings fail before installation or systemd
+calls; no host-memory guess or automatic sizing is performed.
+
+`MemoryHigh` applies reclaim/throttling pressure, not a hard ceiling;
+`MemoryMax` is a last-resort limit on memory charged to the cgroup (including
+page cache) that can trigger cgroup OOM kills when reclaim cannot satisfy it.
+Neither caps swap; these settings
+add no swap or CPU controls. Percentages use physical RAM visible to the
+systemd manager, not free/available RAM. On WSL2 this is the Linux VM's RAM,
+not necessarily Windows host RAM. Stricter ancestor limits still apply.
+Enforcement needs systemd with support for these directives and percentage
+syntax, cgroup v2 and the memory controller available/delegated to the user
+manager; enabling systemd in WSL alone does not guarantee this. Setup checks
+input syntax, not controller availability or effective runtime limits.
+
+These limits cover `chattering.service` and children that remain in its
+cgroup, not all work initiated by Chattering. Independent cold/terminal
+launches, delegated user scopes and guest slices outside the service are not
+covered. Running `node server.js`, `node launcher.js` or the portable/download
+launcher bypasses this setup unit. Guest budgets remain separate; this is
+not an aggregate machine or application budget. Rerunning setup without the
+variables omits the generated directives again but does not remove local
+drop-ins (`systemctl --user edit chattering`).
+
+The unit generator and parser can be checked without installation or contacting
+systemd: `node --test test/setup-resources.test.js` and `bash -n setup.sh`.
+
 Then, on Windows, open <http://localhost:7433> in Chrome or Edge (WSL2
 forwards localhost) and use the browser menu → **Install chattering**. The
 PWA gets its own window, own icon, and a Start-menu entry — the same
