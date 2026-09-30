@@ -118,6 +118,12 @@ test('a phone through the relay is its person, never the console; People revokes
   assert.match(await lost, /removed/);
   st = await (await fetch(base + '/api/anywhere')).json();
   assert.deepEqual(st.devices, []);
+  // Written down: which device left, and why.
+  const signIns = (await (await fetch(base + '/api/doors/sign-ins')).json()).recent;
+  const gone = signIns.find(r => r.outcome === 'device-removed');
+  assert.ok(gone, JSON.stringify(signIns.slice(0, 3)));
+  assert.equal(gone.device, 'iPhone · Safari');
+  assert.equal(gone.why, 'its credential was revoked');
   await until(async () => (await (await fetch(base + '/api/anywhere')).json()).relayState === 'off', 'nothing paired: off the relay');
 
   // Off: no codes.

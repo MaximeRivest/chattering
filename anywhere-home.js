@@ -83,6 +83,7 @@ function createAnywhereHome(opts) {
     revokeCredential = () => {},           // (userId, credentialId)
     userOf = () => null,                   // userId → { id, name } | null
     onChange = () => {},
+    onRemoved = () => {},                  // (device, why, by): a device left the list
     WebSocketImpl = globalThis.WebSocket,
     relayOnly = false,                     // tests: through the TURN server only
     log = () => {},
@@ -282,6 +283,7 @@ function createAnywhereHome(opts) {
     if (!device) return refuse(peer, 'unknown', 'This phone is no longer paired with this computer.');
     if (!credentialAlive(device.userId, device.credentialId)) {
       state.devices = state.devices.filter(d => d !== device); save(); changed();
+      try { onRemoved(device, 'its credential was revoked', null); } catch {}
       return refuse(peer, 'removed', 'This phone was removed from this computer.');
     }
     const pub = await P.importPublic(P.unb64u(device.publicKey));
@@ -437,11 +439,12 @@ function createAnywhereHome(opts) {
     if (p && (!userId || p.userId === userId)) pairings.delete(p.id);
     sync(); changed();
   }
-  function forget(deviceId) {
+  function forget(deviceId, by = null) {
     const d = state.devices.find(x => x.id === deviceId);
     if (!d) return null;
     state.devices = state.devices.filter(x => x !== d);
     save();
+    try { onRemoved(d, 'removed', by); } catch {}
     try { revokeCredential(d.userId, d.credentialId); } catch {}
     for (const p of [...peers.values()]) if (p.device && p.device.id === d.id) p.close('This phone was removed from ' + homeName() + '.');
     sync(); changed();
@@ -451,7 +454,9 @@ function createAnywhereHome(opts) {
   // phones holding it go at once, not at their next request.
   function prune() {
     const before = state.devices.length;
-    state.devices = state.devices.filter(d => credentialAlive(d.userId, d.credentialId));
+    const gone = state.devices.filter(d => !credentialAlive(d.userId, d.credentialId));
+    state.devices = state.devices.filter(d => !gone.includes(d));
+    for (const d of gone) { try { onRemoved(d, 'its credential was revoked', null); } catch {} }
     if (state.devices.length !== before) {
       save();
       const ids = new Set(state.devices.map(d => d.id));

@@ -6020,6 +6020,10 @@ const anywhere = anywhereLib.createAnywhereHome({
   userOf: id => { const u = usersLib.findUser(roster, id); return u ? { id: u.id, name: u.name } : null; },
   // A ping; the settings page asks again (the list is filtered per person).
   onChange: () => { clearTimeout(anywhereTimer); anywhereTimer = setTimeout(() => broadcast({ type: 'anywhere' }), 150); },
+  // Every device that leaves the list, and why, in the sign-in log
+  // (settings → machines → recent sign-ins): never a mystery afterwards.
+  onRemoved: (d, why, by) => signInLog.record({ ip: '-', door: 'anywhere', outcome: 'device-removed', device: d.name, why,
+    user: d.userId ? { id: d.userId, name: (usersLib.findUser(roster, d.userId) || {}).name || '' } : undefined, by: by ? { id: by.id, name: by.name } : undefined }),
   log: m => console.error(m),
 });
 async function anywhereResponse(identity) {
@@ -18013,7 +18017,7 @@ async function handleRequest(req, res) {
           const d = anywhere.status().devices.find(x => x.id === String(p.id || ''));
           if (!d) return json(res, 404, { error: 'no such phone' });
           if (d.user.id !== identity.user.id && !usersLib.canManageUsers(identity)) return json(res, 403, { error: 'only its person or an administrator removes a phone' });
-          anywhere.forget(d.id);
+          anywhere.forget(d.id, identity.user);
           return json(res, 200, await anywhereResponse(identity));
         }
         if (op === 'settings') {
