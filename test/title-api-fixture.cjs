@@ -15,7 +15,9 @@ async function until(fn, label = 'fixture condition', timeout = 12000) {
 }
 async function port() { const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); const p = s.address().port; await new Promise(r => s.close(r)); return p; }
 async function boot(t, options = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'title-api-'));
+  // Native canonicalization expands Windows 8.3 temp names before fs.watch
+  // receives them; libuv's event prefix assertion requires the long path.
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'title-api-')));
   const home = path.join(root, 'home'), tmp = path.join(root, 'tmp'), work = path.join(root, 'project');
   const config = path.join(root, 'config'), cache = path.join(root, 'cache'), data = path.join(root, 'data'), notes = path.join(root, 'notes');
   const agent = path.join(home, '.pi/agent');
@@ -61,7 +63,9 @@ else if(at>=0) { fs.readFileSync(0,'utf8');setTimeout(()=>process.stdout.write(J
   const base = 'http://127.0.0.1:' + p;
   const request = (route, body, method = body === undefined ? 'GET' : 'POST', credential = token) => fixtureChild.request(state, base + route, {
     method, headers: { Authorization: 'Bearer ' + credential, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
+  // Rescan includes upstream Git probes. Keep it within the original 30s test
+  // budget instead of imposing the newly added 5s fast-request deadline.
+  }, route === '/api/rescan' ? 25000 : 5000);
   const ready = async () => {
     let lastError;
     try {
