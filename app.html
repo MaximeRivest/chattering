@@ -1259,6 +1259,7 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
 
 .empty { color: var(--text-dim); text-align: center; margin-top: 60px; }
 .empty .hint { color: var(--text-faint); font-size: var(--fs-meta); }
+.home-loading { padding: var(--sp-6); color: var(--text-faint); font-size: var(--fs-meta); text-align: center; }
 /* An empty conversation: the Rockfrog mark, quiet, in the theme's own ink. */
 .conv-empty { display: flex; justify-content: center; padding: 16vh 0 8vh; }
 .conv-empty .rf-mark { width: 148px; aspect-ratio: 1828 / 1428; background: var(--text-faint); opacity: .55;
@@ -2558,6 +2559,10 @@ if (!globalThis.DelegationUI) {
 </script>
 <script>
 let sessions = [];          // full index list
+// The list has arrived at least once. Before that, an empty list says
+// nothing: home must not take it for a new install (through a slow link,
+// design/85, that first moment lasts seconds).
+let sessionsLoaded = false;
 const LOOSE_PROJECT = 'Loose conversations';
 let projectFolds = { map: {}, suggestions: [] }; // raw→canonical project folds + fold suggestions
 let shown = [];             // currently displayed list (index or search results)
@@ -4905,6 +4910,8 @@ async function load() {
   const tag = sessRes.headers.get('ETag');
   if (tag) sessionsEtag = tag;
   if (!unchanged) sessions = await sessRes.json();
+  const firstList = !sessionsLoaded;
+  sessionsLoaded = true;
   if (!agentReadLoaded) await readReq;
   // Folds: apply now if they already landed, else when they do.
   if (foldsDone) applyProjectFolds(foldsResult);
@@ -4927,7 +4934,7 @@ async function load() {
   });
   // The list is the reconnect and tab-wake safety net for the open transcript.
   reconcileTranscript();
-  if (unchanged) return;
+  if (unchanged && !firstList) return;
   refreshFilterOptions();
   if (tab === 'conv') applyFilter();
 }
@@ -5538,6 +5545,12 @@ function mobileConversationCard(s) {
 // took the list.
 function homeWelcome(list) {
   if (viewKind !== 'home' || !window.Welcome) return false;
+  // Neither the list nor who this is known yet: no welcome, no empty home.
+  if (!sessionsLoaded || !settingsState) {
+    disposeHomeTimeline();
+    list.innerHTML = '<div class="hint home-loading">Loading…</div>';
+    return true;
+  }
   const found = sessions.filter(s => s.key).length;
   // After the timeline is drawn (this render is synchronous).
   if (found && !Welcome.wanted()) { queueMicrotask(() => Welcome.banner(list)); return false; }
@@ -16790,8 +16803,9 @@ async function loadSettings() {
   if (settingsOpen) renderSettings();
   // Settings arrive after a first transcript may be on screen.
   if (window.PlainSteps && viewKind === 'conversation') PlainSteps.apply($('view'));
-  // An install's first open: the welcome takes home once settings say so.
-  if (window.Welcome && Welcome.wanted() && viewKind === 'home') render();
+  // An install's first open: the welcome takes home once settings say so;
+  // a home that waited for them (homeWelcome) paints now.
+  if (window.Welcome && viewKind === 'home' && (Welcome.wanted() || document.querySelector('.home-loading'))) render();
   maybeAskBackgroundAi();
 }
 
