@@ -18,10 +18,10 @@
    end-to-end encrypted by WebRTC (DTLS), and both ends prove who they are
    with keys that never pass through here (design/85, "the handshake").
 
-   What it keeps: nothing. No database, no files, no logs. Homes and calls
-   live in memory while their sockets are open; addresses only in the
-   in-memory rate limiter, for a minute. Restarting it forgets everything,
-   and homes reconnect within a minute.
+   What it keeps: no logs, no database of anyone. Homes and calls live in
+   memory while their sockets are open; addresses only in the in-memory
+   rate limiter, for a minute. The one thing written down is usage totals
+   per day and month (usage.js): counts, with no ids, addresses or times.
 
    Environment:
      PORT                 listen port (8790); behind a TLS proxy (Caddy)
@@ -32,7 +32,10 @@
      STUN_URLS            comma list; default: stun: on the TURN host(s)
      TURN_TTL             seconds a TURN credential lasts (86400)
      TRUST_PROXY          1 when behind a proxy on this machine: the client
-                          address (for rate limits only) is X-Forwarded-For */
+                          address (for rate limits only) is X-Forwarded-For
+     USAGE_FILE           where the usage totals are kept (usage.js); empty =
+                          memory only. GET /_usage on the relay's own port,
+                          from this machine, reads them. */
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -40,6 +43,7 @@ const crypto = require('crypto');
 const zlib = require('zlib');
 const { acceptWebSocket, refuseUpgrade } = require('../wsserver.js');
 const P = require('./protocol.js');
+const { createUsage } = require('./usage.js');
 
 const LIMITS = {
   message: 16 * 1024,        // one signalling message
@@ -64,6 +68,8 @@ function createRelay(opts = {}) {
   const trustProxy = env.TRUST_PROXY === '1';
   const publicDir = opts.publicDir || path.join(__dirname, 'public');
   const homes = new Map();     // homeId → { conn, calls: Map<sid, conn>, waiting: Set<conn> }
+  // Totals only, per day and month (usage.js): how much, never who.
+  const usage = opts.usage || createUsage({ file: String(env.USAGE_FILE || ''), now: opts.now });
   const perAddress = new Map(); // address → open sockets (memory only)
 
   // TURN credentials the coturn "use-auth-secret" way: the name is when it
@@ -123,6 +129,17 @@ function createRelay(opts = {}) {
   function serveInner(req, res) {
     const u = pathOf(req.url);
     if (!u) { res.writeHead(400, { 'Content-Type': 'text/plain' }); return res.end('bad request\n'); }
+    // The usage totals, for whoever runs this relay, on this machine only:
+    // straight to the relay's port, not through the https front (which marks
+    // every request it forwards).
+    if (u.pathname === '/_usage') {
+      const ip = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+      if ((ip === '127.0.0.1' || ip === '::1') && !req.headers['x-forwarded-for']) {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        return res.end(JSON.stringify(usage.snapshot(), null, 1) + '\n');
+      }
+      res.writeHead(404, { 'Content-Type': 'text/plain', ...SECURITY }); return res.end('not found\n');
+    }
     if (u.pathname === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); return res.end('ok\n'); }
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET, HEAD' }); return res.end(); }
     let name = u.pathname;
@@ -207,9 +224,10 @@ function createRelay(opts = {}) {
         if (!homes.has(conn.homeId) && homes.size >= LIMITS.homes) return conn.close(1013, 'full');
         const prev = homes.get(conn.homeId);
         const entry = { conn, calls: prev ? prev.calls : new Map(), waiting: prev ? prev.waiting : new Set() };
-        if (prev && prev.conn !== conn && prev.conn.close) { prev.conn.replaced = true; prev.conn.close(1000, 'replaced by a newer connection'); }
+        if (prev && prev.conn !== conn && prev.conn.close) { prev.conn.replaced = true; if (prev.conn.role === 'home') usage.homeOffline(); prev.conn.close(1000, 'replaced by a newer connection'); }
         homes.set(conn.homeId, entry);
         conn.role = 'home';
+        usage.homeOnline(conn.homeId);
         send({ t: 'welcome', servers: iceServers() });
         // Phones that were waiting for this home call again now.
         for (const w of entry.waiting) { try { w.send(JSON.stringify({ t: 'online' })); } catch {} }
@@ -237,12 +255,14 @@ function createRelay(opts = {}) {
           if (!w) { w = { conn: { role: 'none' }, calls: new Map(), waiting: new Set() }; homes.set(id, w); }
           if (w.waiting.size >= LIMITS.waitingPerHome) return conn.close(1013, 'too many waiting');
           w.waiting.add(conn);
+          if (!conn.waited) { conn.waited = true; usage.wait(); }
           return send({ t: 'offline' });
         }
         if (!conn.sid) {
           if (entry.calls.size >= LIMITS.callsPerHome) return conn.close(1013, 'too many calls');
           conn.sid = crypto.randomBytes(9).toString('base64url');
           entry.calls.set(conn.sid, conn);
+          usage.call();
         }
         return send({ t: 'ice', servers: iceServers() });
       }
@@ -262,6 +282,7 @@ function createRelay(opts = {}) {
       const entry = conn.homeId && homes.get(conn.homeId);
       if (!entry) return;
       if (conn.role === 'home' && entry.conn === conn) {
+        usage.homeOffline();
         for (const phone of entry.calls.values()) { try { phone.send(JSON.stringify({ t: 'gone' })); } catch {} }
         entry.calls.clear();
         entry.conn = { role: 'none' };
@@ -291,14 +312,18 @@ function createRelay(opts = {}) {
   }, 25000);
   sweeper.unref();
 
+  // The totals reach the disk every five minutes and when the relay stops.
+  const saver = setInterval(() => usage.save(), 5 * 60 * 1000);
+  saver.unref();
   const server = http.createServer(serve);
   server.on('upgrade', onUpgrade);
   server.on('clientError', (e, socket) => { try { socket.destroy(); } catch {} });
-  return { server, homes, iceServers, close: () => { clearInterval(sweeper); server.close(); } };
+  return { server, homes, iceServers, usage, close: () => { clearInterval(sweeper); clearInterval(saver); usage.save(); server.close(); } };
 }
 
 if (require.main === module) {
   const relay = createRelay();
+  for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { relay.usage.save(); process.exit(0); });
   const port = Number(process.env.PORT || 8790), host = process.env.HOST || '127.0.0.1';
   relay.server.listen(port, host, () => {
     // The one line this program ever prints: that it started.

@@ -344,3 +344,49 @@ test('the relay: only a key\'s holder registers as a home; TURN credentials cotu
   assert.match(upgradeOdd, /404/);
   assert.equal((await get('/healthz')).text, 'ok\n', 'still up');
 });
+
+test('usage: totals per day and month, never who', { skip, timeout: 60000 }, async t => {
+  const { createUsage } = require('../anywhere/usage.js');
+  // The counting itself, with a clock we move.
+  let clock = Date.parse('2026-09-30T23:50:00Z');
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'usage-')), 'usage.json');
+  t.after(() => fs.rmSync(path.dirname(file), { recursive: true, force: true }));
+  const u = createUsage({ file, now: () => clock });
+  const idA = 'AAAAAAAAAAAAAAAAAAAAAA', idB = 'BBBBBBBBBBBBBBBBBBBBBB';
+  u.homeOnline(idA); u.homeOnline(idB); u.homeOffline(); u.homeOnline(idA); // A reconnects: still one computer
+  u.call(); u.call(); u.wait();
+  let s = u.snapshot();
+  assert.deepEqual([s.online, s.today.computers, s.today.peak, s.today.calls, s.today.waits], [2, 2, 2, 2, 1]);
+  clock = Date.parse('2026-10-01T00:10:00Z'); // a new day and a new month
+  u.homeOnline(idA);
+  s = u.snapshot();
+  assert.equal(s.today.key, '2026-10-01');
+  assert.equal(s.today.computers, 1, 'yesterday\'s computers are not today\'s: the mixes do not carry over');
+  assert.equal(s.days[0].key, '2026-09-30');
+  assert.equal(s.days[0].computers, 2);
+  assert.equal(s.months[0].key, '2026-09');
+  u.save();
+  const written = fs.readFileSync(file, 'utf8');
+  assert.doesNotMatch(written, new RegExp(idA + '|' + idB), 'no computer id on disk');
+  assert.deepEqual(Object.keys(JSON.parse(written)), ['days', 'months']);
+  // A restart the same day resumes the counts, and says so.
+  const again = createUsage({ file, now: () => clock });
+  const r = again.snapshot();
+  assert.equal(r.today.computers, 1);
+  assert.equal(r.today.restarts, 1);
+  assert.equal(r.days.length, 1);
+
+  // On a live relay: a computer and a phone are counted; the totals are read
+  // on the relay's own port only.
+  const w = await world(t);
+  const pairing = await w.home.pair('u1');
+  const link = P.readPairingLink(new URL(pairing.url).hash);
+  await until(() => w.home.status().relayState === 'ready', 'registered');
+  await w.phone({ homeId: link.homeId, device: await newDevice(), pairing: { id: link.id, secret: link.secret } });
+  const live = await (await fetch(w.relayUrl + '/_usage')).json();
+  assert.equal(live.online, 1);
+  assert.equal(live.today.computers, 1);
+  assert.equal(live.today.calls, 1);
+  assert.doesNotMatch(JSON.stringify(live), new RegExp(link.homeId), 'no id in the totals');
+  assert.equal((await fetch(w.relayUrl + '/_usage', { headers: { 'X-Forwarded-For': '1.2.3.4' } })).status, 404, 'not through the https front');
+});

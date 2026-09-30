@@ -140,6 +140,10 @@ Environment=PORT=$RELAY_PORT HOST=127.0.0.1 TRUST_PROXY=1
 Environment="TURN_URLS=turn:$DOMAIN:3478?transport=udp,turn:$DOMAIN:3478?transport=tcp,turns:$DOMAIN:5349?transport=tcp"
 Environment=TURN_SECRET_FILE=%d/turn
 LoadCredential=turn:/etc/chattering-anywhere/turn-secret
+# The usage totals (anywhere/usage.js): counts per day and month, no ids,
+# no addresses. The one thing the relay writes.
+StateDirectory=chattering-anywhere
+Environment=USAGE_FILE=%S/chattering-anywhere/usage.json
 ExecStart=/usr/bin/node /opt/chattering-anywhere/current/anywhere/relay.js
 Restart=always
 RestartSec=2
@@ -328,8 +332,15 @@ write /etc/nftables/relay.nft 0644 root:root <<EOF || true
 table inet relay
 delete table inet relay
 table inet relay {
+	# How many bytes the relay carried for phones that could not reach their
+	# computer directly (coturn's ports), in and out: totals, no addresses.
+	counter relayed_in { }
+	counter relayed_out { }
 	chain input {
 		type filter hook input priority filter; policy drop;
+		# Counted before "established" lets a flow's packets through.
+		udp dport { 3478, 49152-65535 } counter name "relayed_in"
+		tcp dport { 3478, 5349 } counter name "relayed_in"
 		ct state established,related accept
 		ct state invalid drop
 		iif lo accept
@@ -347,6 +358,11 @@ table inet relay {
 	chain forward {
 		type filter hook forward priority filter; policy drop;
 	}
+	chain output {
+		type filter hook output priority filter; policy accept;
+		udp sport { 3478, 49152-65535 } counter name "relayed_out"
+		tcp sport { 3478, 5349 } counter name "relayed_out"
+	}
 }
 EOF
 write /etc/nftables.conf 0755 root:root <<'EOF' || true
@@ -354,9 +370,75 @@ write /etc/nftables.conf 0755 root:root <<'EOF' || true
 # No "flush ruleset": that would erase Tailscale's rules too.
 include "/etc/nftables/relay.nft"
 EOF
+say "relayed traffic, a total per day (the firewall's counters, kept before they reset)"
+install -d -m 0750 -o root -g root /var/lib/chattering-anywhere-traffic
+write /usr/local/sbin/relay-traffic-day 0755 root:root <<'EOF' || true
+#!/usr/bin/env python3
+# Add the firewall's relayed-bytes counters to a day's total, then zero them.
+# From the timer, just after midnight UTC: the day that ended. With --today
+# (before the firewall reloads, at shutdown): today so far.
+import datetime, json, os, subprocess, sys
+FILE = '/var/lib/chattering-anywhere-traffic/traffic.json'
+now = datetime.datetime.now(datetime.timezone.utc)
+day = (now if '--today' in sys.argv else now - datetime.timedelta(minutes=5)).strftime('%Y-%m-%d')
+try:
+    out = json.loads(subprocess.run(['nft', '-j', 'list', 'counters', 'table', 'inet', 'relay'], capture_output=True, text=True, check=True).stdout)
+except Exception:
+    sys.exit(0)  # no firewall table yet: nothing counted
+got = {c['counter']['name']: c['counter']['bytes'] for c in out.get('nftables', []) if 'counter' in c}
+try:
+    data = json.load(open(FILE))
+except Exception:
+    data = {'days': []}
+row = next((d for d in data['days'] if d.get('key') == day), None)
+if row is None:
+    row = {'key': day, 'in': 0, 'out': 0}
+    data['days'].append(row)
+row['in'] += int(got.get('relayed_in', 0))
+row['out'] += int(got.get('relayed_out', 0))
+data['days'] = data['days'][-400:]
+tmp = FILE + '.tmp'
+with open(tmp, 'w') as f:
+    json.dump(data, f)
+os.replace(tmp, FILE)
+subprocess.run(['nft', 'reset', 'counters', 'table', 'inet', 'relay'], capture_output=True)
+EOF
+write /etc/systemd/system/relay-traffic-day.service 0644 root:root <<'EOF' || true
+[Unit]
+Description=Add the relayed bytes to the day's total
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/relay-traffic-day
+EOF
+write /etc/systemd/system/relay-traffic-day.timer 0644 root:root <<'EOF' || true
+[Unit]
+Description=Relayed bytes, a total per day (UTC)
+[Timer]
+OnCalendar=*-*-* 00:00:30 UTC
+Persistent=true
+[Install]
+WantedBy=timers.target
+EOF
+write /etc/systemd/system/relay-traffic-keep.service 0644 root:root <<'EOF' || true
+[Unit]
+Description=Keep today's relayed bytes when the machine shuts down
+After=nftables.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/usr/local/sbin/relay-traffic-day --today
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable --now relay-traffic-day.timer relay-traffic-keep.service >/dev/null 2>&1
 nft -c -f /etc/nftables.conf
 systemctl enable nftables >/dev/null 2>&1
+# Counted so far today, kept before the reload zeroes the counters.
+/usr/local/sbin/relay-traffic-day --today
 nft -f /etc/nftables.conf
+
 
 say "done"
 echo "  relay code:  $( [ -e /opt/chattering-anywhere/current ] && readlink -f /opt/chattering-anywhere/current || echo 'not deployed yet: run deploy-relay.sh from a checkout')"
