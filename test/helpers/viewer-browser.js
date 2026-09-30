@@ -8,7 +8,8 @@ const { spawn } = require('node:child_process');
 const { chromiumBinary } = require('./chromium.js');
 
 // opts: setup(home) before the server starts (settings files…), env for
-// the server, flags for the browser; fixture: false for a home with no
+// the server, flags for the browser; cleanEnv drops inherited credentials/config;
+// fixture: false for a home with no
 // conversation at all (a stranger's first start).
 async function viewerBrowser(t, opts = {}) {
   const root = path.join(__dirname, '../..'), home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'file-viewers-')));
@@ -39,11 +40,21 @@ async function viewerBrowser(t, opts = {}) {
   });
   const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r)); const port = socket.address().port; await new Promise(r => socket.close(r));
   const base = 'http://127.0.0.1:' + port; let log = '';
+  const inherited = opts.cleanEnv ? { ...require('./home-env.js').systemEnv(),
+    ...Object.fromEntries(['PATH', 'TMPDIR', 'TMP', 'TEMP', 'PI_CODING_AGENT_PACKAGE', 'CHATTERING_TEST_CHROMIUM', 'CHROMIUM_BIN', 'CHROMIUM', 'PI_OFFLINE', 'JITI_FS_CACHE', 'LANG', 'LC_ALL']
+      .filter(k => process.env[k] !== undefined).map(k => [k, process.env[k]])) } : process.env;
+  const fixtureEnv = { ...inherited, ...require('./home-env.js').homeEnv(home), ...(opts.cleanEnv ? {
+    XDG_CONFIG_HOME: path.join(home, '.config'), XDG_CACHE_HOME: path.join(home, '.cache'),
+    XDG_DATA_HOME: path.join(home, '.local/share'), XDG_STATE_HOME: path.join(home, '.local/state'),
+  } : {}) };
   // Since the console needs the token (design/53), the harness signs in
   // like a client: Bearer on its own calls, ?token= for the browser's cookie.
   const token = 'viewer-test-token', auth = { Authorization: 'Bearer ' + token };
-  server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...require('./home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: 'viewer-test-token', CHATTERING_NO_WATCH: '1', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, ...(opts.env || {}) }, stdio: ['ignore', 'pipe', 'pipe'] });
-  server.stdout.on('data', b => log += b); server.stderr.on('data', b => log += b);
+  const startServer = () => {
+    server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...fixtureEnv, PORT: String(port), CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: 'viewer-test-token', CHATTERING_NO_WATCH: '1', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, ...(opts.env || {}) }, stdio: ['ignore', 'pipe', 'pipe'] });
+    server.stdout.on('data', b => log += b); server.stderr.on('data', b => log += b);
+  };
+  startServer();
   let ready = false;
   for (let i = 0; i < 150; i++) {
     try { const rows = await (await fetch(base + '/api/sessions', { headers: auth })).json(); if (opts.fixture === false ? Array.isArray(rows) : rows.some(s => s.key === 'pi:fixture/media.jsonl')) { ready = true; break; } } catch {}
@@ -51,7 +62,7 @@ async function viewerBrowser(t, opts = {}) {
     await new Promise(r => setTimeout(r, 100));
   }
   assert.ok(ready, log);
-  browser = spawn(chromiumBinary(), [...require('./chromium.js').CHROMIUM_TEST_FLAGS, '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--disable-sync', '--no-first-run', '--user-data-dir=' + path.join(home, 'browser'), '--remote-debugging-port=0', ...(opts.flags || []), 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+  browser = spawn(chromiumBinary(), [...require('./chromium.js').CHROMIUM_TEST_FLAGS, '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--disable-sync', '--no-first-run', '--user-data-dir=' + path.join(home, 'browser'), '--remote-debugging-port=0', ...(opts.flags || []), 'about:blank'], { env: opts.cleanEnv ? fixtureEnv : process.env, stdio: ['ignore', 'ignore', 'pipe'] });
   const endpoint = await new Promise((resolve, reject) => {
     let output = ''; const timer = setTimeout(() => reject(Error(output)), 10000);
     browser.stderr.on('data', b => { output += b; const m = output.match(/DevTools listening on (ws:\/\/[^\s]+)/); if (m) { clearTimeout(timer); resolve(m[1]); } });
@@ -124,7 +135,16 @@ async function viewerBrowser(t, opts = {}) {
     return { id: world.result.executionContextId, session };
   };
   const screenshot = async name => { const shot = await command('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(os.tmpdir(), name), Buffer.from(shot.result.data, 'base64')); };
-  return { home, work, base, token, auth, command, evaluate, until, size, open, frameContext, screenshot, exceptions, requests };
+  const restartServer = async () => {
+    await stop(server); startServer();
+    for (let i = 0; i < 150; i++) {
+      try { if ((await fetch(base + '/health', { headers: auth })).ok) return; } catch {}
+      if (server.exitCode !== null) break;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    assert.fail('restarted server did not become ready\n' + log);
+  };
+  return { home, work, base, token, auth, command, evaluate, until, size, open, frameContext, screenshot, exceptions, requests, restartServer };
 }
 
 function samplePDF(padding = 0) {

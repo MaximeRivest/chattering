@@ -11878,16 +11878,63 @@ function renderModelStrip() {
 }
 
 // ---- slash palette: pi's own commands, autocompleting like the TUI ----
-const slashCmdCache = new Map(); // conversation key → Promise<[{name,description,source}]>
+const slashCmdCache = new Map();
+let slashLocalTicket = 0, slashServerGeneration = 0, slashServerBoot = null;
+const slashRetiredBoots = new Set();
+function invalidateSlashCommands(generation = slashServerGeneration, boot = slashServerBoot) {
+  if (boot !== slashServerBoot) {
+    if (slashRetiredBoots.has(boot)) return false;
+    if (slashServerBoot !== null) slashRetiredBoots.add(slashServerBoot);
+  } else {
+    if (generation < slashServerGeneration) return false;
+    if (generation === slashServerGeneration) return true;
+  }
+  slashServerBoot = boot; slashServerGeneration = generation;
+  slashLocalTicket++; slashCmdCache.clear(); hideSlashPop();
+  return true;
+}
+function acceptSlashSettings(data, ticket) {
+  const boot = data.webExtensionBoot ?? slashServerBoot;
+  // A response predating a boot switch cannot introduce a different boot,
+  // even if the previous boot was not yet known when the request started.
+  if (ticket !== slashLocalTicket && boot !== slashServerBoot) return false;
+  return invalidateSlashCommands(data.webExtensionGeneration, boot);
+}
+function receiveSlashPolicy(d) {
+  if (!invalidateSlashCommands(d.generation, d.boot)) return false;
+  if (typeof settingsState !== 'undefined' && settingsState) {
+    settingsState.webExtensionGeneration = d.generation; settingsState.webExtensionBoot = d.boot;
+    if (d.discovery !== undefined) settingsState.settings.webExtensionDiscovery = d.discovery;
+  }
+  return true;
+}
+function slashCommandScope(key) {
+  const state = typeof settingsState === 'undefined' ? null : settingsState;
+  const conv = (typeof current !== 'undefined' && current?.key === key ? current : null)
+    || (typeof sessions !== 'undefined' ? sessions.find(s => s.key === key) : null);
+  return JSON.stringify([key, state?.me?.id, state?.tier, conv?.cwd]);
+}
 function ensureSlashCmds(key) {
   if (isDraftKey(key)) return Promise.reject(new Error('slash commands run inside a started conversation — send the first message, then use /'));
-  if (!slashCmdCache.has(key)) {
-    slashCmdCache.set(key, fetch('/api/node/commands?id=' + encodeURIComponent(key))
-      .then(r => r.json())
-      .then(d => { if (d.error) throw new Error(d.error); return d.commands || []; })
-      .catch(e => { slashCmdCache.delete(key); throw e; }));
+  const cacheKey = slashCommandScope(key);
+  if (!slashCmdCache.has(cacheKey)) {
+    const ticket = slashLocalTicket;
+    const promise = fetch('/api/node/commands?id=' + encodeURIComponent(key)).then(async r => {
+      const d = await r.json();
+      if (ticket !== slashLocalTicket || cacheKey !== slashCommandScope(key)) throw new Error('stale slash commands');
+      if (d.boot !== undefined && d.boot !== slashServerBoot) {
+        if (!invalidateSlashCommands(d.generation, d.boot)) throw new Error('stale slash commands');
+        return ensureSlashCmds(key);
+      }
+      if (d.generation !== undefined && d.generation < slashServerGeneration) throw new Error('stale slash commands');
+      if (r.status === 409) { invalidateSlashCommands(d.generation, d.boot); return ensureSlashCmds(key); }
+      if (d.error) throw new Error(d.error);
+      if (d.generation > slashServerGeneration) { invalidateSlashCommands(d.generation, d.boot); return ensureSlashCmds(key); }
+      return d.commands || [];
+    }).catch(e => { if (slashCmdCache.get(cacheKey) === promise) slashCmdCache.delete(cacheKey); throw e; });
+    slashCmdCache.set(cacheKey, promise);
   }
-  return slashCmdCache.get(key);
+  return slashCmdCache.get(cacheKey);
 }
 // A picked command runs as its own text — the composer, its draft, and its
 // images are never touched. Arguments ride along: "/name args" runs whole.
@@ -16721,6 +16768,11 @@ function paneAdvanced() {
     ], s.piEngine === 'rpc' ? 'rpc' : 'sdk')}
     <div class="set-help">Applies to sessions started after the change.</div>
     <div class="set-field">
+      <label for="setWebExtensionDiscovery">web extension discovery</label>
+      <select id="setWebExtensionDiscovery"><option value="all"${s.webExtensionDiscovery !== 'minimal' ? ' selected' : ''}>All</option><option value="minimal"${s.webExtensionDiscovery === 'minimal' ? ' selected' : ''}>Minimal</option></select>
+      <p class="set-help">All uses normal Pi discovery. Minimal loads Chattering's tools and modes plus its explicit provider. Web runs only; terminals stay unchanged. Applies at the next idle operation, without stopping active runs. Not isolation or a permission boundary.</p>
+    </div>
+    <div class="set-field">
       <label for="setFile">settings file</label>
       <div class="set-row" style="margin:0"><input id="setFile" type="text" value="${esc(file)}" readonly><button type="button" id="setFileCopy">copy path</button></div>
       <div class="set-help">Every setting on these panes lives in this JSON file. Edit it by hand when the server is stopped.</div>
@@ -16733,6 +16785,7 @@ function paneAdvanced() {
 
 function bindPaneAdvanced(root) {
   bindOptions(root, 'setPiEngine', v => saveSettings({ piEngine: v }, 'engine: ' + v + ' — for new sessions'));
+  $('setWebExtensionDiscovery').onchange = () => saveSettings({ webExtensionDiscovery: $('setWebExtensionDiscovery').value }, 'web extension discovery updated');
   $('setFileCopy').onclick = async () => {
     try { await copyText($('setFile').value); toast('path copied'); }
     catch { $('setFile').select(); }
@@ -16799,8 +16852,11 @@ function renderSettings() {
 }
 
 async function loadSettings() {
+  const ticket = slashLocalTicket;
   const res = await fetch('/api/settings');
-  settingsState = await res.json();
+  const data = await res.json();
+  if (!acceptSlashSettings(data, ticket)) return;
+  settingsState = data;
   renderPeopleHeader();
   renderMachineBtn();
   applyCapabilities();
@@ -16962,7 +17018,7 @@ function bindPaneTeam(root) {
 }
 
 async function saveSettings(patch, message) {
-  const current = settingsOf();
+  const current = settingsOf(), ticket = slashLocalTicket;
   const res = await fetch('/api/settings', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -16970,6 +17026,7 @@ async function saveSettings(patch, message) {
   });
   const data = await res.json();
   if (data.error) return errToast(data.error);
+  if (!acceptSlashSettings(data, ticket)) return;
   settingsState = data;
   renderPeopleHeader();
   toast(message || ('memory model: ' + data.resolved.label));
@@ -18594,7 +18651,9 @@ live.onmessage = ev => {
   // and the AI programs when their pages are open.
   if (d.type === 'hello' && docState) setTimeout(() => docFollow(docState), 0);
   if (d.type === 'hello' && window.Programs) setTimeout(() => Programs.connected(), 0);
+  if (d.type === 'hello' && !receiveSlashPolicy(d)) return; // Retire old palettes, ignore delayed old-boot hellos.
   if (peopleLiveEvent(d)) return;
+  if (d.type === 'web-extension-policy') { receiveSlashPolicy(d); return; }
   if (d.type === 'agent-recovery') { applyAgentRecovery(d.recovery); return; }
   if (d.type === 'delegation-update') { delegationUI.invalidate(); return; }
   if (d.type === 'timeline-titles') {

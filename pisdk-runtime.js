@@ -13,6 +13,7 @@ const { installCustomPromptPreparation, waitForCustomTurns } = require('./pisdk-
 const { forkPiSnapshot } = require('./session-snapshot.js');
 const { captureRewriteRequest } = require('./pisdk-rewrite.js');
 const { createSpeedMeter } = require('./responsespeed.js');
+const { parseExtensionArgs: parseExtraArgs, extensionPolicyFingerprint, requiredExtensionError } = require('./web-extension-policy.js');
 
 const { PI_TESTED_VERSION } = require('./runtime.js'); // runtime/package.json
 const WARM_IDLE_MS = 5 * 60 * 1000;
@@ -63,30 +64,6 @@ function sdkInfo() {
 // Injection keeps lifecycle tests independent of installed providers and user files.
 function createRuntimeEngine(hooks = {}) {
 const getSdk = hooks.loadSdk || loadSdk;
-
-// Parse the CLI-style extraArgs the server hands both engines, exactly the
-// way pi's own arg parser would: -e paths, --name, --append-system-prompt,
-// and every unrecognized --flag becomes an extension flag (this carries
-// --prompt-mode into the modes extension, matching pi's unknownFlags map).
-function parseExtraArgs(extraArgs) {
-  const args = Array.isArray(extraArgs) ? extraArgs : [];
-  const out = { extensionPaths: [], name: null, appendSystemPrompt: undefined, flags: new Map() };
-  for (let i = 0; i < args.length; i++) {
-    const a = args[i];
-    if (a === '-e' && args[i + 1]) { out.extensionPaths.push(args[++i]); continue; }
-    if (a === '--name' && args[i + 1]) { out.name = args[++i]; continue; }
-    if (a === '--append-system-prompt' && args[i + 1]) { out.appendSystemPrompt = args[++i]; continue; }
-    if (a === '--no-session') continue;
-    if (a.startsWith('--')) {
-      const eq = a.indexOf('=');
-      if (eq > 2) { out.flags.set(a.slice(2, eq), a.slice(eq + 1)); continue; }
-      const next = args[i + 1];
-      if (next !== undefined && !next.startsWith('-') && !next.startsWith('@')) { out.flags.set(a.slice(2), next); i++; }
-      else out.flags.set(a.slice(2), true);
-    }
-  }
-  return out;
-}
 
 // ---- session pool --------------------------------------------------------
 
@@ -399,8 +376,12 @@ async function bindS(S, loaded) {
       reload: async () => { await session.reload(); },
     },
     shutdownHandler: () => { if (hooks.onShutdown) hooks.onShutdown(); },
-    onError: err => S.emit({ type: 'extension_error', extensionPath: err.extensionPath, event: err.event, error: err.error }),
+    onError: err => {
+      if (requiredExtensionError(err)) S.extensionFailure = new Error('Required extension failed: ' + err.extensionPath + ': ' + err.error);
+      S.emit({ type: 'extension_error', extensionPath: err.extensionPath, event: err.event, error: err.error });
+    },
   });
+  if (S.extensionFailure) throw S.extensionFailure;
   S.fileSig = fileSigOf(S.file);
   publishState(S);
 }
@@ -418,6 +399,7 @@ async function createS(target) {
   const cwd = sm.getCwd() || target.cwd;
   const trustStore = new SDK.ProjectTrustStore(agentDir);
   const parsed = parseExtraArgs(target.extraArgs);
+  let loadErrors = [];
   const createRuntime = async ({ cwd, agentDir, sessionManager, sessionStartEvent }) => {
     const projectTrusted = !SDK.hasTrustRequiringProjectResources(cwd) || trustStore.get(cwd) === true;
     const settingsManager = SDK.SettingsManager.create(cwd, agentDir, { projectTrusted });
@@ -426,6 +408,7 @@ async function createS(target) {
       modelRuntimeSignal: AbortSignal.timeout(15000),
       extensionFlagValues: parsed.flags.size ? parsed.flags : undefined,
       resourceLoaderOptions: {
+        noExtensions: parsed.noExtensions,
         extensionFactories: [{ name: 'workspace-checkpoints', factory: require('./checkpoint-extension.js').checkpointExtension }],
         additionalExtensionPaths: parsed.extensionPaths.length ? parsed.extensionPaths : undefined,
         // pi's resource loader treats appendSystemPromptSource as an array of
@@ -433,6 +416,14 @@ async function createS(target) {
         appendSystemPrompt: parsed.appendSystemPrompt ? [parsed.appendSystemPrompt] : undefined,
       },
     });
+    const errors = services.resourceLoader?.getExtensions().errors || [];
+    const fatal = errors.filter(error => parsed.noExtensions || requiredExtensionError({ extensionPath: error.path }) ||
+      parsed.extensionPaths.some(file => path.resolve(cwd, file) === path.resolve(error.path)));
+    const diagnostics = (services.diagnostics || []).filter(d => d.type === 'error');
+    if (fatal.length || diagnostics.length) {
+      throw new Error([...fatal.map(e => 'Extension ' + e.path + ': ' + e.error), ...diagnostics.map(d => d.message)].join('\n'));
+    }
+    loadErrors = errors;
     return {
       ...(await SDK.createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),
       services,
@@ -445,6 +436,7 @@ async function createS(target) {
   const S = {
     file: path.resolve(file),
     runtime, session: runtime.session,
+    policyFingerprint: extensionPolicyFingerprint(target),
     busy: false, idleTimer: null, model: null,
     fileSig: fileSigOf(file),
     pendingUi: new Map(),
@@ -459,9 +451,17 @@ async function createS(target) {
       if (S.onEvent) S.onEvent(ev);
     },
   };
-  runtime.setRebindSession(async () => { await bindS(S, loaded); });
+  const reportLoadErrors = () => {
+    for (const error of loadErrors) S.emit({ type: 'extension_error', extensionPath: error.path, event: 'load', error: error.error });
+  };
+  runtime.setRebindSession(async () => { reportLoadErrors(); await bindS(S, loaded); });
+  reportLoadErrors();
   try { await bindS(S, loaded); }
-  catch (error) { stopWarmSession(S.file); throw error; }
+  catch (error) {
+    stopWarmSession(S.file);
+    if (stopping.has(S.file)) await stopping.get(S.file);
+    throw error;
+  }
   if (disposed || S.stopped) throw new Error('Pi runtime is stopped');
   if (parsed.name && typeof S.session.setSessionName === 'function') {
     try { S.session.setSessionName(parsed.name); } catch {}
@@ -477,7 +477,14 @@ async function ensureS(target) {
   const work = (async () => {
     const S = sdkSessions.get(key);
     if (S) {
-      if (sessionBusy(S) || S.fileSig === fileSigOf(key)) return S;
+      const changed = S.policyFingerprint !== extensionPolicyFingerprint(target);
+      const busy = sessionBusy(S) || S.pendingUi.size || S.customViews.size;
+      // A required extension failure belongs to this runtime, not the next
+      // prompt. Never send new work through it or abort an active run to reset
+      // it; once idle, await its teardown before opening the replacement.
+      if (S.extensionFailure) {
+        if (busy) throw S.extensionFailure;
+      } else if (busy || (!changed && S.fileSig === fileSigOf(key))) return S;
       stopWarmSession(key);
     }
     if (stopping.has(key)) await stopping.get(key);
@@ -531,6 +538,7 @@ function piHeadlessRun(target, opts = {}) {
         } catch (error) { S.emit({ type: 'run_note', text: 'could not set the reasoning level: ' + String(error.message || error) }); }
       }
       if (aborted) throw new Error('Pi run aborted before prompt');
+      if (S.extensionFailure) throw S.extensionFailure;
       if (opts.simplifyAnswers && !opts.customMessage) rewrite = captureRewriteRequest(S.session, opts.simplifyPrompt);
       // Who is sending: one entry in the session tree right before the user
       // message, so it travels with the file (forks, copies) and the index
@@ -554,6 +562,7 @@ function piHeadlessRun(target, opts = {}) {
       // Use SDK idle state, not agent_end (which precedes retries/followups).
       await waitForCustomTurns(S.session);
       await S.session.waitForIdle();
+      if (S.extensionFailure) throw S.extensionFailure;
       rewrite?.restore();
       if (rewrite && !aborted && !S.stopped && S.uiAutoCancelled === beforeCancelled) {
         S.rewriteController = new AbortController();
@@ -565,6 +574,7 @@ function piHeadlessRun(target, opts = {}) {
         await waitForCustomTurns(S.session);
         await S.session.waitForIdle();
       }
+      if (S.extensionFailure) throw S.extensionFailure;
       return { uiAutoCancelled: S.uiAutoCancelled - beforeCancelled, pid: process.pid, warm: true, engine: 'sdk' };
     } finally {
       rewrite?.restore();
@@ -654,6 +664,7 @@ async function piQueuePrompt(target, message, behavior, images) {
   const key = path.resolve(target.sessionPath);
   const S = sdkSessions.get(key);
   if (!S || S.rewriteController || !S.session.isStreaming) return false;
+  if (S.extensionFailure) throw S.extensionFailure;
   return await new Promise((resolve, reject) => {
     S.session.prompt(message, {
       streamingBehavior: behavior || 'followUp',

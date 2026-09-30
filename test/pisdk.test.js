@@ -649,14 +649,52 @@ test('reply speed is measured at the source and stored once per run with the rep
 test('warm startup keeps extension flags, name, system prompt, and per-child environment', async t => {
   const { proxy, workers } = harness(t);
   const begun = await proxy.piBeginWarm({ cwd: '/virtual/project', env: { DISPLAY: ':7', PI_PROMPT_MODE: 'explicit-fixture' },
-    extraArgs: ['-e', '/virtual/extension.ts', '--name', 'fixture', '--prompt-mode', 'review', '--append-system-prompt', 'fixture prompt'] });
+    extraArgs: ['--no-extensions', '-e', '/virtual/extension.ts', '--name', 'fixture', '--prompt-mode', 'review', '--append-system-prompt', 'fixture prompt'] });
   assert.equal(workers[0].opts.env.DISPLAY, ':7');
   assert.equal(workers[0].opts.env.PI_PROMPT_MODE, 'explicit-fixture');
   const service = workers[0].sdk.services[0];
+  assert.equal(service.resourceLoaderOptions.noExtensions, true);
+  assert.equal(service.extensionFlagValues.has('no-extensions'), false);
   assert.equal(service.extensionFlagValues.get('prompt-mode'), 'review');
   assert.deepEqual(service.resourceLoaderOptions.additionalExtensionPaths, ['/virtual/extension.ts']);
   assert.deepEqual(service.resourceLoaderOptions.appendSystemPrompt, ['fixture prompt']);
   assert.equal(workers[0].sdk.sessions[0].name, 'fixture');
   await proxy.piHeadlessRun({ sessionPath: begun.file, cwd: '/virtual/project' }, { message: '/command' }).done;
   assert.equal(workers.length, 1);
+});
+
+test('policy generation crosses SDK worker IPC; replacement waits until an active turn settles', async t => {
+  const { proxy, workers } = harness(t);
+  const first = { ...target('generation'), extensionPolicyGeneration: 1 };
+  const run = proxy.piHeadlessRun(first, { message: 'held' });
+  await until(() => workers[0]?.sdk.sessions[0]?.isStreaming);
+  const old = workers[0].sdk.sessions[0];
+  const changed = proxy.piBeginWarm({ ...first, extensionPolicyGeneration: 2 });
+  await tick(); // Worker utilities serialize behind the explicit active run.
+  assert.equal(workers[0].sdk.sessions.length, 1);
+  assert.equal(old.abortCount, 0);
+  old.finish(); await run.done;
+  await changed;
+  assert.equal(workers[0].sdk.sessions.length, 2);
+  assert.equal(old.disposed, true);
+});
+
+test('required extension failure is visible; poisoned SDK runtime is disposed before any healthy prompt', async t => {
+  const path = require('../web-extension-policy.js').REQUIRED_EXTENSIONS[2];
+  const shutdown = latch();
+  const sdk = fakeSdk({ shutdown: () => shutdown.promise, prompt(s, message) {
+    if (message === 'bad') s.bindings.onError({ extensionPath: path, event: 'before_agent_start', error: 'fixture failure' });
+  } });
+  const events = [];
+  const engine = createRuntimeEngine({ ...sdk, onEvent: ev => events.push(ev) });
+  t.after(() => engine.dispose());
+  await assert.rejects(engine.piHeadlessRun(target('poison'), { message: 'bad' }).done, /Required extension failed:.*fixture failure/);
+  assert.equal(events.find(ev => ev.type === 'extension_error').extensionPath, path);
+  const healthy = engine.piHeadlessRun(target('poison'), { message: 'healthy' });
+  await tick();
+  assert.equal(sdk.sessions.length, 1);
+  assert.deepEqual(sdk.sessions[0].prompts.map(p => p.message), ['bad']);
+  shutdown.resolve(); await healthy.done;
+  assert.equal(sdk.runtimes[0].disposed, 1);
+  assert.deepEqual(sdk.sessions[1].prompts.map(p => p.message), ['healthy']);
 });
