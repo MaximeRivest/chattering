@@ -483,27 +483,6 @@ function madeSummaries() {
   });
   return madeService;
 }
-// What each box of steps changed, shown in the conversation (design/87).
-let stepChangesService = null;
-function stepChanges() {
-  stepChangesService ||= require('./step-changes.js').createStepChanges({
-    store: checkpoints,
-    session: key => { const { sessionPath, entry } = sessionPathsFor(key); return { file: sessionPath, cwd: entry.cwd || '', source: entry.source }; },
-    recorded: key => conversationDiffs(key),
-    // Other conversations of the project that edited files in that time: a
-    // file they edited is theirs, not the step's that ran beside them.
-    peerEdits: async (key, from, to) => {
-      const entry = index[key], project = entry && projectNameOf(entry.cwd, key), out = [];
-      const peers = Object.entries(index).filter(([k, e]) => k !== key && projectNameOf(e.cwd, k) === project
-        && Date.parse(e.lastTs || '') >= from - 60000 && Date.parse(e.firstTs || '') <= to + 60000).slice(0, 40);
-      for (const [k] of peers) {
-        try { out.push(...(await conversationDiffs(k)).filter(e => e.kind !== 'shell' && e.outcome !== 'failed').map(e => ({ path: e.path, ts: e.ts }))); } catch {}
-      }
-      return out;
-    },
-  });
-  return stepChangesService;
-}
 const conversationReviewsRunning = new Map();
 function conversationReview(key) {
   // One build per conversation at a time: a second click waits for the first.
@@ -16346,8 +16325,6 @@ async function handleRequest(req, res) {
       '/conversation-tree.js': { file: 'conversation-tree.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/artifacts.js': { file: 'artifacts.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/made-panel.js': { file: 'made-panel.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/step-changes-ui.js': { file: 'step-changes-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/step-changes.css': { file: 'step-changes.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/made.css': { file: 'made.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/programs-ui.js': { file: 'programs-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/programs.css': { file: 'programs.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
@@ -16750,33 +16727,6 @@ async function handleRequest(req, res) {
         const items = await require('./file-completion.js').completeFiles({ piDir: dir, root, cwd, query, signal: ctl.signal });
         if (!res.destroyed) json(res, 200, { items });
       } finally { clearTimeout(timeout); res.removeListener('close', abort); }
-    } else if (u.pathname === '/api/conversation/changes' && req.method === 'POST') {
-      // design/87: the files each box of steps changed, for the conversation.
-      try {
-        let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 2 * 1024 * 1024) throw Object.assign(Error('Too many steps in one request'), { status: 413 }); }
-        const input = JSON.parse(raw || '{}');
-        const key = String(input.id || '');
-        if (!index[key]) return json(res, 404, { error: 'conversation not found' });
-        assertCan(identity, 'see', targetOf(key), 'this conversation');
-        const groups = (Array.isArray(input.groups) ? input.groups : []).slice(0, 5000)
-          .map(g => (Array.isArray(g) ? g : []).filter(c => typeof c === 'string' && c.length <= 200).slice(0, 2000)).filter(g => g.length);
-        json(res, 200, await stepChanges().changes(key, groups));
-      } catch (e) { json(res, e.status || 500, { error: e.message }); }
-    } else if ((u.pathname === '/api/conversation/change' || u.pathname === '/api/conversation/change-blob') && req.method === 'GET') {
-      try {
-        const key = u.searchParams.get('id') || '', abs = u.searchParams.get('path') || '';
-        const calls = (u.searchParams.get('calls') || '').split(',').filter(Boolean).slice(0, 2000);
-        if (!index[key]) return json(res, 404, { error: 'conversation not found' });
-        if (!calls.length || !path.isAbsolute(abs)) return json(res, 400, { error: 'Name the steps and the file' });
-        assertPathAccess(identity, abs, 'see');
-        const picture = u.pathname.endsWith('-blob');
-        if (!picture) return json(res, 200, await stepChanges().content(key, calls, abs));
-        const bytes = await stepChanges().blob(key, calls, abs, u.searchParams.get('side') === 'old' ? 'old' : 'next');
-        const mime = imageMimeForPath(abs);
-        if (!mime) return json(res, 415, { error: 'Only pictures are shown this way' });
-        res.writeHead(200, { 'Content-Type': mime, 'Content-Length': bytes.length, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
-        res.end(bytes);
-      } catch (e) { if (!res.headersSent) json(res, e.status || 500, { error: e.message }); }
     } else if (u.pathname === '/api/made' && req.method === 'GET') {
       const key = u.searchParams.get('key') || '';
       if (!index[key]) return json(res, 404, { error: 'conversation not found' });
