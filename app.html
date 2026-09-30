@@ -122,7 +122,6 @@ try {
 :root[data-theme-mode="binary"] mark { color: var(--text); font-weight: 700; text-decoration: underline; }
 :root[data-theme-mode="binary"] code, :root[data-theme-mode="binary"] a { color: var(--text); }
 :root[data-theme-mode="binary"] a { text-decoration: underline; }
-:root[data-theme-mode="binary"] #ganttDate { color-scheme: light; }
 /* Binary Gantt states use a hatch, a dashed frame, and solid live dots. */
 :root[data-theme-mode="binary"] .tmark.selected .violin { fill: url(#selHatch) !important; stroke: var(--text) !important; }
 .activeframe { display: none; }
@@ -666,7 +665,6 @@ body.home #tabs { display: none; }
   body.home #left { border: 1px solid var(--border); border-radius: var(--r); overflow: hidden; }
 }
 #ganttBar { flex-wrap: wrap; gap: 4px; padding: 8px; }
-#ganttBar:not(:has(#projSort)) { display: none; }
 #ganttBar #projSort { flex-wrap: wrap; }
 #ganttBar button, #ganttBar select, #ganttBar input { min-height: 30px; }
 /* Floating mark details: one click shows them, a second click opens. */
@@ -695,9 +693,6 @@ body:not(.home) #left, body:not(.home) #ganttResize { display: none !important; 
 #ganttBar { display: flex; align-items: stretch; border-bottom: 1px solid var(--border); flex-shrink: 0; background: var(--surface-1); }
 #ganttBar button { flex: 0 0 auto; height: 24px; min-width: 26px; padding: 0 6px; border: 0; border-right: 1px solid var(--border); border-radius: 0; background: transparent; color: var(--text-dim); font: 12px var(--font); }
 #ganttBar button:hover { color: var(--text); background: var(--surface-2); }
-#ganttBar .gsep { width: 1px; background: var(--border); }
-#ganttDate { border: 0; border-left: 1px solid var(--border); background: transparent; color: var(--text-dim); font: 11px var(--font); padding: 0 6px; height: 24px; width: 118px; }
-#ganttDate:focus { outline: 1px solid var(--accent); outline-offset: -1px; color: var(--text); }
 #ganttProject { flex: 0 1 180px; min-width: 110px; height: 24px; border: 0; border-left: 1px solid var(--border); border-radius: 0; background: var(--surface-1); color: var(--text-dim); padding: 0 6px; font: 10px var(--font); }
 #ganttGroup { flex: 0 0 auto; height: 24px; min-width: 92px; padding: 0 7px; border: 0; border-left: 1px solid var(--border); border-right: 1px solid var(--border); border-radius: 0; background: var(--accent-strong); color: var(--accent-ink); font: 10px var(--font); }
 #ganttGroup.compact { background: transparent; color: var(--text-dim); }
@@ -705,10 +700,6 @@ body:not(.home) #left, body:not(.home) #ganttResize { display: none !important; 
 #ganttResize { height: 7px; flex: 0 0 7px; cursor: row-resize; background: var(--surface-2); border-bottom: 1px solid var(--border); position: relative; touch-action: none; }
 #ganttResize::after { content: ""; position: absolute; width: 40px; height: 2px; left: calc(50% - 20px); top: 2px; background: var(--border-strong); }
 #ganttResize:hover, #ganttResize.dragging { background: var(--surface-3); }
-#scaleSeg { display: inline-flex; flex-shrink: 0; }
-#scaleSeg button { flex: 0 0 auto; height: 24px; padding: 0 7px; border: 0; border-right: 1px solid var(--border); border-radius: 0; background: transparent; color: var(--text-dim); font-size: 10px; }
-#scaleSeg button:hover { color: var(--text); }
-#scaleSeg button.on { background: var(--accent-strong); color: var(--accent-ink); font-weight: 700; }
 
 #list { flex: 1; min-height: 0; overflow: auto; }
 /* Horizontal timeline: now is at the right edge. Older work extends left. */
@@ -2043,7 +2034,6 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
   body.phone-shell:not(.home) #view:has(.agent-compose) { padding-bottom: calc(var(--compose-h, 174px) + var(--phone-bar-h) + 16px + env(safe-area-inset-bottom)); }
   body.phone-shell:not(.chrome-min) .agent-compose { padding-bottom: 8px; }
   body.phone-shell.home #left { padding-bottom: var(--phone-bar-h); }
-  body.phone-shell #gRecenter { bottom: calc(12px + var(--phone-bar-h)); }
   body.phone-shell #tabs { bottom: calc(8px + var(--phone-bar-h)); }
   body.phone-shell #cornerStack { bottom: calc(10px + var(--phone-bar-h)); }
   body.phone-shell .mpick { bottom: var(--phone-bar-h); }
@@ -2085,14 +2075,13 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
   body.phone-shell > #filesToggle, body.phone-shell #sideUnfold { display: none !important; }
   /* Menus opened by a finger: rows tall enough to hit. */
   body.phone-shell .file-action-menu button { min-height: 44px; padding: 8px 12px; font-size: var(--fs-label); }
-  /* phone dashboard: the app opens on the chart and nothing else */
+  /* Phone dashboard: keep chart-local controls, not the application header. */
   body.home header, body.home #tabs { display: none !important; }
-  body.home #gRecenter { display: flex; }
   /* the tab switcher floats in the corner instead of owning a full-width bar */
   #tabs { position: fixed; left: auto; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); z-index: 35; width: auto; height: auto; padding: 2px; background: var(--surface-1); border: 1px solid var(--border-strong); border-bottom: 1px solid var(--border-strong); box-shadow: 0 2px 12px var(--shadow-color); }
   #tabs button[data-tab] { height: 34px; min-height: 34px; min-width: 0; padding: 0 8px; font-size: 11px; }
   /* the search collapses to one magnifier button; tap toggles the field */
-  #selShown, #ganttBar, #ganttResize { display: none !important; }
+  #selShown, #ganttResize { display: none !important; }
   #list { overscroll-behavior: contain; }
   .mobile-home section { background: var(--bg); }
   .mobile-home section + section { margin-top: 10px; border-top: 1px solid var(--border-strong); }
@@ -2220,8 +2209,6 @@ body.zen:not(.home) .transcript, body.zen:not(.home) #runCards:not(:empty) { bor
 body.zen:not(.home) .msg { border-bottom: 0; padding: 14px 0; }
 body.zen:not(.home) .msg.user { border-left: 2px solid var(--border-strong); padding-left: 14px; }
 #zenExit { display: none; }
-/* recenter on now — the one Google-Maps-style control on the phone chart */
-#gRecenter { display: none; position: fixed; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 40; width: 46px; height: 46px; min-height: 46px; align-items: center; justify-content: center; border: 1px solid var(--border-strong); background: var(--surface-1); font-size: 20px; box-shadow: 0 2px 12px var(--shadow-color); }
 body.zen:not(.home) #zenExit { display: block; position: fixed; top: 6px; right: 10px; z-index: 60; border: 0; background: transparent; color: var(--text-faint); font-size: var(--fs-micro); height: auto; padding: 2px 6px; }
 #zenExit:hover { color: var(--text); background: transparent; }
 /* Conversation surfaces share theme shape tokens; no hard-coded pill radii. */
@@ -2360,7 +2347,6 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
   <button id="barFold" title="Fold the top bar — click the rail to bring it back (`)">▴</button>
 </header>
 <button id="zenExit" title="Leave zen mode (z)">zen ✕</button>
-<button id="gRecenter" title="Jump to now" aria-label="Jump to now">⌖</button>
 <div id="agentsPop" hidden><div id="agentsSheetHead"><span class="sheet-title">Agents</span><button id="agentsSheetClose" type="button" title="Close" aria-label="Close agents">✕</button></div><div id="agentsUnread"></div><div id="agentsLegacy"></div></div>
 <div id="machinePop" hidden></div>
 <aside id="side" hidden aria-label="Navigation and agents">
@@ -2438,25 +2424,17 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
     <div id="tabs">
       <button id="tabsNew" title="New conversation">+ new</button><button data-tab="conv" class="on">conversations</button><button data-tab="notes">notes</button><button data-tab="epics">epics</button><button data-tab="repos">repos</button><button id="selShown" class="ghost" title="Select all shown conversations">select shown</button>
     </div>
-    <div id="ganttBar" role="toolbar" aria-label="Sort and find projects">
-      <!-- Auxiliary controls retain the timeline's existing state and keyboard bindings,
-           but the visible toolbar contains only project sorting and search. -->
+    <div id="ganttBar" role="toolbar" aria-label="Projects and timeline navigation">
+      <div id="timelineControls" role="group" aria-label="Timeline controls"></div>
+      <!-- Legacy collection controls are not part of the camera toolbar. -->
       <div hidden>
       <button id="homeFilters" type="button" aria-expanded="false" aria-controls="filtersPop" title="Filter the timeline (f)">Filters</button>
-      <button id="jumpStart" title="Jump to the oldest conversation (b)">«</button>
-      <button id="jumpNow" title="Jump to now (n)">»</button>
-      <span class="gsep"></span>
-      <button id="zoomOut" title="Zoom out (-)">−</button>
-      <button id="zoomIn" title="Zoom in (+)">+</button>
-      <span id="scaleSeg" title="Zoom presets"><button data-s="hours" title="Preset: hours">hrs</button><button data-s="days" title="Preset: days">days</button><button data-s="weeks" title="Preset: weeks">wks</button></span>
-      <span class="gsep"></span>
       <button id="ganttGroup" title="Toggle project rows or compact lanes">rows: project</button>
       <select id="ganttProject" title="Filter the timeline by project or repository"><option value="">all projects</option></select>
       <button id="newProject" title="Create a project or add an existing folder. No agent starts during setup.">+ project</button>
-      <input id="ganttDate" type="date" title="Jump to a date (t)">
       </div>
     </div>
-    <div id="list"></div>
+    <div id="list" tabindex="0" aria-label="Conversation timeline"></div>
     <div id="selbar" hidden>
       <span class="n"><span id="selCount">0</span> selected</span>
       <button id="copySel">copy</button>
@@ -2505,6 +2483,8 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <script src="/programs-make.js"></script>
 <script src="/navigation.js"></script>
 <script src="/timeline-chart.js"></script>
+<script src="/timeline-controls.js"></script>
+<link rel="stylesheet" href="/timeline-controls.css">
 <script src="/context-panel.js"></script>
 <script src="/conversation-draft.js"></script>
 <script src="/ai-connect.js"></script>
@@ -2585,6 +2565,7 @@ const lastNavConversation = new Map(); // project → last conversation opened t
 // key — rebuild the screen from its hash and land where the reader left it.
 // Rule: the app never navigates by itself — only user clicks change routes.
 let viewKind = 'home';
+let timelineControls = null;
 let currentHash = '';
 // Progress screens are not places: nothing goes back to "launching…".
 const TRANSIENT_KINDS = new Set(['launch', 'distill']);
@@ -2648,6 +2629,7 @@ function setRouteKind(kind) {
   // the draft and destroys the editor. Re-entering rebuilds from scratch.
   if (kind !== 'file' && kind !== 'files-project' && !besideFile && typeof fileWs !== 'undefined' && fileWs) closeFileWorkspace();
   viewKind = kind;
+  timelineControls?.setActive(kind === 'home');
   queueMicrotask(() => delegationUI.visibilityChanged());
   // The column follows the page: the current row, "new here", the project
   // scope of the recent lists.
@@ -3189,8 +3171,6 @@ function setZen(on) {
 try { if (localStorage.getItem('chattering.zen') === '1') document.body.classList.add('zen'); } catch {}
 $('zenExit').onclick = () => setZen(false);
 
-$('gRecenter').onclick = () => jumpToNow();
-
 // Phone: the search rests as one magnifier button; tap opens the field.
 const BUILTIN_THEMES = new Set(['rockfrog', 'rockfrog-light', 'rockfrog-dark', 'dark', 'light', 'gray', 'eink']);
 function themeToken(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
@@ -3468,9 +3448,15 @@ async function goToLocalMachine(m, b) {
   catch { return down(m.kind === 'wsl' ? 'it does not answer — open Chattering (Linux) once to start it' : 'it does not answer — open Chattering from the Start menu to start it'); }
   location.href = base + hand.path;
 }
+// Other computers this install links to (design/90): each at a local port,
+// so only from this computer's own screen (localhost).
+function linkedMachinesHere() {
+  if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) return [];
+  return (settingsState && settingsState.anywhereLinks) || [];
+}
 function renderMachineBtn() {
   const btn = $('machineBtn');
-  const list = [...(settingsOf().machines || []), ...localMachinesHere()];
+  const list = [...(settingsOf().machines || []), ...localMachinesHere(), ...linkedMachinesHere()];
   const host = (settingsState && settingsState.hostname) || '';
   btn.hidden = !list.length;
   btn.textContent = '@' + (host || 'this machine');
@@ -3486,10 +3472,20 @@ function toggleMachinePop(show) {
   const locals = localMachinesHere();
   pop.innerHTML = `<div class="mach-head">you are on ${esc(host)} · go to</div>` +
     locals.map(m => `<button type="button" data-local="${esc(m.id)}"><span>${esc(m.name)}</span><span class="mach-url">${esc(localMachineWhere(m, locals))}</span></button>`).join('') +
+    linkedMachinesHere().map(m => `<button type="button" data-link="${esc(m.id)}"><span>${esc(m.name)}</span><span class="mach-url">encrypted link</span></button>`).join('') +
     list.map((m, i) => `<button type="button" data-i="${i}"><span>${esc(m.name)}</span><span class="mach-url">${esc(m.url.replace(/^https?:\/\//i, ''))}</span></button>`).join('');
   pop.querySelectorAll('button[data-local]').forEach(b => b.onclick = () => {
     const m = locals.find(x => x.id === b.dataset.local);
     if (m) goToLocalMachine(m, b);
+  });
+  // A linked computer: connect (or say why not), then its local address.
+  pop.querySelectorAll('button[data-link]').forEach(b => b.onclick = async () => {
+    const url = b.querySelector('.mach-url');
+    b.disabled = true; url.textContent = 'connecting…';
+    let r;
+    try { r = await (await fetch('/api/anywhere/links/check?id=' + encodeURIComponent(b.dataset.link))).json(); } catch (e) { r = { ok: false, why: e.message }; }
+    if (r.ok && r.port) { location.href = location.protocol + '//' + location.hostname + ':' + r.port + '/'; return; }
+    b.disabled = false; url.textContent = r.why || 'not reachable';
   });
   const anchor = sideLayoutOn() ? $('railMachine') : $('machineBtn');
   const rect = anchor.getBoundingClientRect();
@@ -5166,12 +5162,11 @@ const DAY_MS = 86400000;
 // presets, the keys, and the saved setting speak.
 const PX_DAY_BASE = 160;
 const ZOOM_MIN = 0.08, ZOOM_MAX = 8;
-const ZOOM_PRESETS = { hours: 6, days: 1, weeks: 0.15 };
+const ZOOM_PRESETS = TimelineControls.PRESETS;
 let ganttZoom = Number(localStorage.getItem('chattering.ganttZoom')) || 0;
 if (!ganttZoom) { // migrate the old discrete scale setting
   ganttZoom = ZOOM_PRESETS[localStorage.getItem('chattering.ganttScale')] || 1;
 }
-const nearPreset = () => Object.entries(ZOOM_PRESETS).find(([, z]) => Math.abs(Math.log(ganttZoom / z)) < 0.18)?.[0] || null;
 const LANE_H = 26;    // vertical pixels per lane
 const PROJECT_LANE_H = 32;
 const PROJECT_GUTTER = 168;
@@ -5744,7 +5739,7 @@ function paintHomeTimeline(rows, layout, marks) {
     onInteract: () => { hideMarkPop(); cancelTimelineBand(); },
     onChange: state => {
       const zoom = state.scale / PX_DAY_BASE;
-      if (zoom !== ganttZoom) { ganttZoom = zoom; updateScaleSeg(); }
+      if (zoom !== ganttZoom) { ganttZoom = zoom; updateTimelineControls(); }
     },
     onSettle: () => { try { localStorage.setItem('chattering.ganttZoom', ganttZoom); } catch {} },
     // Only drawn marks can be hit by the rubber band or asked for details.
@@ -15595,13 +15590,9 @@ function applyGanttMode(persist = true) {
   renderTabList();
 }
 // ---- Gantt zoom and navigation (design/07-gantt-ergonomics.md) ----
-function updateScaleSeg() {
-  const near = nearPreset();
-  document.querySelectorAll('#scaleSeg button').forEach(b => b.classList.toggle('on', b.dataset.s === near));
+function updateTimelineControls() {
+  timelineControls?.updateScale(ganttZoom);
 }
-document.querySelectorAll('#scaleSeg button').forEach(b => {
-  b.onclick = () => zoomTo(ZOOM_PRESETS[b.dataset.s]);
-});
 
 // Buttons and keys drive the home chart's camera, the same one the wheel and
 // a pinch move. They anchor on the viewport center and transition briefly.
@@ -15624,11 +15615,13 @@ function jumpToDate(value) {
   if (viewKind === 'home') homeTimeline?.jump(new Date(value + 'T12:00:00').getTime());
 }
 
-$('jumpNow').onclick = jumpToNow;
-$('jumpStart').onclick = jumpToStart;
-$('zoomIn').onclick = () => zoomBy(1.4);
-$('zoomOut').onclick = () => zoomBy(1 / 1.4);
-$('ganttDate').addEventListener('change', e => jumpToDate(e.target.value));
+timelineControls = TimelineControls.mount({
+  host: $('timelineControls'), scroller: $('list'), active: viewKind === 'home',
+  zoomTo, zoomBy, jumpNow: jumpToNow, jumpStart: jumpToStart, jumpDate: jumpToDate,
+  bottomInset: () => $('phoneBar').checkVisibility() ? Math.max(0, innerHeight - $('phoneBar').getBoundingClientRect().top) : 0,
+  canHandleKeys: () => !settingsOpen && $('helpOverlay').hidden && $('epicOverlay').hidden && $('filtersPop').hidden &&
+    !agentsTrayOpen() && !searchModalOpenNow() && !readOverlayOpen(),
+});
 function paintGanttGroupButton() {
   $('ganttGroup').textContent = ganttGroup === 'project' ? 'rows: project' : 'rows: compact';
   $('ganttGroup').classList.toggle('compact', ganttGroup === 'compact');
@@ -18136,8 +18129,7 @@ function helpNow() {
     ];
     if (tab === 'conv') listKeys.push(['space', 'toggle selection']);
     listKeys.push(
-      ['+ − 0', 'timeline zoom'],
-      ['n / b / t', 'timeline: now / beginning / date'],
+      ...TimelineControls.helpRows(),
       ['C', 'new conversation — a blank page (works from any view)'],
       ['P', 'create a project or add an existing folder'],
       ['f', 'filters']);
@@ -18347,6 +18339,9 @@ document.addEventListener('keydown', e => {
     const run = $('agentRun'), ta = $('agentText');
     if (run && ta && ta.value.trim()) { e.preventDefault(); headlessSendFromComposer(run); return; }
   }
+  // The chart and its controls share a shortcut map and help. Other surfaces
+  // and open dialogs keep their keys, even with the chart behind them.
+  if (viewKind === 'home' && timelineControls?.handleKey(e)) return;
   // Home Gantt keys: Home/End jump to the oldest/now, PageUp/PageDown scroll
   // rows, shift+PageUp/PageDown pans along the time axis.
   if (viewKind === 'home' && ['Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) {
@@ -18419,18 +18414,13 @@ document.addEventListener('keydown', e => {
     case '1': case '2': case '3': goHome(); setTab(['conv', 'notes', 'epics'][Number(e.key) - 1]); break;
     case '4': goHome(); setTab('repos'); break;
     case 'f': e.preventDefault(); toggleHomeFilters(); break;
-    case '+': case '=': zoomBy(1.4); break;
-    case '-': case '_': zoomBy(1 / 1.4); break;
-    case '0': zoomTo(1); break;
     case 'n':
       // In a transcript with search marks, n walks the matches (vim style).
       if (viewKind === 'conversation' && gotoMatch(1)) { e.preventDefault(); break; }
-      jumpToNow(); break;
+      break;
     case 'N':
       if (viewKind === 'conversation' && gotoMatch(-1)) e.preventDefault();
       break;
-    case 'b': jumpToStart(); break;
-    case 't': if (!$('ganttDate').checkVisibility()) break; e.preventDefault(); $('ganttDate').focus(); break;
     case 'a': toggleAgents(); break;
     case '`': e.preventDefault(); sideLayoutOn() ? setSideFold(!sideFolded()) : setBarFold(!barFolded()); break;
     case ',': e.preventDefault(); settingsOpen ? closeSettings() : showSettings(); break;
@@ -18878,7 +18868,7 @@ setInterval(() => {
 // (ETag 304 skips the rebuild when the list did not change).
 setInterval(() => { if (!document.hidden) updateLiveBadges(); }, 60000);
 
-updateScaleSeg();
+updateTimelineControls();
 applyGanttMode();
 loadJobs();
 loadSettings();
