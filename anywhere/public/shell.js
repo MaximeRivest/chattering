@@ -537,7 +537,19 @@
     // Back from installing: the page is still here, the button still works.
     $('useApp').onclick = () => {
       // The app, opened from the installer, finds the code here and offers it.
-      try { navigator.clipboard.writeText(P.pairingLink(location.origin, code)).catch(() => {}); } catch {}
+      // Copied at once, in step with the tap: the download dialog takes the
+      // focus right after, and a page without focus may not write the
+      // clipboard (the asynchronous way lost that race).
+      const link = P.pairingLink(location.origin, code);
+      let copied = false;
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = link; ta.setAttribute('readonly', ''); ta.style.cssText = 'position:fixed;top:-100px;opacity:0';
+        document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, link.length);
+        copied = document.execCommand('copy');
+        ta.remove();
+      } catch {}
+      if (!copied) { try { navigator.clipboard.writeText(link).catch(() => {}); } catch {} }
       setTimeout(() => { const h = $('useApp'); if (h) h.textContent = 'Open the Android app'; }, 1500);
     };
   }
