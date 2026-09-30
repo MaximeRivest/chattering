@@ -112,6 +112,7 @@
       <p class="any-lead">Scan this code with your phone's camera.</p>
       <div class="any-qr">${r.svg}</div>
       <div class="any-wait"><span class="any-pulse" aria-hidden="true"></span><span>Waiting for your phone…</span><span class="any-clock hint"></span></div>
+      <p class="set-help any-android">Android: <a href="https://github.com/MaximeRivest/chattering/releases/tag/android" target="_blank" rel="noopener">install the Chattering app</a> first, and this code opens in it (safer: the app carries its own page). iPhone and others: the code opens Chattering in the browser.</p>
       <details class="any-more"><summary>no camera? open this link on the phone</summary>
         <div class="row"><code class="mach-link">${h(r.url)}</code><button type="button" class="ghost" id="anyCopy">copy</button></div>
         <div class="set-help">The link works once. Send it only to yourself: whoever opens it first gets your phone's place.</div>

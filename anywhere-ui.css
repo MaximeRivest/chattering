@@ -21,6 +21,7 @@
 .any-pulse { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); animation: any-pulse 1.4s ease-out infinite; }
 @keyframes any-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent); } 100% { box-shadow: 0 0 0 10px transparent; } }
 .any-more { margin: 0 0 var(--sp-3); }
+.any-android { text-align: center; margin: 0 0 var(--sp-3); }
 .any-more summary { cursor: pointer; color: var(--text-dim); font-size: var(--fs-meta); }
 .any-more .row { display: flex; gap: var(--sp-2); align-items: center; margin-top: var(--sp-2); }
 .any-more code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
