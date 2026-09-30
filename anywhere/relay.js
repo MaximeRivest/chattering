@@ -27,6 +27,7 @@
      PORT                 listen port (8790); behind a TLS proxy (Caddy)
      HOST                 listen address (127.0.0.1)
      TURN_SECRET          coturn's static-auth-secret; empty = no TURN
+     TURN_SECRET_FILE     the same, read from a file (preferred)
      TURN_URLS            comma list, e.g. turn:relay.example:3478,turns:relay.example:5349?transport=tcp
      STUN_URLS            comma list; default: stun: on the TURN host(s)
      TURN_TTL             seconds a TURN credential lasts (86400)
@@ -53,7 +54,10 @@ const LIMITS = {
 
 function createRelay(opts = {}) {
   const env = opts.env || process.env;
-  const turnSecret = String(env.TURN_SECRET || '');
+  // The secret from a file (systemd's credentials: never in the environment
+  // of the process, where anything running as it could read it), or as is.
+  let turnSecret = String(env.TURN_SECRET || '');
+  if (env.TURN_SECRET_FILE) turnSecret = fs.readFileSync(env.TURN_SECRET_FILE, 'utf8').trim();
   const turnUrls = String(env.TURN_URLS || '').split(',').map(s => s.trim()).filter(Boolean);
   const stunUrls = String(env.STUN_URLS || '').split(',').map(s => s.trim()).filter(Boolean);
   const turnTtl = Number(env.TURN_TTL || 86400);
@@ -279,7 +283,7 @@ if (require.main === module) {
   const port = Number(process.env.PORT || 8790), host = process.env.HOST || '127.0.0.1';
   relay.server.listen(port, host, () => {
     // The one line this program ever prints: that it started.
-    process.stdout.write(`chattering anywhere relay on ${host}:${port}${process.env.TURN_SECRET ? ' (TURN credentials on)' : ' (no TURN: phones without a direct path cannot connect)'}\n`);
+    process.stdout.write(`chattering anywhere relay on ${host}:${port}${process.env.TURN_SECRET || process.env.TURN_SECRET_FILE ? ' (TURN credentials on)' : ' (no TURN: phones without a direct path cannot connect)'}\n`);
   });
 }
 

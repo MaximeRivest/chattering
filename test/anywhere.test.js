@@ -281,6 +281,11 @@ test('the relay: only a key\'s holder registers as a home; TURN credentials cotu
   t.after(() => relay.close());
   const servers = relay.iceServers();
   assert.deepEqual(servers[0], { urls: ['stun:relay.example:3478'] }, 'STUN on the TURN host by default');
+  const secretFile = path.join(os.tmpdir(), 'anywhere-turn-' + process.pid);
+  fs.writeFileSync(secretFile, 'fromfile\n');
+  t.after(() => fs.rmSync(secretFile, { force: true }));
+  const fromFile = createRelay({ env: { TURN_SECRET_FILE: secretFile, TURN_URLS: 'turn:x:3478' } }).iceServers()[1];
+  assert.equal(fromFile.credential, require('crypto').createHmac('sha1', 'fromfile').update(fromFile.username).digest('base64'), 'the secret read from its file, trimmed');
   const turn = servers[1];
   const [expiry] = turn.username.split(':');
   assert.ok(Number(expiry) > Date.now() / 1000 + 3500);

@@ -53,48 +53,53 @@ built yet) removes this point entirely.
   relay is what would cost; `maxBps` caps each session.
 - **A name:** `encrypted-link-to-your-devices.rockfrog.ai`, pointing at the server (A and AAAA).
 
-## Deploy on NixOS
+## Deploy (Ubuntu: what runs at encrypted-link-to-your-devices.rockfrog.ai)
 
-```nix
-# configuration.nix of the relay machine
-imports = [ /path/to/chattering/anywhere/deploy/nixos.nix ];
-services.chattering-anywhere = {
-  enable = true;
-  domain = "encrypted-link-to-your-devices.rockfrog.ai";
-  source = /path/to/chattering;              # a checkout; only anywhere/ and wsserver.js are used
-  turnSecretFile = "/var/lib/secrets/anywhere-turn";
-};
-```
+The relay runs on a small OVHcloud VPS in Beauharnois, Québec (VPS-1:
+2 vCPU, 4 GB, unlimited traffic, anti-DDoS included; about $6 CAD a month),
+on Ubuntu LTS. Ubuntu rather than NixOS for this one machine: it patches
+itself every day with no one watching, it is the image the host supports,
+and the machine holds no state, so it is rebuilt from one script rather
+than maintained (design/85, "Where it runs").
+
+**A new server, from nothing** (as the admin user, from a checkout):
 
 ```sh
-install -d -m 0750 /var/lib/secrets
-openssl rand -hex 32 > /var/lib/secrets/anywhere-turn
-chown root:turnserver /var/lib/secrets/anywhere-turn && chmod 0440 /var/lib/secrets/anywhere-turn
-nixos-rebuild switch
-curl https://encrypted-link-to-your-devices.rockfrog.ai/healthz      # ok
+scp anywhere/deploy/setup-ubuntu.sh ubuntu@SERVER:/tmp/
+ssh ubuntu@SERVER 'sudo DOMAIN=encrypted-link-to-your-devices.rockfrog.ai bash /tmp/setup-ubuntu.sh'
+ssh ubuntu@SERVER 'sudo tailscale up --advertise-tags=tag:relay --hostname=encrypted-link-relay --ssh=false --accept-dns=false'
+RELAY_HOST=ubuntu@SERVER anywhere/deploy/deploy-relay.sh
+ssh ubuntu@encrypted-link-relay 'sudo DOMAIN=encrypted-link-to-your-devices.rockfrog.ai PUBLIC_SSH=0 bash /tmp/setup-ubuntu.sh'
 ```
 
-Caddy gets the certificate. coturn serves TURN on 3478 (UDP and TCP) and on
-5349 over TLS (with Caddy's certificate, for networks that let nothing else
-out). The module opens those ports, 80/443, and the UDP range coturn relays
-through.
+`setup-ubuntu.sh` (safe to run again) installs Caddy from Caddy's signed
+repository and Tailscale from Tailscale's (keys checked against their
+published fingerprints), coturn and Node from Ubuntu; turns on daily
+security updates from all of them with a reboot at 04:00 when one needs
+it; keeps the journal in memory for a day and removes syslog; runs the
+relay as a throwaway user that can write nothing and reach nothing but
+Caddy on the same machine; turns Caddy's admin API off and allows only
+Let's Encrypt; gives coturn Caddy's certificate on every renewal, and
+keeps it from relaying to this machine or any private network (Tailscale
+ranges included); and sets a firewall that opens only the relay's ports,
+with SSH through Tailscale once `PUBLIC_SSH=0`.
 
-## Deploy anywhere else (Debian, Ubuntu…)
+**New relay code**: commit, push, then `anywhere/deploy/deploy-relay.sh`.
+It only ships a commit that is on GitHub, never a working tree; each
+release stays read-only on the server, and going back is
+`deploy-relay.sh <older commit>`.
 
-1. Node 22 or newer, Caddy, coturn.
-2. Copy `anywhere/` and `wsserver.js` from a Chattering checkout to
-   `/opt/chattering-anywhere/`.
-3. The relay, as a service: see `deploy/anywhere-relay.service`.
-4. Caddy (`/etc/caddy/Caddyfile`), with no `log` directive:
-   ```
-   encrypted-link-to-your-devices.rockfrog.ai {
-     encode zstd gzip
-     reverse_proxy 127.0.0.1:8790
-   }
-   ```
-5. coturn: `deploy/turnserver.conf` into `/etc/turnserver.conf`, with the
-   same secret as the relay's `TURN_SECRET`.
-6. Firewall: TCP 80, 443, 3478, 5349; UDP 3478, 5349, 49152–65535.
+**Tailscale**: the relay is tagged `tag:relay`. The tailnet policy lets
+your own devices start connections and tagged devices none, so the relay
+answers SSH from you but cannot reach any of your machines, even taken
+over. The policy's tests check this on every save.
+
+**Ubuntu Pro** (free for personal use, up to five machines): attach it
+(`sudo pro attach <token>`) so Node and coturn, which Ubuntu ships in its
+community section, get Canonical's security fixes too.
+
+Other systems: `deploy/nixos.nix` (NixOS), `deploy/anywhere-relay.service`
+and `deploy/turnserver.conf` (any systemd Linux, by hand).
 
 ## Pointing Chattering at another relay
 
