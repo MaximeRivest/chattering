@@ -30,7 +30,7 @@
   // phone, never to a server.
   // (Its own scheme: Chrome hands an intent URL to an app for a scheme of
   // its own, not for https.)
-  const appIntent = code => `intent://pair/${[code.homeId, code.id, code.secret].join('.')}?${code.name ? 'n=' + encodeURIComponent(code.name) + '&' : ''}r=${encodeURIComponent(location.host)}` +
+  const appIntent = code => `intent://pair/${[code.homeId, code.id, code.secret].join('.')}?${code.name ? 'n=' + encodeURIComponent(code.name) + '&' : ''}${code.expires ? 'e=' + Math.floor(code.expires / 1000) + '&' : ''}r=${encodeURIComponent(location.host)}` +
     `#Intent;scheme=chattering;package=app.rockfrog.chattering;S.browser_fallback_url=${encodeURIComponent(APK_URL)};end`;
 
   /* ---- storage ---- */
@@ -117,8 +117,9 @@
     try { link = window.ChatteringApp.clipboardPairingLink() || ''; } catch {}
     let code = null;
     try { code = link && P.readPairingLink(new URL(link).hash); } catch {}
-    if (!code || (homeOf(code.homeId) && homeOf(code.homeId).deviceId)) { box.innerHTML = ''; return; }
-    box.innerHTML = `<div class="clip-offer"><p>Pair with <b>${esc(code.name || 'your computer')}</b>? You copied its code a moment ago.</p>
+    if (!code || !usable(code) || (homeOf(code.homeId) && homeOf(code.homeId).deviceId)) { box.innerHTML = ''; if (code && !usable(code)) { try { window.ChatteringApp.clearClipboardLink(); } catch {} } return; }
+    const mins = code.expires ? Math.max(1, Math.round((code.expires - Date.now()) / 60000)) : 0;
+    box.innerHTML = `<div class="clip-offer"><p>Pair with <b>${esc(code.name || 'your computer')}</b>? You copied its code${mins ? `; it works for ${mins} more minute${mins === 1 ? '' : 's'}` : ' a moment ago'}.</p>
       <div class="row"><button type="button" class="primary" id="clipPair">Pair</button><button type="button" class="ghost" id="clipNo">Not now</button></div></div>`;
     $('clipPair').onclick = () => { try { window.ChatteringApp.clearClipboardLink(); } catch {} window.ChatteringApp.openLink(link); };
     $('clipNo').onclick = () => { try { window.ChatteringApp.clearClipboardLink(); } catch {} box.innerHTML = ''; };
@@ -132,27 +133,54 @@
     const html = `<div class="link-art ${esc(step)}" aria-hidden="true"><span class="node phone"></span><span class="wire"><i></i><i></i><i></i></span><span class="node computer"></span><span class="lock"></span></div>
       <h1>${pairing ? 'Pairing with' : 'Connecting to'} <b>${esc(name || 'your computer')}</b></h1>
       <ol class="steps">${STEPS.map(([k, label], i) => `<li class="${i < idx ? 'done' : i === idx ? 'now' : ''}">${label}${k === 'relay' ? ' ' + esc(name || 'it') : ''}</li>`).join('')}</ol>
-      ${homes.length > 1 && !pairing ? `<button type="button" class="ghost small" id="switchHome">Another computer…</button>` : ''}`;
+      ${homes.length > 1 && !pairing ? `<button type="button" class="ghost small" id="switchHome">Another computer…</button>` : ''}
+      ${pairing ? `<button type="button" class="ghost small" id="cancelPair">Cancel</button>` : ''}`;
     if (stage.dataset.screen === 'connecting' && !stage.hidden && !document.body.classList.contains('app-open')) {
       $('card').innerHTML = html;
     } else show(html, 'connecting');
     stage.dataset.screen = 'connecting';
     const sw = $('switchHome'); if (sw) sw.onclick = openSheet;
+    const cp = $('cancelPair'); if (cp) cp.onclick = startOver;
   }
-  function showWaiting(home) {
-    if (frame) return pill(`Waiting for <b>${esc(home.name)}</b> to come online…`, 'wait');
+  function showWaiting(home, { pairing = false } = {}) {
+    if (frame && !pairing) return pill(`Waiting for <b>${esc(home.name)}</b> to come online…`, 'wait');
     show(`<div class="link-art waiting" aria-hidden="true"><span class="node phone"></span><span class="wire"><i></i><i></i><i></i></span><span class="node computer asleep"></span></div>
       <h1><b>${esc(home.name)}</b> is not online</h1>
       <p class="lead">It may be asleep, turned off, or without internet. This page connects by itself the moment it is back.</p>
-      ${homes.length > 1 ? link('Another computer…', 'switchHome') : ''}`, 'waiting');
+      <div class="actions">${homes.length > 1 ? link('Another computer…', 'switchHome') : ''}${link('Start over', 'startOver')}</div>`, 'waiting');
     stage.dataset.screen = 'waiting';
     const sw = $('switchHome'); if (sw) sw.onclick = openSheet;
+    $('startOver').onclick = startOver;
   }
-  function showProblem(title, text, actions = [], cls = 'problem') {
+  // Every screen that stops has a way on: the actions it names, then (in the
+  // app) scanning a new code, then starting over. Never a dead end.
+  function showProblem(title, text, actions = [], cls = 'problem', { scan = false } = {}) {
     stage.dataset.screen = 'problem';
-    show(`${mark}<h1>${title}</h1><p class="lead">${text}</p><div class="actions">${actions.map(a => link(a[0], a[1], a[2])).join('')}</div>`, cls);
-    for (const a of actions) { const b = $(a[1]); if (b) b.onclick = a[3]; }
+    const all = actions.slice();
+    if (scan && APP) all.push(['Scan a new code', 'scanNew', !all.some(a => a[2]), () => window.ChatteringApp.scanCode()]);
+    all.push(['Start over', 'startOver', !all.some(a => a[2]), startOver]);
+    show(`${mark}<h1>${title}</h1><p class="lead">${text}</p><div class="actions">${all.map(a => link(a[0], a[1], a[2])).join('')}</div>`, cls);
+    for (const a of all) { const b = $(a[1]); if (b) b.onclick = a[3]; }
   }
+  // Back to the beginning: the computer this device uses, or the first screen.
+  function startOver() {
+    if (pairCtl) { pairCtl.abort(); pairCtl = null; }
+    drop();
+    if (frame) { frame.remove(); frame = null; }
+    hidePill();
+    try { history.replaceState(null, '', '/'); } catch {}
+    const h = homeOf(active);
+    if (h) connect(h); else showWelcome();
+  }
+
+  // Codes that cannot work again on this device: one that paired, or one the
+  // computer refused (used, or expired). Kept to never offer them twice.
+  const SPENT = 'anywhere-spent-codes';
+  const spent = () => { try { return JSON.parse(localStorage.getItem(SPENT) || '[]'); } catch { return []; } };
+  const markSpent = id => { try { localStorage.setItem(SPENT, JSON.stringify(spent().filter(x => x !== id).concat(id).slice(-50))); } catch {} };
+  const expired = code => !!(code.expires && code.expires < Date.now() + 10000);
+  const usable = code => !expired(code) && !spent().includes(code.id);
+  const DEAD_CODE = ['This code does not work any more', 'Codes work once, for ten minutes. On your computer, press <b>Add a device</b> again for a new one, then scan it.'];
 
   let pillTimer = null;
   function pill(html, kind = '', ms = 0) {
@@ -231,12 +259,12 @@
       saveHomes();
       if (frame) { frame.remove(); frame = null; }
       hidePill();
-      return showProblem(`This phone was removed from <b>${esc(home.name)}</b>`, 'To use it again, press <b>Add a device</b> in Chattering on that computer (Settings → Machines) and scan the new code.', homes.length ? [['Your other computers', 'others', true, openSheet]] : []);
+      return showProblem(`This device was removed from <b>${esc(home.name)}</b>`, 'To use it again, press <b>Add a device</b> in Chattering on that computer (Settings → Machines) and scan the new code.', homes.length ? [['Your other computers', 'others', false, openSheet]] : [], 'problem', { scan: true });
     }
     if (e.code === 'refused' && e.why === 'bad-signature') {
       if (frame) { frame.remove(); frame = null; }
       hidePill();
-      return showProblem(`<b>${esc(home.name)}</b> did not recognise this phone`, 'Its key on this phone no longer matches. Forget the computer here, then press <b>Add a device</b> on it and scan the new code.', [['Your computers', 'others', true, openSheet]], 'problem');
+      return showProblem(`<b>${esc(home.name)}</b> did not recognise this device`, 'Its key here no longer matches. Forget the computer here, then press <b>Add a device</b> on it and scan the new code.', [['Your computers', 'others', false, openSheet]], 'problem', { scan: true });
     }
     if (e.code === 'forged') {
       if (frame) { frame.remove(); frame = null; }
@@ -338,7 +366,8 @@
       return { cancel: () => { cancelled = true; if (req) req.cancel(); } };
     },
     navigated(path, title) {
-      try { if (path && path !== location.pathname + location.search + location.hash) history.replaceState(null, '', path); } catch {}
+      // Never over a pairing code that is on its way in.
+      try { if (path && !/[#&]pair=/.test(location.hash) && path !== location.pathname + location.search + location.hash) history.replaceState(null, '', path); } catch {}
       if (title) document.title = title;
     },
     themeColor(c) { const m = document.querySelector('meta[name="theme-color"]'); if (m && c) m.content = c; },
@@ -350,6 +379,7 @@
   window.chatteringBack = () => {
     const sh = $('sheet');
     if (sh && !sh.hidden) { closeSheet(); return true; }
+    if (!stage.hidden && !['welcome', ''].includes(stage.dataset.screen || '') && !(stage.dataset.screen === 'connecting' && homeOf(active))) { startOver(); return true; }
     try { const w = frame && frame.contentWindow; if (w && w.chatteringBack) return !!w.chatteringBack(); } catch {}
     return false;
   };
@@ -474,32 +504,44 @@
     return base;
   }
 
+  let pairCtl = null;
   async function pair(code) {
     const known = homeOf(code.homeId);
+    if (pairCtl) pairCtl.abort();
+    const ctlHere = pairCtl = new AbortController();
     showConnecting(code.name || (known && known.name), 'relay', { pairing: true });
     const pairKey = await P.subtle().generateKey(P.ECDSA, false, ['sign', 'verify']);
     const key = { privateKey: pairKey.privateKey, spki: new Uint8Array(await P.subtle().exportKey('spki', pairKey.publicKey)) };
     try {
       const t = await C.connect({
         relay: RELAY, homeId: code.homeId, name: await deviceName(),
-        device: key, pairing: { id: code.id, secret: code.secret },
-        onStatus: s => { if (s === 'waiting') showWaiting({ name: code.name || 'your computer' }); else showConnecting(code.name, s, { pairing: true }); },
+        device: key, pairing: { id: code.id, secret: code.secret }, signal: ctlHere.signal,
+        onStatus: s => { if (ctlHere.signal.aborted) return; if (s === 'waiting') showWaiting({ name: code.name || 'your computer' }, { pairing: true }); else showConnecting(code.name, s, { pairing: true }); },
       });
+      if (pairCtl === ctlHere) pairCtl = null;
       const home = { homeId: code.homeId, name: (t.home && t.home.name) || code.name || 'Computer', deviceId: t.device, key, user: t.user || null, pairedAt: Date.now() };
       homes = homes.filter(h => h.homeId !== home.homeId).concat(home);
       await saveHomes();
+      markSpent(code.id);
       active = home.homeId;
       await kvSet('active', active);
       history.replaceState(null, '', '/');
       if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
       await celebrate(home);
+      // Chattering may be open already (another computer, or this one paired
+      // again): what it shows belongs to the old connection. A fresh view
+      // for the one just paired.
+      if (tunnel && tunnel !== t) { const old = tunnel; tunnel = null; old.close(); }
+      if (frame) { frame.remove(); frame = null; }
       adopt(t, home);
       installHint();
     } catch (e) {
+      if (pairCtl === ctlHere) pairCtl = null;
+      if (e.code === 'aborted') return; // Cancel, Start over: already elsewhere
       history.replaceState(null, '', '/');
-      if (e.code === 'refused') return showProblem('This code does not work any more', 'Codes work once, for ten minutes. On your computer, press <b>Add a device</b> again and scan the new code.', homes.length ? [['Your computers', 'others', true, openSheet]] : []);
-      if (e.code === 'forged') return showProblem('This connection could not be verified', 'Something between this phone and the computer that showed the code did not prove to be that computer, so nothing was sent. Try again on another network.', [], 'problem danger');
-      showProblem('Pairing did not finish', esc(e.message) + '. Scan the code again, or show a new one.', []);
+      if (e.code === 'refused') { markSpent(code.id); return showProblem(DEAD_CODE[0], DEAD_CODE[1], homes.length ? [['Your computers', 'others', false, openSheet]] : [], 'problem', { scan: true }); }
+      if (e.code === 'forged') return showProblem('This connection could not be verified', 'Something between this device and the computer that showed the code did not prove to be that computer, so nothing was sent. Try again on another network.', [], 'problem danger', { scan: true });
+      showProblem('Pairing did not finish', esc(e.message) + '. Try again, or show a new code on your computer.', usable(code) ? [['Try again', 'again', true, () => pair(code)]] : [], 'problem', { scan: true });
     }
   }
   function celebrate(home) {
@@ -540,7 +582,7 @@
       // Copied at once, in step with the tap: the download dialog takes the
       // focus right after, and a page without focus may not write the
       // clipboard (the asynchronous way lost that race).
-      const link = P.pairingLink(location.origin, code);
+      const link = P.pairingLink(location.origin, { ...code, expires: code.expires });
       let copied = false;
       try {
         const ta = document.createElement('textarea');
@@ -595,6 +637,11 @@
   // False when the code took the screen (pairing, or asking where).
   async function takeCode(code) {
     const known = homeOf(code.homeId);
+    if (!(known && known.deviceId) && !usable(code)) {
+      try { history.replaceState(null, '', '/'); } catch {}
+      showProblem(expired(code) ? 'This code has expired' : DEAD_CODE[0], DEAD_CODE[1], [], 'problem', { scan: true });
+      return false;
+    }
     if (known && known.deviceId) {
       // An old code (the home-screen icon keeps the address it was added
       // from): already paired, carry on.
@@ -607,8 +654,11 @@
     else pair(code);
     return false;
   }
-  addEventListener('hashchange', async () => {
-    const code = P.readPairingLink(location.hash);
+  addEventListener('hashchange', async e => {
+    // The code from the event, not from the address bar: the app inside
+    // reports its own address (navigated), which can replace it first.
+    let code = null;
+    try { code = P.readPairingLink(new URL(e.newURL).hash); } catch {}
     if (!code || !navigator.serviceWorker || !navigator.serviceWorker.controller) return;
     if (await takeCode(code)) switchTo(active);
   });

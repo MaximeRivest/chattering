@@ -234,14 +234,18 @@
   /* ---- the pairing link ---- */
   // https://relay/#pair=<homeId>.<pairingId>.<secret>&n=<home name>
   // Everything after # stays in the phone: browsers never send it to a server.
-  function pairingLink(relay, { homeId, id, secret, name }) {
-    return String(relay).replace(/\/+$/, '') + '/#pair=' + [homeId, id, secret].join('.') + (name ? '&n=' + encodeURIComponent(name) : '');
+  // e: when the code stops working (seconds since 1970), so a device never
+  // offers a code that can no longer work (a copied one, found later).
+  function pairingLink(relay, { homeId, id, secret, name, expires }) {
+    return String(relay).replace(/\/+$/, '') + '/#pair=' + [homeId, id, secret].join('.') + (name ? '&n=' + encodeURIComponent(name) : '') +
+      (expires ? '&e=' + Math.floor(expires / 1000) : '');
   }
   function readPairingLink(hash) {
     const q = new URLSearchParams(String(hash || '').replace(/^#/, ''));
     const parts = String(q.get('pair') || '').split('.');
     if (parts.length !== 3 || parts.some(p => !/^[A-Za-z0-9_-]{8,64}$/.test(p))) return null;
-    return { homeId: parts[0], id: parts[1], secret: parts[2], name: (q.get('n') || '').slice(0, 60) };
+    const e = Number(q.get('e'));
+    return { homeId: parts[0], id: parts[1], secret: parts[2], name: (q.get('n') || '').slice(0, 60), ...(e > 0 ? { expires: e * 1000 } : {}) };
   }
 
   // A few plain words for a device, from its browser's description.

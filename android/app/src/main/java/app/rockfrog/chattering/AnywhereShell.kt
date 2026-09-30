@@ -80,7 +80,8 @@ class AnywhereShell(private val context: Context) {
         val code = path.removePrefix("/").removePrefix("pair/")
         if (!Regex("^[A-Za-z0-9_-]{8,64}\\.[A-Za-z0-9_-]{8,64}\\.[A-Za-z0-9_-]{8,64}$").matches(code)) return uri
         val name = uri.getQueryParameter("n")?.take(60)
-        val fragment = "pair=$code" + if (name.isNullOrEmpty()) "" else "&n=" + Uri.encode(name)
+        val expires = uri.getQueryParameter("e")?.takeIf { Regex("^\\d{9,11}$").matches(it) }
+        val fragment = "pair=$code" + (if (name.isNullOrEmpty()) "" else "&n=" + Uri.encode(name)) + (if (expires == null) "" else "&e=$expires")
         return Uri.Builder().scheme("https").authority(authority).path("/").encodedFragment(fragment).build()
     }
 

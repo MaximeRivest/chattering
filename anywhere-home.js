@@ -426,7 +426,7 @@ function createAnywhereHome(opts) {
     if (t.unref) t.unref();
     sync();
     changed();
-    return { id: pairing.id, expiresAt: pairing.expiresAt, url: P.pairingLink(String(relayUrl() || DEFAULT_RELAY), { homeId: k.homeId, id: pairing.id, secret: pairing.secret, name: homeName() }) };
+    return { id: pairing.id, expiresAt: pairing.expiresAt, url: P.pairingLink(String(relayUrl() || DEFAULT_RELAY), { homeId: k.homeId, id: pairing.id, secret: pairing.secret, name: homeName(), expires: pairing.expiresAt }) };
   }
   function pairingState(id) {
     const p = pairings.get(String(id));

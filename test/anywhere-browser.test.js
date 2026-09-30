@@ -102,7 +102,8 @@ test('a phone pairs in the browser and runs Chattering from the computer', { ski
   await until(`document.getElementById('useApp')`, 'the choice: the app or the browser');
   const intent = await evaluate(`document.getElementById('useApp').getAttribute('href')`);
   const pairLink = require('../anywhere/protocol.js').readPairingLink(new URL(code.url).hash);
-  assert.equal(intent, `intent://pair/${pairLink.homeId}.${pairLink.id}.${pairLink.secret}?n=lambda&r=${encodeURIComponent(new URL(relayUrl).host)}#Intent;scheme=chattering;package=app.rockfrog.chattering;S.browser_fallback_url=${encodeURIComponent('https://github.com/MaximeRivest/chattering/releases/download/android/Chattering-android.apk')};end`);
+  assert.ok(pairLink.expires > Date.now() + 9 * 60e3, 'the link says when it stops working');
+  assert.equal(intent, `intent://pair/${pairLink.homeId}.${pairLink.id}.${pairLink.secret}?n=lambda&e=${Math.floor(pairLink.expires / 1000)}&r=${encodeURIComponent(new URL(relayUrl).host)}#Intent;scheme=chattering;package=app.rockfrog.chattering;S.browser_fallback_url=${encodeURIComponent('https://github.com/MaximeRivest/chattering/releases/download/android/Chattering-android.apk')};end`);
   await shot('anywhere-0-choice.png');
   await evaluate(`document.getElementById('inBrowser').click(); 1`);
   // Pairing, then the app from the computer, full screen.
@@ -173,6 +174,20 @@ test('a phone pairs in the browser and runs Chattering from the computer', { ski
   await until(`/removed/.test(document.getElementById('stage').innerText)`, 'the laptop told it was removed');
   const again = await post('/api/anywhere/pair');
   await evaluate(`location.hash = ${JSON.stringify(new URL(again.url).hash)}; 1`);
-  await until(`document.body.classList.contains('app-open') && ${frame}.__anywhereInside === true`, 'paired from a fragment that arrived later');
+  await until(`document.body.classList.contains('app-open') && document.getElementById('stage').hidden && ${frame}.__anywhereInside === true`, 'paired from a fragment that arrived later, and in Chattering (not left on "Paired")');
+
+  // Codes for a computer this browser does not have yet. An expired one is
+  // not tried; the screen says so and has a way on, back into Chattering.
+  const Pr = require('../anywhere/protocol.js');
+  const stranger = { homeId: 'ZZZZZZZZZZZZZZZZZZZZZZ', id: 'strangerpair', secret: 'SSSSSSSSSSSSSSSSSSSSSS', name: 'elsewhere' };
+  await evaluate(`location.hash = ${JSON.stringify(new URL(Pr.pairingLink(relayUrl, { ...stranger, expires: Date.now() - 60e3 })).hash)}; 1`);
+  await until(`/has expired/.test(document.getElementById('stage').innerText) && document.getElementById('startOver')`, 'an expired code, with a way on');
+  await evaluate(`document.getElementById('startOver').click(); 1`);
+  await until(`document.body.classList.contains('app-open') && document.getElementById('stage').hidden`, 'Start over: back in Chattering');
+  // One whose computer is not online: the waiting screen has a way on too.
+  await evaluate(`location.hash = ${JSON.stringify(new URL(Pr.pairingLink(relayUrl, { ...stranger, id: 'strangerpai2', expires: Date.now() + 5 * 60e3 })).hash)}; 1`);
+  await until(`/is not online/.test(document.getElementById('stage').innerText) && document.getElementById('startOver')`, 'waiting, with a way on');
+  await evaluate(`document.getElementById('startOver').click(); 1`);
+  await until(`document.body.classList.contains('app-open') && document.getElementById('stage').hidden`, 'Start over from waiting: back in Chattering');
   assert.deepEqual(problems.filter(p => !/favicon|ERR_|net::/.test(p)), [], 'no errors on the page');
 });
