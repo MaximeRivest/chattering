@@ -167,7 +167,7 @@ Revised 2026-09-23 (conversation 01a0cb65) after checking the plan against the p
 - [ ] Chattering Anywhere (design/85) for real: rent the relay (anywhere/README.md, ~€5/month), point `encrypted-link-to-your-devices.rockfrog.ai` at it, then a week on a real iPhone and Android phone, mobile data included (reconnect after sleep, relayed path, iOS home-screen pairing). Built and tested on one machine only.
 - [ ] Anywhere: carry artifact previews (their own origin) through the tunnel; downloads and background notifications in the Android app's encrypted-link mode (both work only in server mode today)
 - [ ] Android app: an update check (sideloaded installs get no updates by themselves); Play Store later (a closed test with 12 testers for 14 days first)
-- [ ] test/anywhere.test.js failed once (2026-09-30, a busy machine) and passed 17 times after: find the timing it depends on
+- [ ] test/anywhere.test.js "a wrong code, a wrong home, a home asleep" hangs rarely, only in the full parallel run (twice on 2026-09-30; 30+ runs alone or under CPU load pass). It now logs the step it waits on: read that the next time
 - [ ] Pen: aligned, responsive, palm-rejecting, coexisting with finger navigation (constraint in project memory)
 - [ ] Voice: intentional completion, audible state feedback, no silence-as-submit; works over the tailnet HTTPS address
 - [ ] Notifications ladder (`off / chime / title / summary / voice`) tested end-to-end on each device

@@ -239,12 +239,20 @@ test('a phone pairs, then comes back, as its person, over an encrypted channel',
 });
 
 test('a wrong code, a wrong home, a home asleep', { skip, timeout: 60000 }, async t => {
+  // It hung once under a heavy parallel run (2026-09-30) and could not be made
+  // to again: if it does, the log names the step it was waiting on.
+  let step = 'start';
+  const at = label => { step = label; };
+  const watchdog = setTimeout(() => console.error('[home asleep] still waiting at: ' + step), 55000);
+  watchdog.unref();
+  t.after(() => clearTimeout(watchdog));
   const w = await world(t);
   const pairing = await w.home.pair('u1');
   const link = P.readPairingLink(new URL(pairing.url).hash);
   await until(() => w.home.status().relayState === 'ready', 'registered');
   await assert.rejects(w.phone({ homeId: link.homeId, device: await newDevice(), pairing: { id: link.id, secret: P.b64u(P.random(16)) } }), e => e.code === 'refused' && e.why === 'bad-code');
 
+  at('another home id');
   // Another home id: nobody answers for it.
   const other = P.b64u(P.random(16));
   await assert.rejects(w.phone({ homeId: other, device: await newDevice(), pairing: { id: link.id, secret: link.secret }, wait: false }), e => e.code === 'offline');
@@ -253,13 +261,16 @@ test('a wrong code, a wrong home, a home asleep', { skip, timeout: 60000 }, asyn
   // moment it arrives.
   const statuses = [];
   w.home.stop();
+  at('a second world');
   const w2 = await world(t);
   const p2 = await w2.home.pair('u2');
   const l2 = P.readPairingLink(new URL(p2.url).hash);
   await until(() => w2.home.status().relayState === 'ready', 'registered');
   w2.home.stop();
+  at('the home leaving the relay');
   await until(() => ![...w2.relay.homes.values()].some(e => e.conn.role === 'home'), 'gone from the relay');
   const pending = w2.phone({ homeId: l2.homeId, device: await newDevice(), pairing: { id: l2.id, secret: l2.secret }, onStatus: s => statuses.push(s) });
+  at('the phone waiting');
   await until(() => statuses.includes('waiting'), 'the phone waits');
   // Same data folder, same key: the computer "wakes up".
   const again = createAnywhereHome({
@@ -269,8 +280,10 @@ test('a wrong code, a wrong home, a home asleep', { skip, timeout: 60000 }, asyn
   });
   t.after(() => again.stop());
   // A restart forgets pairing codes: the waiting phone is told so.
+  at('the home back, a new code');
   const p3 = await again.pair('u2');
   assert.notEqual(p3.id, l2.id);
+  at('the waiting phone told the old code expired: ' + JSON.stringify(statuses));
   await assert.rejects(pending, e => e.code === 'refused' && e.why === 'pairing-expired');
   assert.deepEqual(statuses.slice(0, 2), ['relay', 'waiting']);
 });
@@ -389,4 +402,62 @@ test('usage: totals per day and month, never who', { skip, timeout: 60000 }, asy
   assert.equal(live.today.calls, 1);
   assert.doesNotMatch(JSON.stringify(live), new RegExp(link.homeId), 'no id in the totals');
   assert.equal((await fetch(w.relayUrl + '/_usage', { headers: { 'X-Forwarded-For': '1.2.3.4' } })).status, 404, 'not through the https front');
+});
+
+test('a computer links to another: its own local address, private, from anywhere', { skip, timeout: 90000 }, async t => {
+  const { createAnywhereLinks } = require('../anywhere-link.js');
+  const { iceForNode } = require('../anywhere-home.js');
+  const w = await world(t);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'links-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const portBase = 30000 + Math.floor(Math.random() * 20000);
+  const links = createAnywhereLinks({ dataDir: dir, rtc, iceForNode, portBase, deviceName: () => 'XPSwhite · Chattering',
+    authorize: req => /(^|;\s*)chattering=me(;|$)/.test(String(req.headers.cookie || '')) });
+  t.after(() => links.stop());
+  const code = await w.home.pair('u1');
+  await until(() => w.home.status().relayState === 'ready', 'registered');
+  const link = await links.add(code.url, { by: { id: 'local-me', name: 'Maxime' } });
+  assert.equal(link.name, 'lambda');
+  assert.equal(link.url, `http://localhost:${portBase}/`);
+  assert.equal(link.connected, true);
+  assert.equal(fs.statSync(path.join(dir, 'anywhere-links.json')).mode & 0o777, 0o600);
+  assert.equal(w.home.status().devices[0].name, 'XPSwhite · Chattering', 'listed there as this computer');
+
+  const base = `http://localhost:${portBase}`;
+  const me = { Cookie: 'chattering=me' };
+  // The other computer's app, as its person; this computer's cookie stays here.
+  const who = await fetch(base + '/who', { headers: me });
+  assert.equal(who.status, 200);
+  assert.equal((await who.json()).auth, 'Bearer secret-1');
+  // Private: no sign-in, another host name, another site.
+  assert.equal((await fetch(base + '/who')).status, 401);
+  const otherHost = await new Promise(resolve => http.get({ host: '127.0.0.1', port: portBase, path: '/who', headers: { ...me, Host: 'evil.example:' + portBase } }, r => { r.resume(); resolve(r.statusCode); }));
+  assert.equal(otherHost, 421, 'a page whose name was pointed at this computer is refused');
+  assert.equal((await fetch(base + '/who', { headers: { ...me, 'Sec-Fetch-Site': 'cross-site' } })).status, 403);
+  // Big answers, uploads, a live stream, a WebSocket.
+  const big = Buffer.from(await (await fetch(base + '/big', { headers: me })).arrayBuffer());
+  assert.ok(big.equals(w.app.big), 'every byte of 3 MB');
+  const up = Buffer.alloc(900 * 1024, 'y');
+  assert.equal((await (await fetch(base + '/echo', { method: 'POST', headers: { ...me, 'Content-Type': 'text/plain' }, body: up })).text()).length, up.length);
+  const events = await (await fetch(base + '/events', { headers: me })).text();
+  assert.match(events, /tick 1[\s\S]*tick 3/);
+  const echoed = await new Promise((resolve, reject) => {
+    const ws = new WebSocket(`ws://localhost:${portBase}/ws`, { headers: me });
+    ws.onopen = () => ws.send('over the link');
+    ws.onmessage = e => { resolve(e.data); ws.close(); };
+    ws.onerror = () => reject(new Error('websocket failed'));
+  });
+  assert.equal(echoed, 'echo:over the link');
+
+  // The other computer goes away: a page says so; it comes back: it works.
+  w.home.stop();
+  await new Promise(r => setTimeout(r, 500));
+  const away = await fetch(base + '/who', { headers: { ...me, Accept: 'text/html' } });
+  assert.equal(away.status, 503);
+  assert.match(await away.text(), /lambda cannot be reached right now/);
+
+  // Removed from the list here: its address closes.
+  await links.remove(link.id);
+  await assert.rejects(fetch(base + '/who', { headers: me }));
+  assert.deepEqual(links.list(), []);
 });

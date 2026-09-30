@@ -44,6 +44,8 @@
     return st.devices && st.devices.length ? 'Waiting to connect to the relay.' : 'Not connected to any relay: nothing is paired yet, so this computer does not connect to one.';
   }
 
+  // Links open at local ports: only from this computer's own screen.
+  const localScreen = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
   function render() {
     const el = document.getElementById('setAnywhereBody');
     if (!el) return;
@@ -63,6 +65,18 @@
           <button type="button" class="ghost" data-any-forget="${h(d.id)}" title="Remove this device: it cannot connect again until it is paired again">remove</button>
         </div>`).join('')}</div>` : ''}
       <div class="set-help any-relay">${relayLine(st)}</div>
+      <div class="any-links">
+        <h4>this computer, linked to others</h4>
+        <div class="set-help">Link this Chattering to another computer's (your main machine, a desktop at work): it opens here from anywhere, in the machine switcher, over the same encrypted link. This computer keeps running its own agents too.</div>
+        ${(st.links || []).map(l => `<div class="any-device${l.connected ? ' online' : ''}">
+          <span class="any-dot" aria-hidden="true"></span>
+          <span class="any-name"><b>${h(l.name)}</b></span>
+          <span class="any-seen hint">${l.connected ? 'linked' : h(l.why || 'not connected')}</span>
+          <span class="any-row-actions">${localScreen ? `<button type="button" class="ghost" data-link-open="${h(l.id)}">open</button>` : ''}<button type="button" class="ghost" data-link-remove="${h(l.id)}" title="Stop linking this computer to ${h(l.name)}">remove</button></span>
+        </div>`).join('')}
+        <form class="row any-link-form" id="anyLinkForm"><input id="anyLinkInput" type="text" spellcheck="false" autocomplete="off" placeholder="the other computer's link: https://…#pair=…"><button type="submit">link</button></form>
+        <div class="set-help">On the other computer: Settings → Machines → <b>Add a device</b>, then copy the link under its code.</div>
+      </div>
       ${st.owner ? `<details class="set-more"><summary>relay and switch</summary>
         <label class="set-check"><input type="checkbox" id="anyOff"${st.enabled ? '' : ' checked'}> turn off: no phone connects, and this computer stays away from the relay</label>
         <div class="set-field"><label for="anyRelay">relay address <span class="hint">(empty: ${h(st.defaultRelay)}, run by Rockfrog; or run your own, see anywhere/README.md)</span></label>
@@ -77,6 +91,38 @@
       const r = await post('/api/anywhere/forget', { id: d.id });
       if (r.error) return say(r.error, true);
       state = r; render(); say(d.name + ' removed');
+    });
+    const linkForm = document.getElementById('anyLinkForm');
+    if (linkForm) linkForm.onsubmit = async e => {
+      e.preventDefault();
+      const input = document.getElementById('anyLinkInput');
+      const btn = linkForm.querySelector('button');
+      const v = input.value.trim();
+      if (!v) return input.focus();
+      btn.disabled = true; btn.textContent = 'linking…';
+      const r = await post('/api/anywhere/links/add', { link: v });
+      btn.disabled = false; btn.textContent = 'link';
+      if (r.error) return say(r.error, true);
+      state = r; render();
+      const l = (r.links || []).slice(-1)[0];
+      say(l ? 'linked to ' + l.name : 'linked');
+      if (typeof loadSettings === 'function') loadSettings().catch(() => {});
+    };
+    el.querySelectorAll('[data-link-open]').forEach(b => b.onclick = async () => {
+      b.disabled = true;
+      let r;
+      try { r = await (await fetch('/api/anywhere/links/check?id=' + encodeURIComponent(b.dataset.linkOpen))).json(); } catch (e) { r = { ok: false, why: e.message }; }
+      b.disabled = false;
+      if (r.ok && r.port) location.href = location.protocol + '//' + location.hostname + ':' + r.port + '/';
+      else say(r.why || 'not reachable', true);
+    });
+    el.querySelectorAll('[data-link-remove]').forEach(b => b.onclick = async () => {
+      const l = (st.links || []).find(x => x.id === b.dataset.linkRemove);
+      if (!l || !confirm(`Stop linking this computer to ${l.name}? To link again, show a new code there.`)) return;
+      const r = await post('/api/anywhere/links/remove', { id: l.id });
+      if (r.error) return say(r.error, true);
+      state = r; render(); say('no longer linked to ' + l.name);
+      if (typeof loadSettings === 'function') loadSettings().catch(() => {});
     });
     const off = document.getElementById('anyOff');
     if (off) off.onchange = async () => {
@@ -120,7 +166,7 @@
       ${r.app ? `<div class="any-switch"><button type="button" class="ghost" id="anyAppOnly">just the Android app, no pairing</button></div>` : ''}
       <details class="any-more"${remote ? '' : ' open'}><summary>a laptop or another computer: open this link in its browser</summary>
         <div class="row"><code class="mach-link">${h(r.url)}</code><button type="button" class="ghost" id="anyCopy">copy</button></div>
-        <div class="set-help">The link works once. Send it only to yourself: whoever opens it first gets your device's place.</div>
+        <div class="set-help">Or, to link that computer's own Chattering: paste it in its Settings → Machines → <b>this computer, linked to others</b>. The link works once. Send it only to yourself: whoever uses it first gets your device's place.</div>
       </details>
       <div class="any-foot"><span class="hint">Works once, for ten minutes. No account: the device opens Chattering in its browser, or in the Android app.</span><button type="button" class="ghost" data-close>cancel</button></div>`;
     bindClose();
