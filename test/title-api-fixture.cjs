@@ -1,9 +1,16 @@
 'use strict';
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), net = require('node:net');
 const { spawn } = require('node:child_process');
+const fixtureChild = require('./title-fixture-child.cjs');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function until(fn, label = 'fixture condition') {
-  for (let n = 0; n < 300; n++) { const value = await fn(); if (value) return value; await sleep(40); }
+async function until(fn, label = 'fixture condition', timeout = 12000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const value = await fixtureChild.within(Promise.resolve().then(fn), deadline - Date.now())
+      .catch(error => { throw new Error('Timed out or failed: ' + label + ': ' + error.message); });
+    if (value) return value;
+    await sleep(Math.min(40, Math.max(0, deadline - Date.now())));
+  }
   throw new Error('Timed out: ' + label);
 }
 async function port() { const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); const p = s.address().port; await new Promise(r => s.close(r)); return p; }
@@ -32,7 +39,7 @@ else if(at>=0) { fs.readFileSync(0,'utf8');setTimeout(()=>process.stdout.write(J
 `);
   const p = await port(), previewPort = await port(), token = 'local-integration-synthetic-token';
   const env = {
-    PATH: '/usr/bin:/bin', HOME: home, USERPROFILE: home, TMPDIR: tmp, TMP: tmp, TEMP: tmp,
+    ...fixtureChild.systemEnv(), HOME: home, USERPROFILE: home, TMPDIR: tmp, TMP: tmp, TEMP: tmp,
     XDG_CONFIG_HOME: config, XDG_CACHE_HOME: cache, XDG_DATA_HOME: data, XDG_STATE_HOME: path.join(root, 'state'),
     PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, PI_OFFLINE: '1',
     APPDATA: path.join(home, 'AppData/Roaming'), LOCALAPPDATA: path.join(home, 'AppData/Local'),
@@ -44,26 +51,33 @@ else if(at>=0) { fs.readFileSync(0,'utf8');setTimeout(()=>process.stdout.write(J
     CHATTERING_PI_CLI: cli, CHATTERING_PI_PACKAGE_DIR: path.resolve(__dirname, '../runtime/node_modules/@earendil-works/pi-coding-agent'),
     FUNCTAI_LOG_CALLS: path.join(data, 'functai/calls'), ...(options.env || {}),
   };
-  let child, log = '';
-  const start = () => { child = spawn(process.execPath, [...(options.instrument ? ['--require', path.resolve(__dirname, 'title-api-instrument.cjs')] : []), 'server.js'], { cwd: path.resolve(__dirname, '..'), env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] }); child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b); };
-  const stop = async () => { if (!child || child.exitCode !== null) return; const done = new Promise(r => child.once('exit', r)); child.kill('SIGTERM'); const timer = setTimeout(() => child.kill('SIGKILL'), 3000); await done; clearTimeout(timer); };
+  let state;
+  const start = () => {
+    const child = spawn(process.execPath, [...(options.instrument ? ['--require', path.resolve(__dirname, 'title-api-instrument.cjs')] : []), 'server.js'], { cwd: path.resolve(__dirname, '..'), env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    state = fixtureChild.observeChild(child, [token]);
+  };
+  const stop = () => fixtureChild.stop(state);
   t.after(async () => { await stop(); fs.rmSync(root, { recursive: true, force: true }); });
   const base = 'http://127.0.0.1:' + p;
-  const request = async (route, body, method = body === undefined ? 'GET' : 'POST', credential = token) => {
-    const response = await fetch(base + route, { method, headers: { Authorization: 'Bearer ' + credential, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-    const text = await response.text(); let result; try { result = JSON.parse(text); } catch { result = text; } return { status: response.status, data: result };
+  const request = (route, body, method = body === undefined ? 'GET' : 'POST', credential = token) => fixtureChild.request(state, base + route, {
+    method, headers: { Authorization: 'Bearer ' + credential, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const ready = async () => {
+    let lastError;
+    try {
+      await until(async () => {
+        if (state.closed || state.exit || state.spawnError) throw state.failure('server scan', new Error('Child stopped'));
+        try { return (await request('/api/sessions')).data.some(e => e.key === key); }
+        catch (error) { lastError = error; return false; }
+      }, 'server scan');
+    } catch (error) { throw state.failure('server scan GET ' + base + '/api/sessions', lastError || error); }
   };
-  const ready = () => until(async () => { if (child.exitCode !== null) throw new Error(log); try { return (await request('/api/sessions')).data.some(e => e.key === key); } catch { return false; } }, 'server scan: ' + log);
   const calls = () => { try { return fs.readFileSync(callsFile, 'utf8').trim().split('\n').map(JSON.parse); } catch { return []; } };
   if (options.setup) await options.setup({ root, home, agent, work, notes, cache, config, env, source });
   start(); await ready();
   return { root, home, tmp, work, notes, config, cache, agent, source, key, settingsFile, answerFile, delayFile, env, base, token, previewPort, request, calls,
-    cachePath: path.join(cache, 'sessions', key.replace(/[:/\\]/g, '__') + '.json'), log: () => log, stop,
-    probe: operation => new Promise((resolve, reject) => {
-      const id = Math.random();
-      const listener = reply => { if (reply.id !== id) return; child.off('message', listener); reply.error ? reject(new Error(reply.error)) : resolve(reply.value); };
-      child.on('message', listener); child.send({ id, operation });
-    }),
+    cachePath: path.join(cache, 'sessions', key.replace(/[:/\\]/g, '__') + '.json'), log: () => state.log(), stop,
+    probe: operation => fixtureChild.probe(state, operation),
     restart: async () => { await stop(); start(); await ready(); } };
 }
 module.exports = { boot, until, sleep, port };
