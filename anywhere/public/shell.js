@@ -417,6 +417,21 @@
     throw Object.assign(new Error('The page could not start its connection helper. Close this tab and open Chattering again.'), { code: 'browser' });
   }
 
+  // How the computer will list this phone. Chrome on Android hides the model
+  // in its user agent ("Android 10; K"), so every Android phone read
+  // "Android · Chrome"; it gives the model when asked (User-Agent Client Hints).
+  async function deviceName() {
+    const base = P.deviceLabel(navigator.userAgent);
+    try {
+      if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+        const v = await navigator.userAgentData.getHighEntropyValues(['model']);
+        const model = String(v.model || '').trim().slice(0, 30);
+        if (model && /^Android · /.test(base)) return model + base.slice('Android'.length);
+      }
+    } catch {}
+    return base;
+  }
+
   async function pair(code) {
     const known = homeOf(code.homeId);
     showConnecting(code.name || (known && known.name), 'relay', { pairing: true });
@@ -424,7 +439,7 @@
     const key = { privateKey: pairKey.privateKey, spki: new Uint8Array(await P.subtle().exportKey('spki', pairKey.publicKey)) };
     try {
       const t = await C.connect({
-        relay: RELAY, homeId: code.homeId, name: P.deviceLabel(navigator.userAgent),
+        relay: RELAY, homeId: code.homeId, name: await deviceName(),
         device: key, pairing: { id: code.id, secret: code.secret },
         onStatus: s => { if (s === 'waiting') showWaiting({ name: code.name || 'your computer' }); else showConnecting(code.name, s, { pairing: true }); },
       });
