@@ -10,7 +10,7 @@ Wants=network-online.target
 Environment=PORT=8790
 Environment=HOST=127.0.0.1
 Environment=TRUST_PROXY=1
-Environment=TURN_URLS=turn:anywhere.rockfrog.ai:3478?transport=udp,turn:anywhere.rockfrog.ai:3478?transport=tcp,turns:anywhere.rockfrog.ai:5349?transport=tcp
+Environment=TURN_URLS=turn:encrypted-link-to-your-devices.rockfrog.ai:3478?transport=udp,turn:encrypted-link-to-your-devices.rockfrog.ai:3478?transport=tcp,turns:encrypted-link-to-your-devices.rockfrog.ai:5349?transport=tcp
 EnvironmentFile=/etc/chattering-anywhere.env
 ExecStart=/usr/bin/node /opt/chattering-anywhere/anywhere/relay.js
 DynamicUser=yes

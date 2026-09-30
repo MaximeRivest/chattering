@@ -61,7 +61,7 @@ test('a phone through the relay is its person, never the console; People revokes
   // Nothing paired: the component is here, the relay untouched.
   let st = await (await fetch(base + '/api/anywhere')).json();
   assert.equal(st.available, true, st.why);
-  assert.equal(st.relay, 'https://anywhere.rockfrog.ai', 'Rockfrog\'s relay unless the owner names another');
+  assert.equal(st.relay, 'https://encrypted-link-to-your-devices.rockfrog.ai', 'Rockfrog\'s relay unless the owner names another');
   assert.equal(st.relayState, 'off');
   assert.deepEqual(st.devices, []);
   assert.match(st.homeId, /^[A-Za-z0-9_-]{22}$/);

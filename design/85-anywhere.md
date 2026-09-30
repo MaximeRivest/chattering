@@ -2,7 +2,7 @@
 
 Status: built and tested end to end (protocol, pairing, tunnel, a real
 Chattering, a phone-sized Chromium, a real coturn). Not yet deployed: the
-relay at `anywhere.rockfrog.ai` has to be rented and switched on
+relay at `encrypted-link-to-your-devices.rockfrog.ai` has to be rented and switched on
 (anywhere/README.md). Not yet tried on a real iPhone or Android phone.
 
 ## The question
@@ -16,6 +16,16 @@ What a new person should do: press **Add a phone** on the computer, scan the
 code with the phone. Chattering is on the phone, from anywhere, with no app
 and no account. Nothing readable passes through anyone else's server, and
 that server keeps nothing.
+
+## The name
+
+The relay's address is what a person sees when the phone's camera reads the
+code ("Open encrypted-link-to-your-devices.rockfrog.ai?"), so it says what
+happens: your devices, linked, encrypted. It is not a "tunnel" or a
+"bridge": the tunnel runs between the devices themselves; the relay
+introduces them and, when it must, passes along what it cannot read.
+Chosen before any phone paired, because a phone stays with the address it
+paired through.
 
 ## The shape
 

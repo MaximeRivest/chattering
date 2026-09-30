@@ -164,7 +164,7 @@ Revised 2026-09-23 (conversation 01a0cb65) after checking the plan against the p
 - [ ] Browser pane (item 1) on both devices
 - [ ] Global AI commands view (item 3) reachable on the phone
 - [ ] APK: server address from the first-launch form only, no hardcoded IPs; Tailscale address option
-- [ ] Chattering Anywhere (design/85) for real: rent the relay (anywhere/README.md, ~€5/month), point `anywhere.rockfrog.ai` at it, then a week on a real iPhone and Android phone, mobile data included (reconnect after sleep, relayed path, iOS home-screen pairing). Built and tested on one machine only.
+- [ ] Chattering Anywhere (design/85) for real: rent the relay (anywhere/README.md, ~€5/month), point `encrypted-link-to-your-devices.rockfrog.ai` at it, then a week on a real iPhone and Android phone, mobile data included (reconnect after sleep, relayed path, iOS home-screen pairing). Built and tested on one machine only.
 - [ ] Anywhere: carry artifact previews (their own origin) through the tunnel; an Android build that carries the shell itself, so no page comes from the relay
 - [ ] Pen: aligned, responsive, palm-rejecting, coexisting with finger navigation (constraint in project memory)
 - [ ] Voice: intentional completion, audible state feedback, no silence-as-submit; works over the tailnet HTTPS address

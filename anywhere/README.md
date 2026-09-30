@@ -51,7 +51,7 @@ built yet) removes this point entirely.
   often force this). Reading conversations moves little data: a busy person
   uses tens of MB a day. 20 TB covers thousands of people. Video through the
   relay is what would cost; `maxBps` caps each session.
-- **A name:** `anywhere.rockfrog.ai`, pointing at the server (A and AAAA).
+- **A name:** `encrypted-link-to-your-devices.rockfrog.ai`, pointing at the server (A and AAAA).
 
 ## Deploy on NixOS
 
@@ -60,7 +60,7 @@ built yet) removes this point entirely.
 imports = [ /path/to/chattering/anywhere/deploy/nixos.nix ];
 services.chattering-anywhere = {
   enable = true;
-  domain = "anywhere.rockfrog.ai";
+  domain = "encrypted-link-to-your-devices.rockfrog.ai";
   source = /path/to/chattering;              # a checkout; only anywhere/ and wsserver.js are used
   turnSecretFile = "/var/lib/secrets/anywhere-turn";
 };
@@ -71,7 +71,7 @@ install -d -m 0750 /var/lib/secrets
 openssl rand -hex 32 > /var/lib/secrets/anywhere-turn
 chown root:turnserver /var/lib/secrets/anywhere-turn && chmod 0440 /var/lib/secrets/anywhere-turn
 nixos-rebuild switch
-curl https://anywhere.rockfrog.ai/healthz      # ok
+curl https://encrypted-link-to-your-devices.rockfrog.ai/healthz      # ok
 ```
 
 Caddy gets the certificate. coturn serves TURN on 3478 (UDP and TCP) and on
@@ -87,7 +87,7 @@ through.
 3. The relay, as a service: see `deploy/anywhere-relay.service`.
 4. Caddy (`/etc/caddy/Caddyfile`), with no `log` directive:
    ```
-   anywhere.rockfrog.ai {
+   encrypted-link-to-your-devices.rockfrog.ai {
      encode zstd gzip
      reverse_proxy 127.0.0.1:8790
    }

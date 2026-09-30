@@ -6,7 +6,7 @@
 #   imports = [ /path/to/chattering/anywhere/deploy/nixos.nix ];
 #   services.chattering-anywhere = {
 #     enable = true;
-#     domain = "anywhere.rockfrog.ai";
+#     domain = "encrypted-link-to-your-devices.rockfrog.ai";
 #     source = /path/to/chattering;          # a checkout (relay.js, public/, wsserver.js)
 #     turnSecretFile = "/var/lib/secrets/anywhere-turn";  # one line: openssl rand -hex 32;
 #                                   # owner root, group turnserver, mode 0440 (coturn reads it too)

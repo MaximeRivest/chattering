@@ -38,7 +38,7 @@
 
   function relayLine(st) {
     if (!st.enabled) return 'Off: phones cannot reach this computer through the relay.';
-    if (st.relayState === 'ready') return `Listening for your phones through <b>${h(host(st.relay))}</b>.`;
+    if (st.relayState === 'ready') return `Listening for your phones through <b>${h(host(st.relay))}</b>: it introduces them to this computer and, when they cannot reach it directly, passes along encrypted data it cannot read.`;
     if (st.relayState === 'connecting') return `Connecting to the relay at ${h(host(st.relay))}…`;
     if (st.relayState === 'error') return `Cannot reach the relay at ${h(host(st.relay))}: ${h(st.relayError)}. Trying again by itself.`;
     return st.devices && st.devices.length ? 'Waiting to connect to the relay.' : 'Not connected to any relay: nothing is paired yet, so this computer does not connect to one.';

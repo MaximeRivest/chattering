@@ -25,7 +25,7 @@ const zlib = require('zlib');
 const P = require('./anywhere/protocol.js');
 const { T } = P;
 
-const DEFAULT_RELAY = 'https://anywhere.rockfrog.ai';
+const DEFAULT_RELAY = 'https://encrypted-link-to-your-devices.rockfrog.ai';
 const PAIRING_MS = 10 * 60 * 1000;
 const MAX_PEERS = 32;
 const AUTH_MS = 20000;
