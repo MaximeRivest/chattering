@@ -7,6 +7,11 @@
 .any-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); }
 .any-device.online .any-dot { background: var(--live); box-shadow: 0 0 0 3px color-mix(in srgb, var(--live) 25%, transparent); }
 .any-relay { font-size: var(--fs-meta); }
+.any-links { margin-top: var(--sp-4); padding-top: var(--sp-3); border-top: 1px solid var(--border); }
+.any-links h4 { margin: 0 0 var(--sp-1); font-size: var(--fs-body); font-weight: 600; }
+.any-link-form { display: flex; gap: var(--sp-2); margin: var(--sp-2) 0; }
+.any-link-form input { flex: 1; min-width: 0; }
+.any-row-actions { display: flex; gap: var(--sp-1); }
 
 .any-dialog { width: min(420px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); overflow: auto; box-sizing: border-box; padding: 22px 22px 16px; border: 1px solid var(--border-strong); border-radius: var(--r-dialog); background: var(--bg); color: var(--text); }
 .any-dialog::backdrop { background: var(--overlay); }

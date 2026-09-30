@@ -3448,9 +3448,15 @@ async function goToLocalMachine(m, b) {
   catch { return down(m.kind === 'wsl' ? 'it does not answer — open Chattering (Linux) once to start it' : 'it does not answer — open Chattering from the Start menu to start it'); }
   location.href = base + hand.path;
 }
+// Other computers this install links to (design/90): each at a local port,
+// so only from this computer's own screen (localhost).
+function linkedMachinesHere() {
+  if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) return [];
+  return (settingsState && settingsState.anywhereLinks) || [];
+}
 function renderMachineBtn() {
   const btn = $('machineBtn');
-  const list = [...(settingsOf().machines || []), ...localMachinesHere()];
+  const list = [...(settingsOf().machines || []), ...localMachinesHere(), ...linkedMachinesHere()];
   const host = (settingsState && settingsState.hostname) || '';
   btn.hidden = !list.length;
   btn.textContent = '@' + (host || 'this machine');
@@ -3466,10 +3472,20 @@ function toggleMachinePop(show) {
   const locals = localMachinesHere();
   pop.innerHTML = `<div class="mach-head">you are on ${esc(host)} · go to</div>` +
     locals.map(m => `<button type="button" data-local="${esc(m.id)}"><span>${esc(m.name)}</span><span class="mach-url">${esc(localMachineWhere(m, locals))}</span></button>`).join('') +
+    linkedMachinesHere().map(m => `<button type="button" data-link="${esc(m.id)}"><span>${esc(m.name)}</span><span class="mach-url">encrypted link</span></button>`).join('') +
     list.map((m, i) => `<button type="button" data-i="${i}"><span>${esc(m.name)}</span><span class="mach-url">${esc(m.url.replace(/^https?:\/\//i, ''))}</span></button>`).join('');
   pop.querySelectorAll('button[data-local]').forEach(b => b.onclick = () => {
     const m = locals.find(x => x.id === b.dataset.local);
     if (m) goToLocalMachine(m, b);
+  });
+  // A linked computer: connect (or say why not), then its local address.
+  pop.querySelectorAll('button[data-link]').forEach(b => b.onclick = async () => {
+    const url = b.querySelector('.mach-url');
+    b.disabled = true; url.textContent = 'connecting…';
+    let r;
+    try { r = await (await fetch('/api/anywhere/links/check?id=' + encodeURIComponent(b.dataset.link))).json(); } catch (e) { r = { ok: false, why: e.message }; }
+    if (r.ok && r.port) { location.href = location.protocol + '//' + location.hostname + ':' + r.port + '/'; return; }
+    b.disabled = false; url.textContent = r.why || 'not reachable';
   });
   const anchor = sideLayoutOn() ? $('railMachine') : $('machineBtn');
   const rect = anchor.getBoundingClientRect();

@@ -6026,12 +6026,32 @@ const anywhere = anywhereLib.createAnywhereHome({
     user: d.userId ? { id: d.userId, name: (usersLib.findUser(roster, d.userId) || {}).name || '' } : undefined, by: by ? { id: by.id, name: by.name } : undefined }),
   log: m => console.error(m),
 });
+// This install's links to other computers (design/90): each one opened here
+// at a local address of its own, for the person who made it.
+const anywhereLinksLib = require('./anywhere-link.js');
+const anywhereLinks = anywhereLinksLib.createAnywhereLinks({
+  dataDir: DATA_DIR,
+  rtc: anywhereLib.loadRtc(__dirname),
+  iceForNode: anywhereLib.iceForNode,
+  deviceName: () => HOST_NAME + ' · Chattering',
+  portBase: Number(process.env.CHATTERING_LINK_PORT_BASE || anywhereLinksLib.PORT_BASE),
+  authorize: (req, link) => {
+    const identity = identifyRequest(req);
+    if (!identity || !identity.user) return false;
+    return identity.tier === 'console' || !link.by || identity.user.id === link.by.id;
+  },
+  onChange: () => { clearTimeout(anywhereTimer); anywhereTimer = setTimeout(() => broadcast({ type: 'anywhere' }), 150); },
+  log: m => console.error(m),
+});
+anywhereLinks.start().catch(e => console.error('anywhere links: ' + e.message));
+const linksFor = identity => anywhereLinks.list().filter(l => !l.by || (identity && identity.user && (l.by.id === identity.user.id || usersLib.canManageUsers(identity))));
 async function anywhereResponse(identity) {
   const st = anywhere.status();
   const manages = usersLib.canManageUsers(identity);
   const me = identity && identity.user ? identity.user.id : null;
   return { ...st, homeId: await anywhere.homeId(), manages, owner: usersLib.isOwnerTier(identity), me,
-    devices: manages ? st.devices : st.devices.filter(d => d.user && d.user.id === me) };
+    devices: manages ? st.devices : st.devices.filter(d => d.user && d.user.id === me),
+    links: linksFor(identity) };
 }
 
 // The doors as tailscale reports them, plus what the settings say. Cached
@@ -6080,6 +6100,8 @@ function settingsResponse(identity = ownerIdentity()) {
     // them to a browser on this computer, with no pairing to do. Guests
     // are walled to what was shared with them, here.
     localMachines: identity && identity.user && !usersLib.isGuest(identity.user) ? localMachines.list().map(publicLocalMachine) : [],
+    // Other computers this install links to (design/90), for the switcher.
+    anywhereLinks: identity && identity.user && !usersLib.isGuest(identity.user) ? linksFor(identity).map(l => ({ id: l.id, name: l.name, port: l.port, connected: l.connected })) : [],
     port: PORT,
     // A connect link carries the install token, which is the owner's
     // credential: only the owner tier is shown it.
@@ -17996,6 +18018,26 @@ async function handleRequest(req, res) {
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/anywhere' && req.method === 'GET') {
       json(res, 200, await anywhereResponse(identity));
+    } else if (u.pathname === '/api/anywhere/links/check' && req.method === 'GET') {
+      // The switcher, before going: is that computer there?
+      const l = linksFor(identity).find(x => x.id === u.searchParams.get('id'));
+      if (!l) return json(res, 404, { error: 'no such link' });
+      json(res, 200, { ...(await anywhereLinks.check(l.id)), port: l.port });
+    } else if ((u.pathname === '/api/anywhere/links/add' || u.pathname === '/api/anywhere/links/remove') && req.method === 'POST') {
+      let body = '';
+      for await (const chunk of req) { body += chunk; if (body.length > 16 * 1024) return json(res, 413, { error: 'too large' }); }
+      try {
+        const p = JSON.parse(body || '{}');
+        assertNotGuest(identity, 'Linking this computer to another');
+        if (u.pathname.endsWith('/add')) {
+          await anywhereLinks.add(String(p.link || ''), { by: { id: identity.user.id, name: identity.user.name } });
+        } else {
+          const l = linksFor(identity).find(x => x.id === String(p.id || ''));
+          if (!l) return json(res, 404, { error: 'no such link' });
+          await anywhereLinks.remove(l.id);
+        }
+        json(res, 200, await anywhereResponse(identity));
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/anywhere/pairing' && req.method === 'GET') {
       // The settings page watches its code until the phone arrives.
       const s = anywhere.pairingState(u.searchParams.get('id'));
@@ -19304,6 +19346,7 @@ async function shutdownGracefully() {
   if (shuttingDown) return;
   shuttingDown = true;
   try { anywhere.stop(); } catch {}
+  try { anywhereLinks.stop(); } catch {}
   clearInterval(delegationTimer);
   clearInterval(recoveryTimer);
   delegationCoordinator.stop();
