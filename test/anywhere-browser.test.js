@@ -166,5 +166,13 @@ test('a phone pairs in the browser and runs Chattering from the computer', { ski
   await until(`document.body.classList.contains('app-open') && ${frame}.__anywhereInside === true`, 'the laptop in, from a pasted link');
   const laptop = (await (await fetch(base + '/api/anywhere')).json()).devices.find(d => /Linux computer/.test(d.name));
   assert.ok(laptop, 'listed as a computer');
+
+  // A code that arrives as only a new #pair=… on a page already showing (the
+  // app's scanner or clipboard offer, which open the same page): taken.
+  await post('/api/anywhere/forget', { id: laptop.id });
+  await until(`/removed/.test(document.getElementById('stage').innerText)`, 'the laptop told it was removed');
+  const again = await post('/api/anywhere/pair');
+  await evaluate(`location.hash = ${JSON.stringify(new URL(again.url).hash)}; 1`);
+  await until(`document.body.classList.contains('app-open') && ${frame}.__anywhereInside === true`, 'paired from a fragment that arrived later');
   assert.deepEqual(problems.filter(p => !/favicon|ERR_|net::/.test(p)), [], 'no errors on the page');
 });

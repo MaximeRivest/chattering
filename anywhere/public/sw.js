@@ -8,7 +8,7 @@
    This worker keeps no data of its own: the shell's files, cached so the
    page opens without the network, and nothing else. */
 'use strict';
-const VERSION = 'anywhere-9';
+const VERSION = 'anywhere-10';
 const SHELL_CACHE = 'anywhere-shell-' + VERSION;
 const SHELL_FILES = ['/_anywhere/shell.html', '/_anywhere/shell.css', '/_anywhere/shell.js', '/_anywhere/protocol.js', '/_anywhere/client.js',
   '/_anywhere/inside.js', '/_anywhere/manifest.webmanifest', '/_anywhere/mark.svg', '/_anywhere/favicon.svg', '/_anywhere/icon-192.png', '/_anywhere/apple-touch-icon.png'];

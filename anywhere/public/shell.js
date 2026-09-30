@@ -584,18 +584,32 @@
     } catch (e) {
       return showProblem('Chattering cannot start here', esc(e.message), [['Reload', 'reload', true, () => location.reload()]]);
     }
-    if (code) {
-      const known = homeOf(code.homeId);
-      if (known && known.deviceId) {
-        // An old code (the home-screen icon keeps the address it was added
-        // from): already paired, carry on.
-        history.replaceState(null, '', '/');
-        active = known.homeId; await kvSet('active', active);
-      } else if (IOS && !standalone()) return iosChoice(code);
-      else if (ANDROID_WEB && !standalone()) return androidChoice(code);
-      else return pair(code);
-    }
+    if (code && !(await takeCode(code))) return;
     if (!active) return showWelcome();
     connect(homeOf(active));
   })();
+
+  // A code for this page: from the address it opened with, or arriving later
+  // as only a new "#pair=…" (the app's scanner and clipboard, a pasted link:
+  // the same page with a new fragment, which does not load the page again).
+  // False when the code took the screen (pairing, or asking where).
+  async function takeCode(code) {
+    const known = homeOf(code.homeId);
+    if (known && known.deviceId) {
+      // An old code (the home-screen icon keeps the address it was added
+      // from): already paired, carry on.
+      history.replaceState(null, '', '/');
+      active = known.homeId; await kvSet('active', active);
+      return true;
+    }
+    if (IOS && !standalone()) iosChoice(code);
+    else if (ANDROID_WEB && !standalone()) androidChoice(code);
+    else pair(code);
+    return false;
+  }
+  addEventListener('hashchange', async () => {
+    const code = P.readPairingLink(location.hash);
+    if (!code || !navigator.serviceWorker || !navigator.serviceWorker.controller) return;
+    if (await takeCode(code)) switchTo(active);
+  });
 })();
