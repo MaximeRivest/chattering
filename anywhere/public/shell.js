@@ -17,6 +17,12 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
   const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  // Inside the Android app (it carries this page itself, design/86), or in
+  // an Android browser that could have it.
+  const APP = !!window.ChatteringApp;
+  const ANDROID_WEB = !APP && /Android/.test(navigator.userAgent);
+  const APK_URL = 'https://github.com/MaximeRivest/chattering/releases/download/android/Chattering-android.apk';
+  const getApp = ANDROID_WEB ? `<p class="hint app-offer">On Android, the Chattering app does this more safely: <a href="${APK_URL}">get the app</a>, then scan the same code.</p>` : '';
 
   /* ---- storage ---- */
   let dbp = null;
@@ -59,10 +65,23 @@
   function showWelcome() {
     show(`${mark}<h1>Chattering, anywhere</h1>
       <p class="lead">Use Chattering on this phone, from anywhere, straight from your own computer.</p>
-      <ol class="how"><li>On your computer, open Chattering → <b>Settings → Machines</b>.</li><li>Under <b>Your phone, anywhere</b>, press <b>Add a phone</b>.</li><li>Scan the code with this phone's camera.</li></ol>
+      <ol class="how"><li>On your computer, open Chattering → <b>Settings → Machines</b>.</li><li>Under <b>Your phone, anywhere</b>, press <b>Add a phone</b>.</li><li>Scan the code with this phone's camera${APP ? ': it opens here' : ''}.</li></ol>
       ${homes.length ? `<div class="homes">${homes.map(h => `<button type="button" class="home" data-home="${esc(h.homeId)}"><span class="dot"></span>${esc(h.name)}</button>`).join('')}</div>` : ''}
+      ${APP ? `<form class="paste" id="pasteForm"><label for="pasteLink">or paste the link shown under the code</label><div class="row"><input id="pasteLink" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://…#pair=…"><button type="submit" class="primary">Pair</button></div></form>
+        <button type="button" class="ghost small" id="useServer">Use a server address instead (Tailscale, home network)</button>` : getApp}
       ${PRIVACY}`, 'welcome');
     bindHomes();
+    const form = $('pasteForm');
+    if (form) form.onsubmit = e => {
+      e.preventDefault();
+      const v = $('pasteLink').value.trim();
+      let u = null;
+      try { u = new URL(v); } catch {}
+      if (!u || u.protocol !== 'https:' || !P.readPairingLink(u.hash)) { $('pasteLink').setCustomValidity('This is not a pairing link.'); $('pasteLink').reportValidity(); return; }
+      window.ChatteringApp.openLink(u.href);
+    };
+    const pl = $('pasteLink'); if (pl) pl.oninput = () => pl.setCustomValidity('');
+    const us = $('useServer'); if (us) us.onclick = () => window.ChatteringApp.useServerAddress();
   }
 
   const STEPS = [['relay', 'Finding'], ['connecting', 'Connecting'], ['securing', 'Securing'], ['ready', 'Ready']];
@@ -284,6 +303,14 @@
     homes: () => homes.map(h => ({ id: h.homeId, name: h.name, active: h.homeId === active })),
     switchTo, openSheet,
   };
+  // Android's back key (the app asks the page first): a sheet closes, else
+  // the app inside decides, else history moves.
+  window.chatteringBack = () => {
+    const sh = $('sheet');
+    if (sh && !sh.hidden) { closeSheet(); return true; }
+    try { const w = frame && frame.contentWindow; if (w && w.chatteringBack) return !!w.chatteringBack(); } catch {}
+    return false;
+  };
 
   /* ---- requests from the service worker ---- */
   const INSIDE = '<script src="/_anywhere/inside.js"></script>';
@@ -420,7 +447,7 @@
   }
   function celebrate(home) {
     show(`<div class="link-art ready" aria-hidden="true"><span class="node phone"></span><span class="wire"><i></i><i></i><i></i></span><span class="node computer"></span><span class="lock"></span></div>
-      <h1>Paired with <b>${esc(home.name)}</b></h1><p class="lead">From now on, open this page (or its icon) and Chattering is here, wherever you are.</p>`, 'paired');
+      <h1>Paired with <b>${esc(home.name)}</b></h1><p class="lead">${APP ? 'From now on, open this app and Chattering is here, wherever you are.' : 'From now on, open this page (or its icon) and Chattering is here, wherever you are.'}</p>`, 'paired');
     stage.dataset.screen = 'paired';
     return new Promise(r => setTimeout(r, 1400));
   }
@@ -428,7 +455,7 @@
   let installEvent = null;
   addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvent = e; });
   function installHint() {
-    if (standalone() || localStorage.getItem('anywhere-install-hint')) return;
+    if (APP || standalone() || localStorage.getItem('anywhere-install-hint')) return;
     localStorage.setItem('anywhere-install-hint', '1');
     setTimeout(() => {
       if (installEvent) {

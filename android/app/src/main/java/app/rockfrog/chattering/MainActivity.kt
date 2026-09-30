@@ -27,6 +27,9 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.JavascriptInterface
+import android.webkit.ServiceWorkerClient
+import android.webkit.ServiceWorkerController
+import android.webkit.WebResourceResponse
 import android.webkit.ValueCallback
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -108,6 +111,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
     private lateinit var web: WebView
+    private lateinit var anywhere: AnywhereShell
+    // "anywhere": paired computers through the encrypted link (design/85);
+    // "server": one server by address (Tailscale, home network).
+    private var mode = "anywhere"
     private lateinit var speech: SpeechBridge
     private lateinit var listen: ListenBridge
     private lateinit var ink: InkOverlay
@@ -155,7 +162,7 @@ class MainActivity : AppCompatActivity() {
         val server = findViewById<EditText>(R.id.server)
         val token = findViewById<EditText>(R.id.token)
         val prefs = getSharedPreferences("chattering", Context.MODE_PRIVATE)
-        server.setText(prefs.getString("server", "http://100.86.49.54:7433"))
+        server.setText(prefs.getString("server", ""))
         token.setText(prefs.getString("token", ""))
         findViewById<Button>(R.id.connect).setOnClickListener {
             val url = ServerReach.normalizeBase(server.text.toString())
@@ -164,16 +171,28 @@ class MainActivity : AppCompatActivity() {
                 showError("Enter the server address.")
                 return@setOnClickListener
             }
-            prefs.edit().putString("server", url).putString("token", pin).apply()
+            prefs.edit().putString("server", url).putString("token", pin).putString("mode", "server").apply()
+            mode = "server"
             openServer(url, pin)
         }
+        findViewById<Button>(R.id.pairInstead).setOnClickListener { openAnywhere(null) }
         configureInk()
+        anywhere = AnywhereShell(this)
         speech = SpeechBridge(this, web)
         listen = ListenBridge(this, web)
         configureWebView()
         val saved = prefs.getString("server", "") ?: ""
-        if (saved.isNotEmpty() && prefs.contains("token")) openServer(saved, prefs.getString("token", "") ?: "", intent?.getStringExtra(NotifyService.EXTRA_KEY))
-        else showSetup()
+        val link = intent?.data
+        when {
+            // A pairing code scanned with the camera, or a relay link tapped.
+            anywhere.isRelay(link) || anywhere.isPairingLink(link) -> openAnywhere(link.toString())
+            prefs.getString("mode", null) == "anywhere" -> openAnywhere(null)
+            saved.isNotEmpty() && prefs.contains("token") -> {
+                mode = "server"
+                openServer(saved, prefs.getString("token", "") ?: "", intent?.getStringExtra(NotifyService.EXTRA_KEY))
+            }
+            else -> openAnywhere(null)
+        }
         NotifyService.startIfEnabled(this)
     }
 
@@ -181,6 +200,8 @@ class MainActivity : AppCompatActivity() {
     // that conversation instead of reloading everything.
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
+        val link = intent?.data
+        if (anywhere.isRelay(link) || anywhere.isPairingLink(link)) { openAnywhere(link.toString()); return }
         val key = intent?.getStringExtra(NotifyService.EXTRA_KEY) ?: return
         if (web.visibility != View.VISIBLE) return
         val encoded = Uri.encode(key)
@@ -341,7 +362,15 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+        // The relay's pages come from this app, never the network (AnywhereShell):
+        // for the page itself, and for the service worker's own fetches.
+        ServiceWorkerController.getInstance().setServiceWorkerClient(object : ServiceWorkerClient() {
+            override fun shouldInterceptRequest(request: WebResourceRequest): WebResourceResponse? = anywhere.intercept(request)
+        })
         web.webViewClient = object : WebViewClient() {
+            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? =
+                anywhere.intercept(request)
+
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 view?.evaluateJavascript(deviceScript(), null)
             }
@@ -364,6 +393,9 @@ class MainActivity : AppCompatActivity() {
 
             override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
                 if (request?.isForMainFrame != true) return
+                // The encrypted link's page comes from the app itself; its own
+                // screens say when the computer cannot be reached.
+                if (mode == "anywhere") return
                 // The page itself failed (server went away, network switched
                 // mid-load). Go through the same connect path: it starts
                 // Tailscale when that is what is missing, and otherwise
@@ -425,7 +457,8 @@ class MainActivity : AppCompatActivity() {
             (getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
             Toast.makeText(this, "Downloading $name — see Downloads", Toast.LENGTH_LONG).show()
         } catch (_: Exception) {
-            Toast.makeText(this, "Could not start this download. Try opening Chattering in your browser.", Toast.LENGTH_LONG).show()
+            val why = if (mode == "anywhere") "Downloads do not go through the encrypted link yet." else "Could not start this download. Try opening Chattering in your browser."
+            Toast.makeText(this, why, Toast.LENGTH_LONG).show()
         }
     }
 
@@ -513,6 +546,27 @@ class MainActivity : AppCompatActivity() {
     // way back on a device without a navigation bar). Never fall back to
     // loading an untrusted site in the WebView that exposes native bridges.
     inner class AppBridge {
+        /** The page's paste field: a pairing link, opened here. */
+        @JavascriptInterface
+        fun openLink(url: String) {
+            runOnUiThread {
+                val parsed = try { Uri.parse(url) } catch (_: Exception) { null } ?: return@runOnUiThread
+                if (anywhere.isPairingLink(parsed)) openAnywhere(parsed.toString())
+            }
+        }
+
+        /** "Use a server address instead": the form for one server by address. */
+        @JavascriptInterface
+        fun useServerAddress() {
+            runOnUiThread {
+                mode = "server"
+                getSharedPreferences("chattering", Context.MODE_PRIVATE).edit().putString("mode", "server").apply()
+                connectGeneration++
+                conn = Conn.IDLE
+                showSetup()
+            }
+        }
+
         @JavascriptInterface
         fun openExternal(url: String) {
             runOnUiThread {
@@ -563,6 +617,32 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * Chattering through the encrypted link: the relay's address, with the
+     * page served from this app (AnywhereShell). A link (a scanned code) is
+     * loaded as is; otherwise the relay this phone last used.
+     */
+    private fun openAnywhere(link: String?) {
+        val prefs = getSharedPreferences("chattering", Context.MODE_PRIVATE)
+        val uri = link?.let { try { Uri.parse(it) } catch (_: Exception) { null } }
+        if (uri != null && uri.scheme == "https" && uri.host != null) {
+            anywhere.remember(uri)
+            prefs.edit().putString("relay", "https://${uri.host}").apply()
+        }
+        mode = "anywhere"
+        prefs.edit().putString("mode", "anywhere").apply()
+        connectGeneration++
+        serverBase = ""
+        conn = Conn.LOADED
+        pageOk = true
+        hideFullscreenVideo()
+        setup.visibility = View.GONE
+        status.visibility = View.GONE
+        error.visibility = View.GONE
+        web.visibility = View.VISIBLE
+        web.loadUrl(uri?.toString() ?: ((prefs.getString("relay", null) ?: AnywhereShell.DEFAULT_RELAY) + "/"))
     }
 
     private fun reachFailureText(host: String, detail: String?): String {
@@ -625,6 +705,7 @@ class MainActivity : AppCompatActivity() {
     override fun onBackPressed() {
         when {
             fullscreenView != null -> hideFullscreenVideo()
+            setup.visibility == View.VISIBLE && mode == "server" && getSharedPreferences("chattering", Context.MODE_PRIVATE).getString("server", "").isNullOrEmpty() -> openAnywhere(null)
             setup.visibility == View.VISIBLE -> super.onBackPressed()
             // The page goes first (design/58): a sheet, a menu, a picker or a
             // dialog closes; only with nothing open does history move.
@@ -632,6 +713,7 @@ class MainActivity : AppCompatActivity() {
                 if (handled == "true") return@evaluateJavascript
                 when {
                     web.canGoBack() -> web.goBack()
+                    mode == "anywhere" -> moveTaskToBack(true)
                     else -> { connectGeneration++; conn = Conn.IDLE; showSetup() }
                 }
             }

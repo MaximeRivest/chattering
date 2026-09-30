@@ -10,8 +10,8 @@ android {
         applicationId "app.rockfrog.chattering"
         minSdk 26
         targetSdk 35
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "0.2.0"
     }
     buildTypes {
         release {
@@ -27,7 +27,22 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { buildConfig true }
+    // The phone's page for the encrypted link (design/85): the repository's
+    // anywhere/ files, copied at build time, so the app carries the same
+    // code the relay serves to browsers, signed into the APK.
+    sourceSets { main { assets.srcDirs += ["$buildDir/generated/anywhere-assets"] } }
 }
+
+def anywhereDir = rootProject.file("../anywhere")
+tasks.register("anywhereAssets", Sync) {
+    from(new File(anywhereDir, "public")) { into "anywhere" }
+    from(anywhereDir) { include "protocol.js", "client.js"; into "anywhere" }
+    into "$buildDir/generated/anywhere-assets"
+    doFirst {
+        if (!new File(anywhereDir, "public/shell.html").exists()) throw new GradleException("anywhere/ is missing beside android/: build from a whole checkout")
+    }
+}
+preBuild.dependsOn("anywhereAssets")
 dependencies {
     implementation "androidx.core:core-ktx:1.15.0"
     implementation "androidx.appcompat:appcompat:1.7.0"

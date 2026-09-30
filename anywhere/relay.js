@@ -128,6 +128,9 @@ function createRelay(opts = {}) {
     let name = u.pathname;
     // The service worker lives at the root so it may answer for every address.
     if (name === '/sw.js') name = '/_anywhere/sw.js';
+    // Android's check that the Chattering app (signed with Rockfrog's release
+    // key) may open this site's links: the pairing code then opens the app.
+    else if (name === '/.well-known/assetlinks.json') name = '/_anywhere/assetlinks.json';
     else if (!name.startsWith('/_anywhere/')) {
       // A page inside the shell asked before the service worker took over:
       // never the shell inside itself.

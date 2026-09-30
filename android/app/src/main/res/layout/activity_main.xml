@@ -52,7 +52,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:paddingBottom="16dp"
-                android:text="Connect to your Chattering server (by Rockfrog). Use its Tailscale address so it works at home and away; the app turns Tailscale on when needed."
+                android:text="Connect to one Chattering server by its address: its Tailscale address works at home and away (the app turns Tailscale on when needed), a home-network address only at home."
                 android:textColor="#000000"
                 android:textSize="16sp" />
 
@@ -68,7 +68,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginBottom="12dp"
-                android:hint="http://100.86.49.54:7433"
+                android:hint="http://100.x.y.z:7433"
                 android:inputType="textUri"
                 android:textColor="#000000"
                 android:textColorHint="#666666" />
@@ -95,6 +95,15 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:text="open Chattering"
+                android:textAllCaps="false" />
+
+            <Button
+                android:id="@+id/pairInstead"
+                style="?android:attr/borderlessButtonStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="pair with a computer instead (no address needed)"
                 android:textAllCaps="false" />
 
             <TextView

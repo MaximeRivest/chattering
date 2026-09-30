@@ -320,6 +320,9 @@ test('the relay: only a key\'s holder registers as a home; TURN credentials cotu
   assert.match(shell.text, /<title>Chattering<\/title>/);
   assert.match(shell.csp, /frame-ancestors 'none'/);
   assert.equal((await get('/sw.js')).swa, '/');
+  const links = await get('/.well-known/assetlinks.json');
+  assert.equal(links.type, 'application/json');
+  assert.equal(JSON.parse(links.text)[0].target.package_name, 'app.rockfrog.chattering');
   assert.equal((await get('/_anywhere/protocol.js')).status, 200);
   assert.equal((await get('/_anywhere/relay.js')).status, 404);
   assert.equal((await get('/_anywhere/..%2frelay.js')).status, 404);

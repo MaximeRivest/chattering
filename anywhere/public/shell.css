@@ -119,5 +119,11 @@ details.about p { margin: 10px 0 0; }
 .sheet h2 { margin: 0 0 6px; font-size: 1.1rem; }
 .sheet-card > button { width: 100%; margin-top: 12px; }
 .noscript { padding: 2em; text-align: center; }
+.paste { text-align: left; margin: 6px 0 12px; }
+.paste label { display: block; color: var(--dim); font-size: .9rem; margin-bottom: 6px; }
+.paste .row { display: flex; gap: 8px; }
+.paste input { flex: 1; min-width: 0; font: inherit; font-size: .95rem; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); color: var(--text); }
+.card > #useServer { margin-top: 4px; color: var(--dim); }
+.app-offer a { color: var(--accent); }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
