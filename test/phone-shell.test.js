@@ -48,7 +48,7 @@ test('phone shell: bottom bar, sheets, one-row head, back hook, desktop untouche
   assert.equal(await ev(fits), true, 'the bar sits on the bottom edge');
   assert.equal(await ev(`[...document.querySelectorAll('#phoneBar > button, #phoneBar > .pb-slot')].every(b=>b.getBoundingClientRect().height>=44)`), true, 'every tab is a finger target');
   assert.equal(await ev(`document.querySelector('[data-phone-tab=gantt]').getAttribute('aria-pressed')`), 'true', 'home lights Gantt');
-  assert.equal(await ev(`$('gRecenter').getBoundingClientRect().bottom <= $('phoneBar').getBoundingClientRect().top`), true, 'the recenter control moved above the bar');
+  assert.equal(await ev(`document.querySelector('#timelineControls [data-action=now]').getBoundingClientRect().bottom <= $('phoneBar').getBoundingClientRect().top`), true, 'Now is reachable in the chart toolbar, above the phone bar');
   await screenshot('phone-shell-home.png');
 
   // Agents: the side list in a sheet (design/59) — the conversations a

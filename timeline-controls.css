@@ -1,0 +1,38 @@
+/* Compact by default; the optional strip takes space only when requested. */
+body.home #ganttBar { align-items: center; padding-right: max(6px, var(--corner-r, 0px)); }
+#timelineControls { margin-left: auto; padding: 2px 6px; }
+.timeline-controls, .tc-inline, .tc-camera, .tc-presets, .tc-zoom { display: flex; align-items: center; gap: 4px; }
+.tc-camera { flex-wrap: wrap; gap: 10px; }
+#timelineControls button, .timeline-control-panel button { min-height: 30px; height: auto; min-width: 30px; padding: 4px 8px; border: 1px solid transparent; border-radius: var(--r); background: transparent; color: var(--text-dim); font: inherit; font-size: 12px; cursor: pointer; }
+#timelineControls button:hover, .timeline-control-panel button:hover { color: var(--text); background: var(--surface-2); }
+#timelineControls button:focus-visible, .timeline-control-panel :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#timelineControls .tc-scale { min-width: 80px; font-variant-numeric: tabular-nums; }
+#timelineControls button[aria-pressed="true"], .timeline-control-panel button[aria-pressed="true"] { color: var(--text); background: var(--surface-2); border-color: var(--border-strong); font-weight: 600; }
+.timeline-control-panel { position: fixed; inset: auto; margin: 0; box-sizing: border-box; padding: 12px; overflow: auto; overscroll-behavior: contain; background: var(--surface-1); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-menu); box-shadow: var(--shadow); font: 12px/1.5 var(--font); }
+.timeline-control-panel::backdrop { background: transparent; pointer-events: none; }
+.tc-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.tc-heading strong { font-size: 13px; }
+.tc-settings { display: flex; flex-direction: column; align-items: stretch; gap: 12px; }
+.tc-settings > button { text-align: left; display: flex; justify-content: space-between; }
+.tc-presets kbd { display: block; font-weight: normal; }
+.tc-inline kbd { display: none; }
+:root[data-theme-mode="binary"] .tc-date input { color-scheme: light; }
+.tc-date { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.tc-date input { flex: 1; min-width: 130px; min-height: 32px; background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--r); font: inherit; padding: 4px; }
+.tc-pin { display: flex; align-items: center; gap: 8px; padding-top: 10px; border-top: 1px solid var(--border); color: var(--text-dim); cursor: pointer; }
+.tc-pin input { accent-color: var(--accent); }
+.tc-guide p { color: var(--text-dim); margin: 0 0 8px; }
+.tc-guide table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.tc-guide td { padding: 5px 0; border: 0; vertical-align: top; }
+.tc-guide td:first-child { width: 48%; padding-right: 8px; }
+.timeline-control-panel kbd { font: 11px/1.4 var(--mono, monospace); color: var(--text-dim); }
+@media (max-width: 700px) {
+  body.home #ganttBar #projSort { display: none; }
+  body.home #ganttBar { padding: 0; flex-wrap: nowrap; }
+  #timelineControls { padding: 2px 8px; }
+  .tc-pin:has([data-pin="controls"]) { display: none; }
+}
+@media (pointer: coarse) {
+  #timelineControls button, .timeline-control-panel button { min-height: 44px; min-width: 44px; }
+  .tc-pin, .tc-date input { min-height: 44px; }
+}

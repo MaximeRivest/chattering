@@ -619,6 +619,7 @@
     }
     #fitViewport(width, height) {
       const resized = this.#width !== width || this.#height !== height;
+      const oldWidth = this.#width;
       const keep = this.#anchor();
       const scaleBefore = this.#scale;
       this.#width = width;
@@ -626,7 +627,14 @@
       this.#measure();
       if (this.#initial || resized || scaleBefore !== this.#scale) keep();
       else this.#clampScroll();
-      if (resized && !this.#initial) this.#animation = null; // its anchor was in the old viewport
+      if (resized && !this.#initial && this.#animation && oldWidth !== width) {
+        // A disappearing scrollbar or a resized pane must not abandon a
+        // requested zoom halfway through. Keep its time anchor at the same
+        // fraction of the drawable viewport, without restarting the clock.
+        const gutter = this.#model.gutter;
+        const fraction = clamp((this.#animation.x - gutter) / Math.max(1, oldWidth - gutter), 0, 1);
+        this.#animation.x = Math.min(gutter, width) + fraction * Math.max(0, width - gutter);
+      }
       this.#initial = false;
     }
     #stepAnimation(now) {
