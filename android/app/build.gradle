@@ -10,8 +10,8 @@ android {
         applicationId "app.rockfrog.chattering"
         minSdk 26
         targetSdk 35
-        versionCode 4
-        versionName "0.2.2"
+        versionCode 5
+        versionName "0.3.0"
     }
     buildTypes {
         release {
@@ -47,4 +47,8 @@ dependencies {
     implementation "androidx.core:core-ktx:1.15.0"
     implementation "androidx.appcompat:appcompat:1.7.0"
     implementation "com.squareup.okhttp3:okhttp:3.14.9"
+    // Scan the pairing code from inside the app: Google's code scanner (the
+    // camera UI is Google Play services', so the app asks for no camera
+    // permission and sees only the scanned text).
+    implementation "com.google.android.gms:play-services-code-scanner:16.1.0"
 }

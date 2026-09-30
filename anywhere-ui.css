@@ -23,6 +23,7 @@
 .any-more { margin: 0 0 var(--sp-3); }
 .any-android { text-align: center; margin: 0 0 var(--sp-3); }
 .any-switch { text-align: center; margin: 0 0 var(--sp-3); }
+.any-this { display: flex; flex-direction: column; align-items: center; gap: var(--sp-1); text-align: center; margin: 0 0 var(--sp-3); padding-bottom: var(--sp-3); border-bottom: 1px solid var(--border); }
 .any-more summary { cursor: pointer; color: var(--text-dim); font-size: var(--fs-meta); }
 .any-more .row { display: flex; gap: var(--sp-2); align-items: center; margin-top: var(--sp-2); }
 .any-more code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

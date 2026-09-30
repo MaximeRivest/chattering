@@ -155,5 +155,16 @@ test('a phone pairs in the browser and runs Chattering from the computer', { ski
   await post('/api/anywhere/forget', { id: devices[0].id });
   await until(`/removed/.test(document.getElementById('stage').innerText)`, 'told it was removed');
   await shot('anywhere-3-removed.png');
+
+  // A laptop: a desktop browser pastes the link and is in.
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, sid);
+  await send('Emulation.setUserAgentOverride', { userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36' }, sid);
+  const laptopCode = await post('/api/anywhere/pair');
+  await send('Page.navigate', { url: relayUrl + '/' }, sid);
+  await until(`document.getElementById('pasteForm') && /Add a device/.test(document.getElementById('stage').innerText)`, 'the welcome, with a place to paste');
+  await evaluate(`document.getElementById('pasteLink').value = ${JSON.stringify(laptopCode.url)}; document.getElementById('pasteForm').requestSubmit(); 1`);
+  await until(`document.body.classList.contains('app-open') && ${frame}.__anywhereInside === true`, 'the laptop in, from a pasted link');
+  const laptop = (await (await fetch(base + '/api/anywhere')).json()).devices.find(d => /Linux computer/.test(d.name));
+  assert.ok(laptop, 'listed as a computer');
   assert.deepEqual(problems.filter(p => !/favicon|ERR_|net::/.test(p)), [], 'no errors on the page');
 });

@@ -71,14 +71,25 @@
     <p>The relay keeps no record of what passes through it. It cannot see your conversations, your files or your keys. It only sees that a phone and a computer are connecting, from which internet addresses, and how much data they exchange.</p>
     <p>This phone keeps one key per computer. The browser created that key and will not let any script read it out, and nothing else is stored here.</p></details>`;
 
+  // The first screen: how to add this device. In the app, the scanner and a
+  // code the browser left on the clipboard; anywhere, a box to paste a link.
+  const DESKTOP = !APP && !IOS && !/Android/.test(navigator.userAgent);
   function showWelcome() {
+    const how = APP
+      ? `<button type="button" class="primary big" id="scanCode">Scan the pairing code</button>
+         <div id="clipOffer"></div>
+         <p class="hint">On your computer: Chattering → <b>Settings → Machines → Add a device</b> shows the code.</p>`
+      : DESKTOP
+        ? `<ol class="how"><li>On the computer running Chattering: <b>Settings → Machines → Add a device</b>.</li><li>Press <b>Use this browser</b> there if you are looking at it from here, or copy its link.</li><li>Paste the link below.</li></ol>`
+        : `<ol class="how"><li>On your computer, open Chattering → <b>Settings → Machines</b>.</li><li>Press <b>Add a device</b>.</li><li>Scan the code with this device's camera.</li></ol>`;
     show(`${mark}<h1>Chattering, anywhere</h1>
-      <p class="lead">Use Chattering on this phone, from anywhere, straight from your own computer.</p>
-      <ol class="how"><li>On your computer, open Chattering → <b>Settings → Machines</b>.</li><li>Under <b>Your phone, anywhere</b>, press <b>Add a phone</b>.</li><li>Scan the code with this phone's camera${APP ? ': it opens here' : ''}.</li></ol>
+      <p class="lead">Use Chattering on this ${DESKTOP ? 'computer' : 'device'}, from anywhere, straight from your own computer.</p>
+      ${how}
       ${homes.length ? `<div class="homes">${homes.map(h => `<button type="button" class="home" data-home="${esc(h.homeId)}"><span class="dot"></span>${esc(h.name)}</button>`).join('')}</div>` : ''}
-      ${APP ? `<form class="paste" id="pasteForm"><label for="pasteLink">or paste the link shown under the code</label><div class="row"><input id="pasteLink" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://…#pair=…"><button type="submit" class="primary">Pair</button></div></form>
-        <button type="button" class="ghost small" id="useServer">Use a server address instead (Tailscale, home network)</button>` : getApp}
+      <form class="paste" id="pasteForm"><label for="pasteLink">${APP ? 'or paste the link shown under the code' : 'paste the link'}</label><div class="row"><input id="pasteLink" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://…#pair=…"><button type="submit" class="${DESKTOP ? 'primary' : ''}">Pair</button></div></form>
+      ${APP ? `<button type="button" class="ghost small" id="useServer">Use a server address instead (Tailscale, home network)</button>` : getApp}
       ${PRIVACY}`, 'welcome');
+    stage.dataset.screen = 'welcome';
     bindHomes();
     const form = $('pasteForm');
     if (form) form.onsubmit = e => {
@@ -86,12 +97,34 @@
       const v = $('pasteLink').value.trim();
       let u = null;
       try { u = new URL(v); } catch {}
-      if (!u || u.protocol !== 'https:' || !P.readPairingLink(u.hash)) { $('pasteLink').setCustomValidity('This is not a pairing link.'); $('pasteLink').reportValidity(); return; }
-      window.ChatteringApp.openLink(u.href);
+      const code = u && (u.protocol === 'https:' || u.origin === location.origin) && P.readPairingLink(u.hash);
+      if (!code) { $('pasteLink').setCustomValidity('This is not a pairing link.'); $('pasteLink').reportValidity(); return; }
+      if (APP) return window.ChatteringApp.openLink(u.href);
+      if (u.origin !== location.origin) { location.href = u.href; return; }
+      history.replaceState(null, '', '/');
+      if (ANDROID_WEB) androidChoice(code); else pair(code);
     };
     const pl = $('pasteLink'); if (pl) pl.oninput = () => pl.setCustomValidity('');
     const us = $('useServer'); if (us) us.onclick = () => window.ChatteringApp.useServerAddress();
+    const sc = $('scanCode'); if (sc) sc.onclick = () => window.ChatteringApp.scanCode();
+    checkClipboard();
   }
+  // A code the browser copied before the app was installed: offered here.
+  function checkClipboard() {
+    const box = $('clipOffer');
+    if (!APP || !box || !window.ChatteringApp.clipboardPairingLink) return;
+    let link = '';
+    try { link = window.ChatteringApp.clipboardPairingLink() || ''; } catch {}
+    let code = null;
+    try { code = link && P.readPairingLink(new URL(link).hash); } catch {}
+    if (!code || (homeOf(code.homeId) && homeOf(code.homeId).deviceId)) { box.innerHTML = ''; return; }
+    box.innerHTML = `<div class="clip-offer"><p>Pair with <b>${esc(code.name || 'your computer')}</b>? You copied its code a moment ago.</p>
+      <div class="row"><button type="button" class="primary" id="clipPair">Pair</button><button type="button" class="ghost" id="clipNo">Not now</button></div></div>`;
+    $('clipPair').onclick = () => { try { window.ChatteringApp.clearClipboardLink(); } catch {} window.ChatteringApp.openLink(link); };
+    $('clipNo').onclick = () => { try { window.ChatteringApp.clearClipboardLink(); } catch {} box.innerHTML = ''; };
+  }
+  // The app came to the front (the clipboard is readable only then).
+  window.anywhereAppFocus = () => { if (stage.dataset.screen === 'welcome' && !stage.hidden) checkClipboard(); };
 
   const STEPS = [['relay', 'Finding'], ['connecting', 'Connecting'], ['securing', 'Securing'], ['ready', 'Ready']];
   function showConnecting(name, step, { pairing = false } = {}) {
@@ -138,7 +171,7 @@
     s.innerHTML = `<div class="sheet-card" role="dialog" aria-label="Your computers">
       <h2>Your computers</h2>
       <div class="homes">${homes.map(h => `<div class="home-row"><button type="button" class="home${h.homeId === active ? ' on' : ''}" data-home="${esc(h.homeId)}"><span class="dot"></span>${esc(h.name)}${h.user && h.user.name ? `<small>as ${esc(h.user.name)}</small>` : ''}</button><button type="button" class="ghost small" data-forget="${esc(h.homeId)}" title="Forget it on this phone">Forget</button></div>`).join('')}</div>
-      <p class="hint">To add a computer, press <b>Add a phone</b> in its Chattering (Settings → Machines) and scan the code.</p>
+      <p class="hint">To add a computer, press <b>Add a device</b> in its Chattering (Settings → Machines) and scan the code.</p>
       ${PRIVACY}
       <button type="button" class="ghost" id="sheetClose">Close</button></div>`;
     s.hidden = false;
@@ -198,12 +231,12 @@
       saveHomes();
       if (frame) { frame.remove(); frame = null; }
       hidePill();
-      return showProblem(`This phone was removed from <b>${esc(home.name)}</b>`, 'To use it again, press <b>Add a phone</b> in Chattering on that computer (Settings → Machines) and scan the new code.', homes.length ? [['Your other computers', 'others', true, openSheet]] : []);
+      return showProblem(`This phone was removed from <b>${esc(home.name)}</b>`, 'To use it again, press <b>Add a device</b> in Chattering on that computer (Settings → Machines) and scan the new code.', homes.length ? [['Your other computers', 'others', true, openSheet]] : []);
     }
     if (e.code === 'refused' && e.why === 'bad-signature') {
       if (frame) { frame.remove(); frame = null; }
       hidePill();
-      return showProblem(`<b>${esc(home.name)}</b> did not recognise this phone`, 'Its key on this phone no longer matches. Forget the computer here, then press <b>Add a phone</b> on it and scan the new code.', [['Your computers', 'others', true, openSheet]], 'problem');
+      return showProblem(`<b>${esc(home.name)}</b> did not recognise this phone`, 'Its key on this phone no longer matches. Forget the computer here, then press <b>Add a device</b> on it and scan the new code.', [['Your computers', 'others', true, openSheet]], 'problem');
     }
     if (e.code === 'forged') {
       if (frame) { frame.remove(); frame = null; }
@@ -464,7 +497,7 @@
       installHint();
     } catch (e) {
       history.replaceState(null, '', '/');
-      if (e.code === 'refused') return showProblem('This code does not work any more', 'Codes work once, for ten minutes. On your computer, press <b>Add a phone</b> again and scan the new code.', homes.length ? [['Your computers', 'others', true, openSheet]] : []);
+      if (e.code === 'refused') return showProblem('This code does not work any more', 'Codes work once, for ten minutes. On your computer, press <b>Add a device</b> again and scan the new code.', homes.length ? [['Your computers', 'others', true, openSheet]] : []);
       if (e.code === 'forged') return showProblem('This connection could not be verified', 'Something between this phone and the computer that showed the code did not prove to be that computer, so nothing was sent. Try again on another network.', [], 'problem danger');
       showProblem('Pairing did not finish', esc(e.message) + '. Scan the code again, or show a new one.', []);
     }
@@ -497,12 +530,16 @@
     show(`${mark}<h1>Pair with <b>${name}</b></h1>
       <p class="lead">Chattering works best on Android as an app.</p>
       <a class="primary big" id="useApp" href="${esc(appIntent(code))}">Use the Android app</a>
-      <p class="hint steps-app">Not installed yet? This button downloads it (3 MB). Open the downloaded file, allow the install, then come back here and <b>tap the button again</b>: it opens the app, already paired.</p>
+      <p class="hint steps-app">Not installed yet? This button downloads it (3 MB) and copies this code. Open the downloaded file and install it, then open the app: it offers to pair with ${name}. (Or come back here and tap the button again.)</p>
       <button type="button" class="ghost" id="inBrowser">Continue in the browser</button>
       <p class="hint">This code works for ten minutes, once.</p>`, 'choice');
     $('inBrowser').onclick = () => pair(code);
     // Back from installing: the page is still here, the button still works.
-    $('useApp').onclick = () => { setTimeout(() => { const h = $('useApp'); if (h) h.textContent = 'Open the Android app'; }, 1500); };
+    $('useApp').onclick = () => {
+      // The app, opened from the installer, finds the code here and offers it.
+      try { navigator.clipboard.writeText(P.pairingLink(location.origin, code)).catch(() => {}); } catch {}
+      setTimeout(() => { const h = $('useApp'); if (h) h.textContent = 'Open the Android app'; }, 1500);
+    };
   }
 
   // On an iPhone, a home-screen app keeps its own storage, apart from

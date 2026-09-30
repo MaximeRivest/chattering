@@ -53,14 +53,14 @@
     if (!st.available) { el.innerHTML = `<div class="set-help">${h(st.why)}</div>`; return; }
     const devices = st.devices || [];
     el.innerHTML = `
-      <div class="set-help">Use Chattering on your phone from anywhere, with nothing to install and no account. Your phone connects to this computer directly, encrypted from end to end. When it cannot, a relay passes the encrypted data along without being able to read it.</div>
-      <div class="any-actions"><button type="button" id="anyAdd"${st.enabled ? '' : ' disabled'}>Add a phone</button></div>
+      <div class="set-help">Use Chattering from your phone, tablet or another computer, from anywhere, with no account. Each device connects to this computer directly, encrypted from end to end. When it cannot, a relay passes the encrypted data along without being able to read it.</div>
+      <div class="any-actions"><button type="button" id="anyAdd"${st.enabled ? '' : ' disabled'}>Add a device</button></div>
       ${devices.length ? `<div class="any-devices">${devices.map(d => `
         <div class="any-device${d.online ? ' online' : ''}">
           <span class="any-dot" aria-hidden="true"></span>
           <span class="any-name"><b>${h(d.name)}</b>${st.manages && d.user && d.user.name ? ` <span class="hint">· ${h(d.user.name)}</span>` : ''}</span>
           <span class="any-seen hint">${d.online ? 'connected' + (d.path === 'relay' ? ' through the relay' : d.path === 'direct' ? ' directly' : '') : 'last seen ' + h(ago(d.lastSeenAt))}</span>
-          <button type="button" class="ghost" data-any-forget="${h(d.id)}" title="Remove this phone: it cannot connect again until it scans a new code">remove</button>
+          <button type="button" class="ghost" data-any-forget="${h(d.id)}" title="Remove this device: it cannot connect again until it is paired again">remove</button>
         </div>`).join('')}</div>` : ''}
       <div class="set-help any-relay">${relayLine(st)}</div>
       ${st.owner ? `<details class="set-more"><summary>relay and switch</summary>
@@ -73,7 +73,7 @@
     if (add) add.onclick = openPairing;
     el.querySelectorAll('[data-any-forget]').forEach(b => b.onclick = async () => {
       const d = devices.find(x => x.id === b.dataset.anyForget);
-      if (!d || !confirm(`Remove ${d.name}? It is disconnected at once and cannot connect again until it scans a new code.`)) return;
+      if (!d || !confirm(`Remove ${d.name}? It is disconnected at once and cannot connect again until it is paired again.`)) return;
       const r = await post('/api/anywhere/forget', { id: d.id });
       if (r.error) return say(r.error, true);
       state = r; render(); say(d.name + ' removed');
@@ -98,7 +98,7 @@
     dialog = document.createElement('dialog');
     dialog.className = 'any-dialog';
     dialog.setAttribute('aria-labelledby', 'anyTitle');
-    dialog.innerHTML = `<h2 id="anyTitle">Add a phone</h2><div class="any-body"><div class="any-qr any-loading" aria-busy="true"></div></div>`;
+    dialog.innerHTML = `<h2 id="anyTitle">Add a device</h2><div class="any-body"><div class="any-qr any-loading" aria-busy="true"></div></div>`;
     dialog.addEventListener('keydown', e => e.stopPropagation());
     dialog.addEventListener('cancel', e => { e.preventDefault(); closePairing(true); });
     dialog.addEventListener('click', e => { if (e.target === dialog) closePairing(true); });
@@ -108,18 +108,26 @@
     if (!dialog) return;
     if (r.error) { dialog.querySelector('.any-body').innerHTML = `<p class="set-help">${h(r.error)}</p><div class="any-foot"><button type="button" class="ghost" data-close>close</button></div>`; bindClose(); return; }
     pairing = r;
+    // Viewed from another device than this computer (its own screen reads
+    // Chattering at localhost): that device can pair itself.
+    const remote = !/^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(location.hostname);
     dialog.querySelector('.any-body').innerHTML = `
-      <p class="any-lead" id="anyLead">Scan this code with your phone's camera.</p>
+      ${remote ? `<div class="any-this"><button type="button" id="anyThis">Use this browser</button><span class="hint">You are looking at this Chattering from another computer: pair this browser with it, in one click.</span></div>` : ''}
+      <p class="any-lead" id="anyLead">Phone or tablet: scan this code with its camera.</p>
       <div class="any-qr" id="anyQr">${r.svg}</div>
       <div class="any-wait" id="anyWait"><span class="any-pulse" aria-hidden="true"></span><span>Waiting for your phone…</span><span class="any-clock hint"></span></div>
       <p class="set-help any-android" id="anyAndroid">On Android, it offers the Chattering app (one tap installs it, the next opens it paired) or the browser. On iPhone, it opens in the browser.</p>
       ${r.app ? `<div class="any-switch"><button type="button" class="ghost" id="anyAppOnly">just the Android app, no pairing</button></div>` : ''}
-      <details class="any-more"><summary>no camera? open this link on the phone</summary>
+      <details class="any-more"${remote ? '' : ' open'}><summary>a laptop or another computer: open this link in its browser</summary>
         <div class="row"><code class="mach-link">${h(r.url)}</code><button type="button" class="ghost" id="anyCopy">copy</button></div>
-        <div class="set-help">The link works once. Send it only to yourself: whoever opens it first gets your phone's place.</div>
+        <div class="set-help">The link works once. Send it only to yourself: whoever opens it first gets your device's place.</div>
       </details>
-      <div class="any-foot"><span class="hint">Works once, for ten minutes. No app, no account: the phone opens Chattering in its browser.</span><button type="button" class="ghost" data-close>cancel</button></div>`;
+      <div class="any-foot"><span class="hint">Works once, for ten minutes. No account: the device opens Chattering in its browser, or in the Android app.</span><button type="button" class="ghost" data-close>cancel</button></div>`;
     bindClose();
+    // Pair the browser this page is in (a laptop reaching this computer over
+    // the home network or Tailscale): the link opens beside, in a tab of its own.
+    const thisBrowser = document.getElementById('anyThis');
+    if (thisBrowser) thisBrowser.onclick = () => { window.open(r.url, '_blank', 'noopener'); };
     // The code for the app alone (a tablet, a phone to set up later), and back.
     const appOnly = document.getElementById('anyAppOnly');
     if (appOnly) appOnly.onclick = () => {
@@ -166,7 +174,7 @@
     if (!body) return;
     body.innerHTML = `<div class="any-done"><div class="any-check" aria-hidden="true"></div>
       <p class="any-lead"><b>${h(d.name)}</b> is paired.</p>
-      <p class="set-help">Chattering is open on it now. Next time, open the same page (or the icon, if you added it to the home screen) from anywhere.</p></div>
+      <p class="set-help">Chattering is open on it now. Next time, open the same page (or its app or icon) from anywhere.</p></div>
       <div class="any-foot"><span></span><button type="button" data-close>done</button></div>`;
     bindClose();
     load().then(render);

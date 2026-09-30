@@ -208,6 +208,11 @@ class MainActivity : AppCompatActivity() {
         web.evaluateJavascript("location.hash='#$encoded'", null)
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && mode == "anywhere" && ::web.isInitialized) web.evaluateJavascript("window.anywhereAppFocus&&window.anywhereAppFocus()", null)
+    }
+
     override fun onResume() {
         super.onResume()
         NotifyService.appOnScreen = true
@@ -552,6 +557,53 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 val parsed = try { Uri.parse(url) } catch (_: Exception) { null } ?: return@runOnUiThread
                 if (anywhere.isPairingLink(parsed)) openAnywhere(parsed.toString())
+            }
+        }
+
+        /** "Scan the pairing code": Google's scanner; a pairing link opens here. */
+        @JavascriptInterface
+        fun scanCode() {
+            runOnUiThread {
+                try {
+                    val options = com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions.Builder()
+                        .setBarcodeFormats(com.google.mlkit.vision.barcode.common.Barcode.FORMAT_QR_CODE)
+                        .build()
+                    com.google.mlkit.vision.codescanner.GmsBarcodeScanning.getClient(this@MainActivity, options).startScan()
+                        .addOnSuccessListener { code ->
+                            val text = code.rawValue ?: ""
+                            val uri = try { Uri.parse(text) } catch (_: Exception) { null }
+                            if (anywhere.isPairingLink(uri)) openAnywhere(text)
+                            else Toast.makeText(this@MainActivity, "That is not a Chattering pairing code.", Toast.LENGTH_LONG).show()
+                        }
+                        .addOnFailureListener {
+                            Toast.makeText(this@MainActivity, "The scanner is not available here: scan the code with your camera app instead.", Toast.LENGTH_LONG).show()
+                        }
+                } catch (_: Throwable) {
+                    Toast.makeText(this@MainActivity, "The scanner is not available here: scan the code with your camera app instead.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+
+        /** A pairing link on the clipboard (the browser's "Use the Android app"
+         *  copies it before the download): offered, never used unasked. */
+        @JavascriptInterface
+        fun clipboardPairingLink(): String {
+            return try {
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                val text = cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this@MainActivity)?.toString()?.trim() ?: ""
+                val uri = try { Uri.parse(text) } catch (_: Exception) { null }
+                if (text.length < 400 && anywhere.isPairingLink(uri) && uri?.scheme == "https" && anywhere.isRelay(uri)) text else ""
+            } catch (_: Exception) { "" }
+        }
+
+        /** Forget the clipboard's link once used or declined. */
+        @JavascriptInterface
+        fun clearClipboardLink() {
+            runOnUiThread {
+                try {
+                    val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    if (Build.VERSION.SDK_INT >= 28) cm.clearPrimaryClip()
+                } catch (_: Exception) {}
             }
         }
 
