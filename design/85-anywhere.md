@@ -1,9 +1,11 @@
 # Your phone, anywhere: a relay that cannot read
 
-Status: built and tested end to end (protocol, pairing, tunnel, a real
-Chattering, a phone-sized Chromium, a real coturn). Not yet deployed: the
-relay at `encrypted-link-to-your-devices.rockfrog.ai` has to be rented and switched on
-(anywhere/README.md). Not yet tried on a real iPhone or Android phone.
+Status: built, tested end to end, and **live** at
+`https://encrypted-link-to-your-devices.rockfrog.ai` since 2026-09-30
+(see "Where it runs"). Checked in production with a phone-sized browser
+pairing with lambda (direct, 2.3 s) and a client forced through TURN
+(0.3 s). Not yet tried on a real iPhone or Android phone. Level 2 (the page
+from the person's own computer): design/86.
 
 ## The question
 
@@ -166,6 +168,43 @@ the 1 MB app.
 - **Not tested on real phones and networks yet**: the tests cover a
   phone-sized Chromium on one machine and a real coturn on loopback. A week
   on real phones, mobile data included, is the next step.
+
+## Where it runs (Level 1, 2026-09-30)
+
+- **Machine**: OVHcloud VPS-1, Beauharnois QC (2 vCPU, 4 GB, 40 GB,
+  unlimited traffic, anti-DDoS), Ubuntu 26.04. Public `144.217.95.30`,
+  `2607:5300:205:200::a009`; OVH name `vps-5e7e7197.vps.ovh.ca`.
+- **Set up by** `anywhere/deploy/setup-ubuntu.sh`; relay code by
+  `anywhere/deploy/deploy-relay.sh` (pushed commits only).
+- **Getting in**: `ssh ubuntu@encrypted-link-relay` over Tailscale (keys
+  only; SSH is closed to the internet). If Tailscale is down: OVH
+  customer area → the VPS → KVM (a console in the browser), then
+  `sudo DOMAIN=… PUBLIC_SSH=1 bash /tmp/setup-ubuntu.sh` or fix from there.
+- **Tailnet**: the relay is `tag:relay`. The tailnet policy (edited
+  2026-09-30) lets `autogroup:member` and `autogroup:shared` start
+  connections and tagged devices none; its tests assert the relay reaches
+  none of lambda, XPSwhite, lilly-pc, the phone. Checked: the relay
+  cannot open lambda:22, lambda:7433, XPSwhite:22, lilly-pc:445.
+- **DNS (GoDaddy)**: A and AAAA for the name; CAA `0 issue
+  "letsencrypt.org"` on the name (GoDaddy's editor drops `accounturi`; the
+  account is `https://acme-v02.api.letsencrypt.org/acme/acct/3809097526`,
+  to add once DNS moves, design/86). Domain lock, privacy and auto-renew
+  are on. DNSSEC deliberately off until the DNS host is decided.
+- **Exposed**: TCP 80, 443 (Caddy), 3478 and 5349 (coturn), UDP 443, 3478,
+  49152–65535 (coturn relaying), 41641 (Tailscale). Nothing else answers.
+- **Checked from outside**: Let's Encrypt certificate; HSTS and the
+  shell's headers; coturn refuses expired and wrong credentials and will
+  not relay to the server itself; the relay's sandbox (no network out,
+  code read-only; systemd exposure 1.1).
+- **Learned in the first hour**: a scanner's request (`//%2e%2e%2f.env`)
+  crashed the relay; Chattering had the same crash before sign-in. Both
+  fixed (requestUrl), with tests. Caddy's error messages recorded visitor
+  addresses; they are excluded now, and the journal lives in memory for a
+  day.
+- **Owner's to do**: two-step sign-in (a hardware key if possible) on OVH,
+  GoDaddy and GitHub; `sudo pro attach <token>` (Ubuntu Pro, free) so Node
+  and coturn get Canonical's security fixes; Cert Spotter (sslmate.com,
+  free) alerts for `rockfrog.ai`.
 
 ## Files
 

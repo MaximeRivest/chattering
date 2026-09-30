@@ -33,7 +33,7 @@ git archive --format=tar "$COMMIT" anywhere wsserver.js | gzip -9 | ssh "$HOST" 
   mv -T /opt/chattering-anywhere/current.new /opt/chattering-anywhere/current
   echo $COMMIT > /opt/chattering-anywhere/DEPLOYED
   systemctl restart chattering-anywhere
-  for i in \$(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:8790/healthz && break; sleep 0.3; done
+  for i in \$(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:8790/healthz 2>/dev/null && break; sleep 0.3; done
   curl -fsS http://127.0.0.1:8790/healthz >/dev/null || { echo relay did not answer; journalctl -u chattering-anywhere -n 20 --no-pager; exit 1; }
   # Keep the five newest releases.
   ls -1dt /opt/chattering-anywhere/releases/*/ | tail -n +6 | xargs -r rm -rf
