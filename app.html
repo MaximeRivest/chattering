@@ -1676,7 +1676,6 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
 .tg-label { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
 .tg-count { flex: 0 0 auto; font-weight: 600; color: var(--text); }
 .tg-detail { min-width: 0; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
-.toolgroup:not([open]) > summary .tg-file { display: none; }
 /* Keep message actions reachable without reserving a second large gap
    between the commentary and its work row. */
 .msg.assistant:has(+ .toolgroup), .msg.assistant:has(+ .tg-review-turn) { padding-bottom: 6px; }
@@ -1709,9 +1708,6 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
   .toolgroup[data-live-work] > div { padding: 8px 10px 12px; }
   .ls-b .ls-think { font-size: 14px; }
 }
-/* file-edit links on the group line and in the ▤ files fold */
-.tg-file { height: 18px; padding: 0 5px; border: 0; background: transparent; color: var(--text-dim); font-size: 10px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
-.tg-file:hover { color: var(--cyan); text-decoration: underline; background: transparent; }
 
 /* the run card's growing steps line: same voice as the settled toolgroup */
 /* the card's status line duplicates the pane head now — keep it quiet */
@@ -2502,6 +2498,8 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <script src="/artifacts.js"></script>
 <link rel="stylesheet" href="/made.css">
 <script src="/made-panel.js"></script>
+<link rel="stylesheet" href="/step-changes.css">
+<script src="/step-changes-ui.js"></script>
 <link rel="stylesheet" href="/programs.css">
 <script src="/programs-ui.js"></script>
 <script src="/programs-make.js"></script>
@@ -9801,6 +9799,9 @@ function handleFileControlClick(e, button) {
   e.stopPropagation();
   e.preventDefault();
   if (Date.now() < fileClickSuppressedUntil) return;
+  // A file a step changed opens its change right here (design/88); Shift
+  // still takes it full page, the menu still has "beside".
+  if (!e.shiftKey && !e.ctrlKey && !e.metaKey && window.StepChanges && StepChanges.claims(button) && StepChanges.toggle(button)) return;
   const ctx = fileControlContext(button);
   if (e.ctrlKey || e.metaKey) return runNativePathAction(ctx, 'open');
   // Shift: full page, in place of the conversation (as before design/83).
@@ -9912,7 +9913,7 @@ for (const type of ['pointerup', 'pointercancel']) document.addEventListener(typ
 });
 document.addEventListener('pointerover', e => {
   const b = e.target && e.target.closest ? e.target.closest('[data-file-diff], [data-transcript-path]') : null;
-  if (!b || b.dataset.fileHinted) return;
+  if (!b || b.dataset.fileHinted || (window.StepChanges && StepChanges.claims(b))) return;
   const ctx = fileControlContext(b);
   const beside = !!window.Pair && viewKind === 'conversation' && ctx.key === activeRel;
   b.title = `${ctx.change ? (FILE_PREVIEW_PATH.test(ctx.path) ? 'Click: preview file' : 'Click: view this change') : 'Click: open in Chattering'}${beside ? ' beside the conversation\nShift-click: full page' : ''}\nCtrl-click: open with system application\nRight-click: more file actions\n${ctx.path}`;
@@ -10036,7 +10037,9 @@ function msgBlock(m, hl, keepOpen = false, q = '', copyIndex = -1, messageKey = 
     const res = m._result || null;
     if (isFileWriteTool(m)) {
       const mark = res ? (res.err ? '<span class="tstat err" title="the edit failed">✗</span>' : '<span class="tstat ok" title="the edit applied">✓</span>') : '';
-      return `<div class="msg tool toolline"${toolAnchor}${idxAttr}>✎ <button class="msg-file-inline" data-file-diff="${esc(m.path)}" data-file-ts="${esc(m.ts || '')}" data-file-anchor="${esc(m.ts || '')}" data-file-call="${esc(m.id || '')}" title="Open this file change">${esc(shortFilePath(m.path))}</button> ${mark}</div>`;
+      // The file name opens this step's own change under the line (design/88).
+      const own = m.id && window.StepChanges ? ` data-sc-calls="${esc(m.id)}"` : '';
+      return `<div class="msg tool toolline"${toolAnchor}${idxAttr}>✎ <button class="msg-file-inline" data-file-diff="${esc(m.path)}" data-file-ts="${esc(m.ts || '')}" data-file-anchor="${esc(m.ts || '')}" data-file-call="${esc(m.id || '')}"${own} title="Read this step’s change">${esc(shortFilePath(m.path))}</button>${own ? StepChanges.countSlot(messageKey, m.id, m.path) : ''} ${mark}</div>`;
     }
     const hint = String(m.text || '').replace(/\s+/g, ' ').trim().slice(0, 60);
     const first = res ? String(res.text || '').trim().split('\n').find(x => x.trim()) || '' : '';
@@ -10046,9 +10049,10 @@ function msgBlock(m, hl, keepOpen = false, q = '', copyIndex = -1, messageKey = 
       ? `<details class="resfold"><summary>↳ result${resLines ? ` · ${resLines} line${resLines > 1 ? 's' : ''}` : ''}${resImages ? ` · ${resImages} image${resImages > 1 ? 's' : ''}` : ''}</summary><div class="tool-out">${toolTextHtml(res.text, res.paths, hl)}${messageMediaHtml(res.images, messageKey)}</div></details>`
       : '';
     const structuredPath = m.path && !isFileWriteTool(m) ? ` · ${transcriptPathButton(m.path, shortFilePath(m.path))}` : '';
-    // Bash-created files (redirects, tee, heredocs) link into the same
-    // whole-file view as write/edit calls — mined server-side (m.writes).
-    const writeLinks = (m.writes || []).map(p => ` <button class="msg-file" data-file-diff="${esc(p)}" data-file-ts="${esc(m.ts || '')}" data-file-anchor="${esc(m.ts || '')}" data-file-call="${esc(m.id || '')}" title="Open this file change\n${esc(p)}">▤ ${esc(shortFilePath(p))}</button>`).join('');
+    // The files this step changed (a redirect, a script, anything): seen in
+    // its saved snapshots, or read from the command without them (design/88).
+    const writeLinks = m.id && window.StepChanges ? StepChanges.chipsHtml(messageKey, m.id)
+      : (m.writes || []).map(p => ` <button class="msg-file" data-file-diff="${esc(p)}" data-file-ts="${esc(m.ts || '')}" data-file-anchor="${esc(m.ts || '')}" data-file-call="${esc(m.id || '')}" title="Open this file change\n${esc(p)}">▤ ${esc(shortFilePath(p))}</button>`).join('');
     return `<details class="msg tool"${toolAnchor}${idxAttr}${keepOpen ? ' open' : ''}><summary>⚙ <span class="step-tech"><span class="tname">${esc(m.name || '?')}</span>${hint ? ' · ' + esc(hint) : ''}${first ? ` <span class="res-first">→ ${esc(first.slice(0, 60))}</span>` : ''}</span>${structuredPath}${fileLink}${writeLinks}</summary><div class="tool-out">${toolTextHtml(m.text, m.paths, hl)}</div>${resFold}</details>`;
   }
   if (m.role === 'user' || m.role === 'assistant') {

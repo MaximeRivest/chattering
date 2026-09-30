@@ -71,6 +71,7 @@ class CheckpointStore {
       CREATE TABLE IF NOT EXISTS checkpoint_scopes(root TEXT NOT NULL, path TEXT NOT NULL, PRIMARY KEY(root,path));
       CREATE TABLE IF NOT EXISTS artifact_scopes(root TEXT NOT NULL, path TEXT NOT NULL, PRIMARY KEY(root,path));
       CREATE INDEX IF NOT EXISTS checkpoint_call_only ON checkpoint_boundaries(call,id);
+      CREATE INDEX IF NOT EXISTS checkpoint_root_time ON checkpoint_boundaries(root,started);
       CREATE INDEX IF NOT EXISTS checkpoint_boundary_snapshot ON checkpoint_boundaries(snapshot);
       CREATE INDEX IF NOT EXISTS checkpoint_target_link_version ON checkpoint_target_links(version);
       CREATE TABLE IF NOT EXISTS checkpoint_leases(token TEXT PRIMARY KEY, root TEXT NOT NULL, kind TEXT NOT NULL, expires INTEGER NOT NULL);
@@ -279,7 +280,7 @@ class CheckpointStore {
     const row = this.db.prepare(`INSERT INTO checkpoint_boundaries(root,session,run,call,tool,phase,started,finished,snapshot,error,overlapping) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(root, meta.session || '', meta.run || '', meta.call || '', meta.tool || '', meta.phase || 'observation', started, Date.now(), snapshot?.id || null, error, meta.overlapping || active ? 1 : 0);
     const id = Number(row.lastInsertRowid);
     for (const target of targets) this.db.prepare('INSERT INTO checkpoint_target_links VALUES (?,?,?,?)').run(id, JSON.stringify(target.location), target.version, target.error);
-    return { id, root, snapshot: snapshot?.id || null, error, targetErrors: targets.filter(t => t.error).map(t => t.error) };
+    return { id, root, snapshot: snapshot?.id || null, error, targetErrors: targets.filter(t => t.error && !t.location.soft).map(t => t.error) };
   }
   async scan(root, started, { artifactsOnly = false } = {}) {
     if (inside(root, this.dir)) throw Error('Checkpoint storage must be outside the captured workspace');
@@ -383,6 +384,65 @@ class CheckpointStore {
     if (item.unavailable) return { unavailable: item.unavailable, oid: null };
     return { text: (await git(['--git-dir=' + this.repo(s.root), 'cat-file', 'blob', item.oid], { max: 2 * 1024 * 1024 })).toString('utf8'), oid: item.oid };
   }
+  // Steps of any conversation in one folder during a stretch of time, for
+  // telling what a step changed from what ran beside it (design/88).
+  boundariesBetween(root, from, to) {
+    return this.db.prepare("SELECT id, root, session, run, call, tool, phase, started, finished, snapshot, error FROM checkpoint_boundaries WHERE root=? AND started BETWEEN ? AND ? AND call != '' ORDER BY id").all(root, from, to);
+  }
+  // What only the metadata row knows of each snapshot: its Git tree and the
+  // files it could not save (binary, too large), which are not in the tree.
+  snapshotHeads(ids) {
+    const out = new Map(), list = [...new Set(ids.filter(Boolean))];
+    for (let i = 0; i < list.length; i += 400) {
+      const part = list.slice(i, i + 400);
+      for (const row of this.db.prepare(`SELECT id, root, tree, manifest, format FROM checkpoint_snapshots WHERE id IN (${part.map(() => '?').join(',')})`).all(...part)) {
+        const listed = row.format === 2 ? unpackList(row.manifest) : JSON.parse(row.manifest);
+        out.set(row.id, { id: row.id, root: row.root, tree: row.tree, unsaved: new Map(listed.filter(f => f.unavailable).map(f => [f.path, f.unavailable])) });
+      }
+    }
+    return out;
+  }
+  // Many pairs of trees of one folder compared by one Git process: for each
+  // pair, the files that differ with both object ids and the lines added and
+  // removed (null for binary). pairs: [[treeA, treeB]]; the result is keyed
+  // 'treeA treeB'. Identical trees are not asked about.
+  async diffTrees(root, pairs) {
+    const out = new Map(), wanted = [];
+    for (const [a, b] of pairs) {
+      const k = a + ' ' + b;
+      if (out.has(k)) continue;
+      out.set(k, []);
+      if (a !== b) wanted.push(k);
+    }
+    if (!wanted.length) return out;
+    const raw = (await git(['--git-dir=' + this.repo(root), 'diff-tree', '--stdin', '-r', '-z', '--raw', '--numstat', '--no-renames', '--no-ext-diff'],
+      { input: wanted.join('\n') + '\n', timeout: 120000, max: 256 * 1024 * 1024 })).toString('utf8');
+    let at = 0, current = null;
+    const byPath = new Map();
+    const header = /^([0-9a-f]{40}) ([0-9a-f]{40})\n/;
+    while (at < raw.length) {
+      const head = header.exec(raw.slice(at, at + 82));
+      if (head) { current = out.get(head[1] + ' ' + head[2]) || null; byPath.clear(); at += head[0].length; continue; }
+      const end = raw.indexOf('\0', at);
+      if (end < 0) break;
+      const token = raw.slice(at, end); at = end + 1;
+      if (token[0] === ':') {
+        const [, , oldOid, newOid, status] = token.slice(1).split(' ');
+        const stop = raw.indexOf('\0', at), file = raw.slice(at, stop); at = stop + 1;
+        const zero = /^0+$/;
+        const item = { path: file, status: status[0], old: zero.test(oldOid) ? null : oldOid, next: zero.test(newOid) ? null : newOid, add: null, del: null, binary: false };
+        if (current) { current.push(item); byPath.set(file, item); }
+      } else {
+        const tab = token.indexOf('\t'), tab2 = token.indexOf('\t', tab + 1);
+        const item = byPath.get(token.slice(tab2 + 1));
+        if (!item) continue;
+        const add = token.slice(0, tab), del = token.slice(tab + 1, tab2);
+        if (add === '-') item.binary = true;
+        else { item.add = Number(add); item.del = Number(del); }
+      }
+    }
+    return out;
+  }
   async diff(base, head) {
     const [a, b] = await Promise.all([this.snapshot(base), this.snapshot(head)]);
     if (a.root !== b.root) throw Error('Cannot compare different workspaces');
@@ -470,6 +530,7 @@ class CheckpointStore {
     }
     return result;
   }
+  targetVersion(id) { return this.db.prepare('SELECT id, root, path, oid, state FROM checkpoint_target_versions WHERE id=?').get(id) || null; }
   targets(boundary) {
     return [...this.db.prepare("SELECT *, 'git' AS storage FROM checkpoint_target_links WHERE boundary=?").all(boundary),
       ...this.db.prepare("SELECT *, 'legacy' AS storage FROM checkpoint_targets WHERE boundary=?").all(boundary)]

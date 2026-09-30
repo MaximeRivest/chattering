@@ -1,0 +1,124 @@
+/* Files a conversation's steps changed, in the conversation (design/88). */
+
+.sc-strip { margin: 2px 14px 16px; border: 1px solid var(--border); border-radius: var(--r-menu); background: var(--bg); overflow: hidden; }
+.sc-strip[hidden] { display: none; }
+.sc-list { list-style: none; margin: 0; padding: 0; }
+.sc-item + .sc-item { border-top: 1px solid var(--border); }
+
+/* One file: kind, name, folder, what it needs, lines. */
+.sc-row {
+  display: flex; align-items: baseline; gap: 8px; width: 100%; height: auto; min-height: 34px;
+  padding: 7px 12px; border: 0; border-radius: 0; background: transparent; color: var(--text);
+  font: inherit; font-size: var(--fs-body); text-align: left; cursor: pointer;
+}
+.sc-row:hover, .sc-row[aria-expanded="true"] { background: var(--surface-1); }
+.sc-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.sc-caret { flex: none; width: 8px; align-self: center; height: 8px; border-right: 1.5px solid var(--text-faint); border-bottom: 1.5px solid var(--text-faint); transform: rotate(-45deg); margin-right: 2px; transition: transform .12s; }
+.sc-row[aria-expanded="true"] > .sc-caret, .sc-fold > details[open] > summary > .sc-caret { transform: rotate(45deg); }
+.sc-kind { flex: none; width: 14px; font-family: var(--font-mono); font-size: 11px; font-weight: 700; text-align: center; color: var(--text-faint); }
+.sc-kind[data-kind="added"] { color: var(--success); }
+.sc-kind[data-kind="modified"] { color: var(--warn); }
+.sc-kind[data-kind="deleted"] { color: var(--danger); }
+.sc-name { flex: 0 1 auto; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-dir { flex: 0 10 auto; min-width: 0; color: var(--text-faint); font-size: var(--fs-micro); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-tag { flex: none; color: var(--text-dim); font-size: var(--fs-micro); white-space: nowrap; }
+.sc-tag.sc-quiet { color: var(--text-faint); }
+.sc-tag.sc-warn { color: var(--warn); }
+.sc-n { flex: none; margin-left: auto; display: inline-flex; gap: 6px; padding-left: 8px; font-family: var(--font-mono); font-size: 11px; white-space: nowrap; color: var(--text-dim); }
+.sc-add { color: var(--success); }
+.sc-del { color: var(--danger); }
+.sc-meta { color: var(--text-faint); font-family: var(--font); }
+.sc-wait .sc-name { color: var(--text-dim); }
+
+/* Scratch files and changes that may be someone else's: folded, quiet. */
+.sc-fold > details > summary { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 5px 12px; list-style: none; cursor: pointer; color: var(--text-faint); font-size: var(--fs-meta); }
+.sc-fold > details > summary::-webkit-details-marker { display: none; }
+.sc-fold > details > summary:hover { color: var(--text-dim); background: var(--surface-1); }
+.sc-fold > details > .sc-list { border-top: 1px solid var(--border); }
+.sc-fold .sc-row { padding-left: 28px; }
+
+/* The card: the change itself, under its row. */
+.sc-card { border-top: 1px solid var(--border); background: var(--surface-1); }
+.sc-card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 6px 12px; font-size: var(--fs-meta); color: var(--text-dim); }
+.sc-what b { color: var(--text); font-weight: 600; }
+.sc-how { color: var(--text-faint); }
+.sc-acts { margin-left: auto; display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.sc-acts button { height: 24px; padding: 0 9px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg); color: var(--text-dim); font-size: 11px; }
+.sc-acts button:hover { color: var(--text); border-color: var(--border-strong); }
+.sc-acts button[aria-pressed="true"] { color: var(--text); border-color: var(--border-strong); background: var(--surface-2); }
+.sc-body { background: var(--bg); border-top: 1px solid var(--border); }
+.sc-body:empty { display: none; }
+.sc-note { margin: 0; padding: 10px 14px; color: var(--text-dim); font-size: var(--fs-meta); }
+.sc-hunk-label { padding: 4px 14px; font-size: var(--fs-micro); color: var(--text-faint); background: var(--surface-1); border-bottom: 1px solid var(--border); }
+
+/* Lines. Long lines wrap: nothing is hidden sideways in a conversation. */
+.sc-code { font-family: var(--font-mono); font-size: 12px; line-height: 1.55; }
+.sc-l { display: grid; grid-template-columns: calc(var(--sc-ln, 3ch) + 16px) 1.4em minmax(0, 1fr); }
+.sc-ln { padding-right: 8px; text-align: right; color: var(--text-faint); user-select: none; font-variant-numeric: tabular-nums; }
+.sc-sg { color: var(--text-faint); user-select: none; text-align: center; font-weight: 700; }
+.sc-c { display: block; padding-right: 12px; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; font: inherit; font-style: normal; color: var(--text); background: none; }
+.sc-lineless .sc-l { grid-template-columns: 1.6em minmax(0, 1fr); }
+.sc-lineless .sc-ln { display: none; }
+.sc-l[data-t="1"] { background: color-mix(in srgb, var(--danger) 11%, transparent); }
+.sc-l[data-t="2"] { background: color-mix(in srgb, var(--success) 11%, transparent); }
+.sc-l[data-t="1"] .sc-sg { color: var(--danger); }
+.sc-l[data-t="2"] .sc-sg { color: var(--success); }
+::highlight(sc-add-word) { background-color: color-mix(in srgb, var(--success) 38%, transparent); }
+::highlight(sc-del-word) { background-color: color-mix(in srgb, var(--danger) 38%, transparent); }
+.sc-cut { color: var(--text-faint); font-style: italic; }
+.sc-gap {
+  display: block; width: 100%; height: auto; min-height: 26px; padding: 3px 14px 3px calc(var(--sc-ln, 3ch) + 16px + 1.4em); border: 0; border-radius: 0;
+  background: var(--surface-1); color: var(--text-faint); font-size: var(--fs-micro); text-align: left; cursor: pointer;
+}
+.sc-gap:hover { color: var(--text); background: var(--surface-2); }
+.sc-more { padding-left: 14px; color: var(--accent); }
+.sc-read .sc-l { grid-template-columns: calc(var(--sc-ln, 3ch) + 16px) minmax(0, 1fr); }
+.sc-read .sc-c { padding-left: 6px; }
+.sc-read .sc-sg { display: none; }
+
+/* A Markdown file as a page; a long one shows its opening. */
+.sc-page { padding: 4px 20px 10px; }
+.sc-page.sc-capped { max-height: 420px; overflow: hidden; position: relative; }
+.sc-page.sc-capped::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 72px; background: linear-gradient(transparent, var(--bg)); pointer-events: none; }
+
+/* Pictures: before and after side by side. */
+.sc-pics { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px; }
+.sc-pic { margin: 0; flex: 1 1 220px; max-width: 100%; }
+.sc-pic img { display: block; max-width: 100%; max-height: 320px; object-fit: contain; background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--r-sm); }
+.sc-pic figcaption { margin-top: 4px; font-size: var(--fs-micro); color: var(--text-faint); }
+
+/* Inside the box: a step's own files, and cards under that step. */
+.sc-chips { display: inline; }
+.sc-chip {
+  display: inline-flex; align-items: baseline; gap: 4px; height: 20px; margin-left: 6px; padding: 0 6px; vertical-align: baseline;
+  border: 1px solid var(--border); border-radius: var(--r-pill); background: transparent; color: var(--text-dim); font-size: 11px; cursor: pointer;
+}
+.sc-chip:hover { color: var(--text); border-color: var(--border-strong); background: var(--surface-1); }
+.sc-chip .sc-n { margin-left: 2px; padding-left: 0; font-size: 10.5px; }
+.sc-chip .sc-kind { width: auto; font-size: 10px; }
+.sc-count .sc-n { margin-left: 4px; padding-left: 0; }
+.sc-card.sc-step-card { margin: 2px 0 10px 26px; border: 1px solid var(--border); border-radius: var(--r-menu); overflow: hidden; }
+
+@media (max-width: 650px) {
+  .sc-row { min-height: 44px; padding: 10px 12px; flex-wrap: wrap; row-gap: 2px; }
+  .sc-dir { flex-basis: auto; }
+  .sc-acts button { height: 32px; padding: 0 12px; }
+  .sc-l { grid-template-columns: calc(var(--sc-ln, 3ch) + 8px) 1.2em minmax(0, 1fr); }
+  .sc-read .sc-l { grid-template-columns: calc(var(--sc-ln, 3ch) + 8px) minmax(0, 1fr); }
+  .sc-code { font-size: 11.5px; }
+  .sc-card.sc-step-card { margin-left: 8px; }
+  .sc-gap { min-height: 36px; }
+}
+@media (hover: none), (pointer: coarse) { .sc-chip { height: 28px; padding: 0 10px; } }
+
+/* E-ink and other two-tone themes: every state is a mark or a word. */
+:root[data-theme-mode="binary"] .sc-kind, :root[data-theme-mode="binary"] .sc-add, :root[data-theme-mode="binary"] .sc-del,
+:root[data-theme-mode="binary"] .sc-tag.sc-warn, :root[data-theme-mode="binary"] .sc-sg { color: var(--text); font-weight: 700; }
+:root[data-theme-mode="binary"] .sc-l[data-t="1"], :root[data-theme-mode="binary"] .sc-l[data-t="2"] { background: none; }
+:root[data-theme-mode="binary"] .sc-l[data-t="1"] { border-left: 3px dashed var(--text); }
+:root[data-theme-mode="binary"] .sc-l[data-t="2"] { border-left: 3px solid var(--text); }
+:root[data-theme-mode="binary"] .sc-l[data-t="1"] .sc-c { text-decoration: line-through; text-decoration-thickness: 1px; }
+:root[data-theme-mode="binary"] ::highlight(sc-add-word) { background-color: transparent; text-decoration: underline 2px; }
+:root[data-theme-mode="binary"] ::highlight(sc-del-word) { background-color: transparent; text-decoration: line-through 2px; }
+:root[data-theme-mode="binary"] .sc-page.sc-capped::after { display: none; }
+@media (prefers-reduced-motion: reduce) { .sc-caret { transition: none; } }

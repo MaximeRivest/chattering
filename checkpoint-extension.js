@@ -2,7 +2,23 @@
 const { randomUUID } = require('node:crypto');
 const { READ_ONLY, CheckpointStore } = require('./checkpoint-store');
 const { isLooseCwd } = require('./projectfolds');
-const { directTargets } = require('./task-locations');
+const { directTargets, inspectShell } = require('./task-locations');
+
+// The files a shell command names as its output (a redirect, tee, cp's
+// destination, sed -i) are saved before and after it too, so a step that
+// writes an ignored file or one outside the project is observed, not only
+// read from the command (design/88). A named output that is a folder, a
+// binary file or protected is simply not saved: soft, never a warning.
+function shellTargets(name, input, cwd) {
+  const command = input && (input.command || input.cmd);
+  if (!/^(bash|shell)$/i.test(String(name || '')) || typeof command !== 'string') return [];
+  try {
+    return inspectShell(command, { host: 'local', cwd }).locations
+      .filter(l => l.host === 'local' && l.path && (l.role === 'output' || l.role === 'copy-destination'))
+      .slice(0, 16).map(l => ({ ...l, soft: true }));
+  } catch { return []; }
+}
+const stepTargets = (name, input, cwd) => [...directTargets(name, input, cwd), ...shellTargets(name, input, cwd)];
 
 function checkpointExtension(pi, options = {}) {
   let store, run = '', review = '', warned = '', closed = false;
@@ -38,7 +54,7 @@ function checkpointExtension(pi, options = {}) {
   pi.on('tool_call', async (e, ctx) => {
     const info = pi.getAllTools?.().find(t => t.name === e.toolName);
     if (READ_ONLY.has(e.toolName) && info?.sourceInfo?.source === 'builtin') return;
-    const entry = { tool: e.toolName, input: e.input, targets: directTargets(e.toolName, e.input, ctx.cwd), overlapping: pending.size > 0 };
+    const entry = { tool: e.toolName, input: e.input, targets: stepTargets(e.toolName, e.input, ctx.cwd), overlapping: pending.size > 0 };
     if (pending.size) for (const other of pending.values()) other.overlapping = true;
     pending.set(e.toolCallId, entry);
     await capture(ctx, { call: e.toolCallId, tool: e.toolName, phase: 'before', overlapping: entry.overlapping, targets: entry.targets });
@@ -46,7 +62,7 @@ function checkpointExtension(pi, options = {}) {
   pi.on('tool_result', async (e, ctx) => {
     const entry = pending.get(e.toolCallId);
     if (!entry) return;
-    try { await capture(ctx, { call: e.toolCallId, tool: e.toolName, phase: e.isError ? 'after-error' : 'after', overlapping: entry.overlapping, targets: directTargets(e.toolName, e.input || entry.input, ctx.cwd) }); }
+    try { await capture(ctx, { call: e.toolCallId, tool: e.toolName, phase: e.isError ? 'after-error' : 'after', overlapping: entry.overlapping, targets: stepTargets(e.toolName, e.input || entry.input, ctx.cwd) }); }
     finally { pending.delete(e.toolCallId); }
   });
   pi.on('agent_settled', async (_e, ctx) => {
@@ -60,4 +76,4 @@ function checkpointExtension(pi, options = {}) {
     if (store && !options.store) store.close();
   });
 }
-module.exports = { checkpointExtension };
+module.exports = { checkpointExtension, stepTargets };

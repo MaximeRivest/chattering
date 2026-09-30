@@ -540,6 +540,7 @@ function wireConversationReader() {
   trackViewWidth(view);
   if (typeof ensureNotebookCards === 'function') ensureNotebookCards(key);
   if (window.PlainSteps) PlainSteps.apply(view);
+  if (window.StepChanges) StepChanges.hydrateAll(view);
   view.querySelectorAll('[data-step-review]').forEach(b => b.onclick = () => { const d = parseChoiceToken(b.dataset.stepReview, 'review button'); if (d) openStepReview(d); });
   view.querySelectorAll('[data-answer-version]').forEach(button => button.onclick = () => {
     const box = button.closest('[data-rewrite-choice]'), choice = button.dataset.answerVersion;
@@ -918,10 +919,12 @@ function transcriptFragmentHtml(d, messages, { after = new Map(), before = new M
   // that work is split into several tool groups by commentary, the reader can
   // review the whole turn at once instead of one group at a time.
   let turn = { calls: [], files: new Set(), groups: 0, steps: 0 };
+  // Offered only where the turn changed files: known at once for edit and
+  // write tools, and once the changes are read (design/88) for the rest.
   const endTurn = () => {
     if (turn.groups > 1) {
       const files = turn.files.size;
-      out.push(`<button class="tg-review tg-review-turn" data-step-review="${esc(JSON.stringify({ key: d.key, calls: turn.calls }))}">Review whole turn · ${turn.steps} steps${files ? ` · ${files} ${files === 1 ? 'file' : 'files'} touched` : ''}</button>`);
+      out.push(`<button class="tg-review tg-review-turn" data-sc-turn data-step-review="${esc(JSON.stringify({ key: d.key, calls: turn.calls }))}"${files ? '' : ' hidden'}>Review whole turn · ${turn.steps} steps<span class="sc-turn-files">${files ? `\u00a0· ${files} ${files === 1 ? 'file' : 'files'}` : ''}</span></button>`);
     }
     turn = { calls: [], files: new Set(), groups: 0, steps: 0 };
   };
@@ -933,21 +936,23 @@ function transcriptFragmentHtml(d, messages, { after = new Map(), before = new M
     for (const m of work) {
       const name = m.role === 'thinking' || m.role === 'assistant' ? 'thinking' : m.name || 'tool';
       if (m.role !== 'toolresult') names.set(name, (names.get(name) || 0) + 1);
-      for (const path of (isFileWriteTool(m) ? [m.path] : m.writes || [])) files.set(path, m);
+      // Files the edit and write tools name are listed at once; the rest
+      // (shell commands, scripts) when the changes are read.
+      if (isFileWriteTool(m) && !(m._result && m._result.err)) files.set(m.path, m);
     }
     const tally = [...names].map(([n, count]) => n + (count > 1 ? ' ×' + count : '')).join(' · ');
     const key = stepsBoxKey(d, work);
-    const links = [...files].map(([path, m]) => `<button class="tg-file" data-file-diff="${esc(path)}" data-file-ts="${esc(m.ts || '')}" data-file-anchor="${esc(m.ts || '')}" data-file-call="${esc(m.id || '')}">${esc(path.split(/[\\/]/).pop())}</button>`).join(' ');
     const opened = stepsFoldOpen(d.key, key);
     const count = [...names.values()].reduce((a, b) => a + b, 0);
-    out.push(`<details class="toolgroup" data-msg-key="${esc(d.key)}" data-gkey="${esc(key)}"${end ? ' data-open-end' : ''}${opened ? ' open' : ''}><summary><span class="tg-label"><span class="tg-count">${count} ${count === 1 ? 'step' : 'steps'}</span><span class="tg-detail" title="${esc(tally)}">${esc(tally)}</span></span>${files.size <= 3 ? links : ''}</summary>${work.map(m => msgBlock(m, hl, m.eid === exact, q, indexes.get(m._source), d.key)).join('')}</details>`);
+    out.push(`<details class="toolgroup" data-msg-key="${esc(d.key)}" data-gkey="${esc(key)}"${end ? ' data-open-end' : ''}${opened ? ' open' : ''}><summary><span class="tg-label"><span class="tg-count">${count} ${count === 1 ? 'step' : 'steps'}</span><span class="tg-detail" title="${esc(tally)}">${esc(tally)}</span></span></summary>${work.map(m => msgBlock(m, hl, m.eid === exact, q, indexes.get(m._source), d.key)).join('')}</details>`);
     const reviewCalls = [...new Set(work.filter(m => m.role === 'tool' && m.id).map(m => m.id))];
     if (reviewCalls.length) {
       turn.groups++; turn.steps += reviewCalls.length;
       for (const id of reviewCalls) if (!turn.calls.includes(id)) turn.calls.push(id);
       for (const path of files.keys()) turn.files.add(path);
     }
-    if (reviewCalls.length) out.push(`<button class="tg-review" data-step-review="${esc(JSON.stringify({ key: d.key, calls: reviewCalls }))}">${files.size ? `${files.size} ${files.size === 1 ? 'file' : 'files'} touched · ` : ''}Review changes</button>`);
+    // What these steps changed, file by file, read here (design/88).
+    if (reviewCalls.length && window.StepChanges) out.push(StepChanges.stripHtml(d.key, reviewCalls, [...files.keys()]));
     // Artifacts (design/67): widgets and artifact cards stand outside the
     // folded steps, where the answer is read.
     const artifacts = work.filter(m => m.role === 'tool' && m.artifact);

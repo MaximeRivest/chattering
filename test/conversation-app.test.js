@@ -333,10 +333,15 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   } finally { checkpoints.close(); }
   await evaluate(`open(${JSON.stringify(key)},'restore')`);
   await evaluate(`moveReading(${JSON.stringify(key)},'a',{anchor:'p'})`);
-  assert.equal(await evaluate(`!!document.querySelector('[data-step-review]')`), true);
-  assert.deepEqual(await evaluate(`(()=>{const s=getComputedStyle(document.querySelector('[data-step-review]'));return {border:s.borderTopWidth,background:s.backgroundColor,font:s.fontSize,minHeight:s.minHeight}})()`), { border: '0px', background: 'rgba(0, 0, 0, 0)', font: '12px', minHeight: '34px' }, 'Review action should look like compact metadata, not a boxed button');
-  await evaluate(`openStepReview(JSON.parse(document.querySelector('[data-step-review]').dataset.stepReview))`);
-  assert.equal(await evaluate(`viewKind`), 'change-review');
+  // Under the steps, the file they changed (design/88); the other task's file is not theirs.
+  const waitFor = async (expr, what) => { for (let i = 0; i < 300; i++) { if (await evaluate(expr)) return; await new Promise(r => setTimeout(r, 30)); } assert.fail('Timed out: ' + what); };
+  await waitFor(`!!document.querySelector('.sc-strip:not([hidden]) .sc-row[data-file-diff$="docs/example.js"]:not(.sc-wait)')`, 'the file under the steps');
+  assert.equal(await evaluate(`!!document.querySelector('.sc-row[data-file-diff$="concurrent.txt"]')`), false, 'an edit is not credited with what changed beside it');
+  await evaluate(`document.querySelector('.sc-row[data-file-diff$="docs/example.js"]').click()`);
+  await waitFor(`!!document.querySelector('.sc-card [data-sc-act="review"]')`, 'the change, read in place');
+  assert.equal(await evaluate(`viewKind`), 'conversation');
+  await evaluate(`document.querySelector('.sc-card [data-sc-act="review"]').click()`);
+  await waitFor(`viewKind === 'change-review' && typeof changeReview !== 'undefined' && !!changeReview && document.querySelectorAll('.cr-file').length === 1`, 'the review');
   assert.equal(await evaluate(`document.querySelectorAll('.cr-file').length`), 1);
   assert.equal(await evaluate(`changeReview.otherFiles.some(f=>f.path==='concurrent.txt')`), true);
   await evaluate(`showChangeReview(changeReview.id,'','other')`);

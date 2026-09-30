@@ -300,7 +300,7 @@ test('real app surfaces follow the theme together, including nested painted edge
   await evaluate(`workPreview.querySelector('summary').click()`);
   assert.equal(await evaluate(`workPreview.querySelector('.toolgroup').open`), false);
   // Judge the default (collapsed) state in a conversation, not just a gallery
-  // of expanded cards. The disclosure and its review action form one row.
+  // of expanded cards. The disclosure is compact; the files it changed sit under it.
   await evaluate(`workPreview.innerHTML='<div class="transcript"></div>';
     workPreview.querySelector('.transcript').style.maxWidth='900px';
     const messages=[
@@ -316,9 +316,11 @@ test('real app surfaces follow the theme together, including nested painted edge
     await size(width, 900);
     for (const theme of ['light', 'dark', 'eink']) {
       await evaluate(`selectTheme(${JSON.stringify(theme)})`);
-      assert.equal(await evaluate(`(()=>{const g=workPreview.querySelector('.toolgroup'),h=g.querySelector('summary'),r=g.nextElementSibling;
-        return h.getBoundingClientRect().width<550 && (innerWidth<600 || Math.abs(g.getBoundingClientRect().top-r.getBoundingClientRect().top)<8)
-          && workPreview.scrollWidth<=workPreview.clientWidth;})()`), true, 'compact work row: '+theme+' '+width);
+      // Each box: a compact handle, and right under it the files it
+      // changed (design/88), hidden while none is known.
+      assert.equal(await evaluate(`(()=>[...workPreview.querySelectorAll('.toolgroup')].every(g=>{const h=g.querySelector('summary'),r=g.nextElementSibling,gb=g.getBoundingClientRect(),rb=r.getBoundingClientRect();
+        return h.getBoundingClientRect().width<550 && r.matches('.sc-strip') && (r.hidden || (rb.top>=gb.bottom-1 && rb.top-gb.bottom<24 && rb.left>=gb.left-1))})
+          && workPreview.scrollWidth<=workPreview.clientWidth)()`), true, 'compact work row: '+theme+' '+width);
       await shot('thinking-collapsed-' + theme + '-' + width);
     }
   }

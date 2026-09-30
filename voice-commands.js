@@ -577,7 +577,8 @@ function voiceCollectControls() {
     // A message: its action row (copy, read, notebook, more… › fork). Steps:
     // the files they touched. Folding is "fold"; links in the text are not
     // the item's buttons.
-    const own = focus.classList.contains('toolgroup') ? focus.querySelectorAll('[data-file-diff]') : focus.querySelectorAll(':scope > .msg-actions ' + VOICE_CONTROL_SEL.split(', ').join(', :scope > .msg-actions ') + ', :scope > .unfold');
+    // Steps: the files they touched, inside the box and in the list under it (design/88).
+    const own = focus.classList.contains('toolgroup') ? [...focus.querySelectorAll('[data-file-diff]'), ...(focus.nextElementSibling?.matches('.sc-strip') ? focus.nextElementSibling.querySelectorAll('.sc-row') : [])] : focus.querySelectorAll(':scope > .msg-actions ' + VOICE_CONTROL_SEL.split(', ').join(', :scope > .msg-actions ') + ', :scope > .unfold');
     for (const el of own) {
       const menu = el.closest('details:not([open])');
       if (menu && el.matches('summary') && el.parentElement === menu) { add(el, where, { keep: true }); continue; }

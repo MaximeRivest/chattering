@@ -100,7 +100,8 @@ test('the pair: beside, not in place; one editor that moves; both ways; one side
   await until(`!fileWs && !Artifacts.state()`, 'closing did not let the file go');
   await ev(`(() => { const g = document.querySelector('#view .toolgroup'); if (g) g.open = true; })()`);
   await until(`document.querySelector('#view [data-file-diff]')`, 'no change link in the conversation');
-  await ev(`document.querySelector('#view [data-file-diff]').click()`);
+  // A click reads the change in place (design/88); the menu's "View this change beside" puts it here.
+  await ev(`viewFileChange(fileControlContext(document.querySelector('#view [data-file-diff]')))`);
   await until(`Artifacts.state()?.kind === 'change' && document.querySelector('#artifactPane .quick-file-view .qf-body') && !/Loading/.test(document.querySelector('#artifactPane .qf-body').textContent)`, 'the change did not open beside');
   assert.equal(await ev(`viewKind`), 'conversation');
   assert.equal(await shows('#artifactPane #qfBack'), false);

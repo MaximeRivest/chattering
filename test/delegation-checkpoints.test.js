@@ -43,8 +43,12 @@ test('a delegated worker checkpoints its own write steps', { skip: !pi && 'Pi is
   const phases = call => rows.filter(r => r.call === call).map(r => r.phase);
   assert.deepEqual(phases('target-probe'), ['before', 'after'], 'the write step has its own before/after pair');
   // The test folder is under the temporary folder, where only a step's named
-  // targets are kept (design/67): a shell step names none.
-  assert.deepEqual(phases('env-probe'), [], 'a temporary folder is never scanned whole');
+  // targets are kept (design/67). A shell step's named outputs are targets
+  // since design/88: its probe.txt is saved by name, the folder never scanned.
+  const envRows = rows.filter(r => r.call === 'env-probe');
+  assert.deepEqual(envRows.map(r => r.phase), ['before', 'after']);
+  assert.deepEqual(envRows.map(r => r.snapshot), [null, null], 'a temporary folder is never scanned whole');
+  assert.deepEqual(envRows.map(r => store.targets(r.id).map(x => x.location.path)), [[path.join(work, 'probe.txt')], [path.join(work, 'probe.txt')]], 'only what the command names is kept');
   const after = rows.find(r => r.call === 'target-probe' && r.phase === 'after');
   const saved = store.targets(after.id).find(x => x.location.path === path.join(work, 'scratch/probe.txt'));
   assert.ok(saved?.version, 'the written file is saved as it was after the step');

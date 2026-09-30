@@ -218,6 +218,9 @@ const ROUTES = {
   '/api/vouch/status': 'member',
   '/api/vouch/all': 'member',
   'GET /api/made': { level: 'member', conversation: 'key', right: 'see' }, // design/82
+  'POST /api/conversation/changes': 'guest', // design/88; the handler checks the conversation in the body
+  'GET /api/conversation/change': see('id'),
+  'GET /api/conversation/change-blob': see('id'),
   '/api/reviews': 'member',
   '/api/reviews/*': 'member',
   '/api/snippets': 'member',
