@@ -109,6 +109,17 @@ test('a phone pairs in the browser and runs Chattering from the computer', { ski
   await until(`${frame}.eval('typeof live !== "undefined" && live.readyState === 1')`, 'the event stream open');
   await sleep(1500);
   await shot('anywhere-2-app.png');
+  // Taps reach the app: nothing of the shell lies over it, anywhere on the
+  // screen (a hidden but still displayed layer once caught every tap).
+  const covered = await evaluate(`(() => { const out = []; for (const [x, y] of [[20, 20], [195, 60], [195, 422], [370, 800], [30, 820], [360, 30]]) { const el = document.elementFromPoint(x, y); if (!el || el.id !== 'app') out.push(x + ',' + y + ': ' + (el ? (el.id || el.className || el.tagName) : 'nothing')); } return out; })()`);
+  assert.deepEqual(covered, [], 'points where something covers the app');
+  // A real tap, through the browser's input, lands in the app's page.
+  await evaluate(`${frame}.__taps = 0; ${frame}.addEventListener('click', () => ${frame}.__taps++, true); 1`);
+  await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 195, y: 422 }] }, sid);
+  await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }, sid);
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 195, y: 422, button: 'left', clickCount: 1 }, sid);
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 195, y: 422, button: 'left', clickCount: 1 }, sid);
+  await until(`${frame}.__taps > 0`, 'a tap reaching the app');
   const st = await (await fetch(base + '/api/anywhere')).json();
   assert.equal(st.devices.length, 1);
   assert.equal(st.devices[0].name, 'Pixel 8 · Chrome');

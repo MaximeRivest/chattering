@@ -1,5 +1,6 @@
 {
   "id": "/",
+  "start_url": "/",
   "name": "Chattering",
   "short_name": "Chattering",
   "description": "Chattering on your phone, straight from your own computer. By Rockfrog.",
@@ -9,9 +10,29 @@
   "background_color": "#101412",
   "theme_color": "#101412",
   "icons": [
-    { "src": "/_anywhere/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/_anywhere/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "/_anywhere/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
-    { "src": "/_anywhere/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+    {
+      "src": "/_anywhere/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/_anywhere/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/_anywhere/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/_anywhere/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
   ]
 }

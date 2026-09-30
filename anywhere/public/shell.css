@@ -11,6 +11,10 @@
   :root { --bg: #f6f4ee; --surface: #fffdf8; --surface-2: #efece3; --border: #dcd7ca; --text: #1d241f; --dim: #5b655d; --faint: #9aa29b; --accent: #2f8a4a; --accent-ink: #ffffff; --warn: #8a6d00; --danger: #b43c30; color-scheme: light; }
 }
 * { box-sizing: border-box; }
+/* Hidden means gone, whatever a class says about display: a hidden sheet
+   with display:flex once lay invisible over the whole app and caught every
+   tap. */
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 16px/1.5 var(--font); -webkit-text-size-adjust: 100%; }
 body { overflow: hidden; }
 b { font-weight: 650; }
@@ -102,6 +106,9 @@ details.about p { margin: 10px 0 0; }
 .pill.wait::before { background: var(--warn); animation: blink 1.2s ease-in-out infinite; }
 @keyframes blink { 50% { opacity: .3; } }
 .pill-text { min-width: 0; }
+/* The pill never catches a tap meant for the app under it; only a button in it does. */
+.pill { pointer-events: none; }
+.pill button { pointer-events: auto; }
 .pill button { margin-left: 6px; min-height: 30px; padding: 4px 12px; border-radius: 999px; font-size: .85rem; background: var(--accent); color: var(--accent-ink); border: 0; }
 
 /* ---- the sheet: this phone's computers ---- */

@@ -127,7 +127,7 @@
       else openSheet();
     });
   }
-  function closeSheet() { const s = $('sheet'); s.classList.remove('show'); setTimeout(() => { s.hidden = true; }, 250); }
+  function closeSheet() { const s = $('sheet'); s.classList.remove('show'); s.style.pointerEvents = 'none'; setTimeout(() => { s.hidden = true; s.style.pointerEvents = ''; }, 250); }
   function bindHomes() {
     document.querySelectorAll('[data-home]').forEach(b => b.onclick = () => { closeSheet(); switchTo(b.dataset.home); });
   }
@@ -214,7 +214,8 @@
     if (first) openApp();
     t.path().then(p => {
       const how = p === 'relay' ? 'through the relay (encrypted)' : p === 'direct' ? 'directly' : '';
-      pill(`Connected to <b>${esc(home.name)}</b>${how ? ' · ' + how : ''}`, 'ok', 2600);
+      pill(`Connected to <b>${esc(home.name)}</b>${how ? ' · ' + how : ''}${homes.length > 1 ? ' <button type="button" data-switch>switch</button>' : ''}`, 'ok', homes.length > 1 ? 5000 : 2600);
+      const sw = document.querySelector('#pill [data-switch]'); if (sw) sw.onclick = () => { hidePill(); openSheet(); };
     });
   }
   // A request waits for the tunnel (a reconnection after the phone slept).
@@ -455,7 +456,6 @@
     else if (!connecting) { backoff = 0; connect(h); }
   });
   addEventListener('online', () => { const h = homeOf(active); if (h && !tunnel && !connecting) { backoff = 0; connect(h); } });
-  $('pill').addEventListener('click', e => { if (e.target.tagName !== 'BUTTON' && homes.length) openSheet(); });
 
   (async function boot() {
     const code = P.readPairingLink(location.hash);
