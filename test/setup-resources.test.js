@@ -9,16 +9,22 @@ const { spawnSync } = require('node:child_process');
 const ROOT = path.resolve(__dirname, '..');
 const setup = fs.readFileSync(path.join(ROOT, 'setup.sh'), 'utf8');
 
+// Git Bash canonicalizes imported HOME, but not the other native paths.
+// Make that shell input explicit without changing filesystem-owned paths.
+function shellVars(vars, platform = process.platform) {
+  return { ...vars, HOME: platform === 'win32' ? vars.HOME.replace(/\\/g, '/') : vars.HOME };
+}
+
 // Exercise only setup's unit-generation expression, never its installation
 // caller. The heredoc path lets the same behavioral tests run on the old base.
 function fixture(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'chattering-unit-'));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
-  const vars = {
+  const vars = shellVars({
     PATH: process.env.PATH, HOME: home, REPO: ROOT, NODE_BIN: process.execPath,
     NODE_DIR: path.dirname(process.execPath), PORT: '7433', WIN_PATH: '', DISPLAY_LINES: '',
     CHATTERING_MEMORY_HIGH: '', CHATTERING_MEMORY_MAX: '',
-  };
+  });
   const command = setup.match(/^UNIT_CONTENT="\$\(([\s\S]*?)\)"$/m)?.[1];
   const legacy = setup.match(/^cat > "\$UNIT_DIR\/chattering\.service" <<EOF\n([\s\S]*?)\nEOF$/m)?.[1];
   assert.ok(command || legacy, 'setup has an identifiable unit generator');
@@ -49,6 +55,24 @@ ${lines}Restart=on-failure
 WantedBy=default.target
 `;
 }
+
+test('fixture canonicalizes only Windows HOME for Git Bash, preserving native paths', () => {
+  const native = Object.freeze({
+    HOME: 'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\home "quoted" $cash',
+    NODE_BIN: 'C:\\Program Files\\nodejs\\node.exe',
+    NODE_DIR: 'C:\\Program Files\\nodejs', REPO: 'D:\\a\\chattering\\chattering',
+    PATH: 'C:\\Program Files\\Git\\bin;C:\\Program Files\\nodejs',
+  });
+  const canonical = shellVars(native, 'win32');
+  assert.deepEqual(canonical, {
+    ...native, HOME: 'C:/Users/RUNNER~1/AppData/Local/Temp/home "quoted" $cash',
+  });
+  assert.equal(native.HOME, 'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\home "quoted" $cash');
+  assert.deepEqual(shellVars(canonical, 'win32'), canonical, 'canonical HOME is stable');
+  for (const platform of ['linux', 'darwin']) {
+    assert.deepEqual(shellVars(native, platform), native, 'POSIX backslashes are untouched');
+  }
+});
 
 test('setup generator preserves the exact default chattering service, including WSL lines', t => {
   const f = fixture(t);
