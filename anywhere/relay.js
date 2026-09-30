@@ -226,7 +226,10 @@ function createRelay(opts = {}) {
       if (conn.role === 'phone' && m.t === 'signal' && conn.sid) {
         const entry = homes.get(conn.homeId);
         const data = cleanSignal(m.data);
-        if (entry && entry.conn.role === 'home' && data) { try { entry.conn.send(JSON.stringify({ t: 'signal', from: conn.sid, data })); } catch {} }
+        // A phone's offer brings fresh TURN credentials for the home: a home
+        // stays registered for weeks, far longer than one credential lasts.
+        const extra = data && data.sdp && data.sdp.type === 'offer' ? { servers: iceServers() } : {};
+        if (entry && entry.conn.role === 'home' && data) { try { entry.conn.send(JSON.stringify({ t: 'signal', from: conn.sid, data, ...extra })); } catch {} }
       }
     });
     conn.on('close', () => {

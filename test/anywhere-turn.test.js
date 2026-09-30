@@ -42,7 +42,9 @@ test('relayed through coturn when there is no direct path, still end to end', { 
   const app = http.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('hello through the relay'); });
   await new Promise(r => app.listen(0, '127.0.0.1', r));
   t.after(() => app.close());
-  const relay = createRelay({ env: { TURN_SECRET: secret, TURN_URLS: 'turn:127.0.0.1:' + turnPort + '?transport=udp' } });
+  // Credentials that last 3 seconds: the home registers, they expire, and
+  // only then does the phone call. The call must bring the home fresh ones.
+  const relay = createRelay({ env: { TURN_SECRET: secret, TURN_URLS: 'turn:127.0.0.1:' + turnPort + '?transport=udp', TURN_TTL: '3' } });
   await new Promise(r => relay.server.listen(0, '127.0.0.1', r));
   t.after(() => relay.close());
   const relayUrl = 'http://127.0.0.1:' + relay.server.address().port;
@@ -59,6 +61,7 @@ test('relayed through coturn when there is no direct path, still end to end', { 
   const code = await home.pair('u1');
   const link = P.readPairingLink(new URL(code.url).hash);
   await until(() => home.status().relayState === 'ready', 'the home on the relay');
+  await new Promise(r => setTimeout(r, 4500)); // the home's first credentials have expired
   const key = await P.subtle().generateKey(P.ECDSA, false, ['sign', 'verify']);
   const device = { privateKey: key.privateKey, spki: new Uint8Array(await P.subtle().exportKey('spki', key.publicKey)) };
   const tunnel = await Client.connect({ relay: relayUrl, homeId: link.homeId, device, pairing: { id: link.id, secret: link.secret }, name: 'Phone',

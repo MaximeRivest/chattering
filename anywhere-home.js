@@ -152,7 +152,7 @@ function createAnywhereHome(opts) {
       if (m.t === 'challenge') return send({ t: 'proof', sig: P.b64u(await P.sign(k.privateKey, P.toBytes('chattering-anywhere-relay/' + P.VERSION + '\n' + m.nonce))) });
       if (m.t === 'welcome') { iceServers = Array.isArray(m.servers) ? m.servers : []; retry = 0; relayError = ''; relayState = 'ready'; changed(); return; }
       if (m.t === 'error') { relayError = String(m.why || 'the relay refused this computer'); return; }
-      if (m.t === 'signal' && m.from) return onSignal(String(m.from), m.data || {}, send);
+      if (m.t === 'signal' && m.from) { if (Array.isArray(m.servers)) iceServers = m.servers; return onSignal(String(m.from), m.data || {}, send); }
       if (m.t === 'gone' && m.from) { const p = peers.get(String(m.from)); if (p && !p.authed) p.close('the phone left'); }
     };
   }
