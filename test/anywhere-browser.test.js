@@ -102,7 +102,7 @@ test('a phone pairs in the browser and runs Chattering from the computer', { ski
   await until(`document.getElementById('useApp')`, 'the choice: the app or the browser');
   const intent = await evaluate(`document.getElementById('useApp').getAttribute('href')`);
   const pairLink = require('../anywhere/protocol.js').readPairingLink(new URL(code.url).hash);
-  assert.equal(intent, `intent://${new URL(relayUrl).host}/pair/${pairLink.homeId}.${pairLink.id}.${pairLink.secret}?n=lambda#Intent;scheme=https;package=app.rockfrog.chattering;S.browser_fallback_url=${encodeURIComponent('https://github.com/MaximeRivest/chattering/releases/download/android/Chattering-android.apk')};end`);
+  assert.equal(intent, `intent://pair/${pairLink.homeId}.${pairLink.id}.${pairLink.secret}?n=lambda&r=${encodeURIComponent(new URL(relayUrl).host)}#Intent;scheme=chattering;package=app.rockfrog.chattering;S.browser_fallback_url=${encodeURIComponent('https://github.com/MaximeRivest/chattering/releases/download/android/Chattering-android.apk')};end`);
   await shot('anywhere-0-choice.png');
   await evaluate(`document.getElementById('inBrowser').click(); 1`);
   // Pairing, then the app from the computer, full screen.

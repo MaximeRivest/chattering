@@ -28,6 +28,8 @@ import java.io.ByteArrayInputStream
 class AnywhereShell(private val context: Context) {
     companion object {
         const val DEFAULT_RELAY = "https://encrypted-link-to-your-devices.rockfrog.ai"
+        /** The browser hands a pairing code to this app on this scheme. */
+        const val HANDOFF_SCHEME = "chattering"
         private val NAME = Regex("^[a-z0-9-]+\\.[a-z]+$")
         private val TYPES = mapOf(
             "html" to "text/html", "js" to "text/javascript", "css" to "text/css",
@@ -56,19 +58,30 @@ class AnywhereShell(private val context: Context) {
      *  over by the browser's "Use the Android app" button, as an intent URL,
      *  which cannot carry a # of its own). */
     fun isPairingLink(uri: Uri?): Boolean =
-        uri != null && uri.scheme == "https" &&
-            ((uri.fragment ?: "").contains("pair=") || (uri.path ?: "").startsWith("/pair/"))
+        uri != null && (
+            (uri.scheme == "https" && ((uri.fragment ?: "").contains("pair=") || (uri.path ?: "").startsWith("/pair/"))) ||
+            (uri.scheme == HANDOFF_SCHEME && uri.host == "pair"))
 
     /** The link as the page reads it: the code after #, where it never
      *  leaves the phone. */
     fun normalize(uri: Uri): Uri {
         val path = uri.path ?: return uri
-        if (!path.startsWith("/pair/")) return uri
-        val code = path.removePrefix("/pair/")
+        // chattering://pair/<code>?n=<name>&r=<relay host>: from the browser's
+        // "Use the Android app" button. Only a relay this app already knows
+        // (Rockfrog's, or one used before): a web page cannot send this app
+        // to a relay of its choosing.
+        val handoff = uri.scheme == HANDOFF_SCHEME && uri.host == "pair"
+        if (!handoff && !path.startsWith("/pair/")) return uri
+        val authority = if (handoff) {
+            val r = uri.getQueryParameter("r") ?: Uri.parse(DEFAULT_RELAY).host!!
+            if (r !in relays()) return Uri.parse(DEFAULT_RELAY + "/")
+            r
+        } else uri.authority
+        val code = path.removePrefix("/").removePrefix("pair/")
         if (!Regex("^[A-Za-z0-9_-]{8,64}\\.[A-Za-z0-9_-]{8,64}\\.[A-Za-z0-9_-]{8,64}$").matches(code)) return uri
         val name = uri.getQueryParameter("n")?.take(60)
         val fragment = "pair=$code" + if (name.isNullOrEmpty()) "" else "&n=" + Uri.encode(name)
-        return Uri.Builder().scheme("https").authority(uri.authority).path("/").encodedFragment(fragment).build()
+        return Uri.Builder().scheme("https").authority(authority).path("/").encodedFragment(fragment).build()
     }
 
     fun intercept(request: WebResourceRequest?): WebResourceResponse? {

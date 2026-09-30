@@ -28,8 +28,10 @@
   // downloads it when it is not. The code rides in the path (an intent URL
   // has no room for a # of its own); it goes from Chrome to the app on this
   // phone, never to a server.
-  const appIntent = code => `intent://${location.host}/pair/${[code.homeId, code.id, code.secret].join('.')}${code.name ? '?n=' + encodeURIComponent(code.name) : ''}` +
-    `#Intent;scheme=https;package=app.rockfrog.chattering;S.browser_fallback_url=${encodeURIComponent(APK_URL)};end`;
+  // (Its own scheme: Chrome hands an intent URL to an app for a scheme of
+  // its own, not for https.)
+  const appIntent = code => `intent://pair/${[code.homeId, code.id, code.secret].join('.')}?${code.name ? 'n=' + encodeURIComponent(code.name) + '&' : ''}r=${encodeURIComponent(location.host)}` +
+    `#Intent;scheme=chattering;package=app.rockfrog.chattering;S.browser_fallback_url=${encodeURIComponent(APK_URL)};end`;
 
   /* ---- storage ---- */
   let dbp = null;
