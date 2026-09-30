@@ -97,7 +97,8 @@ const ROUTES = {
   '/api/node/send': 'guest',
   '/api/node/regenerate': 'guest',
   '/api/node/merge': 'guest',
-  '/api/node/commands': 'guest',
+  '/api/node/commands': 'guest', // act checked before loading session extensions
+  'POST /api/node/compose': 'guest', // act checked in body; guest completion stays inside its sandbox
   '/api/branch': 'guest',
   '/api/fork': 'guest',
   '/api/run/abort': 'guest', // act on the run's conversation, checked in the handler
@@ -314,6 +315,11 @@ const ROUTES = {
   'POST /api/anywhere/cancel': 'guest',
   'POST /api/anywhere/forget': 'guest',
   'POST /api/anywhere/settings': 'owner',
+  // Links to other computers (design/90): a person links their own account
+  // there; the handlers keep each person to their own links.
+  'GET /api/anywhere/links/check': 'member',
+  'POST /api/anywhere/links/add': 'member',
+  'POST /api/anywhere/links/remove': 'member',
   '/api/doors': 'owner',
   '/api/doors/public': 'owner',
   '/api/doors/sign-ins': 'owner',

@@ -16,10 +16,9 @@ test('work-first panel, visible timeline tools, quiet jobs and Back to the work 
   assert.deepEqual(await ev(`[...document.querySelectorAll('.side-project-row button')].map(b=>b.id)`), ['railMachine', 'sideHome', 'sideProject', 'sideProjectMore']);
   assert.equal(await ev(`!document.querySelector('#sideRail,.rail-primary,[data-rail]')`), true, 'no icon rail');
   assert.equal(await ev(`sidePanel()`), 'inbox');
-  // The visible toolbar holds project sorting and search only; the other
-  // timeline controls keep their state and keys behind it (fadc4ce).
+  // Sorting and the compact camera controls share one quiet toolbar.
   assert.equal(await ev(`['ganttBar','projSort'].every(id=>$(id).checkVisibility())`), true, 'sorting and search are visible, not merely present');
-  assert.equal(await ev(`['homeFilters','ganttProject','ganttDate'].every(id=>!$(id).checkVisibility())`), true, 'auxiliary controls stay out of the toolbar');
+  assert.equal(await ev(`['homeFilters','ganttProject'].every(id=>!$(id).checkVisibility())`), true, 'auxiliary controls stay out of the toolbar');
   assert.equal(await ev(`$('list').getBoundingClientRect().top > 45 && $('list').getBoundingClientRect().right < innerWidth`), true);
   // f opens the filters, focused, beside the column and on screen.
   await ev(`document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'f',bubbles:true}))`);
