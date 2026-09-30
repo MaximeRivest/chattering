@@ -75,6 +75,8 @@ test('a phone through the relay is its person, never the console; People revokes
   const code = await post('/api/anywhere/pair');
   assert.ok(code.url.startsWith(relayUrl + '/#pair='), code.url);
   assert.match(code.svg, /^<svg[^>]+viewBox="0 0 \d+ \d+"/);
+  assert.equal(code.app.url, 'https://github.com/MaximeRivest/chattering/releases/download/android/Chattering-android.apk');
+  assert.match(code.app.svg, /^<svg/);
   assert.ok(code.expiresAt > Date.now() + 9 * 60e3);
   await until(async () => (await (await fetch(base + '/api/anywhere')).json()).relayState === 'ready', 'on the relay while the code shows');
   const shown = await (await fetch(base + '/api/anywhere/pairing?id=' + code.id)).json();

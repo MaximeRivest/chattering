@@ -26,6 +26,9 @@ const P = require('./anywhere/protocol.js');
 const { T } = P;
 
 const DEFAULT_RELAY = 'https://encrypted-link-to-your-devices.rockfrog.ai';
+// The Android app, straight from its release (design/85): a direct download,
+// no page in between.
+const ANDROID_APK_URL = 'https://github.com/MaximeRivest/chattering/releases/download/android/Chattering-android.apk';
 const PAIRING_MS = 10 * 60 * 1000;
 const MAX_PEERS = 32;
 const AUTH_MS = 20000;
@@ -502,4 +505,4 @@ function qrSvg(text) {
   return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + (n + 2 * m) + ' ' + (n + 2 * m) + '" shape-rendering="crispEdges" role="img" aria-label="Pairing code"><rect width="100%" height="100%" fill="#fff"/><path d="' + d + '" fill="#000"/></svg>';
 }
 
-module.exports = { createAnywhereHome, DEFAULT_RELAY, loadRtc, qrSvg, iceForNode };
+module.exports = { createAnywhereHome, DEFAULT_RELAY, ANDROID_APK_URL, loadRtc, qrSvg, iceForNode };

@@ -626,7 +626,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun openAnywhere(link: String?) {
         val prefs = getSharedPreferences("chattering", Context.MODE_PRIVATE)
-        val uri = link?.let { try { Uri.parse(it) } catch (_: Exception) { null } }
+        val uri = link?.let { try { anywhere.normalize(Uri.parse(it)) } catch (_: Exception) { null } }
         if (uri != null && uri.scheme == "https" && uri.host != null) {
             anywhere.remember(uri)
             prefs.edit().putString("relay", "https://${uri.host}").apply()

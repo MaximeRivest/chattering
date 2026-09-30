@@ -52,9 +52,24 @@ class AnywhereShell(private val context: Context) {
 
     fun isRelay(uri: Uri?): Boolean = uri != null && uri.scheme == "https" && uri.host != null && uri.host in relays()
 
-    /** A pairing link (…/#pair=…) for a relay. */
+    /** A pairing link: …/#pair=… (a scanned code), or …/pair/<code> (handed
+     *  over by the browser's "Use the Android app" button, as an intent URL,
+     *  which cannot carry a # of its own). */
     fun isPairingLink(uri: Uri?): Boolean =
-        uri != null && uri.scheme == "https" && (uri.fragment ?: "").contains("pair=")
+        uri != null && uri.scheme == "https" &&
+            ((uri.fragment ?: "").contains("pair=") || (uri.path ?: "").startsWith("/pair/"))
+
+    /** The link as the page reads it: the code after #, where it never
+     *  leaves the phone. */
+    fun normalize(uri: Uri): Uri {
+        val path = uri.path ?: return uri
+        if (!path.startsWith("/pair/")) return uri
+        val code = path.removePrefix("/pair/")
+        if (!Regex("^[A-Za-z0-9_-]{8,64}\\.[A-Za-z0-9_-]{8,64}\\.[A-Za-z0-9_-]{8,64}$").matches(code)) return uri
+        val name = uri.getQueryParameter("n")?.take(60)
+        val fragment = "pair=$code" + if (name.isNullOrEmpty()) "" else "&n=" + Uri.encode(name)
+        return Uri.Builder().scheme("https").authority(uri.authority).path("/").encodedFragment(fragment).build()
+    }
 
     fun intercept(request: WebResourceRequest?): WebResourceResponse? {
         val uri = request?.url ?: return null

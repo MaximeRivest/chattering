@@ -23,6 +23,13 @@
   const ANDROID_WEB = !APP && /Android/.test(navigator.userAgent);
   const APK_URL = 'https://github.com/MaximeRivest/chattering/releases/download/android/Chattering-android.apk';
   const getApp = ANDROID_WEB ? `<p class="hint app-offer">On Android, the Chattering app does this more safely: <a href="${APK_URL}">get the app</a>, then scan the same code.</p>` : '';
+  // "Use the Android app": an intent URL that opens the app with this code
+  // when it is installed (the app's package, whatever handles links), and
+  // downloads it when it is not. The code rides in the path (an intent URL
+  // has no room for a # of its own); it goes from Chrome to the app on this
+  // phone, never to a server.
+  const appIntent = code => `intent://${location.host}/pair/${[code.homeId, code.id, code.secret].join('.')}${code.name ? '?n=' + encodeURIComponent(code.name) : ''}` +
+    `#Intent;scheme=https;package=app.rockfrog.chattering;S.browser_fallback_url=${encodeURIComponent(APK_URL)};end`;
 
   /* ---- storage ---- */
   let dbp = null;
@@ -479,6 +486,23 @@
       } else if (IOS) pill('Tip: tap <b>Share</b> → <b>Add to Home Screen</b> to keep Chattering one tap away.', 'ok', 9000);
     }, 3200);
   }
+  // On Android in a browser: the app or here? The app is the better home
+  // (it carries this page itself, has the microphone and notifications),
+  // so it comes first; one button installs it or opens it.
+  function androidChoice(code) {
+    const name = esc(code.name || 'your computer');
+    stage.dataset.screen = 'choice';
+    show(`${mark}<h1>Pair with <b>${name}</b></h1>
+      <p class="lead">Chattering works best on Android as an app.</p>
+      <a class="primary big" id="useApp" href="${esc(appIntent(code))}">Use the Android app</a>
+      <p class="hint steps-app">Not installed yet? This button downloads it (3 MB). Open the downloaded file, allow the install, then come back here and <b>tap the button again</b>: it opens the app, already paired.</p>
+      <button type="button" class="ghost" id="inBrowser">Continue in the browser</button>
+      <p class="hint">This code works for ten minutes, once.</p>`, 'choice');
+    $('inBrowser').onclick = () => pair(code);
+    // Back from installing: the page is still here, the button still works.
+    $('useApp').onclick = () => { setTimeout(() => { const h = $('useApp'); if (h) h.textContent = 'Open the Android app'; }, 1500); };
+  }
+
   // On an iPhone, a home-screen app keeps its own storage, apart from
   // Safari's: pairing in Safari would leave the icon unpaired. So first:
   // where do you want it?
@@ -517,6 +541,7 @@
         history.replaceState(null, '', '/');
         active = known.homeId; await kvSet('active', active);
       } else if (IOS && !standalone()) return iosChoice(code);
+      else if (ANDROID_WEB && !standalone()) return androidChoice(code);
       else return pair(code);
     }
     if (!active) return showWelcome();

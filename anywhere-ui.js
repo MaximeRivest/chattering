@@ -109,16 +109,28 @@
     if (r.error) { dialog.querySelector('.any-body').innerHTML = `<p class="set-help">${h(r.error)}</p><div class="any-foot"><button type="button" class="ghost" data-close>close</button></div>`; bindClose(); return; }
     pairing = r;
     dialog.querySelector('.any-body').innerHTML = `
-      <p class="any-lead">Scan this code with your phone's camera.</p>
-      <div class="any-qr">${r.svg}</div>
-      <div class="any-wait"><span class="any-pulse" aria-hidden="true"></span><span>Waiting for your phone…</span><span class="any-clock hint"></span></div>
-      <p class="set-help any-android">Android: <a href="https://github.com/MaximeRivest/chattering/releases/tag/android" target="_blank" rel="noopener">install the Chattering app</a> first, and this code opens in it (safer: the app carries its own page). iPhone and others: the code opens Chattering in the browser.</p>
+      <p class="any-lead" id="anyLead">Scan this code with your phone's camera.</p>
+      <div class="any-qr" id="anyQr">${r.svg}</div>
+      <div class="any-wait" id="anyWait"><span class="any-pulse" aria-hidden="true"></span><span>Waiting for your phone…</span><span class="any-clock hint"></span></div>
+      <p class="set-help any-android" id="anyAndroid">On Android, it offers the Chattering app (one tap installs it, the next opens it paired) or the browser. On iPhone, it opens in the browser.</p>
+      ${r.app ? `<div class="any-switch"><button type="button" class="ghost" id="anyAppOnly">just the Android app, no pairing</button></div>` : ''}
       <details class="any-more"><summary>no camera? open this link on the phone</summary>
         <div class="row"><code class="mach-link">${h(r.url)}</code><button type="button" class="ghost" id="anyCopy">copy</button></div>
         <div class="set-help">The link works once. Send it only to yourself: whoever opens it first gets your phone's place.</div>
       </details>
       <div class="any-foot"><span class="hint">Works once, for ten minutes. No app, no account: the phone opens Chattering in its browser.</span><button type="button" class="ghost" data-close>cancel</button></div>`;
     bindClose();
+    // The code for the app alone (a tablet, a phone to set up later), and back.
+    const appOnly = document.getElementById('anyAppOnly');
+    if (appOnly) appOnly.onclick = () => {
+      const showingApp = appOnly.dataset.on === '1';
+      appOnly.dataset.on = showingApp ? '' : '1';
+      document.getElementById('anyQr').innerHTML = showingApp ? r.svg : r.app.svg;
+      document.getElementById('anyLead').textContent = showingApp ? "Scan this code with your phone's camera." : 'Scan to download the Chattering app for Android (3 MB). Then scan the pairing code with the phone.';
+      document.getElementById('anyWait').hidden = !showingApp;
+      document.getElementById('anyAndroid').hidden = !showingApp;
+      appOnly.textContent = showingApp ? 'just the Android app, no pairing' : 'back to the pairing code';
+    };
     const copy = document.getElementById('anyCopy');
     if (copy) copy.onclick = async () => { try { await copyText(r.url); if (typeof flashCopied === 'function') flashCopied(copy); } catch (e) { say(e.message, true); } };
     tick();

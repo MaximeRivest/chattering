@@ -97,6 +97,14 @@ test('a phone pairs in the browser and runs Chattering from the computer', { ski
   await send('Emulation.setUserAgentOverride', { userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Mobile Safari/537.36' }, sid);
   await send('Page.navigate', { url: code.url }, sid);
 
+  // Android in a browser: the app first, one button (installs it, or opens it
+  // with this code), the browser second.
+  await until(`document.getElementById('useApp')`, 'the choice: the app or the browser');
+  const intent = await evaluate(`document.getElementById('useApp').getAttribute('href')`);
+  const pairLink = require('../anywhere/protocol.js').readPairingLink(new URL(code.url).hash);
+  assert.equal(intent, `intent://${new URL(relayUrl).host}/pair/${pairLink.homeId}.${pairLink.id}.${pairLink.secret}?n=lambda#Intent;scheme=https;package=app.rockfrog.chattering;S.browser_fallback_url=${encodeURIComponent('https://github.com/MaximeRivest/chattering/releases/download/android/Chattering-android.apk')};end`);
+  await shot('anywhere-0-choice.png');
+  await evaluate(`document.getElementById('inBrowser').click(); 1`);
   // Pairing, then the app from the computer, full screen.
   await until(`document.querySelector('.link-art')`, 'the connecting screen');
   await shot('anywhere-1-pairing.png');
