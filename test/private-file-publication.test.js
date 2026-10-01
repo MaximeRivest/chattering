@@ -37,10 +37,11 @@ if (process.platform !== 'win32') {
     assert.deepEqual(fs.readdirSync(parent), ['key']);
     assert.equal(fs.statSync(outer).mode & 0o777, 0o777);
   });
-  test('Given a parent-directory alias, When publication is requested, Then alias refusal leaves both credential and alias untouched', t => {
+  test('Given an alias to an unsafe publication directory, When publication is requested, Then refusal leaves both credential and alias untouched', t => {
     const outer = fixture(t), parent = path.join(outer, 'private'), alias = path.join(outer, 'alias');
     fs.mkdirSync(parent, { mode: 0o700 }); fs.symlinkSync(parent, alias);
     const file = path.join(parent, 'key'); fs.writeFileSync(file, 'existing identity', { mode: 0o600 });
+    fs.chmodSync(parent, 0o777);
     assert.throws(() => storage().writePrivateFileSync(path.join(alias, 'key'), 'replacement'));
     assert.equal(fs.readFileSync(file, 'utf8'), 'existing identity');
     assert.equal(fs.readlinkSync(alias), parent); assert.deepEqual(fs.readdirSync(parent), ['key']);

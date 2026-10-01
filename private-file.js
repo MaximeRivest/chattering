@@ -115,13 +115,27 @@ function publicationDirectory(directory) {
   } catch (e) { close(); throw e; }
 }
 function writePrivateFileSync(file, bytes) {
+  // Resolve existing parent aliases once (macOS /var -> /private/var), then
+  // publish using only the canonical path checked below. Missing descendants
+  // are appended to the canonical existing ancestor and created securely.
+  function canonicalFile(input) {
+    let directory = path.dirname(path.resolve(input));
+    const missing = [];
+    for (;;) {
+      try { return path.join(fs.realpathSync.native(directory), ...missing, path.basename(input)); }
+      catch (e) {
+        if (e.code !== 'ENOENT' || directory === path.dirname(directory)) throw e;
+        missing.unshift(path.basename(directory)); directory = path.dirname(directory);
+      }
+    }
+  }
   bytes = Buffer.from(bytes);
   if (bytes.length > BUDGET) throw new Error('Key storage exceeds budget');
   if (process.platform === 'win32') {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     return windowsOperation(file, 'write', bytes);
   }
-  file = path.resolve(file);
+  file = canonicalFile(file);
   const closeDirectories = publicationDirectory(path.dirname(file));
   const tmp = file + '.' + randomUUID() + '.tmp';
   let fd;
