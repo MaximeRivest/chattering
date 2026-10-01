@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# A separate test copy of Chattering with Claude Code live switched on
-# (CHATTERING_LIVE_TERMINAL=1). It reads the real conversations (~/.claude,
+# A separate test copy of Chattering, from this checkout (agents' own
+# programs are a setting there, design/91). It reads the real conversations (~/.claude,
 # ~/.pi, ~/.codex) but keeps its own settings, data, cache and notes, its
 # own ports (7499; previews 7498) and its own pairings: the running
 # Chattering is not touched. Background AI is off in its settings.
@@ -19,8 +19,7 @@ case "${1:-start}" in
         backgroundAi: { decidedAt: new Date().toISOString(), names: false, memory: false }, welcome: { doneAt: new Date().toISOString() } }));"
     systemctl --user stop "$unit" 2>/dev/null || true
     systemd-run --user --unit="$unit" --collect -p RuntimeMaxSec=8h -p WorkingDirectory="$repo" \
-      -E PATH="$PATH" -E HOME="$HOME" -E CHATTERING_LIVE_TERMINAL=1 \
-      -E PORT=7499 -E CHATTERING_TLS_PORT=0 -E CHATTERING_PREVIEW_PORT=7498 -E CHATTERING_PREVIEW_TLS_PORT=0 -E CHATTERING_PREVIEW_TAILNET_PORT=0 \
+      -E PATH="$PATH" -E HOME="$HOME"      -E PORT=7499 -E CHATTERING_TLS_PORT=0 -E CHATTERING_PREVIEW_PORT=7498 -E CHATTERING_PREVIEW_TLS_PORT=0 -E CHATTERING_PREVIEW_TAILNET_PORT=0 \
       -E CHATTERING_HOST=127.0.0.1 -E CHATTERING_LAN= -E CHATTERING_PUBLIC_URL= -E CHATTERING_HOSTNAME=lambda-live-test \
       -E CHATTERING_NO_SYNC=1 -E CHATTERING_NO_LEDGER=1 -E CHATTERING_NO_FILE_HISTORY=1 -E CHATTERING_NO_CHECKPOINTS=1 -E CHATTERING_LINK_PORT_BASE=7610 \
       -E CHATTERING_CONFIG_DIR="$base/config" -E CHATTERING_DATA_DIR="$base/data" -E CHATTERING_CACHE_DIR="$base/cache" -E CHATTERING_NOTES_DIR="$base/notes" \

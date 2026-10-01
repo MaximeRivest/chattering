@@ -1,6 +1,12 @@
 # Terminal document: a real CLI, rendered as a Chattering conversation
 
-**Prototype, October 1, 2026. Not part of Chattering; no production code changed.**
+**Prototype, October 1, 2026.** It is now part of Chattering: the terminal
+parts live in `harness/terminal/` (host, reader, actions, hub, profiles,
+recorder, terminal holder), the recordings in `test/fixtures/terminal/`, the
+replay tool in `scripts/terminal-replay.js`, and the design in
+`design/91-agents-own-programs.md`. This folder stays as the lab: its
+benches and its standalone page use Chattering's modules. Below, the
+prototype's record as it was written.
 
 The unmodified, interactive Claude Code (and Pi) runs on a real pseudoterminal, exactly as in any terminal app. A full terminal engine (xterm.js headless, the one inside VS Code's terminal) keeps the exact screen. A reader turns that screen into an *interaction document*: the input box, menus, dialogs, transcript, status. The page draws Chattering's own conversation from it, and every key, paste and click goes back as ordinary terminal input.
 

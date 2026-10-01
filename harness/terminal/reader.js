@@ -15,12 +15,10 @@
 //             the others the same indent: a dialog the keyboard answers
 //   status    a "working" line (spinner glyph, "esc to interrupt")
 //   live      anything on screen not understood: kept, shown as cells
-// A profile adds the CLI's own glyphs (Claude Code: ⏺ ⎿ ❯).
+// A profile (profiles.js) adds the program's own marks and patterns.
 
-// Claude Code changed its bullet from ⏺ to ● between versions: both.
-const CLAUDE = { name: 'claude', prompts: ['❯', '>'], bullets: ['⏺', '●'], result: '⎿', markers: ['❯', '›', '>'] };
-// Generic also accepts an input box with no prompt glyph (Pi pads its editor).
-const GENERIC = { name: 'generic', prompts: ['❯', '>', '›', '$'], bullets: [], result: null, markers: ['❯', '›', '>'], glyphless: true };
+const { PROFILES, screenRules } = require('./profiles');
+const CLAUDE = PROFILES.claude, GENERIC = PROFILES.generic;
 
 // A frame line: box-drawing across most of the width. It may carry a label
 // inside ("── ⠦ Working ───", Pi), which is kept as the line's label.
@@ -31,15 +29,14 @@ const isRule = (l, cols) => {
   return (t.match(RULE_CH) || []).length >= t.length * 0.7;
 };
 const ruleLabel = l => l.text.replace(RULE_CH, ' ').replace(/\s+/g, ' ').trim();
-// A spinner or a working word: Pi's braille dots, Claude Code's stars, "Working…".
-const WORKING = /[\u2800-\u28ff]|^(?:[✻✶✳✢✽·*∗⋆◐◓◑◒]\s+)?\S+…|\b(working|thinking)\b/i;
 const flags = run => run.s.split('|')[0];
 const fgOf = runs => { const r = runs.find(x => x.t.trim()); return r ? r.s.split('|')[1] : ''; };
 
 // Programs pad with no-break spaces (Claude Code: "❯\u00a0"): read them as spaces.
 const nb = t => t.replace(/\u00a0/g, ' ');
 
-function readDocument(snap, profile = CLAUDE) {
+function readDocument(snap, profileOrRules = CLAUDE) {
+  const profile = screenRules(profileOrRules);
   const { cols, rows, base, cursor } = snap;
   const lines = snap.lines.map(l => ({ ...l, text: nb(l.text), runs: l.runs.map(r => ({ s: r.s, t: nb(r.t) })) }));
   const top = base, bottom = Math.min(lines.length, base + rows); // the visible screen
@@ -70,7 +67,7 @@ function readDocument(snap, profile = CLAUDE) {
   const holding = frames.find(([a, b]) => cursor.y > a && cursor.y < b);
   const lowest = frames.length && frames[frames.length - 1][0] >= top + rows / 2 ? frames[frames.length - 1] : null;
   let [above, below] = holding || lowest || [rules.filter(y => y < cursor.y).pop(), rules.find(y => y > cursor.y)];
-  const cursorInBox = !!holding || (above != null && below != null && cursor.y > above && cursor.y < below);
+  let cursorInBox = !!holding || (above != null && below != null && cursor.y > above && cursor.y < below);
   // No frame lines (Codex): the cursor's line starts with a prompt mark;
   // the box is that line and the indented lines that continue it, between
   // blank lines. `above`/`below` then stand for the lines around it.
@@ -82,6 +79,7 @@ function readDocument(snap, profile = CLAUDE) {
       let end = cursor.y;
       while (end + 1 < bottom && /^ {2}\S/.test(lines[end + 1].text)) end++;
       above = start - 1; below = end + 1;
+      cursorInBox = true; // found from the cursor's own line: its column is the caret
     }
   }
   if (above != null && below != null && below > above + 1) {
@@ -134,7 +132,7 @@ function readDocument(snap, profile = CLAUDE) {
       // A label in the frame (Pi: "⠦ Working") is the program's status.
       for (const y of [above, below]) {
         const label = lines[y] ? ruleLabel(lines[y]) : '';
-        if (label && WORKING.test(label)) doc.status = { working: true, text: label, rows: [y] };
+        if (label && profile.frameWorkingRe.test(label)) doc.status = { working: true, text: label, rows: [y] };
       }
 
       // ---- what hangs under the composer: a menu, or a footer ----
@@ -208,7 +206,7 @@ function readDocument(snap, profile = CLAUDE) {
     if (used.has(y)) continue;
     const t = lines[y].text;
     if (doc.status) break;
-    if (/esc to interrupt/i.test(t) || /^[✻✶✳✢✽·*∗⋆◐◓◑◒]\s+\S+…/.test(t) || /^\s*[\u2800-\u28ff]\s+\S/.test(t)) { doc.status = { working: true, text: t.trim(), rows: [y] }; used.add(y); break; }
+    if (profile.workingRe.some(re => re.test(t))) { doc.status = { working: true, text: t.trim(), rows: [y] }; used.add(y); break; }
   }
 
   // ---- transcript: everything above the live area, scrollback included ----

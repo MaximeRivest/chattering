@@ -1,7 +1,7 @@
 {
   "name": "terminal-document-prototype",
   "private": true,
-  "description": "Prototype: a real terminal CLI rendered as a Chattering conversation (not production).",
+  "description": "The live terminal's lab: benches and the standalone page it started as. The terminal itself is Chattering's (harness/terminal/, its parts in runtime/); only the lab's own WebSocket server needs ws.",
   "scripts": { "start": "node server.js", "test": "node --test test/*.test.js", "bench": "node bench.js" },
-  "dependencies": { "@xterm/headless": "^6.0.0", "node-pty": "^1.1.0", "ws": "^8.18.0" }
+  "dependencies": { "ws": "8.18.3" }
 }

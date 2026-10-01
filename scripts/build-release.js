@@ -35,7 +35,7 @@ fs.rmSync(OUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
 
 // ---- the app: tracked files, minus what does not ship ----
-const SKIP = [/^test\//, /^android\//, /^manual-test\//, /^scratch\//, /^semantic\//, /^windows\//, /^\.github\//, /^scripts\//,
+const SKIP = [/^test\//, /^android\//, /^manual-test\//, /^scratch\//, /^semantic\//, /^windows\//, /^\.github\//, /^scripts\//, /^prototypes\//,
   /^design\/.*\.(md|html)$/, /^TODO\.md$/, /^(setup|update|tray|open)\.sh$/, /^\.gitignore$/, /^runtime\/node_modules\//, /\.apk$/];
 const files = execFileSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'utf8' }).split('\0').filter(Boolean).filter(f => !SKIP.some(r => r.test(f)));
 for (const f of files) {

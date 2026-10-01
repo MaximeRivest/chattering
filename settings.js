@@ -141,6 +141,13 @@ const DEFAULT_SETTINGS = {
   // Chattering Anywhere (design/85): phones reach this computer through a
   // relay. relay: its address, '' for Rockfrog's; off: the owner's switch.
   anywhere: { relay: '', off: false },
+  // Agents continued in their own interactive program (design/91), per
+  // agent: 'off' (never), 'choose' (Chattering's box, the program a click
+  // away), 'always' (the program). Claude Code has no box of Chattering's
+  // own, so for it 'choose' is 'always'. idleMinutes: a program with nothing
+  // to do is ended after this long (the next message starts it again).
+  // record: each session's terminal and devices are kept, gzip, private.
+  liveTerminal: { agents: { claude: 'always', pi: 'choose', codex: 'choose' }, idleMinutes: 30, record: true },
 };
 
 // What an install from before version 2 ran on without having saved it:
@@ -441,6 +448,7 @@ function normalizeSettings(input) {
   const publicDoor = src.publicDoor === true;
   const tailscaleApiKey = typeof src.tailscaleApiKey === 'string' ? src.tailscaleApiKey.trim().slice(0, 200) : '';
   const anywhere = normalizeAnywhere(src.anywhere);
+  const liveTerminal = normalizeLiveTerminal(src.liveTerminal);
   // A fixed model needs both halves; half a choice is Pi's default.
   const piDefault = src.usePiDefault === true || !provider || !model;
   return {
@@ -483,7 +491,19 @@ function normalizeSettings(input) {
     publicDoor,
     tailscaleApiKey,
     anywhere,
+    liveTerminal,
   };
+}
+
+const LIVE_TERMINAL_CHOICES = ['off', 'choose', 'always'];
+function normalizeLiveTerminal(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const agents = {};
+  const given = src.agents && typeof src.agents === 'object' ? src.agents : {};
+  for (const [id, fallback] of Object.entries(DEFAULT_SETTINGS.liveTerminal.agents)) agents[id] = LIVE_TERMINAL_CHOICES.includes(given[id]) ? given[id] : fallback;
+  if (agents.claude === 'choose') agents.claude = 'always';
+  const idle = Number(src.idleMinutes);
+  return { agents, idleMinutes: idle >= 1 && idle <= 24 * 60 ? Math.round(idle) : DEFAULT_SETTINGS.liveTerminal.idleMinutes, record: src.record !== false };
 }
 
 // A relay is an https address (http only on this computer itself, for

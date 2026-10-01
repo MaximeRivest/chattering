@@ -2,7 +2,7 @@
 // How does a longer answer arrive on Claude Code's screen? One real turn
 // (uses your plan); records the answer's visible length over time.
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
-const { TerminalHost } = require('./host'); const { readDocument } = require('./reader'); const { waitFor, choose } = require('./actions');
+const { TerminalHost } = require('../../harness/terminal/host'); const { readDocument } = require('../../harness/terminal/reader'); const { waitFor, choose } = require('../../harness/terminal/actions');
 (async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'tdoc-stream-'));
   const host = new TerminalHost({ command: 'claude', args: ['--effort', 'low'], cwd, record: path.join(__dirname, 'recordings', 'claude-stream.cast') });

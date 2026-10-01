@@ -2,7 +2,7 @@
 // Reader rules on hand-made screens (the shapes seen from Claude Code 2.1.285–286).
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { readDocument } = require('../reader');
+const { readDocument } = require('../harness/terminal/reader');
 const row = (text, style = '||') => ({ text, runs: [{ s: style, t: text }] });
 const screen = (rows, cursor, cols = 100) => ({ lines: rows.map(r => typeof r === 'string' ? row(r) : r), cols, rows: 34, base: 0, cursor, revision: 1 });
 const RULE = '─'.repeat(100);
@@ -46,4 +46,10 @@ test('transcript: user, tool with its result, answer; both bullet glyphs', () =>
 test('anything not understood stays visible as cells', () => {
   const d = readDocument(screen(['', '', RULE, '❯ ', RULE, '', '▓▓ some unusual widget ▓▓'], { x: 2, y: 3 }));
   assert.ok(d.footer.some(f => /unusual/.test(f.text)) || d.live.length, 'kept somewhere visible');
+});
+test('a box with no frame (Codex): the cursor is the caret, so trailing spaces count', () => {
+  const codex = require('../harness/terminal/profiles').profileFor('codex');
+  // After Tab completes "/model " the cursor stands past the space.
+  const d = readDocument(screen(['>_ Codex', '', '› /model ', '', '  gpt low · ~/work'], { x: 9, y: 2 }), codex);
+  assert.equal(d.composer.text, '/model '); assert.equal(d.composer.caret, 7);
 });

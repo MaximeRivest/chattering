@@ -1,9 +1,12 @@
 {
   "name": "chattering-runtime",
   "private": true,
-  "description": "The Pi runtime Chattering is tested with, and the WebRTC component phones connect through (node-datachannel, design/85); both ship in its downloads. npm ci here installs exactly the locked versions.",
+  "description": "The Pi runtime Chattering is tested with; the WebRTC component phones connect through (node-datachannel, design/85); and the terminal agents' own programs run on (@lydell/node-pty: Microsoft's node-pty published compiled for Linux, macOS and Windows; @xterm/headless and its serializer: VS Code's terminal engine, design/91). All ship in its downloads. npm ci here installs exactly the locked versions.",
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.87.1",
+    "@lydell/node-pty": "1.1.0",
+    "@xterm/addon-serialize": "0.14.0",
+    "@xterm/headless": "6.0.0",
     "node-datachannel": "0.33.4"
   }
 }

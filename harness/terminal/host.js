@@ -6,15 +6,17 @@
 // - Bytes from the program go into the emulator; the emulator's own replies
 //   (cursor-position reports, device attributes…) go back to the program,
 //   exactly as a visible terminal would answer.
-// - Every byte both ways is recorded with its time (asciicast v2), so any
-//   session can be replayed into the reader deterministically.
+// - Every byte both ways can be recorded with its time (asciicast v2,
+//   recorder.js), so any session replays into the reader deterministically.
 // - A "frame" is published after the emulator has parsed a burst of output,
 //   coalesced to at most one per macrotask, with the inputs it answers.
+//
+// The pseudoterminal is either spawned here (node-pty) or handed in: any
+// object with write, resize, kill, onData, onExit — the terminal holder of
+// pty-holder.js, which keeps a program alive across a Chattering restart.
 
-const pty = require('node-pty');
-const { Terminal } = require('@xterm/headless');
 const { EventEmitter } = require('node:events');
-const fs = require('node:fs');
+const { terminalDeps } = require('./deps');
 
 // Programs that redraw everything (Claude Code after a panel closes, on a
 // resize): cursor home, then every line of the screen erased, or "erase
@@ -43,25 +45,34 @@ function watchRepaints(term) {
 }
 
 class TerminalHost extends EventEmitter {
-  constructor({ command, args = [], cwd, env = process.env, cols = 100, rows = 34, record = null }) {
+  // scrollback: rows kept above the screen. A live strip reads the screen
+  // only (snapshot({ screenOnly })), so a long session costs no more per
+  // update than a short one; the prototype's full reader reads them all.
+  // replay: the screen of a program already running (serialized by the
+  // holder), fed to the engine first so the screen is exactly as it was.
+  // answerQueries: false when the holder's own engine answers the
+  // program's terminal queries (two answers would reach it).
+  constructor({ command, args = [], cwd, env = process.env, cols = 100, rows = 34, recorder = null, pty = null, scrollback = 10000, replay = null, answerQueries = true }) {
     super();
+    const deps = terminalDeps();
+    if (deps.error) throw new Error(deps.error);
     this.cols = cols; this.rows = rows;
-    this.term = new Terminal({ cols, rows, scrollback: 10000, allowProposedApi: true });
+    this.term = new deps.Terminal({ cols, rows, scrollback, allowProposedApi: true });
     this.restarts = watchRepaints(this.term);
     this.t0 = performance.now();
-    this.recordPath = record;
-    this.cast = record ? [JSON.stringify({ version: 2, width: cols, height: rows, timestamp: Math.floor(Date.now() / 1000), env: { TERM: 'xterm-256color' }, title: [command, ...args].join(' ') })] : null;
-    // Written as it happens (every second), not only at the end: a session
-    // that ends badly is the one worth replaying.
-    if (record) { fs.writeFileSync(record, '', { mode: 0o600 }); this.castFlushed = 0; this.castTimer = setInterval(() => this.flushCast(true), 1000); this.castTimer.unref?.(); }
+    this.recorder = recorder;
     this.pending = [];          // inputs written, waiting for the program's reaction
     this.revision = 0;
     this.stats = { bytesOut: 0, chunks: 0, frames: 0, parseMs: 0 };
-    this.proc = pty.spawn(command, args, { cols, rows, cwd, name: 'xterm-256color', env: { ...env, TERM: 'xterm-256color', COLORTERM: 'truecolor' } });
+    this.lastOutputAt = 0; this.lastInputAt = 0;
+    if (replay) { this.term.write(replay); this.sawInputModes = true; }
+    this.proc = pty || deps.pty.spawn(command, args, { cols, rows, cwd, name: 'xterm-256color', env: { ...env, TERM: 'xterm-256color', COLORTERM: 'truecolor' } });
+    this.pid = this.proc.pid;
+    if (recorder) recorder.start({ cols, rows, title: [command, ...args].join(' ') });
     // The emulator answers terminal queries; the answers are the program's input.
-    this.term.onData(reply => this.proc.write(reply));
+    if (answerQueries) this.term.onData(reply => this.proc.write(reply));
     this.proc.onData(data => this.onOutput(data));
-    this.proc.onExit(e => { this.exited = e; clearInterval(this.castTimer); this.flushCast(); this.emit('exit', e); });
+    this.proc.onExit(e => { this.exited = e; if (this.recorder) this.recorder.close(); this.emit('exit', e); });
     this.frameQueued = false;
   }
 
@@ -69,8 +80,8 @@ class TerminalHost extends EventEmitter {
 
   onOutput(data) {
     const at = performance.now();
-    this.stats.bytesOut += data.length; this.stats.chunks++;
-    if (this.cast) this.cast.push(JSON.stringify([(at - this.t0) / 1000, 'o', data]));
+    this.stats.bytesOut += data.length; this.stats.chunks++; this.lastOutputAt = Date.now();
+    if (this.recorder) this.recorder.output(data);
     // First output after an input: the program reacted (not yet parsed).
     for (const p of this.pending) if (p.firstByteAt == null) p.firstByteAt = at;
     // Cursor visibility is not in xterm's public mode list: follow it here.
@@ -128,8 +139,8 @@ class TerminalHost extends EventEmitter {
   }
 
   write(bytes, id, typedAt) {
-    const at = performance.now();
-    if (this.cast) this.cast.push(JSON.stringify([(at - this.t0) / 1000, 'i', bytes]));
+    if (this.recorder) this.recorder.input(bytes);
+    this.lastInputAt = Date.now();
     this.pending.push({ id, writtenAt: typedAt, firstByteAt: null });
     if (this.pending.length > 256) this.pending.shift();
     this.proc.write(bytes);
@@ -144,14 +155,17 @@ class TerminalHost extends EventEmitter {
   resize(cols, rows) {
     this.cols = cols; this.rows = rows;
     this.term.resize(cols, rows); this.proc.resize(cols, rows);
-    if (this.cast) this.cast.push(JSON.stringify([this.now() / 1000, 'r', cols + 'x' + rows]));
+    if (this.recorder) this.recorder.resize(cols, rows);
   }
 
   // The whole buffer (scrollback + screen) as styled rows: the reader's input.
-  snapshot() {
+  // screenOnly: the visible screen alone, as if it were the whole buffer
+  // (base 0, no restarts): what a live strip needs, bounded by the screen.
+  snapshot({ screenOnly = false } = {}) {
     const b = this.term.buffer.active, cell = b.getNullCell();
     const lines = [];
-    for (let y = 0; y < b.length; y++) {
+    const from = screenOnly ? b.baseY : 0, to = screenOnly ? Math.min(b.length, b.baseY + this.rows) : b.length;
+    for (let y = from; y < to; y++) {
       const line = b.getLine(y);
       const runs = []; let run = null;
       for (let x = 0; x < this.cols; x++) {
@@ -167,23 +181,20 @@ class TerminalHost extends EventEmitter {
       }
       lines.push({ text: runs.map(r => r.t).join('').replace(/\s+$/, ''), runs, wrapped: line.isWrapped });
     }
+    const base = screenOnly ? 0 : b.baseY;
     return {
-      lines, cols: this.cols, rows: this.rows, base: b.baseY, viewport: b.viewportY,
-      cursor: { x: b.cursorX, y: b.baseY + b.cursorY, visible: this.cursorVisible !== false },
+      lines, cols: this.cols, rows: this.rows, base, viewport: screenOnly ? 0 : b.viewportY,
+      cursor: { x: b.cursorX, y: base + b.cursorY, visible: this.cursorVisible !== false },
       alternate: b.type === 'alternate',
       modes: { bracketedPaste: this.term.modes.bracketedPasteMode, appCursor: this.term.modes.applicationCursorKeysMode },
-      restarts: (this.restarts || []).slice(),
+      restarts: screenOnly ? [] : (this.restarts || []).slice(),
       revision: this.revision,
     };
   }
 
-  flushCast() {
-    if (!this.cast || !this.recordPath || this.castFlushed >= this.cast.length) return;
-    fs.appendFileSync(this.recordPath, this.cast.slice(this.castFlushed).join('\n') + '\n');
-    this.castFlushed = this.cast.length;
-  }
-
-  kill() { clearTimeout(this.heldTimer); clearInterval(this.castTimer); try { this.proc.kill(); } catch {} this.flushCast(); }
+  kill() { clearTimeout(this.heldTimer); try { this.proc.kill(); } catch {} if (this.recorder) this.recorder.close(); }
+  // Let go of the program without ending it (a holder keeps it running).
+  detach() { clearTimeout(this.heldTimer); if (this.proc.detach) this.proc.detach(); if (this.recorder) this.recorder.close(); }
 }
 
 // Keys as a terminal sends them (xterm conventions). The browser sends

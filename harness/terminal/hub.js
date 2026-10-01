@@ -1,32 +1,38 @@
 'use strict';
-// One running CLI, shared by the pages that watch it (the hub). It owns
-// what every page is shown and what every page may do, whatever server
-// carries the pages' connections (the prototype's own server, Chattering's).
+// One running program, shared by the pages that watch it (the hub). It owns
+// what every page is shown and what every page may do, whatever carries the
+// pages' connections (Chattering's WebSockets, the encrypted link).
 //
 // - Only what changed is sent: each page has the parts it holds.
 // - A page says what it wants: the raw screen or not; "live" (every update)
-//   or "calm" (e-ink: one update a second, no spinner).
+//   or "calm" (e-ink: one update a second, no spinner, no moving window).
 // - One typist at a time; every message carries (page id, sequence) and is
 //   applied once, whatever a reconnect replays.
-// - Optional recording of the devices' side (events.jsonl), on the terminal
-//   recording's clock.
-// - liveOnly: the conversation itself comes from elsewhere (Chattering reads
-//   Claude Code's session file); only the live part is sent: the input box,
-//   suggestions, dialogs, panels, status, and while it works, a window of
-//   the terminal as drawn ("now").
+// - The devices' side can be recorded (`events`: anything with write(obj)),
+//   on the terminal recording's clock.
+// - liveOnly (Chattering): the conversation itself comes from the agent's
+//   session file; only the live part is sent: the input box, suggestions,
+//   questions, panels, status, and while it works, a window of the
+//   terminal as drawn ("now"). It reads the visible screen only, so an
+//   update costs the same in the tenth hour as in the first.
+//   Without liveOnly (the prototype's lab) the conversation is read from
+//   the screen too, scrollback included.
 //
 // A connection is anything with send(string), on('message', fn),
 // on('close', fn), and readyState 1 or 'open' while usable.
 
-const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { encodeKey } = require('./host');
 const { readDocument } = require('./reader');
 const { choose, pickMenu, setComposerText, submitComposer } = require('./actions');
 
 const TYPIST_MS = 2500, CALM_MS = 1000, STATUS_ONLY_MS = 250, NOW_ROWS = 14;
+// A live update is bounded by the screen: every cell styled differently on
+// a 240×120 screen is ~600 KB; anything near this is a fault worth a line
+// in the events file, not something to send to a phone.
+const MAX_PATCH = 512 * 1024;
 const LISTS = new Set(['transcript', 'journal']);
-const open = ws => ws.readyState === 1 || ws.readyState === 'open';
+const isOpen = ws => ws.readyState === 1 || ws.readyState === 'open';
 
 function diff(prev, next) {
   const set = {}, lists = {};
@@ -63,21 +69,18 @@ function nowWindow(snap, doc, sent) {
   return rows.length ? rows.map(l => l.runs) : null;
 }
 
-function createHub({ host, profile, journal = null, events: eventsFile = null, liveOnly = false }) {
+function createHub({ host, profile, journal = null, events = null, liveOnly = false, onState = null }) {
   const clients = new Map();
-  const stats = { frames: 0, messages: 0, bytesSent: 0, fullBytes: 0, perClient: {} };
+  const stats = { frames: 0, messages: 0, bytesSent: 0, fullBytes: 0, maxPatch: 0, oversize: 0 };
   let typist = null, current = null, actionQueue = Promise.resolve();
   let lastBox = ''; // the box's text before it was sent (for the "now" window)
+  let noticeText = null; // something the devices should know, from the server
+  let lastState = '';
   const serial = fn => (actionQueue = actionQueue.then(fn, fn));
-  const events = []; let eventsFlushed = 0;
-  if (eventsFile) fs.writeFileSync(eventsFile, '', { mode: 0o600 });
-  const logEvent = e => { if (eventsFile) events.push(JSON.stringify({ t: +((performance.now() - host.t0) / 1000).toFixed(3), ...e })); };
-  const flushEvents = () => { if (eventsFile && eventsFlushed < events.length) { fs.appendFileSync(eventsFile, events.slice(eventsFlushed).join('\n') + '\n'); eventsFlushed = events.length; } };
-  const eventsTimer = eventsFile ? setInterval(flushEvents, 1000) : null;
-  if (eventsTimer) eventsTimer.unref();
+  const logEvent = e => { if (events) events.write({ t: +((performance.now() - host.t0) / 1000).toFixed(3), ...e }); };
 
   const compute = () => {
-    const snap = host.snapshot();
+    const snap = host.snapshot({ screenOnly: liveOnly });
     const doc = readDocument(snap, profile);
     if (doc.composer && doc.composer.text.trim() && !doc.status) lastBox = doc.composer.text;
     current = {
@@ -87,7 +90,20 @@ function createHub({ host, profile, journal = null, events: eventsFile = null, l
       now: liveOnly ? nowWindow(snap, doc, lastBox) : null,
     };
     stats.frames++;
+    // What the rest of Chattering needs to know (the list's "working" mark):
+    // said only when it changes.
+    if (onState) { const s = state(); const sig = JSON.stringify([s.mode, s.working, s.exited, s.waiting]); if (sig !== lastState) { lastState = sig; onState(s); } }
   };
+  // The program's state in one line: what it is doing, who is typing.
+  function state() {
+    const doc = current ? current.doc : { mode: 'unknown', status: null, choice: null };
+    return {
+      mode: doc.mode, working: !!doc.status, waiting: !!doc.choice, exited: host.exited || null,
+      typist: typist && Date.now() - typist.at < TYPIST_MS ? typist.name : null,
+      devices: [...clients.values()].map(c => c.name),
+      lastInputAt: host.lastInputAt || 0, lastOutputAt: host.lastOutputAt || 0,
+    };
+  }
   function partsFor(c) {
     const doc = current.doc;
     const status = doc.status && c.calm ? { working: true, text: doc.status.text.replace(/^\S+\s+/, '').replace(/\s*\(.*$/, '') } : doc.status;
@@ -95,6 +111,7 @@ function createHub({ host, profile, journal = null, events: eventsFile = null, l
       mode: doc.mode, composer: doc.composer, menu: doc.menu, choice: doc.choice, status, footer: doc.footer, live: doc.live,
       screen: c.wantScreen ? current.screen : null, cursor: current.cursor, exited: current.exited,
       typist: typist && Date.now() - typist.at < TYPIST_MS ? { clientId: typist.clientId, name: typist.name } : null,
+      notice: noticeText,
     };
     if (liveOnly) parts.now = c.calm ? null : current.now; // e-ink: no moving window
     else { parts.transcript = doc.transcript; parts.journal = current.journal; }
@@ -102,7 +119,7 @@ function createHub({ host, profile, journal = null, events: eventsFile = null, l
   }
 
   function sendTo(c, urgent = false) {
-    if (!open(c.ws)) return;
+    if (!isOpen(c.ws)) return;
     const parts = partsFor(c);
     const nextMode = JSON.parse(parts.mode);
     // A program clearing its screen to redraw it passes through a panel or
@@ -116,7 +133,7 @@ function createHub({ host, profile, journal = null, events: eventsFile = null, l
     if (d.empty && !acks.length) return;
     const keys = Object.keys(d.set);
     const statusOnly = !Object.keys(d.lists).length && keys.every(k => k === 'status' || k === 'now');
-    const minGap = c.calm ? (urgent || keys.some(k => ['choice', 'mode', 'composer', 'menu'].includes(k)) ? 150 : CALM_MS) : statusOnly && !acks.length ? STATUS_ONLY_MS : 0;
+    const minGap = c.calm ? (urgent || keys.some(k => ['choice', 'mode', 'composer', 'menu', 'exited'].includes(k)) ? 150 : CALM_MS) : statusOnly && !acks.length ? STATUS_ONLY_MS : 0;
     const since = Date.now() - c.lastAt;
     if (since < minGap) {
       c.acks.unshift(...acks);
@@ -125,6 +142,16 @@ function createHub({ host, profile, journal = null, events: eventsFile = null, l
     }
     clearTimeout(c.timer); c.timer = null;
     const msg = JSON.stringify({ t: 'patch', set: d.set, lists: d.lists, acks });
+    stats.maxPatch = Math.max(stats.maxPatch, msg.length);
+    if (msg.length > MAX_PATCH) {
+      // Never expected (an update is bounded by the screen): recorded, and
+      // the page is told to show the program's screen as drawn instead.
+      stats.oversize++;
+      logEvent({ dev: c.name, id: c.clientId, ev: 'oversize', bytes: msg.length, keys });
+      c.ws.send(JSON.stringify({ t: 'patch', set: { mode: 'unknown', live: [], now: null }, lists: {}, acks }));
+      c.sent = { ...parts, mode: JSON.stringify('unknown'), live: '[]', now: 'null' }; c.lastAt = Date.now();
+      return;
+    }
     c.ws.send(msg);
     logEvent({ dev: c.name, id: c.clientId, ev: 'shown', patch: JSON.parse(msg) });
     c.sent = parts; c.lastAt = Date.now();
@@ -147,9 +174,10 @@ function createHub({ host, profile, journal = null, events: eventsFile = null, l
   function attach(ws, { name = 'a page' } = {}) {
     const c = { ws, clientId: crypto.randomUUID(), name, wantScreen: false, calm: false, sent: {}, lastAt: 0, timer: null, holdTimer: null, acks: [], lastSeq: -1 };
     clients.set(ws, c);
-    ws.on('close', () => { clearTimeout(c.timer); clearTimeout(c.holdTimer); clients.delete(ws); logEvent({ dev: c.name, id: c.clientId, ev: 'disconnected' }); });
+    ws.on('close', () => { clearTimeout(c.timer); clearTimeout(c.holdTimer); clients.delete(ws); logEvent({ dev: c.name, id: c.clientId, ev: 'disconnected' }); if (onState) onState(state()); });
     ws.on('message', raw => {
       let m; try { m = JSON.parse(String(raw)); } catch { return; }
+      if (!m || typeof m !== 'object') return;
       if (m.t === 'hello') {
         if (typeof m.clientId === 'string' && /^[\w-]{8,64}$/.test(m.clientId)) c.clientId = m.clientId;
         c.name = String(m.name || name).slice(0, 40);
@@ -159,6 +187,7 @@ function createHub({ host, profile, journal = null, events: eventsFile = null, l
         logEvent({ dev: c.name, id: c.clientId, ev: 'connected', calm: c.calm, screen: c.wantScreen, lastSeq: c.lastSeq });
         if (!current) compute();
         sendTo(c, true);
+        if (onState) onState(state());
         return;
       }
       if (m.t === 'view') { c.wantScreen = !!m.screen; c.calm = !!m.calm; sendTo(c, true); return; }
@@ -167,13 +196,15 @@ function createHub({ host, profile, journal = null, events: eventsFile = null, l
       c.lastSeq = m.seq;
       logEvent({ dev: c.name, id: c.clientId, ev: 'sent', msg: m });
       const id = c.clientId + ':' + m.seq;
-      const reply = (t, extra) => { logEvent({ dev: c.name, id: c.clientId, ev: 'answer', seq: m.seq, answer: t, ...extra }); if (open(ws)) ws.send(JSON.stringify({ t, seq: m.seq, ...extra })); };
+      const reply = (t, extra) => { logEvent({ dev: c.name, id: c.clientId, ev: 'answer', seq: m.seq, answer: t, ...extra }); if (isOpen(ws)) ws.send(JSON.stringify({ t, seq: m.seq, ...extra })); };
       if (host.exited) return reply('error', { error: 'the program has ended' });
       if (typist && typist.clientId !== c.clientId && Date.now() - typist.at < TYPIST_MS) return reply('refused', { error: typist.name + ' is typing' });
       typist = { clientId: c.clientId, name: c.name, at: Date.now() };
       const act = async fn => { try { reply('done', await fn() || {}); } catch (e) { reply('error', { error: e.message }); } };
+      const modes = () => host.snapshot({ screenOnly: true }).modes;
       if (m.t === 'text') host.input(String(m.text), id);
-      else if (m.t === 'key') { const bytes = encodeKey(m, host.snapshot().modes); if (bytes) host.input(bytes, id); }
+      else if (m.t === 'key') { const bytes = encodeKey(m, modes()); if (bytes) host.input(bytes, id); }
+      else if (m.t === 'stop') { const k = (profile && profile.keys && profile.keys.stop) || { key: 'Escape' }; host.input(encodeKey(k, modes()), id); }
       else if (m.t === 'paste') host.paste(String(m.text), id);
       else if (m.t === 'choose') serial(() => act(() => choose(host, m.index, { profile }).then(() => ({}))));
       else if (m.t === 'menu') serial(() => act(() => pickMenu(host, m.index, { profile }).then(d => ({ text: d.composer ? d.composer.text : null }))));
@@ -194,12 +225,30 @@ function createHub({ host, profile, journal = null, events: eventsFile = null, l
     return c;
   }
 
+  // Wait until the program shows a state (`test(doc)`), e.g. its input box
+  // ready for the first message of a new conversation.
+  function until(test, timeoutMs = 10000) {
+    return new Promise((resolve, reject) => {
+      const check = () => { compute(); if (test(current.doc)) { done(); resolve(current.doc); return true; } return false; };
+      const timer = setTimeout(() => { done(); reject(new Error('the program did not reach the expected state')); }, timeoutMs);
+      const done = () => { clearTimeout(timer); host.off('frame', check); };
+      host.on('frame', check);
+      check();
+    });
+  }
+  // Send a message from the server (a conversation's first message, or one
+  // typed in Chattering's box while the program was ending): the same
+  // closed loop as a device's Send.
+  const submit = text => new Promise((resolve, reject) => serial(() => submitComposer(host, String(text), { profile }).then(resolve, reject)));
+
   function close() {
     host.off('frame', onFrame);
     for (const c of clients.values()) { clearTimeout(c.timer); clearTimeout(c.holdTimer); try { c.ws.close(); } catch {} }
-    clearInterval(eventsTimer); flushEvents();
+    clients.clear();
+    if (events && events.close) events.close();
   }
-  return { attach, close, stats, clients, logEvent };
+  function notice(text) { noticeText = text || null; if (current) for (const c of clients.values()) sendTo(c, true); }
+  return { attach, close, stats, clients, logEvent, state, until, submit, notice };
 }
 
-module.exports = { createHub, diff, encodeParts, nowWindow };
+module.exports = { createHub, diff, encodeParts, nowWindow, MAX_PATCH };

@@ -8,9 +8,9 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { TerminalHost } = require('./host');
-const { readDocument, CLAUDE, GENERIC } = require('./reader');
-const { waitFor, choose, pickMenu } = require('./actions');
+const { TerminalHost } = require('../../harness/terminal/host');
+const { readDocument, CLAUDE, GENERIC } = require('../../harness/terminal/reader');
+const { waitFor, choose, pickMenu } = require('../../harness/terminal/actions');
 const { ClaudeJournal } = require('./journal');
 
 const live = process.argv.includes('--live'), pi = process.argv.includes('--pi');
@@ -28,7 +28,7 @@ async function main() {
   const args = pi ? [] : ['--permission-mode', 'manual', '--effort', 'low'];
   const out = { name, command: [command, ...args].join(' '), when: new Date().toISOString(), cwd, steps: {}, notes: [] };
   const t0 = performance.now();
-  const host = new TerminalHost({ command, args, cwd, record: path.join(here, 'recordings', name + '.cast') });
+  const host = new TerminalHost({ command, args, cwd, recorder: require('../../harness/terminal/recorder').createRecorder(path.join(here, 'recordings', name + '.cast.gz')) });
   const journal = pi ? null : new ClaudeJournal(cwd);
   // Every frame: how long the snapshot + reader take.
   const readMs = [], snapMs = [];

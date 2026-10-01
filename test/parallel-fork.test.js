@@ -11,6 +11,8 @@ const slice = (text, start, end) => text.slice(text.indexOf(start), text.indexOf
 function harness() {
   const calls = [], active = { alive: true };
   const ctx = vm.createContext({
+    // Session files held by an agent's own program (design/91): none here.
+    liveHeld: new Map(),
     sessionPathsFor: key => ({ entry: { source: 'pi', title: 'Parent' }, sessionPath: '/sessions/' + key, cwd: '/project' }),
     assertDelegationOwnership: async file => { calls.push(['ownership', file]); },
     // A configured RPC agent must still use the detached native file utility.

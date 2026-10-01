@@ -2767,6 +2767,7 @@ function withSessionOp(absPath, fn) {
   const prev = sessionFileOps.get(absPath) || Promise.resolve();
   const run = prev.catch(() => {}).then(async () => {
     await assertDelegationOwnership(absPath);
+    if (liveHeld.has(absPath)) throw Object.assign(new Error('This conversation is open in its agent\'s own program here: change it there, or go back to Chattering\'s box first.'), { status: 409 });
     return fn();
   });
   const gate = run.catch(() => {}).then(() => {
@@ -3505,6 +3506,8 @@ function runEventForwarder(job) {
 // and level are already fixed (the reply says so: briefDropped).
 async function startAgentRun(key, { node, provider, modelId, message, images, force, allowQueue, fanout, context, customMessage, expectedLeaf, expectedVersion, recoveryAttempts = 0, principal = null, input = 'keyboard', coauthors = null, brief = null, thinking = null, intent = null }) {
   const { entry, sessionPath, cwd } = sessionPathsFor(key);
+  // One writer (design/91): checked again where the run is registered.
+  if (liveHeld.has(sessionPath)) throw Object.assign(new Error('This conversation is open in its agent\'s own program here: use its box below, or go back to Chattering\'s box first.'), { status: 409 });
   principal = await principalInProject(principal || principalFor(null), projectNameOf(entry.cwd, key));
   assertPrincipalCanRun(principal, 'an agent');
   if (!customMessage) assertWithinBudget(usersLib.findUser(roster, principal.user.id) || principal.user);
@@ -3598,6 +3601,7 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
   jobChanged(job);
   const record = { jobId: job.id, key, startedAt: job.startedAt, model: job.model, handle: null, yielded: null,
     callbackTaskIds: ['delegation-complete', 'delegation-attention'].includes(customMessage?.customType) ? customMessage.details.taskIds : [], launchStarted: false };
+  if (liveHeld.has(sessionPath)) throw Object.assign(new Error('This conversation is open in its agent\'s own program here: use its box below, or go back to Chattering\'s box first.'), { status: 409 });
   headlessRuns.set(sessionPath, record);
   const finish = async (status, statusText, error) => {
     if (headlessRuns.get(sessionPath) === record) headlessRuns.delete(sessionPath);
@@ -3705,6 +3709,7 @@ if (typeof pisdk.setAutonomousRunHandler === 'function') pisdk.setAutonomousRunH
     title: 'Extension callback', status: 'running', statusText: 'responding to an extension event',
     startedAt: Date.now(), model: info.model || null };
   const record = { jobId: job.id, key, startedAt: job.startedAt, model: job.model, handle, yielded: null };
+  if (liveHeld.has(sessionPath)) throw Object.assign(new Error('This conversation is open in its agent\'s own program here: use its box below, or go back to Chattering\'s box first.'), { status: 409 });
   headlessRuns.set(sessionPath, record);
   agentRunJobs.set(job.id, job);
   const forward = runEventForwarder(job);
@@ -4337,6 +4342,7 @@ async function setConversationThinking(key, level, force) {
 const compactingSessions = new Set(); // resolved session paths being compacted
 async function compactConversation(key, instructions, force) {
   const { entry, sessionPath, cwd } = sessionPathsFor(key);
+  assertNotLive(key);
   if (conversationKind(entry) === 'claude') throw new Error('Compacting needs pi. Claude conversations compact in the terminal.');
   if (conversationKind(entry) === 'codex') {
     // Codex's own compaction (its /compact). It takes no focus instructions.
@@ -9180,15 +9186,244 @@ function codexComposerFor(key, principal) {
   return c;
 }
 
-// Experimental: Claude Code continued live from Chattering, through the
-// real interactive `claude` on an invisible terminal (live-terminal.js).
-// Off unless CHATTERING_LIVE_TERMINAL=1: nothing of it loads otherwise.
+// ---- Agents continued in their own program (design/91) ----
+// A conversation of Claude Code, Pi or Codex continued through the real,
+// interactive program on an invisible terminal (harness/live-terminal.js):
+// the conversation is this app's own view of the agent's file, the strip
+// under it is the program's live part. The programs live in the terminal
+// holder, so a restart of this server does not end them.
+//
+// One writer per conversation: while its program runs, the session file
+// is held (liveHeld) and every other way of writing it here (web runs,
+// compaction, branch edits) refuses; before the program starts, this
+// app's own Pi session or Codex connection lets go.
+const liveTerminalProfiles = require('./harness/terminal/profiles.js');
 let liveTerminalsLib = null;
+const liveHeld = new Map();     // session file → conversation key, while its program runs
+const liveStates = new Map();   // key → the program's last state (the list's "working" mark)
+const livePending = new Map();  // a new conversation's temporary key → { harness, cwd, sessionId, startedAt, key }
+const LIVE_CHOICES_FILE = path.join(DATA_DIR, 'live-terminal', 'choices.json');
+const liveChoices = new Map((() => { try { return Object.entries(JSON.parse(fs.readFileSync(LIVE_CHOICES_FILE, 'utf8'))); } catch { return []; } })());
+function saveLiveChoices() {
+  try { fs.mkdirSync(path.dirname(LIVE_CHOICES_FILE), { recursive: true, mode: 0o700 }); fs.writeFileSync(LIVE_CHOICES_FILE, JSON.stringify(Object.fromEntries(liveChoices)), { mode: 0o600 }); }
+  catch (e) { console.error('[live terminal] choices: ' + e.message); }
+}
+function liveTerminalConf() { return appSettings.liveTerminal || settingsLib.normalizeSettings({}).liveTerminal; }
 function liveTerminals() {
-  if (process.env.CHATTERING_LIVE_TERMINAL !== '1') return null;
-  return liveTerminalsLib ||= require('./live-terminal.js').createLiveTerminals({
-    cacheDir: CACHE_DIR, claudeBin: () => claudeBin(), claudeProjects: SOURCES.claude, log: m => console.error(m),
+  if (liveTerminalsLib) return liveTerminalsLib;
+  liveTerminalsLib = require('./harness/live-terminal.js').createLiveTerminals({
+    dataDir: DATA_DIR,
+    commandFor: (profile, args) => {
+      if (profile.program === 'claude') return [claudeBin(), ...args];
+      if (profile.program === 'pi') return piArgv(args);
+      if (profile.program === 'codex') return [codexBin(), ...args];
+      throw new Error(profile.name + ' has no program here');
+    },
+    envFor: principal => agentEnv(principal),
+    settings: () => liveTerminalConf(),
+    onState: (key, st) => liveStateChanged(key, st),
+    log: m => console.error(m),
+    useHolder: process.env.CHATTERING_LIVE_TERMINAL_IN_PROCESS !== '1',
+    holderStart: argv => startTerminalHolder(argv),
   });
+  return liveTerminalsLib;
+}
+// The holder starts in a systemd user scope of its own where there is one:
+// a service restart stops everything in the service's group, detached or
+// not (the same reason delegated work runs in a scope, design/29).
+function startTerminalHolder([node, script, dir]) {
+  const supervision = require('./process-supervision.js');
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const out = fs.openSync(path.join(dir, 'holder.log'), 'a', 0o600);
+  const id = crypto.randomUUID();
+  let plan;
+  try { plan = supervision.supervisionPlan(node, [script, dir], { id, mode: process.env.CHATTERING_NO_CGROUP === '1' ? 'detached' : 'auto' }); }
+  catch { plan = { command: node, args: [script, dir] }; }
+  if (plan.kind === 'user-scope') plan.args = plan.args.map(a => a.startsWith('--unit=') ? '--unit=chattering-terminals-' + id.slice(0, 8) : a);
+  const child = supervision.spawnSupervised(plan, { cwd: dir, stdio: ['ignore', out, out], env: process.env });
+  child.on('error', e => console.error('[live terminal] holder: ' + e.message));
+  child.unref();
+  fs.closeSync(out);
+}
+// Who may continue a conversation in its program. It runs as this
+// machine's account, with the account's own sign-in to the agent: the
+// owner and, in a household (settings → people), its members, who already
+// run agents as the account. Not (yet) behind a guest's walls.
+function liveTerminalRefusal(identity) {
+  if (!identity || !identity.user) return 'sign in first';
+  if (usersLib.isWalled(identity.user)) return 'An agent\'s own program runs as this machine\'s account: it is not available inside a shared project yet.';
+  return null;
+}
+// What a conversation's page needs to know: whether its program is used
+// here, offered, running, and why not.
+function liveTerminalFor(key, identity) {
+  const entry = index[key];
+  if (!entry) return null;
+  const profile = liveTerminalProfiles.PROFILES[entry.source];
+  if (!profile || !profile.program) return null;
+  if (entry.importCopyOf || (entry.codex && entry.codex.imported)) return null;
+  const setting = liveTerminalConf().agents[entry.source] || 'off';
+  const st = liveTerminalsLib ? liveTerminalsLib.status(key) : { running: false };
+  const refusal = liveTerminalRefusal(identity);
+  const choice = liveChoices.get(key);
+  const use = st.running || (setting === 'always' && choice !== 'box') || (setting === 'choose' && choice === 'program');
+  return {
+    harness: entry.source, name: profile.name, setting, running: !!st.running,
+    use: !refusal && setting !== 'off' && use, offer: !refusal && setting === 'choose' && !use,
+    // Pi and Codex have Chattering's own box to go back to; Claude Code
+    // set to 'always' has only its program.
+    canLeave: entry.source !== 'claude',
+    refusal, state: st.state || null, notice: st.notice || null, keptDraft: !!st.keptDraft,
+  };
+}
+// One writer per conversation (see above).
+function assertNotLive(key, what = 'This') {
+  const entry = index[key];
+  let file = null;
+  try { file = sessionPathsFor(key).sessionPath; } catch {}
+  if (file && liveHeld.has(file)) {
+    const name = (liveTerminalProfiles.PROFILES[entry && entry.source] || {}).name || 'its program';
+    throw Object.assign(new Error(`${what} conversation is open in ${name}'s own program here: use its box below, or go back to Chattering's box first.`), { status: 409 });
+  }
+}
+function liveStateChanged(key, st) {
+  const ended = !st || st.mode === 'ended' || !!st.exited;
+  if (ended) { liveStates.delete(key); for (const [f, k] of liveHeld) if (k === key) liveHeld.delete(f); }
+  else liveStates.set(key, st);
+  const out = ended ? { mode: 'ended', working: false, waiting: false } : { mode: st.mode, working: !!st.working, waiting: !!st.waiting };
+  broadcast({ type: 'live-terminal', key, harness: st && st.harness, state: out });
+  refreshAgentsSignal();
+}
+
+// Start a conversation's program, once nothing else writes it: not a
+// terminal elsewhere, not a reply being written here, not delegated work;
+// this app's warm Pi session and its Codex connection let go first.
+async function liveStartExisting(key, identity) {
+  const lt = liveTerminals();
+  if (lt.status(key).running) return;
+  const { entry, sessionPath, cwd } = sessionPathsFor(key);
+  const other = findRunningConversation(key);
+  if (other) throw Object.assign(new Error(`This conversation is open in a terminal on this computer (process ${other.pid}). Close it there first: one program writes a conversation at a time.`), { status: 409 });
+  if (headlessRuns.has(sessionPath)) throw Object.assign(new Error('A reply is being written here. Wait for it (or stop it), then continue in the program.'), { status: 409 });
+  await assertDelegationOwnership(sessionPath);
+  if (entry.source === 'codex') {
+    if (!entry.sessionId) throw new Error('This Codex conversation has no thread id.');
+    await codexDriver.release(entry.sessionId);
+  }
+  stopAnyWarmSession(sessionPath);
+  // Held before the program starts, checked in the same breath as a run
+  // would be: nothing can begin writing in between.
+  if (headlessRuns.has(sessionPath) || liveHeld.has(sessionPath)) throw Object.assign(new Error('Something else started writing this conversation. Try again.'), { status: 409 });
+  liveHeld.set(sessionPath, key);
+  try {
+    await lt.start(key, { profileId: entry.source, cwd, sessionId: entry.sessionId, sessionPath, principal: principalFor(identity) });
+  } catch (e) { liveHeld.delete(sessionPath); throw e; }
+}
+// Which box a conversation uses on every device, kept here, not in one
+// browser: 'program' or 'box' (Chattering's own).
+function liveChooses(key, choice) {
+  const setting = liveTerminalConf().agents[index[key] && index[key].source];
+  const want = choice === 'box' ? (setting === 'always' ? 'box' : null) : (setting === 'choose' ? 'program' : null);
+  if ((liveChoices.get(key) || null) === want) return;
+  if (want) liveChoices.set(key, want); else liveChoices.delete(key);
+  saveLiveChoices();
+}
+// A new conversation's file, once its program writes it: Claude Code and
+// Pi were given its id; Codex picks one, and its file is the new one in
+// this folder that the program itself holds open.
+function liveNewFile(pend, programPid) {
+  if (pend.harness === 'claude') {
+    const f = path.join(SOURCES.claude, pend.cwd.replace(/[^a-zA-Z0-9]/g, '-'), pend.sessionId + '.jsonl');
+    return fs.existsSync(f) ? f : null;
+  }
+  if (pend.harness === 'pi') {
+    const dir = path.join(SOURCES.pi, runtimeLib.piSessionDirName(pend.cwd));
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch { return null; }
+    const name = names.find(n => n.endsWith('_' + pend.sessionId + '.jsonl'));
+    return name ? path.join(dir, name) : null;
+  }
+  if (pend.harness === 'codex') {
+    const days = new Set();
+    for (const t of [pend.startedAt, Date.now()]) { const d = new Date(t); days.add(path.join(String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0'))); }
+    const candidates = [];
+    for (const day of days) {
+      let names = [];
+      try { names = fs.readdirSync(path.join(SOURCES.codex, day)); } catch { continue; }
+      for (const n of names) {
+        if (!/^rollout-.*\.jsonl$/.test(n)) continue;
+        const f = path.join(SOURCES.codex, day, n);
+        // Another program's (claimed), or older than this one: not it.
+        if (liveHeld.has(f)) continue;
+        let st; try { st = fs.statSync(f); } catch { continue; }
+        if ((st.birthtimeMs || st.mtimeMs) < pend.startedAt - 5000) continue;
+        try { const head = JSON.parse(fs.readFileSync(f, 'utf8').split('\n', 1)[0]); if ((head.payload || head).cwd !== pend.cwd) continue; } catch { continue; }
+        candidates.push(f);
+      }
+    }
+    // The one its own process holds open (Linux: /proc), when it holds one;
+    // else the only new file in this folder. Two new Codex conversations
+    // in one folder at the same moment, neither held open: wait, never guess.
+    if (candidates.length > 1) {
+      const held = openFilesUnder(programPid);
+      const mine = held ? candidates.filter(f => held.has(f)) : [];
+      return mine.length === 1 ? mine[0] : null;
+    }
+    return candidates[0] || null;
+  }
+  return null;
+}
+// The files a process and its children hold open; null where the system
+// does not say (only Linux is read here).
+function openFilesUnder(pid) {
+  if (!pid || process.platform !== 'linux') return null;
+  const procs = processesLib.list(), out = new Set();
+  const pids = new Set([pid]);
+  for (let grew = true; grew;) { grew = false; for (const p of procs) if (pids.has(p.ppid) && !pids.has(p.pid)) { pids.add(p.pid); grew = true; } }
+  for (const p of pids) {
+    let fds = [];
+    try { fds = fs.readdirSync('/proc/' + p + '/fd'); } catch { continue; }
+    for (const fd of fds) { try { out.add(fs.readlinkSync('/proc/' + p + '/fd/' + fd)); } catch {} }
+  }
+  return out;
+}
+function watchNewLiveConversation(temp, pend) {
+  const tick = async () => {
+    const lt = liveTerminalsLib;
+    const st = lt && lt.status(temp);
+    if (!st || !st.running) { if (!pend.key) livePending.delete(temp); return; }
+    const s = lt.sessions.get(temp);
+    const file = liveNewFile(pend, s && s.host.pid);
+    if (!file) return setTimeout(tick, 400).unref?.();
+    try {
+      const key = await indexNewSessionFile(file);
+      pend.key = key;
+      liveHeld.set(file, key);
+      lt.rekey(temp, key);
+      liveChooses(key, 'program');
+      broadcast({ type: 'live-terminal', key, from: temp, harness: pend.harness, state: { mode: 'compose', working: true, waiting: false } });
+      // The temporary key keeps answering for a while (pages that hold it).
+      setTimeout(() => livePending.delete(temp), 10 * 60000).unref?.();
+    } catch (e) { console.error('[live terminal] new conversation: ' + e.message); setTimeout(tick, 1000).unref?.(); }
+  };
+  tick();
+}
+// After a restart: the programs that kept running are attached again and
+// their conversations held; new ones still waiting for their file are
+// watched again.
+async function recoverLiveTerminals() {
+  let keys = [];
+  try { keys = await liveTerminals().recover(); } catch (e) { console.error('[live terminal] recovery: ' + e.message); return; }
+  for (const key of keys) {
+    const s = liveTerminalsLib.sessions.get(key);
+    if (key.startsWith('live:')) {
+      const pend = { harness: s.profile.id, cwd: s.cwd, sessionId: s.sessionId, startedAt: s.startedAt, key: null, userId: null };
+      livePending.set(key, pend);
+      watchNewLiveConversation(key, pend);
+      continue;
+    }
+    try { liveHeld.set(sessionPathsFor(key).sessionPath, key); } catch { liveTerminalsLib.stop(key); }
+  }
 }
 
 function claudeBin() {
@@ -9322,10 +9557,26 @@ function recordsApi() {
   return recordsApiInstance;
 }
 
+// The processes this app runs live (its terminal holder and everything
+// under it): not "a terminal elsewhere".
+function liveOwnPids(procs) {
+  const own = liveTerminalsLib ? liveTerminalsLib.ownPids() : null;
+  if (!own || (!own.holderPid && !own.pids.size)) return new Set();
+  const parent = new Map(procs.map(p => [p.pid, p.ppid]));
+  const roots = new Set([own.holderPid, ...own.pids].filter(Boolean));
+  const out = new Set();
+  for (const p of procs) {
+    for (let at = p.pid, guard = 0; at && guard < 64; at = parent.get(at), guard++) if (roots.has(at)) { out.add(p.pid); break; }
+  }
+  return out;
+}
 function listRunningAgents() {
   const running = [];
   const seen = new Set();
-  for (const { pid, argv: args } of processesLib.list()) {
+  const procs = processesLib.list();
+  const own = liveOwnPids(procs);
+  for (const { pid, argv: args } of procs) {
+    if (own.has(pid)) continue;
     if (!isInteractiveAgent(args)) continue;
     const key = matchArgsToKey(args);
     const title = flagValue(args, ['--title', '-t']);
@@ -9360,8 +9611,11 @@ function findRunningConversation(key) {
 // browser pairs this with file mtimes and headless runs to paint a static
 // working/recent mark — no browser polling, no per-second churn (e-ink safe).
 function runningAgentKeys() {
-  try { return [...new Set(listRunningAgents().map(r => r.key).filter(Boolean))].sort(); }
-  catch { return []; }
+  // A program run live here counts while it works or waits for an answer,
+  // as its own screen says; idle, it is not "working".
+  const live = [...liveStates].filter(([, st]) => st.working || st.waiting).map(([k]) => k);
+  try { return [...new Set([...listRunningAgents().map(r => r.key).filter(Boolean), ...live])].sort(); }
+  catch { return live.sort(); }
 }
 // Identifies this server process. A client that reconnects and sees a new
 // boot id knows the server (and possibly the interface) was replaced — it
@@ -9370,13 +9624,26 @@ const BOOT_ID = crypto.randomUUID();
 const BOOT_AT = Date.now();
 const APP_VERSION = (() => { try { return require('./package.json').version || null; } catch { return null; } })();
 let runningAgentsSig = null;
-setInterval(() => {
+function refreshAgentsSignal() {
   const keys = runningAgentKeys();
   const sig = keys.join('|');
   if (sig === runningAgentsSig) return;
   runningAgentsSig = sig;
   broadcast({ type: 'agents', keys });
-}, 15000).unref();
+}
+setInterval(() => { refreshAgentsSignal(); liveConflicts(); }, 15000).unref();
+// A conversation run live here and also open in a terminal elsewhere on
+// this computer has two writers: its devices are told, plainly.
+function liveConflicts() {
+  if (!liveTerminalsLib || !liveTerminalsLib.sessions.size) return;
+  let others = [];
+  try { others = listRunningAgents(); } catch { return; }
+  for (const key of liveTerminalsLib.sessions.keys()) {
+    const other = others.find(r => r.key === key);
+    const name = (liveTerminalProfiles.PROFILES[index[key] && index[key].source] || {}).name || 'The agent';
+    liveTerminalsLib.setNotice(key, other ? `${name} is also open in a terminal on this computer (process ${other.pid}). Two programs writing one conversation can lose messages: close one of them.` : null);
+  }
+}
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -16938,6 +17205,8 @@ async function handleRequest(req, res) {
       data.importCopyOf = index[key].importCopyOf || null;
       if (index[key].source === 'codex') data.codexPrefs = codexRuns().prefsOf(key);
       data.codexCopies = index[key].codexCopies || null;
+      // Its agent's own program (design/91): used here, offered, running.
+      data.liveTerminal = liveTerminalFor(key, identity);
       data.selectedModels = await inferredConversationModels(key, data);
       data.attachedContext = conversationContextOf(key);
       data.reading = readingFor(key, identity);
@@ -18874,51 +19143,79 @@ async function handleRequest(req, res) {
         json(res, 200, await snippetsLib.bumpUse(SNIPPET_USES_FILE, abs));
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname.startsWith('/api/live-terminal/')) {
-      // Claude Code live (experimental; live-terminal.js). Owner only
-      // (policy.js): it runs as this machine's account.
+      // A conversation continued in its agent's own program (design/91).
+      // The gate (policy.js) lets the household in; the handlers refuse
+      // walled people and check the conversation itself.
       const lt = liveTerminals();
       try {
         if (u.pathname === '/api/live-terminal/status' && req.method === 'GET') {
           const key = u.searchParams.get('id');
-          if (!lt) return json(res, 200, { enabled: false });
-          return json(res, 200, { enabled: true, ...(key ? { ...lt.status(key), indexed: !!index[key] } : { available: lt.available, why: lt.why }) });
+          if (!key) return json(res, 200, { available: lt.available, why: lt.why, ...liveTerminalConf(), refusal: liveTerminalRefusal(identity),
+            names: Object.fromEntries(Object.values(liveTerminalProfiles.PROFILES).filter(x => x.program).map(x => [x.id, x.name])) });
+          const pend = livePending.get(key), real = pend ? pend.key : key;
+          if (real && index[real] && !canDo(identity, 'see', targetOf(real))) return json(res, 403, { error: 'This is not shared with you.' });
+          if (pend && pend.userId !== identity.user.id && !policy.isOwnerTier(identity)) return json(res, 403, { error: 'This is not yours.' });
+          return json(res, 200, { ...lt.status(key), resolvedKey: pend ? pend.key || null : null, indexed: !!(real && index[real]), live: real && index[real] ? liveTerminalFor(real, identity) : null });
         }
-        if (!lt) return json(res, 404, { error: 'The live terminal is not switched on here.' });
-        let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 16384) throw Object.assign(new Error('request too large'), { status: 413 }); }
+        const refusal = liveTerminalRefusal(identity);
+        if (refusal) return json(res, 403, { error: refusal });
+        let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 262144) throw Object.assign(new Error('request too large'), { status: 413 }); }
         const p = JSON.parse(raw || '{}');
+        if (u.pathname === '/api/live-terminal/settings' && req.method === 'POST') {
+          if (!policy.isOwnerTier(identity)) return json(res, 403, { error: 'only the owner changes this' });
+          const cur = liveTerminalConf();
+          appSettings = settingsLib.normalizeSettings({ ...appSettings, liveTerminal: { ...cur, ...p, agents: { ...cur.agents, ...(p.agents || {}) } } });
+          saveAppSettings();
+          return json(res, 200, { ...liveTerminalConf(), available: lt.available, why: lt.why });
+        }
         if (u.pathname === '/api/live-terminal/start' && req.method === 'POST') {
-          // The conversation continues in its own program: Claude Code,
-          // Pi or Codex, each the one installed here.
-          const entry = index[p.id];
-          if (!entry || !['claude', 'pi', 'codex'].includes(entry.source)) return json(res, 404, { error: 'conversation not found (Claude Code, Pi or Codex)' });
-          assertCan(identity, 'act', targetOf(p.id), 'this conversation');
-          const { cwd, sessionPath } = sessionPathsFor(p.id);
-          if (!lt.sessions.has(p.id)) {
-            const running = findRunningConversation(p.id);
-            if (running) return json(res, 409, { error: 'This conversation is open in a terminal (pid ' + running.pid + '). Close it there first: one program writes a conversation at a time.' });
-            if (headlessRuns.has(sessionPath)) return json(res, 409, { error: 'A reply is being written here. Wait for it, then continue in the terminal.' });
-          }
-          let command = null;
-          if (entry.source === 'pi') {
-            // Chattering lets go of the conversation first (its warm session).
-            stopAnyWarmSession(sessionPath);
-            command = piArgv(['--session', sessionPath]);
-          } else if (entry.source === 'codex') {
-            if (!entry.sessionId) return json(res, 400, { error: 'This Codex conversation has no thread id.' });
-            if (entry.importCopyOf || (entry.codex && entry.codex.imported)) return json(res, 400, { error: 'A text-only copy Codex imported: continue the original.' });
-            // Codex allows one writer: Chattering's own Codex lets go first.
-            try { await codexDriver.release(entry.sessionId); } catch (e) { return json(res, 409, { error: e.message }); }
-            command = [codexBin(), 'resume', entry.sessionId];
-          }
-          lt.start(p.id, { cwd, sessionId: entry.sessionId, resume: true, command, harness: entry.source });
-          return json(res, 200, { ok: true, ...lt.status(p.id) });
+          const key = String(p.id || '');
+          const info = index[key] ? liveTerminalFor(key, identity) : null;
+          if (!info) return json(res, 404, { error: 'This conversation cannot continue in an agent\'s own program here.' });
+          if (info.setting === 'off') return json(res, 409, { error: info.name + '\'s own program is turned off here (settings → agents).' });
+          assertCan(identity, 'act', targetOf(key), 'this conversation');
+          await liveStartExisting(key, identity);
+          liveChooses(key, 'program');
+          return json(res, 200, { ok: true, ...lt.status(key), live: liveTerminalFor(key, identity) });
+        }
+        if (u.pathname === '/api/live-terminal/send' && req.method === 'POST') {
+          // A message typed while the program had ended: it starts again
+          // from the conversation's file, and the message goes in its box.
+          const key = String(p.id || ''), text = String(p.text || '');
+          if (!text.trim()) return json(res, 400, { error: 'empty message' });
+          const info = index[key] ? liveTerminalFor(key, identity) : null;
+          if (!info || info.setting === 'off') return json(res, 404, { error: 'This conversation cannot continue in an agent\'s own program here.' });
+          assertCan(identity, 'act', targetOf(key), 'this conversation');
+          await liveStartExisting(key, identity);
+          liveChooses(key, 'program');
+          return json(res, 200, await lt.send(key, text));
         }
         if (u.pathname === '/api/live-terminal/new' && req.method === 'POST') {
+          const harness = String(p.harness || 'claude');
+          const profile = liveTerminalProfiles.PROFILES[harness];
+          if (!profile || !profile.program || !profile.start) return json(res, 400, { error: 'no such agent' });
+          if ((liveTerminalConf().agents[harness] || 'off') === 'off') return json(res, 409, { error: profile.name + '\'s own program is turned off here (settings → agents).' });
           const where = describeStartFolder(p.folder || '');
           if (!where.exists) return json(res, 404, { error: 'folder not found: ' + where.display });
-          return json(res, 200, { ok: true, ...lt.newSession(where.path) });
+          const temp = 'live:' + crypto.randomUUID();
+          const pend = { harness, cwd: where.path, sessionId: lt.newSessionId(harness), startedAt: Date.now(), key: null, userId: identity.user.id };
+          livePending.set(temp, pend);
+          try { await lt.start(temp, { profileId: harness, cwd: where.path, sessionId: pend.sessionId, isNew: true, principal: principalFor(identity) }); }
+          catch (e) { livePending.delete(temp); throw e; }
+          watchNewLiveConversation(temp, pend);
+          return json(res, 200, { ok: true, key: temp, harness });
         }
-        if (u.pathname === '/api/live-terminal/stop' && req.method === 'POST') return json(res, 200, { ok: lt.stop(String(p.id || '')) });
+        if (u.pathname === '/api/live-terminal/stop' && req.method === 'POST') {
+          // Back to Chattering's own box: the program ends first (one
+          // writer), text left in its box is kept for next time.
+          const key = String(p.id || '');
+          const pend = livePending.get(key), real = pend ? pend.key || key : key;
+          if (index[real]) assertCan(identity, 'act', targetOf(real), 'this conversation');
+          else if (pend && pend.userId !== identity.user.id && !policy.isOwnerTier(identity)) return json(res, 403, { error: 'This is not yours.' });
+          const ok = lt.stop(real, { keepDraft: true }) || lt.stop(key);
+          if (p.back && index[real]) liveChooses(real, 'box');
+          return json(res, 200, { ok, live: index[real] ? liveTerminalFor(real, identity) : null });
+        }
         json(res, 404, { error: 'not found' });
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/codex/menus' && req.method === 'GET') {
@@ -19903,7 +20200,8 @@ let shuttingDown = false;
 async function shutdownGracefully() {
   if (shuttingDown) return;
   shuttingDown = true;
-  try { if (liveTerminalsLib) liveTerminalsLib.stopAll(); } catch {}
+  // Programs run live go on in their holder; the next start attaches again.
+  try { if (liveTerminalsLib) liveTerminalsLib.detachAll(); } catch {}
   try { anywhere.stop(); } catch {}
   try { anywhereLinks.stop(); } catch {}
   clearInterval(delegationTimer);
@@ -20053,12 +20351,14 @@ function upgradeRequestInner(req, socket, head) {
   if (u.pathname === '/api/voice/listen') return voiceListenUpgrade(req, socket, head);
   if (u.pathname === '/api/live-terminal/ws') {
     const lt = liveTerminals(), key = u.searchParams.get('id') || '';
-    if (!lt) return refuseUpgrade(socket, 404, 'Not Found');
-    // A new conversation is in the hub before its file exists: its key is
-    // known from the start (live-terminal.js newSession).
-    if (index[key] && !canDo(identity, 'act', targetOf(key))) return refuseUpgrade(socket, 403, 'Forbidden');
+    if (liveTerminalRefusal(identity)) return refuseUpgrade(socket, 403, 'Forbidden');
+    // A new conversation is in its hub before its file exists: under a
+    // temporary key, for the person who started it.
+    const pend = livePending.get(key), real = pend && pend.key ? pend.key : key;
+    if (index[real]) { if (!canDo(identity, 'act', targetOf(real))) return refuseUpgrade(socket, 403, 'Forbidden'); }
+    else if (!pend || (pend.userId && pend.userId !== identity.user.id && !policy.isOwnerTier(identity))) return refuseUpgrade(socket, 404, 'Not Found');
     const conn = acceptWebSocket(req, socket, head);
-    if (conn) lt.attach(key, conn, { name: 'a page' });
+    if (conn) lt.attach(lt.sessions.has(key) ? key : real, conn, { name: identity.user.name || 'a page' });
     return;
   }
   return speechStreamUpgrade(req, socket, head);
@@ -20149,6 +20449,7 @@ applyLanMode(lanWanted(), () => {
   try { checkpoints(); } catch (e) { console.error('Saved file history unavailable:', e.message); }
   fullScan().then(() => {
     restoreInterruptedRuns();
+    recoverLiveTerminals();
     watch(); watchNotes();
     startDelegationMonitor();
     sweepOrphanFanouts();

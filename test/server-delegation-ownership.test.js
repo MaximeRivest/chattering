@@ -22,7 +22,7 @@ function setup(t) {
   S.atomic(path.join(dir, 'request.json'), { id, sessionPath: file, status: 'succeeded', createdAt: Date.now(), parentTaskId: null });
   fs.writeFileSync(file, '');
   const box = vm.createContext({ path, crypto, console, delegationLib: D, DELEGATION_ROOT: root,
-    DELEGATION_TERMINAL: S.TERMINAL, sessionFileOps: new Map(), headlessRuns: new Map(), compactingSessions: new Set(), delegationCoordinator: { refresh: async () => {} },
+    DELEGATION_TERMINAL: S.TERMINAL, sessionFileOps: new Map(), headlessRuns: new Map(), liveHeld: new Map(), compactingSessions: new Set(), delegationCoordinator: { refresh: async () => {} },
     stopAnyWarmSession() {}, sleep: async () => {}, index: { child: {} },
     conversationKind: () => 'pi', windowTitleFor: () => 'test', absPathForKey: () => file,
     sessionPathsFor: () => ({ entry: {}, sessionPath: file, cwd: root }),

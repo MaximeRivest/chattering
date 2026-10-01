@@ -11661,8 +11661,8 @@ function agentComposerHtml(d) {
     <span class="hint">Continue it there, or fork it: the fork is a conversation of this machine, in your checkout.</span>
     <button type="button" class="ghost" id="mirrorFork">fork here</button></div></div>`;
   if (!['claude', 'pi', 'pi-remote', 'codex'].includes(d.source)) return '';
-  // Claude Code continued live, when switched on (live-terminal-ui.js).
-  if (window.LiveTerminal && LiveTerminal.enabled && LiveTerminal.useFor(d)) return LiveTerminal.dockHtml(d);
+  // Continued in its agent's own program (design/91, live-terminal-ui.js).
+  if (window.LiveTerminal && LiveTerminal.useFor(d)) return LiveTerminal.dockHtml(d);
   // A text-only copy the Codex app imported is read here, never continued.
   const codexNotice = window.CodexUI ? CodexUI.noticeHtml(d) : '';
   if (codexNotice && (d.importCopyOf || (d.codex && d.codex.imported))) return `<div class="composer-dock mirror-dock" id="composerDock" data-conversation-key="${esc(d.key)}">${codexNotice}</div>`;
@@ -11693,7 +11693,7 @@ function agentComposerHtml(d) {
       ${d.source !== 'claude' && !d.draft ? '<button id="agentCompact" type="button" title="Summarize the older messages so the model reads less (or type /compact)">Compact conversation…</button>' : ''}
       ${codex ? '<button id="codexAccess" type="button" hidden></button>' : ''}
       ${codex && !d.draft ? '<button id="codexTerminal" type="button" title="Continue in Codex\'s own terminal. Chattering lets go of the conversation first (Codex allows one writer).">Open in Codex (terminal)</button>' : ''}
-      ${window.LiveTerminal && LiveTerminal.offerFor(d) ? `<button id="ltUseHere" type="button" title="Continue in ${codex ? 'Codex' : 'Pi'}'s own terminal program, shown here: its own box, commands and questions (experimental)">Continue in ${codex ? 'Codex' : 'Pi'}'s own program</button>` : ''}
+      ${window.LiveTerminal && LiveTerminal.offerFor(d) ? `<button id="ltUseHere" type="button" title="${esc(`Continue in ${d.liveTerminal.name}'s own program, shown here: its own box, commands and questions. Chattering's box comes back when you choose.`)}">Continue in ${esc(d.liveTerminal.name)}'s own program</button>` : ''}
       <button id="agentAttach" type="button">Attach image</button>
       <input id="agentFiles" type="file" accept="image/*" multiple hidden>
       </div></details>
@@ -13425,7 +13425,7 @@ function wireComposeMin(ta) {
 
 function wireAgentComposer() {
   if (window.LiveTerminal && LiveTerminal.mount()) return;
-  if ($('ltUseHere')) $('ltUseHere').onclick = () => LiveTerminal.useHere(activeRel);
+  if ($('ltUseHere')) $('ltUseHere').onclick = () => LiveTerminal.useHere(activeRel, $('ltUseHere'));
   const tools = $('composeTools');
   if (tools) {
     tools.addEventListener('click', e => {
@@ -16251,6 +16251,7 @@ let voiceMuteTimer = null;
 const SETTINGS_PANES = [
   ['profile', 'your profile', 'Your name, initials and picture.'],
   ['ai', 'AI accounts', 'Sign in with a Claude or ChatGPT plan, add a key, or use a model on your computer.'],
+  ['agents', 'agents', 'Continue Claude Code, Pi and Codex conversations in their own programs, shown here.'],
   ['model', 'model', 'Which model writes notes, titles, epics, and memory.'],
   ['sound', 'sound', 'What the speakers do when a run finishes; voice commands.'],
   ['search', 'search', 'Meaning-based search on the GPU server.'],
@@ -16882,6 +16883,7 @@ const SETTINGS_PANE_RENDER = {
   search: [paneSearch, bindPaneSearch],
   snippets: [paneSnippets, bindPaneSnippets],
   ai: [paneAi, bindPaneAi],
+  agents: [() => window.LiveTerminal ? LiveTerminal.settingsHtml(settingsState && settingsState.canEditSettings !== false) : '', root => window.LiveTerminal && LiveTerminal.bindSettings(root)],
   machines: [paneMachines, bindPaneMachines],
   people: [panePeople, bindPanePeople],
   appearance: [paneAppearance, bindPaneAppearance],
@@ -18791,6 +18793,12 @@ live.onmessage = ev => {
     } else clearLedgers();
     return;
   }
+  if (d.type === 'live-terminal') {
+    // A conversation's own program started, ended, works or waits, on this
+    // device or another: the strip follows (live-terminal-ui.js).
+    if (window.LiveTerminal) LiveTerminal.onEvent(d);
+    return;
+  }
   if (d.type === 'compaction') {
     // Another screen (or this one) compacts a conversation: every meter says so.
     if (d.state === 'running') compactingKeys.add(d.key); else compactingKeys.delete(d.key);
@@ -19006,7 +19014,7 @@ fetch('/api/git/repos').then(r => r.json()).then(d => {
   gitReposCache = (d && d.repos) || [];
   if (viewKind === 'home' && tab === 'conv') render();
 }).catch(() => {});
-// Claude Code live (experimental): known before the first conversation renders.
+// The agents' own programs (design/91): their settings, before the first draft renders.
 Promise.all([load(), window.LiveTerminal ? LiveTerminal.init().catch(() => false) : false]).then(() => {
   // The stack finds its place (a reload) or starts here (a new tab); the
   // page then renders from the hash as it always did.

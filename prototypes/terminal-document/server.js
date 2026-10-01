@@ -8,10 +8,10 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { WebSocketServer } = require('ws');
-const { TerminalHost } = require('./host');
-const { CLAUDE, GENERIC } = require('./reader');
+const { TerminalHost } = require('../../harness/terminal/host');
+const { CLAUDE, GENERIC } = require('../../harness/terminal/reader');
 const { ClaudeJournal } = require('./journal');
-const { createHub, diff, encodeParts } = require('./hub');
+const { createHub, diff, encodeParts } = require('../../harness/terminal/hub');
 
 function parseArgs(argv) {
   const o = { port: 7480, cwd: process.cwd(), profile: 'claude', command: ['claude'], cols: 100, rows: 34, record: null };
@@ -27,9 +27,10 @@ function parseArgs(argv) {
 
 function start(opts) {
   const profile = opts.profile === 'generic' ? GENERIC : CLAUDE;
-  const host = new TerminalHost({ command: opts.command[0], args: opts.command.slice(1), cwd: opts.cwd, cols: opts.cols, rows: opts.rows, record: opts.record });
+  const { createRecorder, createEventLog } = require('../../harness/terminal/recorder');
+  const host = new TerminalHost({ command: opts.command[0], args: opts.command.slice(1), cwd: opts.cwd, cols: opts.cols, rows: opts.rows, recorder: opts.record ? createRecorder(opts.record) : null });
   const journal = profile === CLAUDE ? new ClaudeJournal(opts.cwd) : null;
-  const hub = createHub({ host, profile, journal, events: opts.events || null });
+  const hub = createHub({ host, profile, journal, events: opts.events ? createEventLog(opts.events) : null });
   const authorized = req => !opts.auth || opts.auth(req);
   const server = http.createServer((req, res) => {
     if (!authorized(req)) { res.writeHead(401, { 'Content-Type': 'text/plain' }); return res.end('Not paired.'); }

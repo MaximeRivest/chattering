@@ -1,28 +1,39 @@
 'use strict';
-// Replay a recorded session to any moment: the terminal as it was, what the
-// reader made of it, and what each device sent and was shown around then.
-//   node replay.js [session.cast] [--at SECONDS | --at HH:MM[:SS]] [--around 5] [--events FILE]
-// Defaults: the running instance's files in ~/.cache/chattering-terminal-prototype/.
-// Without --at: a timeline of what devices did, to pick a moment from.
+// Replay a recorded session of an agent's own program (design/91) to any
+// moment: the terminal as it was, what the reader made of it with that
+// agent's profile, and what each device sent and was shown around then.
+//   node scripts/terminal-replay.js [FILE.cast(.gz)] [--at SECONDS | --at HH:MM[:SS]] [--around 5] [--events FILE] [--profile claude|pi|codex]
+//   node scripts/terminal-replay.js --list         the recordings, newest first
+// Default: the newest recording in this install's data folder
+// (live-terminal/recordings/). Without --at: a timeline of what devices did.
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { Terminal } = require('@xterm/headless');
-const { watchRepaints, TerminalHost } = require('./host');
-const { readDocument } = require('./reader');
+const { terminalDeps } = require('../harness/terminal/deps');
+const { watchRepaints, TerminalHost } = require('../harness/terminal/host');
+const { readDocument } = require('../harness/terminal/reader');
+const { profileFor } = require('../harness/terminal/profiles');
+const { readRecording, readLines } = require('../harness/terminal/recorder');
 
-const dir = path.join(os.homedir(), '.cache', 'chattering-terminal-prototype');
+const deps = terminalDeps();
+if (deps.error) { console.error(deps.error); process.exit(1); }
+const dataDir = process.env.CHATTERING_DATA_DIR || require('../platform.js').appDirs(process.env, os.homedir()).data;
+const dir = path.join(dataDir, 'live-terminal', 'recordings');
+const all = () => { const out = []; const walk = d => { let es = []; try { es = fs.readdirSync(d, { withFileTypes: true }); } catch { return; } for (const e of es) { const p = path.join(d, e.name); if (e.isDirectory()) walk(p); else if (/\.cast(\.gz)?$/.test(e.name)) out.push(p); } }; walk(dir); return out.sort().reverse(); };
 const args = process.argv.slice(2);
 const opt = k => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : null; };
-const castFile = args.find(a => a.endsWith('.cast')) || path.join(dir, 'session.cast');
-const eventsFile = opt('events') || castFile.replace(/\.cast$/, '.events.jsonl');
+if (args.includes('--list')) { for (const f of all()) console.log(f); process.exit(0); }
+const castFile = args.find(a => /\.cast(\.gz)?$/.test(a)) || all()[0];
+if (!castFile) { console.error('no recording in ' + dir); process.exit(1); }
+const eventsFile = opt('events') || castFile.replace(/\.cast(\.gz)?$/, '') + '.events.jsonl' + (castFile.endsWith('.gz') ? '.gz' : '');
 const around = +(opt('around') || 5);
-
-const lines = fs.readFileSync(castFile, 'utf8').trim().split('\n');
-const head = JSON.parse(lines[0]);
+const { head, events: records } = readRecording(castFile);
+const agent = opt('profile') || (/-(claude|pi|codex)-/.exec(path.basename(castFile)) || [])[1] || 'claude';
+const profile = profileFor(agent);
 const startMs = head.timestamp * 1000;
-const events = fs.existsSync(eventsFile) ? fs.readFileSync(eventsFile, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
+const events = fs.existsSync(eventsFile) ? readLines(eventsFile) : [];
 const clock = t => new Date(startMs + t * 1000).toLocaleTimeString();
+const Terminal = deps.Terminal;
 function parseAt(v) {
   if (v == null) return null;
   if (/^\d+:\d+/.test(v)) { const [h, m, s = 0] = v.split(':').map(Number); const d = new Date(startMs); d.setHours(h, m, s, 0); return (d - startMs) / 1000; }
@@ -45,21 +56,20 @@ function describe(e) {
 
 (async () => {
   if (at == null) {
-    console.log(`${castFile}: started ${new Date(startMs).toLocaleString()}, ${lines.length - 1} records; ${events.length} device events`);
+    console.log(`${castFile}: ${profile.name}, started ${new Date(startMs).toLocaleString()}, ${records.length} records; ${events.length} device events`);
     for (const e of events) if (e.ev !== 'shown') console.log(`${e.t.toFixed(1).padStart(8)}s ${clock(e.t)}  ${describe(e)}`);
-    console.log('\nPick a moment: node replay.js --at <seconds or HH:MM:SS>');
+    console.log('\nPick a moment: node scripts/terminal-replay.js ' + castFile + ' --at <seconds or HH:MM:SS>');
     return;
   }
   const term = new Terminal({ cols: head.width, rows: head.height, scrollback: 10000, allowProposedApi: true });
   const restarts = watchRepaints(term);
-  for (const l of lines.slice(1)) {
-    const [t, kind, data] = JSON.parse(l);
+  for (const [t, kind, data] of records) {
     if (t > at) break;
     if (kind === 'o') await new Promise(r => term.write(data, r));
     else if (kind === 'r') { const [c, r] = data.split('x').map(Number); term.resize(c, r); }
   }
   const snap = TerminalHost.prototype.snapshot.call({ term, cols: term.cols, rows: term.rows, revision: 0, cursorVisible: true, restarts });
-  const doc = readDocument(snap);
+  const doc = readDocument(snap, profile);
   console.log(`== the terminal at ${at.toFixed(1)}s (${clock(at)})`);
   snap.lines.slice(snap.base, snap.base + snap.rows).forEach((l, y) => { if (l.text.trim()) console.log(String(y).padStart(2) + '│' + l.text); });
   console.log(`\n== what the reader made of it: mode ${doc.mode}`);

@@ -93,6 +93,14 @@ function draftModels(d, defaults) {
   if (d.models && d.models.length) return d.models;
   return defaults && Array.isArray(defaults.models) ? defaults.models : [];
 }
+// Agents started in their own interactive program (design/91): 'off',
+// 'choose' (a checkbox here) or 'always', from settings → agents.
+function draftOwnProgramChoice(harness) { return window.LiveTerminal && LiveTerminal.newChoice ? LiveTerminal.newChoice(harness) : 'off'; }
+function draftAgentName(harness) { return (window.LiveTerminal && LiveTerminal.conf && LiveTerminal.conf.names && LiveTerminal.conf.names[harness]) || harness; }
+function draftUsesOwnProgram(d) {
+  const h = d.harness || 'pi', choice = draftOwnProgramChoice(h);
+  return choice === 'always' || (choice === 'choose' && (h === 'claude' || d.ownProgram === true));
+}
 function draftAsCurrent(d) {
   return { key: draftKey(d.id), draft: true, source: d.harness === 'codex' ? 'codex' : 'pi', messages: [], selectedModels: draftModels(d, null).slice(), attachedContext: (d.context || []).slice(), cwd: null };
 }
@@ -228,7 +236,7 @@ async function showDraft(id) {
   draftWireSetup(d);
   // Claude Code chooses its own model and effort (in its own box, once
   // started): Pi's buttons have nothing to do here.
-  if (d.harness === 'claude') document.querySelectorAll('#modelStrip, #agentThink, #agentMode, #ctxMeter, #agentSlash').forEach(el => { el.style.display = 'none'; });
+  if (draftUsesOwnProgram(d)) document.querySelectorAll('#modelStrip, #agentThink, #agentMode, #ctxMeter, #agentSlash').forEach(el => { el.style.display = 'none'; });
   draftPaintMeter();
   // Defaults and the folder's meaning arrive after the page is usable.
   const mine = draftState;
@@ -258,7 +266,8 @@ function draftSetupHtml(d) {
   return `<div class="draft-setup" id="draftSetup">
     <div class="ds-line">
       <span class="ds-state">not started</span><span class="ds-sep">·</span>runs in <b class="ds-folder">${esc(d.folder || '~')}</b><span class="ds-implies"></span>
-      <span class="ds-harness" role="radiogroup" aria-label="Which agent runs this conversation">${[['pi', 'Pi', 'Pi: every provider, modes, parallel answers'], ['codex', 'Codex', 'Codex: OpenAI\'s agent, on your ChatGPT plan'], ...(window.LiveTerminal && LiveTerminal.enabled ? [['claude', 'Claude Code', 'Claude Code: the real program, live (experimental)']] : [])].map(([h, label, title]) => `<button type="button" role="radio" class="ghost${(d.harness || 'pi') === h ? ' on' : ''}" aria-checked="${(d.harness || 'pi') === h}" data-harness="${h}" title="${esc(title)}">${label}</button>`).join('')}</span>
+      <span class="ds-harness" role="radiogroup" aria-label="Which agent runs this conversation">${[['pi', 'Pi', 'Pi: every provider, modes, parallel answers'], ['codex', 'Codex', 'Codex: OpenAI\'s agent, on your ChatGPT plan'], ...(draftOwnProgramChoice('claude') !== 'off' ? [['claude', 'Claude Code', 'Claude Code: its own program, shown here']] : [])].map(([h, label, title]) => `<button type="button" role="radio" class="ghost${(d.harness || 'pi') === h ? ' on' : ''}" aria-checked="${(d.harness || 'pi') === h}" data-harness="${h}" title="${esc(title)}">${label}</button>`).join('')}</span>
+      ${draftOwnProgramChoice(d.harness || 'pi') === 'choose' ? `<label class="ds-own" title="${esc('Run it in ' + draftAgentName(d.harness || 'pi') + '\'s own program, shown here: its own box, commands and questions')}"><input type="checkbox" class="ds-own-input"${draftUsesOwnProgram(d) ? ' checked' : ''}> in its own program</label>` : ''}
       <button type="button" class="ghost ds-toggle" aria-expanded="false" aria-controls="draftSetupPanel">setup</button>
     </div>
     <div class="ds-panel" id="draftSetupPanel" hidden>
@@ -331,6 +340,14 @@ function draftWireSetup(d) {
     saveDraft(d);
     showDraft(d.id);
   });
+  const own = q('.ds-own-input');
+  if (own) own.onchange = () => {
+    const ta = $('agentText');
+    if (ta) d.text = ta.value;
+    d.ownProgram = own.checked;
+    saveDraft(d);
+    showDraft(d.id);
+  };
   q('.ds-done').onclick = () => draftToggleSetup(false);
   const input = q('.ds-folder-input');
   let infoSeq = 0;
@@ -411,15 +428,15 @@ async function sendDraft(btn) {
   if (draftState.folderInfo && !draftState.folderInfo.exists) { draftToggleSetup(true); return errToast('that folder does not exist — pick another'); }
   if (prompt.startsWith('/')) return errToast('slash commands need a started conversation — send a first message, then use /');
   if (window._draftSendBusy) return;
-  if (d.harness === 'claude' && window.LiveTerminal && LiveTerminal.enabled) {
-    // The real Claude Code, started in the folder; its live part takes the
-    // box's place (it may ask whether to trust the folder), the message is
-    // sent once it is ready, and the conversation opens once written.
+  if (draftUsesOwnProgram(d)) {
+    // The agent's own program, started in the folder; its live part takes
+    // the box's place (it may ask whether to trust the folder), the message
+    // is sent once it is ready, and the conversation opens once written.
     window._draftSendBusy = true;
     d.text = ta.value; saveDraft(d);
     const state = $('draftSetup') && $('draftSetup').querySelector('.ds-state');
     try {
-      const key = await LiveTerminal.startNew(d.folder || '', prompt, text => { if (state) state.textContent = text; });
+      const key = await LiveTerminal.startNew(d.harness || 'pi', d.folder || '', prompt, text => { if (state) state.textContent = text; });
       deleteDraft(d.id);
       draftState = null;
       await open(key, 'bottom');
