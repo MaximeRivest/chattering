@@ -12,6 +12,9 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { chromiumBinary, chromiumAvailable, CHROMIUM_TEST_FLAGS } = require('./helpers/chromium.js');
 
+const { fixtureCleanup } = require('./helpers/fixture-cleanup');
+const { stopAndRemove } = require('./helpers/cleanup');
+
 const root = path.join(__dirname, '..');
 
 async function freePort() {
@@ -22,7 +25,7 @@ async function freePort() {
 const tokenOf = home => fs.readFileSync(path.join(home, 'cache', 'lan-token'), 'utf8').trim();
 const bearer = home => ({ headers: { Authorization: 'Bearer ' + tokenOf(home) } });
 
-async function boot(t, { name, kind, localAppData }) {
+async function boot(cleanup, { name, kind, localAppData }) {
   const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'local-machines-')));
   const agent = path.join(home, '.pi', 'agent');
   fs.mkdirSync(path.join(agent, 'sessions'), { recursive: true });
@@ -34,7 +37,7 @@ async function boot(t, { name, kind, localAppData }) {
     PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, CHATTERING_HOST: '', CHATTERING_LAN: '', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: '',
     CHATTERING_HOSTNAME: name, CHATTERING_LOCAL_KIND: kind, CHATTERING_LOCAL_APPDATA: localAppData }, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b);
-  t.after(() => require('./helpers/cleanup.js').stopAndRemove(child, home));
+  cleanup.add(() => stopAndRemove(child, home));
   const base = 'http://127.0.0.1:' + port;
   for (let i = 0; i < 600; i++) {
     try { if (fs.existsSync(path.join(home, 'cache', 'lan-token')) && (await fetch(base + '/api/settings', bearer(home))).ok) break; } catch {}
@@ -49,10 +52,10 @@ async function until(fn, what) {
 
 test('the Windows app and the Linux side switch to each other, as the owner, with their own cookies', async t => {
   const localAppData = fs.mkdtempSync(path.join(os.tmpdir(), 'local-appdata-'));
-  t.after(() => fs.rmSync(localAppData, { recursive: true, force: true }));
-  const win = await boot(t, { name: 'LILLY-PC', kind: 'windows', localAppData });
+  const cleanup = fixtureCleanup(t, () => stopAndRemove(null, localAppData));
+  const win = await boot(cleanup, { name: 'LILLY-PC', kind: 'windows', localAppData });
   await until(() => fs.existsSync(path.join(localAppData, 'Chattering', 'local-machines', 'windows.json')), 'the Windows card').catch(e => { throw new Error(e.message + '\n' + win.log()); });
-  const linux = await boot(t, { name: 'LILLY-PC (Linux)', kind: 'wsl', localAppData });
+  const linux = await boot(cleanup, { name: 'LILLY-PC (Linux)', kind: 'wsl', localAppData });
 
   const settingsOf = async m => (await fetch(m.base + '/api/settings', bearer(m.home))).json();
   const seen = await until(async () => { const s = await settingsOf(win); return s.localMachines.length ? s : null; }, 'Windows sees Linux');
@@ -95,13 +98,13 @@ test('the Windows app and the Linux side switch to each other, as the owner, wit
   if (!chromiumAvailable()) return t.skip('chromium is not installed');
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'local-machines-browser-'));
   const browser = spawn(chromiumBinary(), [...CHROMIUM_TEST_FLAGS, '--user-data-dir=' + profile, '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
-  t.after(() => { try { browser.kill('SIGKILL'); } catch {} setTimeout(() => fs.rmSync(profile, { recursive: true, force: true }), 500); });
+  cleanup.add(() => stopAndRemove(browser, profile));
   const endpoint = await new Promise((resolve, reject) => {
     let out = ''; const timer = setTimeout(() => reject(Error(out)), 15000);
     browser.stderr.on('data', b => { out += b; const m = out.match(/DevTools listening on (ws:\/\/[^\s]+)/); if (m) { clearTimeout(timer); resolve(m[1]); } });
   });
   const ws = new WebSocket(endpoint); await new Promise(res => ws.onopen = res);
-  t.after(() => { try { ws.close(); } catch {} });
+  cleanup.add(() => { ws.close(); });
   let id = 0; const pending = new Map();
   ws.onmessage = e => { const m = JSON.parse(e.data); if (pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); } };
   const send = (method, params = {}, sessionId) => new Promise(res => { pending.set(++id, res); ws.send(JSON.stringify({ id, method, params, sessionId })); });

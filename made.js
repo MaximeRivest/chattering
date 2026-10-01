@@ -60,7 +60,7 @@ const MEDIA = new Set(['image', 'video', 'audio', 'pdf']);
 // Kinds a person looks at, as opposed to code a command also wrote.
 const SHOWN = new Set(['image', 'video', 'audio', 'pdf', 'web', 'page', 'data']);
 // A temporary or system folder: an agent's scratch space, not its product.
-const SCRATCH = [...new Set([...(platform.IS_WIN ? [] : ['/tmp', '/var/tmp']), os.tmpdir(), (() => { try { return fs.realpathSync(os.tmpdir()); } catch { return os.tmpdir(); } })()])];
+const SCRATCH = [...new Set([...(platform.IS_WIN ? [] : ['/tmp', '/var/tmp']), os.tmpdir(), platform.realFolder(os.tmpdir())])];
 const isScratch = abs => !!abs && (SCRATCH.some(dir => within(dir, abs)) || /^\/(dev|proc|sys)(\/|$)/.test(abs));
 
 // A small LRU: finished agents never change, live ones replace their entry.

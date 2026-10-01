@@ -19,6 +19,7 @@
    its public key, its person, its credential. Pairing codes live in memory
    only; a restart ends any that were showing. */
 const fs = require('fs');
+const { readPrivateFileSync, writePrivateFileSync } = require('./private-file');
 const path = require('path');
 const http = require('http');
 const zlib = require('zlib');
@@ -92,31 +93,39 @@ function createAnywhereHome(opts) {
   const state = load();
   const pairings = new Map();              // id → { id, secret, userId, expiresAt, pairedDevice }
   const peers = new Map();                 // relay session id → Peer
+  let keyInit = null;
   let key = null;                          // { privateKey, spki, homeId }
   let ws = null, relayState = 'off', relayError = '', retry = 0, retryTimer = null, stopped = false, iceServers = [];
 
   function load() {
-    try {
-      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-      return { key: raw.key || null, devices: Array.isArray(raw.devices) ? raw.devices : [] };
-    } catch { return { key: null, devices: [] }; }
+    const bytes = readPrivateFileSync(file);
+    if (bytes === null) return { key: null, devices: [] }; // initial open proved absence
+    const raw = JSON.parse(bytes);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !raw.key ||
+        typeof raw.key.jwk !== 'object' || typeof raw.key.spki !== 'string' || !Array.isArray(raw.devices))
+      throw new Error('Corrupt Anywhere identity store');
+    return { key: raw.key, devices: raw.devices };
   }
-  function save() {
-    fs.mkdirSync(dataDir, { recursive: true });
-    const tmp = file + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 1) + '\n', { mode: 0o600 });
-    fs.renameSync(tmp, file);
+  function save(next = state) {
+    writePrivateFileSync(file, JSON.stringify(next, null, 1) + '\n');
   }
-  async function ensureKey() {
-    if (key) return key;
+  // One initialization, including the constructor's request. A rejected
+  // promise is deliberately latched: never return an unpersisted identity.
+  function ensureKey() {
+    if (!keyInit) keyInit = initializeKey();
+    return keyInit;
+  }
+  async function initializeKey() {
     const subtle = P.subtle();
-    if (!state.key) {
+    let material = state.key;
+    if (!material) {
       const pair = await subtle.generateKey(P.ECDSA, true, ['sign', 'verify']);
-      state.key = { jwk: await subtle.exportKey('jwk', pair.privateKey), spki: P.b64u(new Uint8Array(await subtle.exportKey('spki', pair.publicKey))) };
-      save();
+      material = { jwk: await subtle.exportKey('jwk', pair.privateKey), spki: P.b64u(new Uint8Array(await subtle.exportKey('spki', pair.publicKey))) };
+      save({ ...state, key: material });
+      state.key = material; // publish only after persistence succeeds
     }
-    const privateKey = await subtle.importKey('jwk', state.key.jwk, P.ECDSA, false, ['sign']);
-    const spki = P.unb64u(state.key.spki);
+    const privateKey = await subtle.importKey('jwk', material.jwk, P.ECDSA, false, ['sign']);
+    const spki = P.unb64u(material.spki);
     key = { privateKey, spki, homeId: await P.homeIdOf(spki) };
     return key;
   }

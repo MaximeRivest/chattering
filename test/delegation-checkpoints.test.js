@@ -11,11 +11,12 @@ const { execFileSync } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const D = require('../delegation');
 const pi = require('./helpers/pi-package.js').piPackageForTests();
+const { fixtureCleanup } = require('./helpers/fixture-cleanup');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 test('a delegated worker checkpoints its own write steps', { skip: !pi && 'Pi is not installed', timeout: 60000 }, async t => {
   const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'delegation-cp-')));
-  t.after(() => require('./helpers/cleanup.js').stopAndRemove(null, home));
+  const cleanup = fixtureCleanup(t, () => require('./helpers/cleanup.js').stopAndRemove(null, home));
   const agent = path.join(home, '.pi', 'agent'); await fs.mkdir(agent, { recursive: true });
   await fs.writeFile(path.join(agent, 'settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: 'one', defaultThinkingLevel: 'off' }));
   const work = path.join(home, 'work'); await fs.mkdir(work);
@@ -38,7 +39,7 @@ test('a delegated worker checkpoints its own write steps', { skip: !pi && 'Pi is
 
   const { CheckpointStore } = require('../checkpoint-store');
   const store = new CheckpointStore(checkpoints);
-  t.after(() => store.close());
+  cleanup.add(() => store.close());
   const rows = store.boundaries(done.sessionPath, ['env-probe', 'target-probe']);
   const phases = call => rows.filter(r => r.call === call).map(r => r.phase);
   assert.deepEqual(phases('target-probe'), ['before', 'after'], 'the write step has its own before/after pair');

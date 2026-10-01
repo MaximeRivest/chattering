@@ -20,7 +20,7 @@ function windowsMade() {
     if (name === 'node:path') return windowsPath;
     if (name === 'node:os') return { tmpdir: () => 'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp' };
     if (name === 'node:fs') return { realpathSync: () => 'C:\\Users\\RUNNERADMIN\\AppData\\Local\\Temp' };
-    if (name === './platform.js') return { IS_WIN: true, isInside };
+    if (name === './platform.js') return { IS_WIN: true, isInside, realFolder: () => 'C:\\Users\\RUNNERADMIN\\AppData\\Local\\Temp' };
     return require(name.startsWith('./') ? path.join(directory, name) : name);
   } };
   vm.runInNewContext(source + '\nthis.fixtureWithin = within;', context, { filename: 'made.js (Win32 path rules)' });
