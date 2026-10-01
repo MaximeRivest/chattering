@@ -55,10 +55,10 @@ async function main() {
   const touch = device !== 'laptop';
   // The app's window: the page itself, or (phone) the frame the link opens it in.
   const W = device === 'phone' ? `document.getElementById('app').contentWindow` : 'window';
-  const ev = async x => { const r = await cmd('Runtime.evaluate', { expression: device === 'phone' ? `${W}.eval(${JSON.stringify(x)})` : x, returnByValue: true, awaitPromise: true }); if (r.result && r.result.exceptionDetails) throw Error(JSON.stringify(r.result.exceptionDetails).slice(0, 400)); return r.result && r.result.result.value; };
+  const ev = async x => { const r = await cmd('Runtime.evaluate', { expression: device === 'phone' ? `${W}.eval(${JSON.stringify(x)})` : x, returnByValue: true, awaitPromise: true }); if (r.result && r.result.exceptionDetails) { const d = r.result.exceptionDetails; throw Error(((d.exception && d.exception.description) || d.text) + ' in: ' + x.slice(0, 160)); } return r.result && r.result.result.value; };
   const until = async (x, what, ms = 30000) => { const t = Date.now(); while (Date.now() - t < ms) { if (await ev(`!!(()=>{try{return ${x}}catch{return false}})()`).catch(() => false)) return Date.now() - t; await sleep(60); } throw Error('timed out: ' + what); };
   const shot = async file => { const r = await cmd('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(RESULTS, file), Buffer.from(r.result.data, 'base64')); };
-  const rect = async sel => ev(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; e.scrollIntoView({ block: 'nearest' }); const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+  const rect = async sel => ev(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; e.scrollIntoView({ block: 'nearest' }); const r = e.getBoundingClientRect(); if (!r.width || !r.height) return null; return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
   const frameOffset = async () => device === 'phone' ? (await cmd('Runtime.evaluate', { expression: `(() => { const r = document.getElementById('app').getBoundingClientRect(); return { x: r.left, y: r.top }; })()`, returnByValue: true })).result.result.value : { x: 0, y: 0 };
   // A finger on a touch screen, a click on a laptop.
   const tap = async sel => {
@@ -173,11 +173,16 @@ async function main() {
       await step('pick from its / list', async () => {
         if (touch) { await tap('#ltDraft'); await cmd('Input.insertText', { text: '/' }); } else { await ev(`document.getElementById('ltKeys').focus()`); await typeKeys('/'); }
         await until(`!document.getElementById('ltMenu').hidden && document.querySelectorAll('#ltMenu [role=option]').length >= 2`, 'its / list', 15000);
-        const label = await ev(`document.querySelectorAll('#ltMenu [role=option]')[1].querySelector('b').textContent`);
-        await ev(`document.querySelectorAll('#ltMenu [role=option]')[1].dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
+        // On a touch screen the list hides while the typed text goes to the
+        // program: picked in one go once it is there.
+        let label = null;
+        for (let i = 0; i < 50 && !label; i++) {
+          label = await ev(`(() => { const o = document.querySelectorAll('#ltMenu:not([hidden]) [role=option]')[1]; if (!o) return null; o.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); return o.querySelector('b').textContent; })()`);
+          if (!label) await sleep(100);
+        }
+        if (!label) throw Error('the list went away');
         await until(`${S}.state.composer && ${S}.state.composer.text.replace(/^[/@]/, '').startsWith(${JSON.stringify(label.replace(/^[/@]/, ''))})`, 'the pick in its box', 15000);
         await shot(`done-${device}-${agent}-2-list.png`);
-        if (touch) await escape().catch(() => {});
         await clearBox();
         return label;
       });
@@ -206,14 +211,16 @@ async function main() {
       });
       await step('stop a running reply', async () => {
         await until(ready, 'its box ready', 60000);
-        await sendText('Count from 1 to 600, one number per line, and nothing else.');
+        // Long enough to stop: Claude Code and Pi count (they write it); Codex
+        // counts too fast, so it runs a slow command.
+        await sendText(agent === 'codex' ? 'Run the shell command `sleep 40` and then reply with the word slept.' : 'Count from 1 to 600, one number per line, and nothing else.');
         await until(`${S}.state.status && !document.getElementById('ltStatus').hidden`, 'working', 60000);
         await sleep(2500);
         if (!(await ev(`!!${S}.state.status`))) return 'finished before it could be stopped';
         await tap('#ltStop');
         const ms = await until(`!${S}.state.status`, 'stopped', 15000);
         await sleep(4000);
-        if (await ev(`[...document.querySelectorAll('#conversationTranscript .msg')].some(x => /\\b600\\b/.test(x.textContent) && /\\b599\\b/.test(x.textContent))`)) throw Error('the reply ran to its end');
+        if (await ev(`[...document.querySelectorAll('#conversationTranscript .msg')].some(x => (/\\b600\\b/.test(x.textContent) && /\\b599\\b/.test(x.textContent)) || /^\\s*slept\\s*$/i.test(x.textContent))`)) throw Error('the reply ran to its end');
         return 'stopped ' + ms + ' ms after the tap';
       });
       await step('switch back to Chattering\'s box', async () => {
@@ -240,7 +247,8 @@ async function main() {
       });
       await step('every message shown once', async () => {
         await sleep(2500);
-        const counts = await ev(`(() => { const users = [...document.querySelectorAll('#conversationTranscript .msg.user')].map(x => (x.querySelector('.md') || x).textContent.replace(/\\s+/g, ' ').trim()); return ${JSON.stringify(sent)}.map(p => users.filter(u => u.includes(p.replace(/\\s+/g, ' ').trim())).length); })()`);
+        // As shown: markdown's code marks are not text.
+        const counts = await ev(`(() => { const users = [...document.querySelectorAll('#conversationTranscript .msg.user')].map(x => (x.querySelector('.md') || x).textContent.replace(/\\s+/g, ' ').trim()); return ${JSON.stringify(sent)}.map(p => users.filter(u => u.includes(p.replace(/\x60/g, '').replace(/\\s+/g, ' ').trim())).length); })()`);
         const bad = sent.filter((p, i) => counts[i] !== 1 && !p.startsWith("/"));
         if (bad.length) throw Error('not once: ' + JSON.stringify(bad.map(p => [p.slice(0, 50), counts[sent.indexOf(p)]])));
         return counts.join(',');

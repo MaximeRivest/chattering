@@ -170,7 +170,13 @@
     if (live) { S.running = live.running || S.open; if (!live.running && !S.open) S.ended = true; if (live.notice) S.state.notice = live.notice; }
     dock.classList.toggle('lt-touch', touch()); dock.classList.toggle('lt-eink', calm());
     wire(S);
-    if (S.open) { paint(S); if (S.focused && !touch()) $('ltKeys').focus({ preventScroll: true }); return true; }
+    // The page was redrawn while typing here: the focus comes back where it was.
+    const usesDraft = touch() || !S.open || S.ended;
+    if (usesDraft && S.draftFocused) {
+      const d = $('ltDraft'); d.focus({ preventScroll: true });
+      if (S.draftSel) try { d.setSelectionRange(S.draftSel[0], S.draftSel[1]); } catch {}
+    }
+    if (S.open) { paint(S); if (S.focused && !usesDraft) $('ltKeys').focus({ preventScroll: true }); return true; }
     if (S.running) connect(S);
     paint(S);
     return true;
@@ -234,7 +240,14 @@
       e.stopPropagation();
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(S); }
     });
-    draft.addEventListener('focus', () => { if (S.ended || !S.running) ensureStarted(S); });
+    draft.addEventListener('focus', () => { S.draftFocused = true; if (S.ended || !S.running) ensureStarted(S); });
+    // Kept through a redraw of the page like the keyboard field (a phone's
+    // keyboard stays open, the caret where it was).
+    draft.addEventListener('blur', () => {
+      S.draftSel = [draft.selectionStart, draft.selectionEnd];
+      setTimeout(() => { if (draft.isConnected && document.activeElement !== draft) S.draftFocused = false; }, 0);
+    });
+    draft.addEventListener('select', () => { S.draftSel = [draft.selectionStart, draft.selectionEnd]; });
     draft.addEventListener('input', () => {
       S.draft = draft.value; S.draftDirty = true; S.draftAt = performance.now();
       clearTimeout(S.draftTimer);
@@ -389,7 +402,9 @@
         if (!stale) S.known = c.text;
       }
       draft.placeholder = c ? (c.placeholder || 'Message ' + name) : st.choice ? 'Answer above' : '';
-      $('ltSend').disabled = !c;
+      // A program still drawing its box (just started) takes the message
+      // when it is ready (the server waits); a question or a panel first.
+      $('ltSend').disabled = !!st.choice || st.mode === 'panel';
     } else {
       const typed = [...S.pending.values()].map(p => p.text).join('');
       if (c) {

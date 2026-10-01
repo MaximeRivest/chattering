@@ -1,0 +1,188 @@
+{
+  "device": "phone",
+  "when": "2026-10-01T23:45:03.665Z",
+  "agents": {
+    "claude": {
+      "key": "claude:-home-maxime--cache-chattering-live-test-scratch-phone-muq6lyy1-claude/945746dc-4585-4af6-ac45-f51245ad17ba.jsonl",
+      "new conversation": {
+        "ok": true,
+        "ms": 4178
+      },
+      "type with its own editor": {
+        "ok": true,
+        "ms": 833
+      },
+      "pick from its / list": {
+        "ok": true,
+        "ms": 1681,
+        "note": "/add-dir"
+      },
+      "open and close a panel": {
+        "ok": true,
+        "ms": 1842
+      },
+      "answer a permission question": {
+        "ok": true,
+        "ms": 3435
+      },
+      "stop a running reply": {
+        "ok": true,
+        "ms": 7152,
+        "note": "stopped 122 ms after the tap"
+      },
+      "switch back to Chattering's box": {
+        "ok": false,
+        "ms": 0,
+        "note": "n/a"
+      },
+      "continue an existing one": {
+        "ok": true,
+        "ms": 3269
+      },
+      "every message shown once": {
+        "ok": true,
+        "ms": 2503,
+        "note": "1,1,1,1"
+      },
+      "stats": {
+        "frames": 73,
+        "kb": 49,
+        "errors": []
+      }
+    },
+    "pi": {
+      "key": "pi:--home-maxime-.cache-chattering-live-test-scratch-phone-muq6lyy1-pi--/2026-10-01T23-45-36-714Z_01a0f9db-f2f1-73c5-a1de-83c91d269b02.jsonl",
+      "new conversation": {
+        "ok": true,
+        "ms": 4243
+      },
+      "type with its own editor": {
+        "ok": true,
+        "ms": 759
+      },
+      "pick from its / list": {
+        "ok": true,
+        "ms": 792,
+        "note": "model"
+      },
+      "open and close a panel": {
+        "ok": true,
+        "ms": 1634
+      },
+      "answer a permission question": {
+        "ok": false,
+        "ms": 0,
+        "note": "n/a"
+      },
+      "stop a running reply": {
+        "ok": true,
+        "ms": 7087,
+        "note": "stopped 62 ms after the tap"
+      },
+      "switch back to Chattering's box": {
+        "ok": true,
+        "ms": 175
+      },
+      "continue an existing one": {
+        "ok": true,
+        "ms": 4320
+      },
+      "every message shown once": {
+        "ok": true,
+        "ms": 2504,
+        "note": "1,1,1"
+      },
+      "stats": {
+        "frames": 16,
+        "kb": 3,
+        "errors": []
+      }
+    },
+    "codex": {
+      "key": "codex:2026/10/01/rollout-2026-10-01T19-45-59-01a0f9dc-4b1e-7700-8f47-f058201244f7.jsonl",
+      "new conversation": {
+        "ok": true,
+        "ms": 7390
+      },
+      "type with its own editor": {
+        "ok": true,
+        "ms": 805
+      },
+      "pick from its / list": {
+        "ok": true,
+        "ms": 763,
+        "note": "/fast"
+      },
+      "open and close a panel": {
+        "ok": true,
+        "ms": 1521
+      },
+      "answer a permission question": {
+        "ok": true,
+        "ms": 4884
+      },
+      "stop a running reply": {
+        "ok": true,
+        "ms": 7151,
+        "note": "stopped 62 ms after the tap"
+      },
+      "switch back to Chattering's box": {
+        "ok": true,
+        "ms": 186
+      },
+      "continue an existing one": {
+        "ok": true,
+        "ms": 7375
+      },
+      "every message shown once": {
+        "ok": true,
+        "ms": 2502,
+        "note": "1,1,1,1"
+      },
+      "stats": {
+        "frames": 19,
+        "kb": 9,
+        "errors": []
+      }
+    }
+  },
+  "notes": [
+    "Codex config restored (it had recorded 1 trusted scratch folder(s))"
+  ],
+  "pairedMs": 4929,
+  "flicker": {
+    "changes": 47,
+    "flips": 7,
+    "examples": [
+      [
+        "panel",
+        280
+      ],
+      [
+        "choice",
+        358
+      ],
+      [
+        "compose",
+        480
+      ],
+      [
+        "panel",
+        200
+      ],
+      [
+        "choice",
+        200
+      ],
+      [
+        "compose",
+        40
+      ],
+      [
+        "compose",
+        514
+      ]
+    ]
+  },
+  "pageExceptions": []
+}

@@ -138,6 +138,13 @@ test('the live strip: laptop keyboard, its list, a question, a panel, stop, phon
   await b.size(412, 900, true);
   await ev(`LiveTerminal.mount()`);
   await until(`document.querySelector('.lt-touch') && getComputedStyle(document.getElementById('ltDraft')).display !== 'none'`, 'the phone\'s box');
+  // Typing on the phone while the page is redrawn: the box keeps the focus
+  // (its keyboard stays open) and the caret.
+  await ev(`(() => { const d = document.getElementById('ltDraft'); d.focus(); d.value = 'from the'; d.setSelectionRange(8, 8); d.dispatchEvent(new Event('input')); })()`);
+  await ev(`open(${JSON.stringify(claudeKey)}, 'preserve')`);
+  await new Promise(r => setTimeout(r, 400));
+  assert.equal(await ev(`document.activeElement && document.activeElement.id`), 'ltDraft', 'the phone\'s box keeps the focus through a redraw');
+  assert.equal(await ev(`document.getElementById('ltDraft').selectionStart`), 8, 'and its caret');
   await ev(`(() => { const d = document.getElementById('ltDraft'); d.value = 'from the phone'; d.dispatchEvent(new Event('input')); })()`);
   await until(`LiveTerminal.sessions.get(${JSON.stringify(claudeKey)}).state.composer.text === 'from the phone'`, 'the phone\'s text in its editor');
   await ev(`document.getElementById('ltSend').click()`);

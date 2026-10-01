@@ -38,10 +38,11 @@ const WORKING_LINES = [
   '^\\s*[\\u2800-\\u28ff]\\s+\\S',            // a braille spinner and a word: "⠦ Working"
 ];
 const FRAME_WORKING = '[\\u2800-\\u28ff]|^(?:[✻✶✳✢✽·*∗⋆◐◓◑◒]\\s+)?\\S+…|\\b(working|thinking)\\b';
-// A window title that starts with a turning spinner: Claude Code sets
-// "◐ <name>" while it works (also while it writes its answer, when its
-// status line is gone) and "✳ <name>" when it is idle.
-const TITLE_WORKING = '^[◐◓◑◒\\u2800-\\u28ff]';
+// Claude Code's window title: "◐ <name>" turning while it works (also
+// while it writes its answer, when its status line is gone), "✳ <name>"
+// when it is idle. Not generic: Codex turns a spinner in its title even
+// when idle (recorded 2026-10-01).
+const CLAUDE_TITLE_WORKING = '^[◐◓◑◒]';
 
 const GENERIC_SCREEN = {
   prompts: ['❯', '>', '›', '$'],
@@ -51,7 +52,7 @@ const GENERIC_SCREEN = {
   glyphless: true,
   working: WORKING_LINES,
   frameWorking: FRAME_WORKING,
-  titleWorking: TITLE_WORKING,
+  titleWorking: null,
 };
 
 const PROFILES = {
@@ -67,7 +68,7 @@ const PROFILES = {
     start: ['--session-id', '{sessionId}'],
     newSession: 'known-id', idPattern: 'uuid',
     // Its bullet changed from ⏺ to ● between 2.1.285 and 2.1.286: both.
-    screen: { ...GENERIC_SCREEN, prompts: ['❯', '>'], bullets: ['⏺', '●'], result: '⎿', glyphless: false },
+    screen: { ...GENERIC_SCREEN, prompts: ['❯', '>'], bullets: ['⏺', '●'], result: '⎿', glyphless: false, titleWorking: CLAUDE_TITLE_WORKING },
     keys: { stop: { key: 'Escape' } },
   },
   pi: {

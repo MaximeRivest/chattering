@@ -1,42 +1,43 @@
 {
-  "device": "laptop",
-  "when": "2026-10-01T23:25:21.332Z",
+  "device": "eink",
+  "when": "2026-10-01T23:45:03.862Z",
   "agents": {
-    "codex": {
-      "key": "codex:2026/10/01/rollout-2026-10-01T19-25-25-01a0f9c9-79d6-7253-a0d3-1b973e865912.jsonl",
+    "claude": {
+      "key": "claude:-home-maxime--cache-chattering-live-test-scratch-eink-muq6lyy4-claude/8043a538-e8ac-4790-9e10-150fb6f99296.jsonl",
       "new conversation": {
         "ok": true,
-        "ms": 6671
+        "ms": 4867
       },
       "type with its own editor": {
         "ok": true,
-        "ms": 861
+        "ms": 822
       },
       "pick from its / list": {
         "ok": true,
-        "ms": 1040,
-        "note": "/fast"
+        "ms": 1813,
+        "note": "/add-dir"
       },
       "open and close a panel": {
         "ok": true,
-        "ms": 1250
+        "ms": 1777
       },
       "answer a permission question": {
         "ok": true,
-        "ms": 10154
+        "ms": 3236
       },
       "stop a running reply": {
         "ok": true,
-        "ms": 4717,
-        "note": "finished before it could be stopped"
+        "ms": 7250,
+        "note": "stopped 122 ms after the tap"
       },
       "switch back to Chattering's box": {
-        "ok": true,
-        "ms": 148
+        "ok": false,
+        "ms": 1,
+        "note": "n/a"
       },
       "continue an existing one": {
         "ok": true,
-        "ms": 4806
+        "ms": 2976
       },
       "every message shown once": {
         "ok": true,
@@ -44,30 +45,28 @@
         "note": "1,1,1,1"
       },
       "stats": {
-        "frames": 80,
-        "kb": 27,
+        "frames": 37,
+        "kb": 23,
         "errors": []
       }
     }
   },
-  "notes": [
-    "Codex config restored (it had recorded 1 trusted scratch folder(s))"
-  ],
+  "notes": [],
   "flicker": {
-    "changes": 20,
+    "changes": 17,
     "flips": 3,
     "examples": [
       [
+        "panel",
+        224
+      ],
+      [
         "choice",
-        160
+        281
       ],
       [
         "working",
-        40
-      ],
-      [
-        "choice",
-        320
+        599
       ]
     ]
   },

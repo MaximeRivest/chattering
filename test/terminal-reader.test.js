@@ -106,3 +106,8 @@ test('a box wrapped inside a path (Codex breaks after "/"): the text comes back 
   const d = readDocument(screen(['', line1, '  outside/codex-x.txt', ''], { x: 21, y: 2 }, 100), codex);
   assert.equal(d.composer.text, 'Run exactly this shell command and nothing else: touch /home/maxime/.cache/chattering-live-test/outside/codex-x.txt');
 });
+test('Codex turns a spinner in its title even when idle: its title does not say "working"', () => {
+  const codex = require('../harness/terminal/profiles').profileFor('codex');
+  const d = readDocument({ ...screen(['', '› ', '', '  gpt low · ~/w'], { x: 2, y: 1 }), title: '⠋ laptop-codex' }, codex);
+  assert.equal(d.mode, 'compose');
+});
