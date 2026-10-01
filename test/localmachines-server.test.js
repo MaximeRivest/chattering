@@ -12,7 +12,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { chromiumBinary, chromiumAvailable, CHROMIUM_TEST_FLAGS } = require('./helpers/chromium.js');
 
-const { fixtureCleanup } = require('./helpers/fixture-cleanup');
+const { closeLocalBrowser, localMachinesCleanup } = require('./localmachines-browser-cleanup');
 const { stopAndRemove } = require('./helpers/cleanup');
 
 const root = path.join(__dirname, '..');
@@ -51,8 +51,10 @@ async function until(fn, what) {
 }
 
 test('the Windows app and the Linux side switch to each other, as the owner, with their own cookies', async t => {
+  let primaryError;
+  try {
   const localAppData = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'local-appdata-')));
-  const cleanup = fixtureCleanup(t, () => stopAndRemove(null, localAppData));
+  const cleanup = localMachinesCleanup(t, () => stopAndRemove(null, localAppData));
   const win = await boot(cleanup, { name: 'LILLY-PC', kind: 'windows', localAppData });
   await until(() => fs.existsSync(path.join(localAppData, 'Chattering', 'local-machines', 'windows.json')), 'the Windows card').catch(e => { throw new Error(e.message + '\n' + win.log()); });
   const linux = await boot(cleanup, { name: 'LILLY-PC (Linux)', kind: 'wsl', localAppData });
@@ -101,21 +103,7 @@ test('the Windows app and the Linux side switch to each other, as the owner, wit
   const profile = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'local-machines-browser-')));
   const browser = spawn(chromiumBinary(), [...CHROMIUM_TEST_FLAGS, '--user-data-dir=' + profile, '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   let ws, closeBrowser;
-  cleanup.add(async () => {
-    try {
-      // SIGKILL ends the launcher, not necessarily Chrome's profile writers.
-      // Browser.close joins Chrome's own shutdown before deleting its profile.
-      if (closeBrowser && ws?.readyState === WebSocket.OPEN && browser.exitCode === null && browser.signalCode === null) {
-        const exited = new Promise(resolve => browser.once('exit', resolve));
-        // The exit is authoritative; Chrome may close CDP before replying.
-        closeBrowser();
-        await exited;
-      }
-    } finally {
-      ws?.close();
-      await stopAndRemove(browser, profile);
-    }
-  });
+  cleanup.add(() => closeLocalBrowser({ browser, profile, ws, closeBrowser, primaryError }));
   const endpoint = await new Promise((resolve, reject) => {
     let out = ''; const timer = setTimeout(() => reject(Error(out)), 15000);
     browser.stderr.on('data', b => { out += b; const m = out.match(/DevTools listening on (ws:\/\/[^\s]+)/); if (m) { clearTimeout(timer); resolve(m[1]); } });
@@ -156,4 +144,5 @@ test('the Windows app and the Linux side switch to each other, as the owner, wit
     const shot = await send('Page.captureScreenshot', { format: 'png' }, sid);
     fs.writeFileSync(path.join(process.env.CHATTERING_SHOTS, 'local-machines-switcher.png'), Buffer.from(shot.result.data, 'base64'));
   }
+  } catch (error) { primaryError = error; throw error; }
 });
