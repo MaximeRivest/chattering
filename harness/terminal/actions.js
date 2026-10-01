@@ -147,10 +147,14 @@ async function submitComposer(host, target, { profile } = {}) {
   // read it: Enter again only while the box still holds exactly the message.
   const sentOff = x => x.status || x.choice || x.panel || (x.composer && x.composer.text === '');
   const stillThere = () => { const x = readDocument(host.snapshot({ screenOnly: true }), profile); return x.composer && !sentOff(x) && sameText(x.composer.text, d.composer.text); };
+  // The result says how it went: a question that comes up may be the
+  // message's own (a permission) or the program's (a folder to trust), which
+  // took the Enter: the caller sends it again once that is answered.
+  const how = x => ({ ...x, sentBy: x.choice ? 'choice' : x.status ? 'working' : x.panel ? 'panel' : 'emptied' });
   for (let i = 0; i < 6; i++) {
     host.input('\r');
-    try { return await waitFor(host, sentOff, { profile, timeoutMs: 700 * (i + 1) }); }
-    catch (e) { if (!stillThere()) return waitFor(host, sentOff, { profile, timeoutMs: 5000 }); }
+    try { return how(await waitFor(host, sentOff, { profile, timeoutMs: 700 * (i + 1) })); }
+    catch (e) { if (!stillThere()) return how(await waitFor(host, sentOff, { profile, timeoutMs: 5000 })); }
   }
   throw new Error('the program did not take the message');
 }

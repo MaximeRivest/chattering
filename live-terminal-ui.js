@@ -204,12 +204,14 @@
       const c = $('ltCompose'); if (c) c.classList.remove('focused');
       setTimeout(() => { if (keys.isConnected && document.activeElement !== keys) S.focused = false; }, 0);
     };
+    // While an input method composes, the field is the person's: nothing
+    // (no update from the program, no mirror) touches it until it ends.
     let composing = false;
     const typeText = text => { const t0 = performance.now(); const n = send(S, { t: 'text', text }); if (n != null) S.pending.set(n, { t0, text }); paint(S); };
-    keys.addEventListener('compositionstart', () => { composing = true; });
+    keys.addEventListener('compositionstart', () => { composing = true; S.composing = true; });
     // An input method finished a word: that text goes to the program; the
     // field then shows the program's text again.
-    keys.addEventListener('compositionend', e => { composing = false; if (e.data) typeText(e.data); mirror(S, true); });
+    keys.addEventListener('compositionend', e => { composing = false; S.composing = false; if (e.data) typeText(e.data); mirror(S, true); });
     keys.addEventListener('keydown', e => {
       e.stopPropagation(); // the page's shortcuts stay quiet while typing here
       if (composing || e.isComposing || e.key === 'Process' || e.key === 'Unidentified') return;
@@ -291,7 +293,7 @@
   // read it); `force` after the browser itself changed it.
   function mirror(S, force = false) {
     const keys = $('ltKeys'), c = S.state.composer;
-    if (!keys || touch()) return;
+    if (!keys || touch() || S.composing) return;
     const text = c ? c.text : '';
     if (force || keys.value !== text) {
       keys.value = text;
@@ -435,10 +437,20 @@
     connect(S);
     onProgress('waiting for ' + name + '…');
     const until = (test, ms) => new Promise((resolve, reject) => { const t0 = Date.now(); const tick = () => { if (test()) return resolve(); if (S.ended) return reject(new Error(name + ' ended')); if (Date.now() - t0 > ms) return reject(new Error(name + ' did not get ready')); setTimeout(tick, 100); }; tick(); });
-    await until(() => S.open && S.state.composer && !S.state.choice && !S.state.status, 10 * 60 * 1000); // the person may be answering its question
-    onProgress('sending…');
-    const r = await submit(S, prompt);
-    if (r.t !== 'done') throw new Error(r.error || 'not sent');
+    // The first message goes once its box is ready; a question the program
+    // asks first (trust this folder?) is answered here, then it goes.
+    let r = null;
+    for (let i = 0; i < 20; i++) {
+      await until(() => S.open && S.state.composer && !S.state.choice && !S.state.status, 10 * 60 * 1000);
+      onProgress('sending…');
+      r = await submit(S, prompt);
+      if (r.t === 'done') break;
+      if (!/asks something first|not ready/.test(r.error || '')) break;
+      onProgress('answer ' + name + '\'s question above; your message goes next');
+      S.draft = ''; const dr = $('ltDraft'); if (dr) dr.value = '';
+      await new Promise(res => setTimeout(res, 500));
+    }
+    if (!r || r.t !== 'done') throw new Error((r && r.error) || 'not sent');
     onProgress('opening the conversation…');
     // Its file: the server says so by an event, or when asked.
     const poll = (async () => { for (let i = 0; i < 600; i++) { const st = await statusOf(temp).catch(() => ({})); if (st.resolvedKey && st.indexed) return st.resolvedKey; await new Promise(res => setTimeout(res, 300)); } return null; })();

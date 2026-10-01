@@ -238,5 +238,7 @@ process.stdin.on('data', d => {
 out((style === 'claude' ? ' ✻ Fake Code v0.0.0' : style === 'codex' ? '>_ Fake Codex (v0.0.0)' : ' fake pi v0.0.0') + '\r\n\r\n');
 draw();
 setTimeout(() => { listening = true; out('\x1b[?2004h\x1b[?1004h'); }, 400);
+// FAKE_AGENT_TRUST=late: like Codex, its box first, the question a moment later.
+if (process.env.FAKE_AGENT_TRUST === 'late') { st.mode = 'compose'; draw(); setTimeout(() => { st.mode = 'trust'; st.sel = 0; draw(); }, 600); }
 process.stdout.on('resize', () => draw());
 process.on('SIGHUP', () => process.exit(0));

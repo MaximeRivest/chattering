@@ -121,9 +121,12 @@ function readDocument(snap, profileOrRules = CLAUDE) {
         let joint = '\n';
         if (i) {
           const prev = text.slice(text.lastIndexOf('\n') + 1), word = typed.trimStart().split(/\s/)[0] || '';
-          if (prev.length + 1 + word.length > cols - offset - 4) { joint = ' '; softWraps++; }
+          // A wrap at a space loses the space (it is drawn at the end of the
+          // line, invisible); a wrap after "/" or "-" inside a path or word
+          // (Codex breaks there) had none.
+          if (prev.length + 1 + word.length > cols - offset - 4) { joint = /[^\s][/-]$/.test(prev) && word ? '' : ' '; softWraps++; }
         }
-        if (y === cursor.y && cursorInBox) caret = text.length + (i ? 1 : 0) + Math.max(0, cursor.x - offset);
+        if (y === cursor.y && cursorInBox) caret = text.length + (i ? joint.length : 0) + Math.max(0, cursor.x - offset);
         text += (i ? joint : '') + typed;
         if (!typed && dim.trim()) placeholder = dim.trim();
       });

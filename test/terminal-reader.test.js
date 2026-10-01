@@ -100,3 +100,9 @@ test('working from the window title: Claude Code writing its answer has no worki
   const asking = readDocument({ ...screen([' Do you want to proceed?', ' ❯ 1. Yes', '   2. No'], { x: 0, y: 0 }), title: '◐ x' }, claude);
   assert.equal(asking.mode, 'choice');
 });
+test('a box wrapped inside a path (Codex breaks after "/"): the text comes back without a space', () => {
+  const codex = require('../harness/terminal/profiles').profileFor('codex');
+  const line1 = '› Run exactly this shell command and nothing else: touch /home/maxime/.cache/chattering-live-test/';
+  const d = readDocument(screen(['', line1, '  outside/codex-x.txt', ''], { x: 21, y: 2 }, 100), codex);
+  assert.equal(d.composer.text, 'Run exactly this shell command and nothing else: touch /home/maxime/.cache/chattering-live-test/outside/codex-x.txt');
+});

@@ -24,7 +24,7 @@
 const crypto = require('node:crypto');
 const { encodeKey } = require('./host');
 const { readDocument } = require('./reader');
-const { choose, pickMenu, setComposerText, submitComposer } = require('./actions');
+const { choose, pickMenu, setComposerText, submitComposer, waitFor, quiet, sameText } = require('./actions');
 
 const TYPIST_MS = 2500, CALM_MS = 1000, STATUS_ONLY_MS = 250, NOW_ROWS = 14;
 // A live update is bounded by the screen: every cell styled differently on
@@ -171,6 +171,31 @@ function createHub({ host, profile, journal = null, events = null, liveOnly = fa
   host.on('exit', broadcast);
   if (journal && !liveOnly) journal.on('entry', broadcast);
 
+  // A message, sent with the closed loop. A program that started a moment
+  // ago may still be drawing (Codex shows its box, then asks to trust the
+  // folder): its screen settles first. If a question took the Enter, the
+  // message stays pending, and once the question is answered, the box
+  // still holding exactly it and the program idle, Enter is pressed once.
+  let pending = null;
+  async function send(text) {
+    if (performance.now() - host.t0 < 4000) {
+      await quiet(host, 500, 4000);
+      const now = readDocument(host.snapshot({ screenOnly: true }), profile);
+      if (now.choice && !now.composer) throw new Error('it asks something first: answer it, then send');
+    }
+    const d = await submitComposer(host, text, { profile });
+    pending = d.sentBy === 'choice' ? { text, until: Date.now() + 15 * 60000 } : null;
+    return d;
+  }
+  host.on('frame', () => {
+    if (!pending || !current) return;
+    if (Date.now() > pending.until) { pending = null; return; }
+    const doc = current.doc;
+    if (doc.choice || doc.status || !doc.composer) return;
+    const text = pending.text; pending = null;
+    if (sameText(doc.composer.text, text)) { logEvent({ ev: 'resent-enter', text }); serial(() => submitComposer(host, text, { profile }).catch(() => {})); }
+  });
+
   function attach(ws, { name = 'a page' } = {}) {
     const c = { ws, clientId: crypto.randomUUID(), name, wantScreen: false, calm: false, sent: {}, lastAt: 0, timer: null, holdTimer: null, acks: [], lastSeq: -1 };
     clients.set(ws, c);
@@ -217,7 +242,12 @@ function createHub({ host, profile, journal = null, events = null, liveOnly = fa
         }));
       } else if (m.t === 'submit') serial(() => act(async () => {
         const t0 = performance.now();
-        await submitComposer(host, String(m.text), { profile });
+        // A program just started (a click in the box starts it) may not
+        // show its box yet: the message waits for it, not bounces.
+        const d = await waitFor(host, x => x.composer || x.choice, { profile, timeoutMs: 20000 }).catch(() => null);
+        if (!d) throw new Error('the program is not ready for a message yet');
+        if (d.choice && !d.composer) throw new Error('it asks something first: answer it, then send');
+        await send(String(m.text));
         return { ms: +(performance.now() - t0).toFixed(1) };
       }));
       else if (m.t === 'resize') host.resize(Math.max(40, Math.min(240, m.cols | 0)), Math.max(10, Math.min(120, m.rows | 0)));
@@ -239,7 +269,7 @@ function createHub({ host, profile, journal = null, events = null, liveOnly = fa
   // Send a message from the server (a conversation's first message, or one
   // typed in Chattering's box while the program was ending): the same
   // closed loop as a device's Send.
-  const submit = text => new Promise((resolve, reject) => serial(() => submitComposer(host, String(text), { profile }).then(resolve, reject)));
+  const submit = text => new Promise((resolve, reject) => serial(() => send(String(text)).then(resolve, reject)));
 
   function close() {
     host.off('frame', onFrame);

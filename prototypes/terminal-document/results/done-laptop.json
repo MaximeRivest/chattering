@@ -1,33 +1,282 @@
 {
   "device": "laptop",
-  "when": "2026-10-01T22:26:02.585Z",
+  "when": "2026-10-01T23:13:22.883Z",
   "agents": {
-    "claude": {
-      "key": "claude:-home-maxime--cache-chattering-live-test-scratch-laptop-muq3scr5-claude/d9f8fbd0-4d85-47b5-b4a0-529ee6eed477.jsonl",
+    "codex": {
+      "key": "codex:2026/10/01/rollout-2026-10-01T19-13-27-01a0f9be-8347-7071-9548-fd9a3a0b8333.jsonl",
       "new conversation": {
         "ok": true,
-        "ms": 3454
+        "ms": 13793
       },
       "type with its own editor": {
         "ok": true,
-        "ms": 863
+        "ms": 858
       },
       "pick from its / list": {
         "ok": true,
-        "ms": 382,
+        "ms": 426,
+        "note": "/fast"
+      },
+      "open and close a panel": {
+        "ok": true,
+        "ms": 1234
+      },
+      "answer a permission question": {
+        "ok": false,
+        "ms": 19733,
+        "error": "timed out: the text in its own box",
+        "focus": [
+          [
+            1912,
+            "in",
+            "agentText",
+            0
+          ],
+          [
+            1916,
+            "out",
+            "agentText",
+            0
+          ],
+          [
+            1960,
+            "in",
+            "agentText",
+            0
+          ],
+          [
+            2528,
+            "out",
+            "agentText",
+            0
+          ],
+          [
+            2554,
+            "in",
+            "agentText",
+            0
+          ],
+          [
+            3165,
+            "out",
+            "agentText",
+            0
+          ],
+          [
+            15656,
+            "in",
+            "ltKeys",
+            1
+          ]
+        ]
+      },
+      "stop a running reply": {
+        "ok": false,
+        "ms": 17148,
+        "error": "timed out: the text in its own box",
+        "focus": [
+          [
+            1912,
+            "in",
+            "agentText",
+            0
+          ],
+          [
+            1916,
+            "out",
+            "agentText",
+            0
+          ],
+          [
+            1960,
+            "in",
+            "agentText",
+            0
+          ],
+          [
+            2528,
+            "out",
+            "agentText",
+            0
+          ],
+          [
+            2554,
+            "in",
+            "agentText",
+            0
+          ],
+          [
+            3165,
+            "out",
+            "agentText",
+            0
+          ],
+          [
+            15656,
+            "in",
+            "ltKeys",
+            1
+          ]
+        ]
+      },
+      "switch back to Chattering's box": {
+        "ok": true,
+        "ms": 134
+      },
+      "continue an existing one": {
+        "ok": false,
+        "ms": 17603,
+        "error": "timed out: the text in its own box",
+        "focus": [
+          [
+            1912,
+            "in",
+            "agentText",
+            0
+          ],
+          [
+            1916,
+            "out",
+            "agentText",
+            0
+          ],
+          [
+            1960,
+            "in",
+            "agentText",
+            0
+          ],
+          [
+            2528,
+            "out",
+            "agentText",
+            0
+          ],
+          [
+            2554,
+            "in",
+            "agentText",
+            0
+          ],
+          [
+            3165,
+            "out",
+            "agentText",
+            0
+          ],
+          [
+            15656,
+            "in",
+            "ltKeys",
+            1
+          ],
+          [
+            55222,
+            "out",
+            "ltKeys",
+            1
+          ],
+          [
+            55524,
+            "in",
+            "ltKeys",
+            1
+          ]
+        ]
+      },
+      "every message shown once": {
+        "ok": false,
+        "ms": 2503,
+        "error": "not once: [[\"Run exactly this shell command and nothing else: t\",0],[\"Count from 1 to 600, one number per line, and noth\",0],[\"Reply with exactly this text and nothing else: aga\",0]]",
+        "focus": [
+          [
+            1912,
+            "in",
+            "agentText",
+            0
+          ],
+          [
+            1916,
+            "out",
+            "agentText",
+            0
+          ],
+          [
+            1960,
+            "in",
+            "agentText",
+            0
+          ],
+          [
+            2528,
+            "out",
+            "agentText",
+            0
+          ],
+          [
+            2554,
+            "in",
+            "agentText",
+            0
+          ],
+          [
+            3165,
+            "out",
+            "agentText",
+            0
+          ],
+          [
+            15656,
+            "in",
+            "ltKeys",
+            1
+          ],
+          [
+            55222,
+            "out",
+            "ltKeys",
+            1
+          ],
+          [
+            55524,
+            "in",
+            "ltKeys",
+            1
+          ]
+        ]
+      },
+      "stats": {
+        "frames": 70,
+        "kb": 35,
+        "errors": []
+      }
+    },
+    "claude": {
+      "key": "claude:-home-maxime--cache-chattering-live-test-scratch-laptop-muq5h8c8-claude/622f343a-7703-40b8-9d3d-af90092ff728.jsonl",
+      "new conversation": {
+        "ok": true,
+        "ms": 4213
+      },
+      "type with its own editor": {
+        "ok": true,
+        "ms": 844
+      },
+      "pick from its / list": {
+        "ok": true,
+        "ms": 366,
         "note": "/add-dir"
       },
       "open and close a panel": {
         "ok": true,
-        "ms": 1505
+        "ms": 1508
       },
       "answer a permission question": {
         "ok": true,
-        "ms": 6250
+        "ms": 6100
       },
       "stop a running reply": {
         "ok": true,
-        "ms": 8867,
+        "ms": 8835,
         "note": "stopped 122 ms after the tap"
       },
       "switch back to Chattering's box": {
@@ -36,184 +285,39 @@
         "note": "n/a"
       },
       "continue an existing one": {
-        "ok": false,
-        "ms": 180383,
-        "error": "timed out: the reply",
-        "focus": [
-          [
-            13393,
-            "in",
-            "ltKeys",
-            1
-          ],
-          [
-            13668,
-            "out",
-            "ltKeys",
-            1
-          ],
-          [
-            13673,
-            "in",
-            "ltKeys",
-            1
-          ],
-          [
-            14539,
-            "out",
-            "ltKeys",
-            1
-          ],
-          [
-            14549,
-            "in",
-            "ltKeys",
-            1
-          ],
-          [
-            16849,
-            "out",
-            "ltKeys",
-            1
-          ],
-          [
-            16853,
-            "in",
-            "ltKeys",
-            1
-          ],
-          [
-            19473,
-            "out",
-            "ltKeys",
-            1
-          ],
-          [
-            19483,
-            "in",
-            "ltKeys",
-            1
-          ],
-          [
-            23165,
-            "out",
-            "ltKeys",
-            1
-          ],
-          [
-            23223,
-            "in",
-            "ltDraft",
-            1
-          ],
-          [
-            23249,
-            "out",
-            "ltDraft",
-            1
-          ]
-        ]
+        "ok": true,
+        "ms": 3115
       },
       "every message shown once": {
-        "ok": false,
+        "ok": true,
         "ms": 2504,
-        "error": "not once: [[\"Reply with exactly this text and nothing else: aga\",0]]",
-        "focus": [
-          [
-            13393,
-            "in",
-            "ltKeys",
-            1
-          ],
-          [
-            13668,
-            "out",
-            "ltKeys",
-            1
-          ],
-          [
-            13673,
-            "in",
-            "ltKeys",
-            1
-          ],
-          [
-            14539,
-            "out",
-            "ltKeys",
-            1
-          ],
-          [
-            14549,
-            "in",
-            "ltKeys",
-            1
-          ],
-          [
-            16849,
-            "out",
-            "ltKeys",
-            1
-          ],
-          [
-            16853,
-            "in",
-            "ltKeys",
-            1
-          ],
-          [
-            19473,
-            "out",
-            "ltKeys",
-            1
-          ],
-          [
-            19483,
-            "in",
-            "ltKeys",
-            1
-          ],
-          [
-            23165,
-            "out",
-            "ltKeys",
-            1
-          ],
-          [
-            23223,
-            "in",
-            "ltDraft",
-            1
-          ],
-          [
-            23249,
-            "out",
-            "ltDraft",
-            1
-          ]
-        ]
+        "note": "1,1,1,1"
       },
       "stats": {
-        "frames": 245,
-        "kb": 106,
-        "errors": [
-          "the input box is not on screen"
-        ]
+        "frames": 251,
+        "kb": 112,
+        "errors": []
       }
     }
   },
-  "notes": [],
+  "notes": [
+    "Codex config restored (it had recorded 1 trusted scratch folder(s))"
+  ],
   "flicker": {
-    "changes": 14,
-    "flips": 2,
+    "changes": 27,
+    "flips": 3,
     "examples": [
+      [
+        "choice",
+        160
+      ],
       [
         "panel",
         240
       ],
       [
         "choice",
-        320
+        361
       ]
     ]
   },

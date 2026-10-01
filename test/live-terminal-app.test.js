@@ -55,7 +55,7 @@ test('the live strip: laptop keyboard, its list, a question, a panel, stop, phon
   // Not running yet: an ordinary box; focusing it starts the program.
   await until(`document.querySelector('.lt-ended') && getComputedStyle(document.getElementById('ltDraft')).display !== 'none'`, 'an ordinary box before it runs');
   await ev(`document.getElementById('ltDraft').focus()`);
-  await until(`LiveTerminal.sessions.get(${JSON.stringify(claudeKey)})?.state?.composer && !document.querySelector('.lt-ended')`, () => ev(`JSON.stringify({ keys: [...LiveTerminal.sessions.keys()], st: [...LiveTerminal.sessions.values()].map(S => ({ open: S.open, ended: S.ended, running: S.running, mode: S.state.mode, composer: !!S.state.composer })), cls: document.querySelector('[data-live-terminal]').className })`));
+  await until(`LiveTerminal.sessions.get(${JSON.stringify(claudeKey)})?.state?.composer && !document.querySelector('.lt-ended')`, () => ev(`JSON.stringify({ keys: [...LiveTerminal.sessions.keys()], st: [...LiveTerminal.sessions.values()].map(S => ({ open: S.open, ended: S.ended, running: S.running, mode: S.state.mode, composer: !!S.state.composer, note: S.note, errors: S.stats.errors })), cls: document.querySelector('[data-live-terminal]').className })`));
   await ev(`document.getElementById('ltKeys').focus()`);
   await type('hello');
   await until(`LiveTerminal.sessions.get(${JSON.stringify(claudeKey)}).state.composer.text === 'hello'`, 'typed into its own editor');
@@ -87,7 +87,7 @@ test('the live strip: laptop keyboard, its list, a question, a panel, stop, phon
   await new Promise(r => setTimeout(r, 300));
   assert.equal(await ev(`LiveTerminal.sessions.get(${JSON.stringify(claudeKey)}).state.composer.text`), '', 'nothing sent while composing');
   await command('Input.insertText', { text: 'é' });
-  await until(`LiveTerminal.sessions.get(${JSON.stringify(claudeKey)}).state.composer.text === 'é'`, 'the composed letter, once');
+  await until(`LiveTerminal.sessions.get(${JSON.stringify(claudeKey)}).state.composer.text === 'é'`, () => ev(`JSON.stringify(LiveTerminal.sessions.get(${JSON.stringify(claudeKey)}).state.composer) + ' field=' + JSON.stringify(document.getElementById('ltKeys').value) + ' active=' + document.activeElement.id`));
   await new Promise(r => setTimeout(r, 300));
   assert.equal(await ev(`LiveTerminal.sessions.get(${JSON.stringify(claudeKey)}).state.composer.text`), 'é', 'once');
   await key('Backspace', 'Backspace', 8);

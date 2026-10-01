@@ -36,13 +36,13 @@ function device(hub, name) {
   return { state, send, ask, until, ws, seq: () => seq };
 }
 
-function run(style, { trust = false } = {}) {
+function run(style, { trust = false } = {}) { // trust: true (asked at once) or 'late' (after its box)
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-agent-'));
   const work = path.join(home, 'work'); fs.mkdirSync(work);
   const id = style === 'pi' ? '01a0f000-0000-7000-8000-0000000000aa' : '11111111-2222-4333-8444-5555555555aa';
   const args = style === 'codex' ? [] : ['--session-id', id];
   const host = new TerminalHost({ command: process.execPath, args: [FAKE, ...args], cwd: work, cols: 90, rows: 24, scrollback: 200,
-    env: { ...process.env, HOME: home, FAKE_AGENT_STYLE: style, FAKE_AGENT_TRUST: trust ? '1' : '', PI_CODING_AGENT_DIR: path.join(home, 'pi'), CODEX_HOME: path.join(home, 'codex'), CLAUDE_CONFIG_DIR: path.join(home, 'claude') } });
+    env: { ...process.env, HOME: home, FAKE_AGENT_STYLE: style, FAKE_AGENT_TRUST: trust === 'late' ? 'late' : trust ? '1' : '', PI_CODING_AGENT_DIR: path.join(home, 'pi'), CODEX_HOME: path.join(home, 'codex'), CLAUDE_CONFIG_DIR: path.join(home, 'claude') } });
   const hub = createHub({ host, profile: profileFor(style), liveOnly: true });
   return { host, hub, home, work, close: () => { hub.close(); host.kill(); fs.rmSync(home, { recursive: true, force: true }); } };
 }
@@ -125,4 +125,41 @@ test('a folder question at start; two devices: one typist; a message received tw
   assert.equal(a.state.composer.text, 'abc');
   assert.equal(b.state.composer.text, 'abc', 'every device sees the same box');
   assert.deepEqual(r.hub.state().devices.sort(), ['laptop', 'phone']);
+});
+
+test('a message sent the moment the program starts waits for its box, and goes once', { skip, timeout: 30000 }, async t => {
+  const r = run('claude', { trust: false });
+  t.after(r.close);
+  const a = device(r.hub, 'phone');
+  const ans = await a.ask({ t: 'submit', text: 'sent at once' });
+  assert.equal(ans.t, 'done', JSON.stringify(ans));
+  await a.until(s => s.mode === 'compose' && !s.status, 'answered');
+  await new Promise(res => setTimeout(res, 300));
+  const written = files(r.home).filter(f => f.endsWith('.jsonl')).map(f => fs.readFileSync(f, 'utf8')).join('');
+  assert.equal(written.split('"sent at once"').length - 1, 1, 'once');
+  assert.match(written, /Done: sent at once/);
+});
+
+test('a question that comes up right after the box (Codex trusting a folder): the message waits, then goes once', { skip, timeout: 30000 }, async t => {
+  const r = run('codex', { trust: 'late' });
+  t.after(r.close);
+  const a = device(r.hub, 'laptop');
+  let ans = await a.ask({ t: 'submit', text: 'first words' });
+  if (ans.t !== 'done') {
+    // Told to answer first: answered, then sent again (as the page does).
+    assert.match(ans.error, /asks something first/);
+    await a.until(s => s.mode === 'choice', 'the question');
+    assert.equal((await a.ask({ t: 'choose', index: 0 })).t, 'done');
+    await a.until(s => s.mode === 'compose', 'its box');
+    ans = await a.ask({ t: 'submit', text: 'first words' });
+  } else if (a.state.mode === 'choice') {
+    // Its Enter went to the question: answered, the message goes by itself.
+    assert.equal((await a.ask({ t: 'choose', index: 0 })).t, 'done');
+  }
+  assert.equal(ans.t, 'done', JSON.stringify(ans));
+  const t0 = Date.now();
+  let written = '';
+  while (Date.now() - t0 < 8000 && !/Done: first words/.test(written)) { await sleep(150); written = files(r.home).filter(f => f.endsWith('.jsonl')).map(f => fs.readFileSync(f, 'utf8')).join(''); }
+  assert.match(written, /Done: first words/);
+  assert.equal(written.split('first words').length - 1, 3, 'once (Codex writes a message twice, and the reply)');
 });
