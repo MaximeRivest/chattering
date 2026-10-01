@@ -276,3 +276,49 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
   assert.equal(await ev(`voice.audio`), null, 'the microphone is released');
   assert.deepEqual(b.exceptions, []);
 });
+
+
+test('Given an identity-matched new-conversation draft, When voice writes, clears, and sends, Then the real draft composer accepts them without provider execution', { timeout: 90000 }, async t => {
+  const b = await viewerBrowser(t);
+  await b.until(`sessions.length && nav.current()`);
+  await b.evaluate(`document.querySelector('dialog.bg-ask [data-none]')?.click()`);
+  const result = await b.evaluate(`(async () => {
+    await showDraft(null);
+    const target = voiceTextTarget(), key = activeRel;
+    const identity = { view: viewKind, draft: current.draft, active: activeRel, current: current.key,
+      composer: target.ta.closest('[data-conversation-key]').dataset.conversationKey, open: isDraftOpen() };
+    const realFetch = window.fetch, calls = [];
+    window.fetch = async (url, opts) => {
+      if (String(url) === '/api/conversation/start-loose' || String(url) === '/api/node/send') {
+        calls.push({ path: String(url), payload: JSON.parse(opts.body) });
+        return new Response(JSON.stringify({ error: 'fixture blocked provider execution' }), { headers: { 'content-type': 'application/json' } });
+      }
+      return realFetch(url, opts);
+    };
+    try {
+      const outcomes = [];
+      for (const [action, text] of [['text', 'draft dictation'], ['clear', ''], ['text', 'first draft message'], ['send', '']]) {
+        voiceBeginDictation(target);
+        const entry = { said: action, status: 'deciding' };
+        await voiceDictation(entry, { action, text, args: {} });
+        outcomes.push({ action, status: entry.status, value: target.ta.value, saved: draftState.d.text });
+      }
+      const command = { said: 'send', status: 'deciding' };
+      await voiceRun(command, { action: 'send', args: {} });
+      return { identity, key, outcomes, command: command.status,
+        calls: calls.map(c => ({ path: c.path, draftKey: 'draft:' + c.payload.draftId, prompt: c.payload.prompt })),
+        stillDraft: isDraftOpen() };
+    } finally { window.fetch = realFetch; voiceEndDictation(); }
+  })()`);
+  assert.deepEqual(result.identity, { view: 'draft', draft: true, active: result.key, current: result.key, composer: result.key, open: true });
+  assert.deepEqual(result.outcomes, [
+    { action: 'text', status: 'done', value: 'draft dictation', saved: 'draft dictation' },
+    { action: 'clear', status: 'done', value: '', saved: '' },
+    { action: 'text', status: 'done', value: 'first draft message', saved: 'first draft message' },
+    { action: 'send', status: 'done', value: 'first draft message', saved: 'first draft message' },
+  ]);
+  assert.equal(result.command, 'done');
+  assert.deepEqual(result.calls, Array.from({ length: 2 }, () => ({ path: '/api/conversation/start-loose', draftKey: result.key, prompt: 'first draft message' })), 'both sends reach the existing draft implementation; provider requests are intercepted');
+  assert.equal(result.stillDraft, true, 'the intercepted refusal creates no session and runs no provider');
+  assert.deepEqual(b.exceptions, []);
+});

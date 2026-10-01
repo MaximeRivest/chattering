@@ -1385,7 +1385,8 @@ function voiceResolveTextTarget(t) {
   if (!t) return gone();
   if (t.conversationKey) {
     const key = t.conversationKey;
-    if (viewKind !== 'conversation' || activeRel !== key || current?.key !== key) return gone();
+    const composerView = viewKind === 'conversation' || (viewKind === 'draft' && current?.draft && isDraftOpen());
+    if (!composerView || activeRel !== key || current?.key !== key) return gone();
     const ta = $('agentText');
     if (!ta?.isConnected || ta.closest('[data-conversation-key]')?.dataset.conversationKey !== key) return gone();
     // Same conversation may replace its composer. A different connected box
