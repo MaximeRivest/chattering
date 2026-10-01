@@ -237,6 +237,8 @@ class CheckpointStore {
     }
     const visit = async file => {
       if (paths.length > 20000) throw Error('Approved capture scope exceeds the file limit');
+      // The store never saves itself, whatever folder was declared around it.
+      if (inside(this.dir, file)) return;
       const stat = await fsp.lstat(file).catch(() => null);
       if (!stat || stat.isSymbolicLink() || sensitive(file)) return;
       if (stat.isDirectory()) {
@@ -283,7 +285,11 @@ class CheckpointStore {
     return { id, root, snapshot: snapshot?.id || null, error, targetErrors: targets.filter(t => t.error && !t.location.soft).map(t => t.error) };
   }
   async scan(root, started, { artifactsOnly = false } = {}) {
-    if (inside(root, this.dir)) throw Error('Checkpoint storage must be outside the captured workspace');
+    // A whole-workspace scan lists everything under the root, so the root
+    // must not hold the store. An artifacts-only scan (a loose folder such as
+    // home, which does hold it) walks only the declared folders, and that
+    // walk skips the store itself.
+    if (!artifactsOnly && inside(root, this.dir)) throw Error('Checkpoint storage must be outside the captured workspace');
     const repo = await this.init(root), manifest = [];
     const paths = [...new Set(await this.paths(root, { artifactsOnly }))].sort();
     const artifactDirs = this.artifactScopes(root);
@@ -536,13 +542,16 @@ class CheckpointStore {
       ...this.db.prepare("SELECT *, 'legacy' AS storage FROM checkpoint_targets WHERE boundary=?").all(boundary)]
       .map(r => ({ ...r, location: JSON.parse(r.location) }));
   }
+  // A folder inside the store, or one that contains it (home, ~/.local):
+  // either way, saving it would mean the store saving itself.
+  overlapsStore(folder) { return inside(this.dir, folder) || inside(folder, this.dir); }
   scopes(root) { return this.db.prepare('SELECT path FROM checkpoint_scopes WHERE root=? ORDER BY path').all(root).map(r => r.path); }
   // Artifact folders (design/67): always captured, binary assets included.
   artifactScopes(root) { return this.db.prepare('SELECT path FROM artifact_scopes WHERE root=? ORDER BY path').all(root).map(r => r.path); }
   async addArtifactScope(cwd, folder) {
     const root = await this.root(cwd), scope = await fsp.realpath(folder);
     if (!inside(root, scope)) throw Error('The artifact is outside this conversation\'s workspace');
-    if (sensitive(scope) || inside(this.dir, scope) || scope.split(path.sep).some(p => SKIP.has(p))) throw Error('This folder cannot be versioned');
+    if (sensitive(scope) || this.overlapsStore(scope) || scope.split(path.sep).some(p => SKIP.has(p))) throw Error('This folder cannot be versioned');
     if (!(await fsp.stat(scope)).isDirectory()) throw Error('An artifact scope must be a folder');
     this.db.prepare('INSERT OR IGNORE INTO artifact_scopes VALUES (?,?)').run(root, scope);
     return { root, scope };
@@ -565,7 +574,7 @@ class CheckpointStore {
   revokeScope(root, scope) { this.db.prepare('DELETE FROM checkpoint_scopes WHERE root=? AND path=?').run(root, path.resolve(scope)); return this.scopes(root); }
   async approveScope(root, scope) {
     root = await fsp.realpath(root); scope = await fsp.realpath(scope);
-    if (scope === root || !inside(root, scope) || sensitive(scope) || inside(this.dir, scope) || scope.split(path.sep).some(p => SKIP.has(p))) throw Error('Choose an eligible subfolder inside this workspace');
+    if (scope === root || !inside(root, scope) || sensitive(scope) || this.overlapsStore(scope) || scope.split(path.sep).some(p => SKIP.has(p))) throw Error('Choose an eligible subfolder inside this workspace');
     if (!(await fsp.stat(scope)).isDirectory()) throw Error('Capture scope must be a folder');
     this.db.prepare('INSERT OR IGNORE INTO checkpoint_scopes VALUES (?,?)').run(root, scope);
     return this.scopes(root);

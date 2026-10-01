@@ -186,3 +186,39 @@ test('artifact folders are versioned with their binary assets, even when ignored
   assert.deepEqual((await store.snapshot(b.snapshot)).manifest.map(f => f.path), ['site/frog.png', 'site/index.html']);
   await assert.rejects(store.addArtifactScope(root, os.tmpdir()), /outside/);
 });
+
+// A conversation in home: home holds the store (~/.local/share/chattering),
+// and an artifact folder declared there is still saved, with no warning.
+test('a loose folder that holds the store still saves its artifact folders, never the store', async t => {
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'checkpoint-home-')));
+  const store = new CheckpointStore(path.join(home, '.local', 'share', 'chattering', 'checkpoints'));
+  t.after(async () => { store.close(); await fs.rm(home, { recursive: true, force: true }); });
+  const site = path.join(home, 'Projects', 'farm', 'site'); await fs.mkdir(site, { recursive: true });
+  await fs.writeFile(path.join(site, 'index.html'), '<h1>one</h1>');
+  await store.addArtifactScope(home, site);
+  // Through the extension, as a Pi conversation in a loose folder runs it.
+  const handlers = new Map(), notices = [];
+  checkpointExtension({ on: (name, fn) => handlers.set(name, fn), getAllTools: () => [] }, { store });
+  const ctx = { cwd: home, sessionManager: { getSessionFile: () => '/session' }, ui: { notify: s => notices.push(s) } };
+  await handlers.get('before_agent_start')({ prompt: 'work' }, ctx);
+  await fs.writeFile(path.join(site, 'index.html'), '<h1>two</h1>');
+  await handlers.get('tool_call')({ toolName: 'bash', toolCallId: 'b1', input: { command: 'true' } }, ctx);
+  assert.deepEqual(notices, []);
+  const [saved] = store.boundariesByCalls(['b1']);
+  assert.equal(saved.error, '');
+  assert.deepEqual((await store.snapshot(saved.snapshot)).manifest.map(f => f.path), ['Projects/farm/site/index.html']);
+  // Declaring a folder that holds the store is refused...
+  await assert.rejects(store.addArtifactScope(home, home), /cannot be versioned/);
+  await assert.rejects(store.addArtifactScope(home, path.join(home, '.local')), /cannot be versioned/);
+  await assert.rejects(store.approveScope(home, path.join(home, '.local')), /eligible subfolder/);
+  // ...and one declared before that rule is walked around the store.
+  store.db.prepare('INSERT INTO artifact_scopes VALUES (?,?)').run(home, home);
+  const old = await store.capture(home, { session: '/session', run: 'r', call: 'b2', phase: 'after', targetOnly: true });
+  assert.equal(old.error, '');
+  const files = (await store.snapshot(old.snapshot)).manifest.map(f => f.path);
+  assert.ok(files.includes('Projects/farm/site/index.html'), JSON.stringify(files));
+  assert.ok(!files.some(f => f.startsWith('.local/')), JSON.stringify(files));
+  // A whole-folder scan of a root that holds the store is still refused.
+  const whole = await store.capture(home, { session: '/session', run: 'r', call: 'b3', phase: 'after' });
+  assert.match(whole.error, /outside the captured workspace/);
+});
