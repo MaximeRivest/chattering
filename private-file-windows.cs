@@ -137,7 +137,9 @@ public static class ChatteringPrivateFile {
     static void Rename(FileStream stream, string destination) {
         byte[] name = System.Text.Encoding.Unicode.GetBytes(Path.GetFullPath(destination));
         int nameOffset = (int)Marshal.OffsetOf(typeof(RenameInformation), "Name");
-        int size = checked(nameOffset + name.Length);
+        // FileNameLength excludes the terminator, but Win32's path conversion
+        // consumes a NUL-terminated UTF-16 name. Keep two zero bytes in-bounds.
+        int size = checked(nameOffset + name.Length + 2);
         IntPtr buffer = Marshal.AllocHGlobal(size);
         try {
             Marshal.Copy(new byte[size], 0, buffer, size);

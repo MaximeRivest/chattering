@@ -34,11 +34,20 @@ for (const failure of ['hang/no reply', 'disconnect', 'CDP error', 'CDP rejectio
     let watchdog;
     const done = closeLocalBrowser({ ...f, closeBrowser, graceMs: 0 });
     const guarded = Promise.race([done, new Promise((_, reject) => { watchdog = setTimeout(() => reject(new Error('unbounded graceful wait')), 1000); })]);
-    try { await assert.rejects(guarded, /local browser shutdown:/); }
-    finally { clearTimeout(watchdog); await stopAndRemove(f.browser, f.profile); await done.catch(() => {}); }
-    assert.notEqual(f.browser.signalCode, null, 'fallback actually stopped the live browser');
-    assert.equal(fs.existsSync(f.profile), false, 'all profile removal is joined before rejection');
-    assert.equal(f.browser.listenerCount('exit'), 0, 'no graceful waiter survives fallback');
+    try {
+      await assert.rejects(guarded, error => {
+        assert.match(error.message, /local browser shutdown:/);
+        assert.doesNotMatch(error.message, /fallback returned before browser exit|exit was not observed/);
+        return true;
+      });
+      assert.ok(f.browser.exitCode !== null || f.browser.signalCode !== null, 'fallback actually stopped the live browser');
+      assert.equal(fs.existsSync(f.profile), false, 'all profile removal is joined before rejection');
+      assert.equal(f.browser.listenerCount('exit'), 0, 'no graceful waiter survives fallback');
+    } finally {
+      clearTimeout(watchdog);
+      await stopAndRemove(f.browser, f.profile);
+      await done.catch(() => {});
+    }
   });
 }
 

@@ -7,17 +7,37 @@ const fs = require('node:fs');
 
 function exited(child, ms) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-  return new Promise(resolve => {
-    const timer = setTimeout(resolve, ms);
-    child.once('exit', () => { clearTimeout(timer); resolve(); });
+  return new Promise((resolve, reject) => {
+    const finish = error => {
+      clearTimeout(timer); child.removeListener('exit', onExit);
+      if (error) reject(error); else resolve();
+    };
+    const onExit = () => finish();
+    const timer = setTimeout(() => finish(new Error(`process ${child.pid || '(controlled child)'} exit was not observed within ${ms} ms`)), ms);
+    child.once('exit', onExit);
   });
 }
 async function stopAndRemove(child, dir, { graceMs = 3000 } = {}) {
   if (child && child.exitCode === null && child.signalCode === null) {
-    // Windows: the whole tree (Chrome's helpers hold its profile open).
-    if (process.platform === 'win32') { try { require('../../processes.js').stopTree(child.pid); } catch {} }
-    else { try { child.kill('SIGKILL'); } catch {} }
-    await exited(child, graceMs);
+    // Subscribe before any stop request. Expiry is uncertainty, not exit.
+    const joined = exited(child, graceMs);
+    joined.catch(() => {}); // retain rejection while the bounded stop command runs
+    let stopError;
+    // Windows: taskkill ends the tree, but a failed tree request must not
+    // silently leave our directly owned child alive. Keep the event loop free
+    // to observe its exit while taskkill runs, then use its native kill handle.
+    if (process.platform === 'win32' && Number.isSafeInteger(child.pid) && child.pid > 0) {
+      const taskkill = process.env.SystemRoot ? require('node:path').join(process.env.SystemRoot, 'System32', 'taskkill.exe') : 'taskkill';
+      // Reserve half of the existing exit window for native fallback and
+      // its exit notification; a tree-stop timeout must not consume it all.
+      const treeMs = Math.max(1, Math.floor(graceMs / 2));
+      await new Promise(resolve => require('node:child_process').execFile(taskkill, ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, timeout: treeMs }, error => { stopError = error; resolve(); }));
+    }
+    if (child.exitCode === null && child.signalCode === null) {
+      try { child.kill('SIGKILL'); } catch (error) { stopError = error; }
+    }
+    try { await joined; }
+    catch (error) { if (stopError) error.cause = stopError; throw error; }
   }
   // Linear backoff, about twenty seconds at most: a Pi worker takes a few
   // seconds to notice its server is gone, and Chrome's crash reporter can

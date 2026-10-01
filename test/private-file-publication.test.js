@@ -72,3 +72,27 @@ test('Given Windows reports a primary write failure and failed erasure, When the
     assert.equal(e.cleanupFailure, 'erase failed'); return true;
   });
 });
+
+// Public, uninstrumented native publication: keep every security regression
+// above and additionally verify the exact Unicode destination after return.
+for (const spelling of ['caller', 'canonical']) {
+  for (const mode of ['create', 'replace', 'empty']) {
+    test(`Given a ${spelling} Unicode credential path, When the public writer performs ${mode}, Then exact bytes and restrictive security are published without residue`, t => {
+      const caller = fixture(t);
+      const directory = spelling === 'canonical' ? fs.realpathSync.native(caller) : caller;
+      const file = path.join(directory, mode + '-é-key');
+      const { writePrivateFileSync, readPrivateFileSync, assertPrivateFileSync } = require('../private-file');
+      if (mode === 'replace') {
+        writePrivateFileSync(file, 'old synthetic bytes');
+        assert.equal(readPrivateFileSync(file), 'old synthetic bytes', 'seed must be genuinely published');
+      }
+      const payload = mode === 'empty' ? '' : 'new synthetic bytes';
+      writePrivateFileSync(file, payload);
+      assert.equal(fs.existsSync(file), true, 'success means the requested destination exists');
+      assert.equal(fs.readFileSync(file, 'utf8'), payload, 'ordinary native read sees exact bytes');
+      assert.equal(readPrivateFileSync(file), payload, 'protected native read agrees, including empty files');
+      assertPrivateFileSync(file);
+      assert.deepEqual(fs.readdirSync(caller), [path.basename(file)], 'no misspelled destination or staging residue');
+    });
+  }
+}

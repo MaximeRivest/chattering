@@ -116,8 +116,28 @@ if (process.platform === 'win32') {
 
   const seedAndLock = String.raw`
     [ChatteringPrivateFile]::Write($file, [System.Text.Encoding]::UTF8.GetBytes('existing identity'));
+    if (![System.IO.File]::Exists($file)) { throw 'Seed publication failed: destination absent' };
+    if (![ChatteringPrivateFile]::Inspect($file, $false)) { throw 'Seed publication failed: protected destination absent' };
+    if ([ChatteringPrivateFile]::ReadEncoded($file) -ne ('DATA:' + [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes('existing identity')))) { throw 'Seed publication failed: wrong destination bytes' };
     $locked = [ChatteringPrivateFile]::Open($file, $false);
-    try {`;
+    try {
+      # Capture this API's real locked-target failure rather than assuming
+      # CreateFile's sharing-violation code also describes handle rename.
+      $probe = [ChatteringPrivateFile]::Open($file + '.reference.tmp', $true);
+      $reference = $null;
+      try {
+        $rename = [ChatteringPrivateFile].GetMethod('Rename', [System.Reflection.BindingFlags]'NonPublic,Static');
+        try { $rename.Invoke($null, [object[]]@($probe, $file)) }
+        catch { $reference = $_.Exception; while ($null -ne $reference.InnerException) { $reference = $reference.InnerException } }
+        if (!($reference -is [System.ComponentModel.Win32Exception]) -or $reference.NativeErrorCode -le 0) { throw 'Locked-target reference rename did not fail natively' };
+      } finally {
+        try {
+          $eraseReference = [ChatteringPrivateFile].GetMethod('Erase', [System.Reflection.BindingFlags]'NonPublic,Static');
+          [void]$eraseReference.Invoke($null, [object[]]@($probe));
+        } finally { $probe.Dispose() }
+      }
+      $expectedNativeError = $reference.NativeErrorCode;
+      [Console]::Error.WriteLine('NATIVE-LOCKED-RENAME-REFERENCE ' + $expectedNativeError);`;
   const unchangedTarget = String.raw`
     $locked.Position = 0; $saved = [System.IO.MemoryStream]::new(); $locked.CopyTo($saved);
     if ([System.Text.Encoding]::UTF8.GetString($saved.ToArray()) -ne 'existing identity') { throw 'Existing credential overwritten' };`;
@@ -127,7 +147,7 @@ if (process.platform === 'win32') {
       $primary = $null;
       try { [ChatteringPrivateFile]::Write($file, [System.Text.Encoding]::UTF8.GetBytes('replacement identity')) }
       catch { $primary = $_.Exception; while ($null -ne $primary.InnerException) { $primary = $primary.InnerException } }
-      if (!($primary -is [System.ComponentModel.Win32Exception]) -or $primary.NativeErrorCode -ne 32) { throw 'Original sharing failure not preserved' };
+      if (!($primary -is [System.ComponentModel.Win32Exception]) -or $primary.NativeErrorCode -ne $expectedNativeError) { throw ('Original native rename failure not preserved: expected ' + $expectedNativeError + ', actual ' + $primary.NativeErrorCode) };
       if ($primary.Data['RetainTemporaryState']) { throw 'Erasure unexpectedly failed' };
       if ([System.IO.Directory]::GetFiles([System.IO.Path]::GetDirectoryName($file), 'key.*.tmp').Length -ne 0) { throw 'Staging residue remains' };
       ` + unchangedTarget + String.raw`
@@ -144,7 +164,7 @@ if (process.platform === 'win32') {
       $primary = $null;
       try { $method.Invoke($null, $arguments) }
       catch { $primary = $_.Exception; while ($null -ne $primary.InnerException) { $primary = $primary.InnerException } }
-      if (!($primary -is [System.ComponentModel.Win32Exception]) -or $primary.NativeErrorCode -ne 32) { throw 'Erasure masked primary failure' };
+      if (!($primary -is [System.ComponentModel.Win32Exception]) -or $primary.NativeErrorCode -ne $expectedNativeError) { throw ('Erasure masked primary failure: expected ' + $expectedNativeError + ', actual ' + $primary.NativeErrorCode) };
       if (!$primary.Data['RetainTemporaryState'] -or !$primary.Data['CleanupFailure'].Contains('injected erasure failure')) { throw 'Retained-state diagnosis missing' };
       $temporary = $primary.Data['TemporaryFile'];
       $left = @([System.IO.Directory]::GetFiles([System.IO.Path]::GetDirectoryName($file), 'key.*.tmp'));

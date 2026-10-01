@@ -38,14 +38,18 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   for (const args of [['init'], ['add', '.'], ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', 'commit', '-m', 'Initial files']]) {
     const result = spawnSync('git', args, { cwd: work }); assert.equal(result.status, 0, String(result.stderr));
   }
-  const msg = (id, parentId, role, text) => ({ type: 'message', id, parentId, timestamp: '2026-09-01T12:00:00Z', message: { role, content: [{ type: 'text', text }], model: 'fixture' } });
+  // Boot watchers cover active projects (the last 30 days). Fixed calendar
+  // dates eventually make this live-browser fixture inactive, not just slow.
+  const fixtureStart = Date.now() - 3000;
+  const fixtureTimestamp = seconds => new Date(fixtureStart + seconds * 1000).toISOString();
+  const msg = (id, parentId, role, text) => ({ type: 'message', id, parentId, timestamp: fixtureTimestamp(0), message: { role, content: [{ type: 'text', text }], model: 'fixture' } });
   const raw = [
     { type: 'session', version: 3, id: 'fixture', cwd: path.join(home, 'work') },
     msg('p', null, 'user', 'How can we make a branched conversation easier to follow?'),
     msg('a', 'p', 'assistant', '# One readable conversation\n\nKeep a complete answer at normal reading width.\n\n' + 'Alternatives should stay accessible without interrupting the chosen conversation. '.repeat(200) + '\n\nEND OF ANSWER A'),
     msg('qa', 'a', 'user', 'Use the readable path.'),
-    { type: 'message', id: 'review-tool', parentId: 'qa', timestamp: '2026-09-01T12:00:01Z', message: { role: 'assistant', model: 'fixture', content: [{ type: 'toolCall', id: 'fixture-review-call', name: 'edit', arguments: { path: path.join(work, 'docs/example.js'), edits: [{ oldText: 'const before = 1;', newText: 'const after = 2;' }] } }] } },
-    { type: 'message', id: 'review-result', parentId: 'review-tool', timestamp: '2026-09-01T12:00:02Z', message: { role: 'toolResult', toolCallId: 'fixture-review-call', toolName: 'edit', content: [{ type: 'text', text: 'Updated' }], isError: false } },
+    { type: 'message', id: 'review-tool', parentId: 'qa', timestamp: fixtureTimestamp(1), message: { role: 'assistant', model: 'fixture', content: [{ type: 'toolCall', id: 'fixture-review-call', name: 'edit', arguments: { path: path.join(work, 'docs/example.js'), edits: [{ oldText: 'const before = 1;', newText: 'const after = 2;' }] } }] } },
+    { type: 'message', id: 'review-result', parentId: 'review-tool', timestamp: fixtureTimestamp(2), message: { role: 'toolResult', toolCallId: 'fixture-review-call', toolName: 'edit', content: [{ type: 'text', text: 'Updated' }], isError: false } },
     msg('aa', 'review-result', 'assistant', 'FOLLOWUP A: a coherent reading path.'),
     msg('b', 'p', 'assistant', '# Compare deliberately\n\nKeep comparison available as a separate reading choice.'),
     msg('qb', 'b', 'user', 'How would comparison work on my phone?'), msg('bb', 'qb', 'assistant', 'FOLLOWUP B: one full-width answer at a time, with clear controls.'),
@@ -56,8 +60,8 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   const artifactCommand = `ssh max@fixture 'cd /tmp/job; python - <<"PY"\nfig.savefig("plot.png")\nPY'\nrsync max@fixture:/tmp/job/plot.png scratch/plot.png`;
   const auxiliary = (name, call) => fs.writeFileSync(path.join(sessionDir, name + '.jsonl'), [
     { type: 'session', version: 3, id: name, cwd: work }, msg('p', null, 'user', name),
-    { type: 'message', id: 'a', parentId: 'p', timestamp: '2026-09-01T12:00:00Z', message: { role: 'assistant', model: 'fixture', content: [call] } },
-    { type: 'message', id: 'r', parentId: 'a', timestamp: '2026-09-01T12:00:01Z', message: { role: 'toolResult', toolName: call.name, toolCallId: call.id, content: [{ type: 'text', text: 'done' }], isError: false } },
+    { type: 'message', id: 'a', parentId: 'p', timestamp: fixtureTimestamp(0), message: { role: 'assistant', model: 'fixture', content: [call] } },
+    { type: 'message', id: 'r', parentId: 'a', timestamp: fixtureTimestamp(1), message: { role: 'toolResult', toolName: call.name, toolCallId: call.id, content: [{ type: 'text', text: 'done' }], isError: false } },
   ].map(JSON.stringify).join('\n') + '\n');
   auxiliary('artifacts', { type: 'toolCall', id: 'artifact-call', name: 'bash', arguments: { command: artifactCommand } });
   // A sub-agent the conversation started (design/79): its own session, known
@@ -310,8 +314,16 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
       if (latest && await predicate(latest)) return latest;
       await new Promise(r => setTimeout(r, 50));
     }
-    assert.fail('Watcher did not capture the expected version: ' + JSON.stringify(latest));
+    let stats;
+    try { stats = await (await fetch(base + '/api/files/stats')).json(); }
+    catch (error) { stats = { diagnosticError: error.message }; }
+    assert.fail('Watcher did not capture the expected version: ' + JSON.stringify({ latest, stats }) + '\n' + serverLog);
   };
+  // Given an active conversation, When boot indexing settles, Then the
+  // repository watcher is ready before any external-write assertion.
+  // Check readiness now; do not add another independent waiting allowance.
+  const watchStats = await (await fetch(base + '/api/files/stats')).json();
+  assert.ok(watchStats.watchers > 0 && watchStats.watchedDirs >= 2, 'project watcher was not ready: ' + JSON.stringify(watchStats) + '\n' + serverLog);
   fs.writeFileSync(path.join(work, 'docs', 'example.js'), 'external write\n');
   await waitSaved(async p => p.id !== savedAfter && (await (await fetch(snapshotURL.replace(encodeURIComponent(savedAfter), encodeURIComponent(p.id)))).json()).content === 'external write\n');
   fs.unlinkSync(path.join(work, 'docs', 'example.js'));
