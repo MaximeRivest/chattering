@@ -65,8 +65,13 @@ function readDocument(snap, profileOrRules = CLAUDE) {
   const frames = [];
   for (let i = 0; i + 1 < rules.length; i++) if (rules[i + 1] - rules[i] >= 2 && rules[i + 1] - rules[i] <= 11) frames.push([rules[i], rules[i + 1]]);
   const holding = frames.find(([a, b]) => cursor.y > a && cursor.y < b);
-  const lowest = frames.length && frames[frames.length - 1][0] >= top + rows / 2 ? frames[frames.length - 1] : null;
-  let [above, below] = holding || lowest || [rules.filter(y => y < cursor.y).pop(), rules.find(y => y > cursor.y)];
+  // The cursor on a line that starts with a prompt mark, in no frame: that
+  // line is the box (Codex), whatever frame lines are elsewhere (Codex
+  // draws some around a finished answer).
+  const onPromptLine = !holding && cursor.y >= top && cursor.y < bottom && lines[cursor.y]
+    && profile.prompts.some(p => lines[cursor.y].text.startsWith(p + ' ') || lines[cursor.y].text === p);
+  const lowest = !onPromptLine && frames.length && frames[frames.length - 1][0] >= top + rows / 2 ? frames[frames.length - 1] : null;
+  let [above, below] = holding || lowest || (onPromptLine ? [null, null] : [rules.filter(y => y < cursor.y).pop(), rules.find(y => y > cursor.y)]);
   let cursorInBox = !!holding || (above != null && below != null && cursor.y > above && cursor.y < below);
   // No frame lines (Codex): the cursor's line starts with a prompt mark;
   // the box is that line and the indented lines that continue it, between
@@ -137,11 +142,20 @@ function readDocument(snap, profileOrRules = CLAUDE) {
 
       // ---- what hangs under the composer: a menu, or a footer ----
       const items = [];
+      // "  label   description", optionally after a selection marker (Pi: →).
+      const ITEM = /^(?: {0,6}([→❯›>▶]) +| {2,6})(\S.*?)\s{2,}(\S.*)$/;
+      // A list that marks its selected row: every row whose label starts in
+      // that row's column is one of its items, above the mark or below it.
+      let markedCol = null;
+      for (let y = below + 1; y < bottom && lines[y].text.trim(); y++) {
+        const m = ITEM.exec(lines[y].text);
+        if (m && m[1]) { markedCol = lines[y].text.indexOf(m[2], lines[y].text.indexOf(m[1]) + 1); break; }
+      }
       for (let y = below + 1; y < bottom; y++) {
         const l = lines[y];
-        // "  label   description", optionally after a selection marker (Pi: →).
-        const m = /^(?: {0,6}([→❯›>▶]) +| {2,6})(\S.*?)\s{2,}(\S.*)$/.exec(l.text);
-        if (m && (m[1] || !/^ {4,}/.test(l.text) || (items.length && items[0].marked !== undefined)) && !/^ {8,}/.test(l.text)) items.push({ label: m[2], detail: m[3], fg: fgOf(l.runs), marked: !!m[1], col: l.text.indexOf(m[3], l.text.indexOf(m[2]) + m[2].length), rows: [y] });
+        const m = ITEM.exec(l.text);
+        const inMarkedList = m && markedCol != null && l.text.indexOf(m[2]) === markedCol;
+        if (m && (inMarkedList || ((m[1] || !/^ {4,}/.test(l.text) || (items.length && items[0].marked !== undefined)) && !/^ {8,}/.test(l.text)))) items.push({ label: m[2], detail: m[3], fg: fgOf(l.runs), marked: !!m[1], col: l.text.indexOf(m[3], l.text.indexOf(m[2]) + m[2].length), rows: [y] });
         else if (items.length && /^ {8,}\S/.test(l.text)) { const it = items[items.length - 1]; it.detail += ' ' + l.text.trim(); it.rows.push(y); }
         else if (!l.text.trim() && items.length) break;
         else if (!items.length) { if (l.text.trim()) doc.footer.push({ text: l.text.trim(), rows: [y] }); used.add(y); }
@@ -151,7 +165,13 @@ function readDocument(snap, profileOrRules = CLAUDE) {
       // aligned fields do not.
       const starts = new Map(); for (const it of items) starts.set(it.col, (starts.get(it.col) || 0) + 1);
       const aligned = items.length >= 2 && Math.max(...starts.values()) >= Math.max(2, items.length * 0.6);
-      if (!aligned) { for (const it of items) { doc.footer.push({ text: it.label + '  ' + it.detail, rows: it.rows }); for (const y of it.rows) used.add(y); } items.length = 0; }
+      // One suggestion left: a row under the box that completes what is
+      // typed after "/" or "@" ("/perm" → "/permissions  …"). Any other
+      // single row is a status line.
+      // (Pi lists its commands without the "/": compared without it.)
+      const bare = t => t.replace(/^[/@]/, '');
+      const lastOne = items.length === 1 && /^[/@]\S*$/.test(doc.composer.text) && bare(items[0].label).startsWith(bare(doc.composer.text));
+      if (!aligned && !lastOne) { for (const it of items) { doc.footer.push({ text: it.label + '  ' + it.detail, rows: it.rows }); for (const y of it.rows) used.add(y); } items.length = 0; }
       if (items.length >= 2) {
         // The selected row is styled unlike the others (here: another colour).
         const count = new Map(); for (const it of items) count.set(it.fg, (count.get(it.fg) || 0) + 1);
@@ -159,6 +179,9 @@ function readDocument(snap, profileOrRules = CLAUDE) {
         const odd = marked >= 0 ? marked : items.findIndex(it => count.get(it.fg) === 1);
         doc.menu = { items: items.map((it, i) => ({ label: it.label, detail: it.detail, selected: i === odd, rows: it.rows })), selected: odd };
         for (const it of items) for (const y of it.rows) used.add(y);
+      } else if (lastOne) {
+        doc.menu = { items: [{ label: items[0].label, detail: items[0].detail, selected: true, rows: items[0].rows }], selected: 0 };
+        for (const y of items[0].rows) used.add(y);
       } else if (items.length === 1) { doc.footer.push({ text: items[0].label + '  ' + items[0].detail, rows: items[0].rows }); used.add(items[0].rows[0]); }
     }
   }
@@ -171,19 +194,43 @@ function readDocument(snap, profileOrRules = CLAUDE) {
     if (!m) continue;
     const indent = m[1].length, lead = ' '.repeat(indent + m[2].length + 1);
     const opts = [];
-    let s = y; while (s - 1 >= top && lines[s - 1].text.startsWith(lead) && !used.has(s - 1) && /\S/.test(lines[s - 1].text.slice(lead.length, lead.length + 1))) s--;
+    // Up to the first option: over its siblings (text at the lead) and their
+    // wrapped descriptions (deeper), never over a blank line; it starts at an
+    // option, not at a description that belongs to something above.
+    const sibling = r => lines[r].text.startsWith(lead) && /\S/.test(lines[r].text[lead.length] || '');
+    const wrapped = r => lines[r].text.startsWith(lead + '  ') && !!lines[r].text.trim();
+    let s = y; while (s - 1 >= top && !used.has(s - 1) && (sibling(s - 1) || wrapped(s - 1))) s--;
+    while (s < y && !sibling(s)) s++;
     for (let r = s; r < bottom; r++) {
       const t = lines[r].text;
-      if (r === y) opts.push({ label: m[3], selected: true, rows: [r] });
-      else if (t.startsWith(lead) && /\S/.test(t[lead.length] || '')) opts.push({ label: t.slice(lead.length), selected: false, rows: [r] });
-      else if (opts.length && t.startsWith(lead + '  ') && t.trim()) { const o = opts[opts.length - 1]; o.label += ' ' + t.trim(); o.rows.push(r); }
+      // An option may be a name and, after a wide gap, a description
+      // (Codex: "1. Ask for approval       Codex can read…"), whose wrapped
+      // lines follow, deeper.
+      const option = (text, selected) => { const g = /^(.*?\S)\s{2,}(\S.*)$/.exec(text); return { label: g ? g[1] : text, detail: g ? g[2] : '', selected, rows: [r] }; };
+      if (r === y) opts.push(option(m[3], true));
+      else if (t.startsWith(lead) && /\S/.test(t[lead.length] || '')) opts.push(option(t.slice(lead.length), false));
+      else if (opts.length && t.startsWith(lead + '  ') && t.trim()) {
+        // A line that filled the screen's width was cut, not ended, and a
+        // program that wraps its own text may break after a hyphen inside a
+        // word ("chattering-" / "live-test"): the next continues that word.
+        const prev = lines[r - 1].text, next = t.trim();
+        const cut = prev.length >= cols - 1 || (/[^\s-]-$/.test(prev) && /^[a-z0-9]/.test(next));
+        const o = opts[opts.length - 1], sep = cut ? '' : ' ';
+        if (o.detail) o.detail += sep + t.trim(); else o.label += sep + t.trim();
+        o.rows.push(r);
+      }
       else break;
     }
     if (opts.length < 2) continue;
     const first = opts[0].rows[0], last = opts[opts.length - 1].rows.slice(-1)[0];
-    // The question: the text just above the options, up to a rule or the top.
+    // The question: the text just above the options, up to a rule, two
+    // blank lines in a row (what came before the question), or 14 lines.
     const q = [];
-    for (let r = first - 1; r >= top && first - r <= 14; r--) { if (isRule(lines[r], cols) || used.has(r)) break; q.unshift(r); }
+    for (let r = first - 1; r >= top && first - r <= 14; r--) {
+      if (isRule(lines[r], cols) || used.has(r)) break;
+      if (!lines[r].text.trim() && r - 1 >= top && !lines[r - 1].text.trim()) break;
+      q.unshift(r);
+    }
     while (q.length && !lines[q[0]].text.trim()) q.shift();
     let hint = null;
     for (let r = last + 1; r < Math.min(bottom, last + 4); r++) if (/enter|esc|confirm|cancel/i.test(lines[r].text)) { hint = { text: lines[r].text.trim(), rows: [r] }; break; }
@@ -192,7 +239,7 @@ function readDocument(snap, profileOrRules = CLAUDE) {
     // one is also what an echoed two-line message looks like.
     const numbered = opts.filter(o => /^\d+\.\s/.test(o.label)).length >= 2;
     if (!hint && !numbered) continue;
-    for (const o of opts) o.label = o.label.replace(/\s+/g, ' ').trim();
+    for (const o of opts) { o.label = o.label.replace(/\s+/g, ' ').trim(); o.detail = o.detail.replace(/\s+/g, ' ').trim(); }
     doc.choice = {
       question: q.map(r => lines[r].text).join('\n').replace(/\n{3,}/g, '\n\n').trim(),
       options: opts.map((o, i) => ({ ...o, index: i, number: (/^(\d+)\.\s/.exec(o.label) || [])[1] || null, label: o.label.replace(/^\d+\.\s+/, '') })),

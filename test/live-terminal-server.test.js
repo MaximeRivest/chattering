@@ -68,7 +68,7 @@ async function boot(t, s, { port, lan = false } = {}) {
     CHATTERING_CACHE_DIR: path.join(s.home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(s.home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(s.home, 'delegations'),
     PI_CODING_AGENT_DIR: s.agent, PI_AGENT_DIR: s.agent, CODEX_HOME: path.join(s.home, '.codex'), CHATTERING_NO_CGROUP: '1',
     CHATTERING_CLAUDE: path.join(s.bin, 'claude'), CHATTERING_CODEX: path.join(s.bin, 'codex'), CHATTERING_PI_CLI: path.join(s.bin, 'pi.js'),
-    FAKE_AGENT_DELAY: '300', CHATTERING_DISABLE_NETWORK_RECOVERY: '1', CHATTERING_TOKEN: TOKEN, CHATTERING_PREVIEW_PORT: '0', CHATTERING_PREVIEW_TLS_PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    FAKE_AGENT_DELAY: '300', FAKE_AGENT_LOG: path.join(s.home, 'agent-log.jsonl'), CHATTERING_DISABLE_NETWORK_RECOVERY: '1', CHATTERING_TOKEN: TOKEN, CHATTERING_PREVIEW_PORT: '0', CHATTERING_PREVIEW_TLS_PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', b => log += b); child.stderr.on('data', b => { log += b; if (process.env.LT_DEBUG) process.stderr.write(b); });
   t.after(() => require('./helpers/cleanup').stopAndRemove(child, s.home));
   const base = 'http://127.0.0.1:' + port;
@@ -143,6 +143,8 @@ test('continue, type, send, one writer, back to Chattering\'s box, restart on th
 test('a new conversation of each agent, from the draft\'s route', { skip, timeout: 120000 }, async t => {
   const s = setup();
   const srv = await boot(t, s);
+  // The owner's options reach the program, for that run (settings → agents).
+  await api(srv.base, '/api/live-terminal/settings', { args: { claude: ['--permission-mode', 'default'] } });
   // Pi and Codex start in their program when chosen ("choose"); turned off, never.
   for (const harness of ['claude', 'pi', 'codex']) {
     const out = await api(srv.base, '/api/live-terminal/new', { harness, folder: s.work });
@@ -160,6 +162,8 @@ test('a new conversation of each agent, from the draft\'s route', { skip, timeou
     d.close();
     await api(srv.base, '/api/live-terminal/stop', { id: st.resolvedKey });
   }
+  const started = fs.readFileSync(path.join(s.home, 'agent-log.jsonl'), 'utf8').split('\n').filter(l => l.startsWith('{"argv"')).map(l => JSON.parse(l).argv);
+  assert.ok(started.some(a => a.includes('--session-id') && a.slice(-2).join(' ') === '--permission-mode default'), JSON.stringify(started));
   // Turned off in settings: refused.
   await api(srv.base, '/api/live-terminal/settings', { agents: { codex: 'off' } });
   assert.equal((await api(srv.base, '/api/live-terminal/new', { harness: 'codex', folder: s.work })).status, 409);

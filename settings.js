@@ -147,7 +147,9 @@ const DEFAULT_SETTINGS = {
   // own, so for it 'choose' is 'always'. idleMinutes: a program with nothing
   // to do is ended after this long (the next message starts it again).
   // record: each session's terminal and devices are kept, gzip, private.
-  liveTerminal: { agents: { claude: 'always', pi: 'choose', codex: 'choose' }, idleMinutes: 30, record: true },
+  // args: options each program is started with, as words (for this run
+  // only: e.g. Claude Code's --permission-mode, Codex's -c key=value).
+  liveTerminal: { agents: { claude: 'always', pi: 'choose', codex: 'choose' }, idleMinutes: 30, record: true, args: { claude: [], pi: [], codex: [] } },
 };
 
 // What an install from before version 2 ran on without having saved it:
@@ -503,7 +505,13 @@ function normalizeLiveTerminal(raw) {
   for (const [id, fallback] of Object.entries(DEFAULT_SETTINGS.liveTerminal.agents)) agents[id] = LIVE_TERMINAL_CHOICES.includes(given[id]) ? given[id] : fallback;
   if (agents.claude === 'choose') agents.claude = 'always';
   const idle = Number(src.idleMinutes);
-  return { agents, idleMinutes: idle >= 1 && idle <= 24 * 60 ? Math.round(idle) : DEFAULT_SETTINGS.liveTerminal.idleMinutes, record: src.record !== false };
+  const args = {};
+  const givenArgs = src.args && typeof src.args === 'object' ? src.args : {};
+  for (const id of Object.keys(DEFAULT_SETTINGS.liveTerminal.agents)) {
+    const list = Array.isArray(givenArgs[id]) ? givenArgs[id] : [];
+    args[id] = list.filter(a => typeof a === 'string' && a.length && a.length <= 300 && !/[\0\r\n]/.test(a)).slice(0, 24);
+  }
+  return { agents, idleMinutes: idle >= 1 && idle <= 24 * 60 ? Math.round(idle) : DEFAULT_SETTINGS.liveTerminal.idleMinutes, record: src.record !== false, args };
 }
 
 // A relay is an https address (http only on this computer itself, for

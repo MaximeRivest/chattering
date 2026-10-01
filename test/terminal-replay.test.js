@@ -12,6 +12,7 @@ const path = require('node:path');
 const { terminalDeps } = require('../harness/terminal/deps');
 const { readDocument } = require('../harness/terminal/reader');
 const { watchRepaints, TerminalHost } = require('../harness/terminal/host');
+const { profileFor } = require('../harness/terminal/profiles');
 const deps = terminalDeps();
 const skip = deps.error || false;
 const Terminal = deps.Terminal;
@@ -133,7 +134,6 @@ test('Pi working: the box found while its cursor is up in the reply, "Working" r
 // the session (the screen is read, never the scrollback), every update is
 // valid, and the program's box is found in each.
 const { createHub } = require('../harness/terminal/hub');
-const { profileFor } = require('../harness/terminal/profiles');
 const { EventEmitter } = require('node:events');
 const agentOf = f => /^codex/.test(f) ? 'codex' : /^pi/.test(f) ? 'pi' : 'claude';
 async function liveReplay(file, profile) {
@@ -171,4 +171,48 @@ test('the live strip over every recording: small valid updates, the box found, w
     assert.equal(stats.oversize, 0, f);
     assert.ok(composers > screens * 0.3, f + `: the box found in ${composers} of ${screens} screens`);
   }
+});
+
+// Every screen of a recording, read with an agent's profile.
+async function* screens(name, agent) {
+  const lines = fs.readFileSync(cast(name), 'utf8').trim().split('\n');
+  const head = JSON.parse(lines[0]);
+  const term = new Terminal({ cols: head.width, rows: head.height, scrollback: 200, allowProposedApi: true });
+  const profile = profileFor(agent);
+  for (const l of lines.slice(1)) {
+    const [t, kind, data] = JSON.parse(l);
+    if (kind === 'r') { const [c, r] = data.split('x').map(Number); term.resize(c, r); continue; }
+    if (kind !== 'o') { yield { t, kind, data }; continue; }
+    await new Promise(r => term.write(data, r));
+    yield { t, kind, doc: readDocument(TerminalHost.prototype.snapshot.call({ term, cols: term.cols, rows: term.rows, revision: 0, cursorVisible: true, restarts: [] }, { screenOnly: true }), profile) };
+  }
+}
+
+test('Codex /permissions: every option, with its wrapped description; the question is its title, not the lines above', { skip }, async () => {
+  // Recorded 2026-10-01 (Codex 0.153.4). The first reading missed option 1
+  // (its description wraps): a click on "1" would have chosen "Approve for me".
+  let seen = null;
+  for await (const s of screens('codex-permissions', 'codex')) if (s.doc && s.doc.choice && s.doc.choice.options.length === 3) { seen = s.doc; break; }
+  assert.ok(seen, 'the permissions question');
+  assert.deepEqual(seen.choice.options.map(o => [o.number, o.label]), [['1', 'Ask for approval'], ['2', 'Approve for me'], ['3', 'Full Access (current)']]);
+  assert.match(seen.choice.options[0].detail, /^Codex can read and edit files in the current workspace, and run commands\. Approval is required to access the internet or edit other files\.$/);
+  assert.equal(seen.choice.selected, 2);
+  assert.equal(seen.choice.question, 'Update Model Permissions');
+});
+
+test('Codex asks before a command: the question, its three answers, Yes chosen', { skip }, async () => {
+  // Recorded 2026-10-01: -a on-request -s workspace-write, a file outside the workspace.
+  let question = null, answered = false, last = null;
+  for await (const s of screens('codex-approval', 'codex')) {
+    if (s.doc && s.doc.choice && /run the following command/.test(s.doc.choice.question)) question = question || s.doc;
+    if (s.kind === 'i' && question && !answered) answered = true;
+    if (s.doc) last = s.doc;
+  }
+  assert.ok(question, 'the approval question');
+  assert.match(question.choice.question, /^Would you like to run the following command\?[\s\S]*\$ touch \/home\/maxime\/\.cache\/chattering-live-test\/codex-outside\.txt$/);
+  assert.deepEqual(question.choice.options.map(o => o.label.replace(/ \(\w+\)$/, '').replace(/`.*`/, '`…`')), ['Yes, proceed', 'Yes, and don\'t ask again for commands that start with `…`', 'No, and tell Codex what to do differently']);
+  assert.match(question.choice.options[1].label, /chattering-live-test/, 'a word Codex broke after a hyphen is joined without a space');
+  // After Yes: working, with its box below (the recording ends while it works).
+  assert.equal(last.mode, 'working');
+  assert.equal(last.composer.text, '');
 });

@@ -351,7 +351,7 @@
         ch.dataset.k = k;
         const q = st.choice.question.split('\n').map(l => l.trim()).map(l => /^[╌─━═┄┈-]{8,}$/.test(l) ? '────' : l).join('\n').replace(/\n{3,}/g, '\n\n');
         ch.setAttribute('aria-label', q.split('\n').find(l => l.trim()) || 'A question');
-        ch.innerHTML = `<div class="lt-q">${esc(q)}</div><div class="lt-opts">${st.choice.options.map(o => `<button type="button" data-i="${o.index}" aria-current="${o.index === st.choice.selected}">${o.number ? o.number + '. ' : ''}${esc(o.label)}</button>`).join('')}</div>${st.choice.hint ? `<div class="lt-hint">${esc(st.choice.hint.text)} · or tap</div>` : ''}`;
+        ch.innerHTML = `<div class="lt-q">${esc(q)}</div><div class="lt-opts">${st.choice.options.map(o => `<button type="button" data-i="${o.index}" aria-current="${o.index === st.choice.selected}">${o.number ? o.number + '. ' : ''}<b>${esc(o.label)}</b>${o.detail ? `<span class="lt-detail">${esc(o.detail)}</span>` : ''}</button>`).join('')}</div>${st.choice.hint ? `<div class="lt-hint">${esc(st.choice.hint.text)} · or tap</div>` : ''}`;
         ch.querySelectorAll('button').forEach(b => b.onclick = async () => { ch.querySelectorAll('button').forEach(x => x.disabled = true); const r = await ask(S, { t: 'choose', index: +b.dataset.i }); if (r.t !== 'done') { ch.querySelectorAll('button').forEach(x => x.disabled = false); ch.dataset.k = ''; note(S, r.error || 'not answered'); } });
       }
     }
@@ -363,7 +363,7 @@
     const stuck = st.mode === 'unknown' && performance.now() - S.unknownSince > 1500;
     $('ltKeybar').hidden = !(st.mode === 'panel' || stuck || (touch() && (st.menu || st.choice)));
     // the screen reader's line
-    if (st.choice) say(S, name + ' asks: ' + st.choice.question.replace(/[─━═╌┄┈-]{4,}/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 600) + ' Options: ' + st.choice.options.map(o => o.label).join(', ') + '.');
+    if (st.choice) say(S, name + ' asks: ' + st.choice.question.replace(/[─━═╌┄┈-]{4,}/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 600) + ' Options: ' + st.choice.options.map(o => o.label).join(', ') + '.' + (st.choice.options.find(o => o.selected) ? ' Selected: ' + st.choice.options.find(o => o.selected).label + '.' : ''));
     else if (st.mode === 'panel') say(S, name + ' shows a panel. ' + plainText(blocks[0] ? blocks[0].lines : []).slice(0, 300) + ' Escape closes it.');
     else if (st.status) say(S, name + ' is working.');
     else if (st.mode === 'compose') say(S, name + ' is ready.');
@@ -462,6 +462,9 @@
     <p class="hint">A Claude Code, Pi or Codex conversation can continue in that agent's own program, running on this computer and shown here. You type into its own box, use its own <code>/</code> commands and answer its own questions, from any of your devices. The conversation itself is always Chattering's view of its file.</p>
     ${Object.keys(names).map(id => `<div class="set-field"><label for="ltSet_${esc(id)}">${esc(names[id])}</label>
       <select id="ltSet_${esc(id)}" data-agent="${esc(id)}"${dis}>${CHOICES.filter(([v]) => !(id === 'claude' && v === 'choose')).map(([v, l]) => `<option value="${v}"${agents[id] === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div>`).join('')}
+    <details class="set-field"><summary>start them with options</summary>
+      ${Object.keys(names).map(id => `<label for="ltArgs_${esc(id)}">${esc(names[id])}</label><input id="ltArgs_${esc(id)}" data-args="${esc(id)}" type="text" spellcheck="false" autocomplete="off" value="${esc(((c.args || {})[id] || []).map(a => /[\s"']/.test(a) ? JSON.stringify(a) : a).join(' '))}" placeholder="${id === 'claude' ? '--permission-mode default' : id === 'codex' ? '-c approval_policy="on-request"' : ''}"${dis}>`).join('')}
+      <div class="set-help">Words added to the program's command each time it starts here, for that run only: nothing is written into the agent's own settings. Quote a word that holds spaces.</div></details>
     <div class="set-help">"When I choose": Chattering's own box, with "Continue in its own program" in the + menu. "Always": its program, with Chattering's box a click away. Claude Code has no box of Chattering's own: set to "never", its conversations open in a terminal window on this computer instead.</div>
     <div class="set-field"><label for="ltSetIdle">end a program left idle for</label>
       <select id="ltSetIdle"${dis}>${[...new Set([...IDLE, c.idleMinutes || 30])].sort((a, b) => a - b).map(m => `<option value="${m}"${c.idleMinutes === m ? ' selected' : ''}>${m < 60 ? m + ' minutes' : m / 60 + (m === 60 ? ' hour' : ' hours')}</option>`).join('')}</select>
@@ -486,6 +489,9 @@
     root.querySelectorAll('select[data-agent]').forEach(sel => sel.onchange = () => save({ agents: { [sel.dataset.agent]: sel.value } }));
     const idle = root.querySelector('#ltSetIdle'); if (idle) idle.onchange = () => save({ idleMinutes: Number(idle.value) });
     const rec = root.querySelector('#ltSetRecord'); if (rec) rec.onchange = () => save({ record: rec.checked });
+    // Words, as a shell would split them (quotes keep spaces), never run by one.
+    const words = text => [...String(text).matchAll(/"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g)].map(m => m[1] != null ? m[1].replace(/\\(.)/g, '$1') : m[2] != null ? m[2] : m[3]);
+    root.querySelectorAll('input[data-args]').forEach(inp => inp.onchange = () => save({ args: { [inp.dataset.args]: words(inp.value) } }));
   };
 
   // Re-render on pointer changes (a tablet's keyboard attached).

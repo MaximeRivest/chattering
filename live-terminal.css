@@ -18,6 +18,8 @@
 .lt-q { white-space: pre-wrap; font-size: var(--fs-body); margin-bottom: 10px; max-height: 30vh; overflow: auto; }
 .lt-opts { display: flex; flex-direction: column; gap: 6px; }
 .lt-opts button { text-align: left; min-height: 40px; white-space: normal; }
+.lt-opts button b { font-weight: 600; }
+.lt-opts button .lt-detail { display: block; font-size: var(--fs-meta); color: var(--text-dim); margin-top: 2px; }
 .lt-opts button[aria-current="true"] { border-color: var(--accent); background: var(--surface-3); }
 .lt-hint { color: var(--text-faint); font-size: var(--fs-micro); margin-top: 8px; }
 .lt-keybar { display: flex; flex-wrap: wrap; gap: 6px; }

@@ -85,7 +85,9 @@ async function pickMenu(host, index, { profile, acceptKey = '\t' } = {}) {
   const items = doc.menu.items.map(i => i.label), label = items[index];
   if (!label) throw new Error('no such item');
   const read = d => d.menu && d.menu.items.length === items.length && d.menu.items.every((x, i) => x.label === items[i]) ? { selected: d.menu.selected, count: items.length } : null;
-  return selectAndConfirm(host, { profile, read, index, confirmKey: acceptKey, gone: d => d.composer && d.composer.text.startsWith(label) && !read(d) });
+  // Done when the box holds the pick (Pi lists commands without their "/").
+  const bare = t => String(t).replace(/^[/@]/, '');
+  return selectAndConfirm(host, { profile, read, index, confirmKey: acceptKey, gone: d => d.composer && bare(d.composer.text).startsWith(bare(label)) && !read(d) });
 }
 
 // The terminal does not record whether a line break was typed or is a

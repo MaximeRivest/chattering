@@ -9214,9 +9214,12 @@ function liveTerminals() {
   liveTerminalsLib = require('./harness/live-terminal.js').createLiveTerminals({
     dataDir: DATA_DIR,
     commandFor: (profile, args) => {
-      if (profile.program === 'claude') return [claudeBin(), ...args];
-      if (profile.program === 'pi') return piArgv(args);
-      if (profile.program === 'codex') return [codexBin(), ...args];
+      // The owner's options for this program (settings → agents), after the
+      // profile's: for this run only, never written into the agent's config.
+      const own = (liveTerminalConf().args || {})[profile.id] || [];
+      if (profile.program === 'claude') return [claudeBin(), ...args, ...own];
+      if (profile.program === 'pi') return piArgv([...args, ...own]);
+      if (profile.program === 'codex') return [codexBin(), ...args, ...own];
       throw new Error(profile.name + ' has no program here');
     },
     envFor: principal => agentEnv(principal),
@@ -19164,7 +19167,7 @@ async function handleRequest(req, res) {
         if (u.pathname === '/api/live-terminal/settings' && req.method === 'POST') {
           if (!policy.isOwnerTier(identity)) return json(res, 403, { error: 'only the owner changes this' });
           const cur = liveTerminalConf();
-          appSettings = settingsLib.normalizeSettings({ ...appSettings, liveTerminal: { ...cur, ...p, agents: { ...cur.agents, ...(p.agents || {}) } } });
+          appSettings = settingsLib.normalizeSettings({ ...appSettings, liveTerminal: { ...cur, ...p, agents: { ...cur.agents, ...(p.agents || {}) }, args: { ...(cur.args || {}), ...(p.args || {}) } } });
           saveAppSettings();
           return json(res, 200, { ...liveTerminalConf(), available: lt.available, why: lt.why });
         }

@@ -53,3 +53,39 @@ test('a box with no frame (Codex): the cursor is the caret, so trailing spaces c
   const d = readDocument(screen(['>_ Codex', '', '› /model ', '', '  gpt low · ~/work'], { x: 9, y: 2 }), codex);
   assert.equal(d.composer.text, '/model '); assert.equal(d.composer.caret, 7);
 });
+test('one suggestion left is a menu when it completes what is typed after / or @; else a status line', () => {
+  const codex = require('../harness/terminal/profiles').profileFor('codex');
+  const one = readDocument(screen(['', '› /perm', '', '  /permissions  choose what Codex is allowed to do'], { x: 7, y: 1 }), codex);
+  assert.deepEqual(one.menu && one.menu.items.map(i => i.label), ['/permissions']);
+  const status = readDocument(screen(['', '› hello', '', '  gpt low  ~/work'], { x: 7, y: 1 }), codex);
+  assert.equal(status.menu, null); assert.equal(status.footer.length, 1);
+});
+test('Codex after an answer: frame lines around the answer are not its box; the prompt line holding the cursor is', () => {
+  // The screen seen on 2026-10-01 (Codex 0.153.4) after "• Created approval-check.txt."
+  const codex = require('../harness/terminal/profiles').profileFor('codex');
+  const R = '─'.repeat(100), dim = t => ({ text: t, runs: [{ s: '||', t: t.slice(0, 2) }, { s: 'd||', t: t.slice(2) }] });
+  const rows = ['• Ran touch approval-check.txt', '  └ (no output)', '', R, '', '• Created approval-check.txt.', '', R, '', '', dim('› Ask Codex to do anything'), '', '  gpt-5.6-sol low · ~/scratch/codex'];
+  const d = readDocument(screen(rows, { x: 2, y: 10 }), codex);
+  assert.equal(d.mode, 'compose');
+  assert.equal(d.composer.text, '');
+  assert.equal(d.composer.placeholder, 'Ask Codex to do anything');
+});
+test('Pi\'s last suggestion (its commands have no "/") is a menu too', () => {
+  const pi = require('../harness/terminal/profiles').profileFor('pi');
+  const R = '─'.repeat(100);
+  const d = readDocument(screen([R, ' /sett', R, '  settings  Open settings menu'], { x: 6, y: 1 }), pi);
+  assert.deepEqual(d.menu && d.menu.items.map(i => i.label), ['settings']);
+});
+test('Pi\'s list with its mark on a later row: the rows above it are items too, not status lines', () => {
+  // As drawn by Pi 0.87 after ↓ ↓ (2026-10-01).
+  const pi = require('../harness/terminal/profiles').profileFor('pi');
+  const R = '─'.repeat(100);
+  const d = readDocument(screen([R, ' /', R,
+    '      settings                        Open settings menu',
+    '      model                           <provider/model> — Select model (opens selector UI)',
+    '    → tree                            Navigate session tree (switch branches)',
+    '      thinking                        <level> — Set thinking level'], { x: 2, y: 1 }), pi);
+  assert.deepEqual(d.menu.items.map(i => i.label), ['settings', 'model', 'tree', 'thinking']);
+  assert.equal(d.menu.selected, 2);
+  assert.equal(d.footer.length, 0);
+});

@@ -226,6 +226,7 @@ function keys(data) {
   return out;
 }
 
+if (keyLog) fs.appendFileSync(keyLog, JSON.stringify({ argv }) + '\n'); // how it was started
 let listening = false;
 if (process.stdin.isTTY) process.stdin.setRawMode(true);
 process.stdin.setEncoding('utf8');
