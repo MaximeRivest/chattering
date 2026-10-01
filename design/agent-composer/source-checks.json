@@ -1,0 +1,266 @@
+{
+  "checkedAt": "2026-10-01T12:57:31.467411+00:00",
+  "method": "Unauthenticated GET; status/hash only; see research for semantic evidence",
+  "sources": [
+    {
+      "ref": "R01",
+      "title": "OpenAI Codex App Server (redirects to official ChatGPT Learn)",
+      "url": "https://developers.openai.com/codex/app-server/",
+      "status": "200",
+      "effectiveUrl": "https://learn.chatgpt.com/docs/app-server",
+      "sha256": "803e310460df934a56b34ddf9556131bf12151e085160ce3b4203081c976af7f",
+      "bytes": 956084,
+      "error": null
+    },
+    {
+      "ref": "R02",
+      "title": "OpenAI app-server sign-in integration",
+      "url": "https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server",
+      "status": "200",
+      "effectiveUrl": "https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server",
+      "sha256": "f5d54917730fd8bf2c2e002c0180b3b5cb87b66c278d94762c3ae94f195300e4",
+      "bytes": 340188,
+      "error": null
+    },
+    {
+      "ref": "R03",
+      "title": "Anthropic SDK overview, authentication and branding guidance",
+      "url": "https://code.claude.com/docs/en/agent-sdk/overview",
+      "status": "200",
+      "effectiveUrl": "https://code.claude.com/docs/en/agent-sdk/overview",
+      "sha256": "7b1ba8bee5d6356221452c757a4ac62780440749da4fcd6ada6d9f0d2ac0feae",
+      "bytes": 416384,
+      "error": null
+    },
+    {
+      "ref": "R04",
+      "title": "Anthropic SDK permissions",
+      "url": "https://code.claude.com/docs/en/agent-sdk/permissions",
+      "status": "200",
+      "effectiveUrl": "https://code.claude.com/docs/en/agent-sdk/permissions",
+      "sha256": "bc07544bcaf78157fd2605177fea7576413562449332f4552d405721c60429e8",
+      "bytes": 565263,
+      "error": null
+    },
+    {
+      "ref": "R05",
+      "title": "Official SDK changelog",
+      "url": "https://github.com/anthropics/claude-agent-sdk-typescript/blob/main/CHANGELOG.md",
+      "status": "200",
+      "effectiveUrl": "https://github.com/anthropics/claude-agent-sdk-typescript/blob/main/CHANGELOG.md",
+      "sha256": "ad0db0506e235165144029e3741070ea55ccf09ca71a228fd660792e08feeb9d",
+      "bytes": 1401570,
+      "error": null
+    },
+    {
+      "ref": "R06",
+      "title": "OpenCode server",
+      "url": "https://opencode.ai/docs/server/",
+      "status": "200",
+      "effectiveUrl": "https://opencode.ai/docs/server/",
+      "sha256": "ea05fdd2af4fbe4623203f207cacdba503c8e74c0f587fe1841e396e176cf3ee",
+      "bytes": 85930,
+      "error": null
+    },
+    {
+      "ref": "R07",
+      "title": "OpenCode ACP",
+      "url": "https://opencode.ai/docs/acp/",
+      "status": "200",
+      "effectiveUrl": "https://opencode.ai/docs/acp/",
+      "sha256": "74985bac5c8ed15baf6b077438cf967e61345d764d518b692db724ceac8b6113",
+      "bytes": 74156,
+      "error": null
+    },
+    {
+      "ref": "R08",
+      "title": "Google Gemini CLI ACP guide",
+      "url": "https://raw.githubusercontent.com/google-gemini/gemini-cli/main/docs/cli/acp-mode.md",
+      "status": "200",
+      "effectiveUrl": "https://raw.githubusercontent.com/google-gemini/gemini-cli/main/docs/cli/acp-mode.md",
+      "sha256": "812af1001c110f474a624c3026c31e66519ca95c251d1f79679d8ebd56edd779",
+      "bytes": 4684,
+      "error": null
+    },
+    {
+      "ref": "R09",
+      "title": "Google Gemini CLI configuration/reference",
+      "url": "https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md",
+      "status": "200",
+      "effectiveUrl": "https://github.com/google-gemini/gemini-cli/blob/main/docs/reference/configuration.md",
+      "sha256": "b132eee26a7ba65a5d50dad6f47dcd4fece124a352fbe7aab87d3a248707d4a3",
+      "bytes": 1099557,
+      "error": null
+    },
+    {
+      "ref": "R09-2",
+      "title": "Google Gemini CLI configuration/reference",
+      "url": "https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/cli-reference.md",
+      "status": "200",
+      "effectiveUrl": "https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/cli-reference.md",
+      "sha256": "07ae9d4909dcab1abc670aef6b8a5adf7bc09af4416d1e194390ef6ae9c7204f",
+      "bytes": 336665,
+      "error": null
+    },
+    {
+      "ref": "R10",
+      "title": "Google's account transition announcement",
+      "url": "https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/",
+      "status": "200",
+      "effectiveUrl": "https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/",
+      "sha256": "7d4975ac40f97c06023bf8c989887c7da1122dae287612171a72050abad89227",
+      "bytes": 39227,
+      "error": null
+    },
+    {
+      "ref": "R11",
+      "title": "Google Antigravity headless mode",
+      "url": "https://antigravity.google/docs/cli/headless/",
+      "status": "200",
+      "effectiveUrl": "https://antigravity.google/docs/cli/headless/",
+      "sha256": "eb33e2f3acbe079ad87c1a525d422fed4f1702eb106292c1107366d9ec18068b",
+      "bytes": 208911,
+      "error": null
+    },
+    {
+      "ref": "R12",
+      "title": "Aider scripting",
+      "url": "https://aider.chat/docs/scripting.html",
+      "status": "200",
+      "effectiveUrl": "https://aider.chat/docs/scripting.html",
+      "sha256": "674663a6c4c155a1d061ad522d970e45b0ce98774d9bb22a624d3bb6e7eb59d6",
+      "bytes": 32171,
+      "error": null
+    },
+    {
+      "ref": "R13",
+      "title": "Aider command/model roles",
+      "url": "https://aider.chat/docs/usage/commands.html",
+      "status": "200",
+      "effectiveUrl": "https://aider.chat/docs/usage/commands.html",
+      "sha256": "563e2628ea8b0f57cce03cff34c95744037e8667da117073d6457a30ccd57a07",
+      "bytes": 43205,
+      "error": null
+    },
+    {
+      "ref": "R14",
+      "title": "ACP v1 session configuration",
+      "url": "https://agentclientprotocol.com/protocol/v1/session-config-options",
+      "status": "200",
+      "effectiveUrl": "https://agentclientprotocol.com/protocol/v1/session-config-options",
+      "sha256": "daf4c72966bc466dc67774e0ecb57a495e227f5cc9d556552a2da1bb0a0e688c",
+      "bytes": 476195,
+      "error": null
+    },
+    {
+      "ref": "R15",
+      "title": "ACP v2 migration guide",
+      "url": "https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/protocol/v2/migration.mdx",
+      "status": "200",
+      "effectiveUrl": "https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/protocol/v2/migration.mdx",
+      "sha256": "9eb648adfd8e67408e3c9497348ac76d7df567ce61f1fe1864087d302677fce6",
+      "bytes": 667760,
+      "error": null
+    },
+    {
+      "ref": "R16",
+      "title": "ACP v1 initialization",
+      "url": "https://agentclientprotocol.com/protocol/v1/initialization",
+      "status": "200",
+      "effectiveUrl": "https://agentclientprotocol.com/protocol/v1/initialization",
+      "sha256": "922996ffa06309cbd9e49bfef9808a973de352f99d68be51b551253c9eac54c2",
+      "bytes": 462387,
+      "error": null
+    },
+    {
+      "ref": "R17",
+      "title": "ACP v1 session setup",
+      "url": "https://agentclientprotocol.com/protocol/v1/session-setup",
+      "status": "200",
+      "effectiveUrl": "https://agentclientprotocol.com/protocol/v1/session-setup",
+      "sha256": "ac8c85c10e2b6b904070733a494ca82f8ec48a6e1c3a45afd178cdf727f0c5f9",
+      "bytes": 573297,
+      "error": null
+    },
+    {
+      "ref": "R18",
+      "title": "ACP v1 tool calls / permissions",
+      "url": "https://agentclientprotocol.com/protocol/v1/tool-calls",
+      "status": "200",
+      "effectiveUrl": "https://agentclientprotocol.com/protocol/v1/tool-calls",
+      "sha256": "b3ff87a0d01a0be6835ad1d0f500aaed086637a4d45d517df4374be1f3205ce7",
+      "bytes": 471488,
+      "error": null
+    },
+    {
+      "ref": "R19",
+      "title": "ACP registry maintainers",
+      "url": "https://github.com/agentclientprotocol/registry/blob/main/README.md",
+      "status": "200",
+      "effectiveUrl": "https://github.com/agentclientprotocol/registry/blob/main/README.md",
+      "sha256": "59dad5db88e83e497e23b7622b30196febdb14fcab665bfa36b693716fe42e77",
+      "bytes": 255232,
+      "error": null
+    },
+    {
+      "ref": "R20",
+      "title": "Claude Help Center, paused billing change",
+      "url": "https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan",
+      "status": "200",
+      "effectiveUrl": "https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan",
+      "sha256": "d3d36fe1329f6f1233600c1af2cff8c66f83107170148782ee48ccea1370cd13",
+      "bytes": 352171,
+      "error": null
+    },
+    {
+      "ref": "R21",
+      "title": "DeepSeek developer preview and upstream repository",
+      "url": "https://www.deepseek.com/harness/en/",
+      "status": "200",
+      "effectiveUrl": "https://www.deepseek.com/harness/en/",
+      "sha256": "3f6d1410db2de89c586c8ff4a9aec1a2f558a00f19454bb940afd74b17db4cf9",
+      "bytes": 395,
+      "error": null
+    },
+    {
+      "ref": "R21-2",
+      "title": "DeepSeek developer preview and upstream repository",
+      "url": "https://github.com/deepseek-ai/deepseek-harness",
+      "status": "200",
+      "effectiveUrl": "https://github.com/deepseek-ai/deepseek-harness",
+      "sha256": "061bce90c7957fa24f79088fbb4be9528823b20cfc91be87c82df57c232b9468",
+      "bytes": 403048,
+      "error": null
+    },
+    {
+      "ref": "R22",
+      "title": "Claw Code canonical repository",
+      "url": "https://github.com/ultraworkers/claw-code",
+      "status": "200",
+      "effectiveUrl": "https://github.com/ultraworkers/claw-code",
+      "sha256": "37bdc21280b07c2ad0758c46d1380076ba609979fea5e28628d081a6f50a3e90",
+      "bytes": 415187,
+      "error": null
+    },
+    {
+      "ref": "R23",
+      "title": "CodeWhale repository",
+      "url": "https://github.com/zhuowp/CodeWhale",
+      "status": "200",
+      "effectiveUrl": "https://github.com/zhuowp/CodeWhale",
+      "sha256": "128260b568162a1dd036d5336d7db7908df11dc3d284049a558eda3d95b4bc9e",
+      "bytes": 416210,
+      "error": null
+    },
+    {
+      "ref": "R24",
+      "title": "Cognition Devin CLI",
+      "url": "https://cognition.com/blog/devin-for-terminal",
+      "status": "200",
+      "effectiveUrl": "https://cognition.com/blog/devin-for-terminal",
+      "sha256": "7508f08d8b26ce94aa7f0ba6d7869599383f3e27847e19fa8be929c7e3e89359",
+      "bytes": 132427,
+      "error": null
+    }
+  ]
+}

@@ -1,0 +1,1488 @@
+{
+  "capturedAt": "2026-10-01T13:15:57.508706+00:00",
+  "head": "0b1114a38647cb3a256d76545de0e4aef0d7d755",
+  "scope": "root JS/TS, app.html, harness and extensions; excludes vendor/runtime/test/design/dist; text matches include definitions",
+  "scannedFiles": 165,
+  "reviewed": [
+    {
+      "path": "app.html",
+      "sha256": "82cf61f386361266701986687028798f6dfa70b2c3de606fe6821299bacdbf25",
+      "lineCount": 19028,
+      "anchors": [
+        {
+          "anchor": "agentComposerHtml",
+          "lines": [
+            11655,
+            13708
+          ]
+        },
+        {
+          "anchor": "wireAgentComposer",
+          "lines": [
+            13421,
+            13746
+          ]
+        },
+        {
+          "anchor": "openModelPicker",
+          "lines": [
+            3935,
+            10857,
+            11986,
+            16403,
+            16474
+          ]
+        },
+        {
+          "anchor": "showThinkingPicker",
+          "lines": [
+            11159,
+            11203
+          ]
+        },
+        {
+          "anchor": "currentSpeechTarget",
+          "lines": [
+            13102,
+            13111,
+            13156,
+            13331,
+            13342
+          ]
+        },
+        {
+          "anchor": "agentSpeechEvent",
+          "lines": [
+            13152,
+            13255,
+            13257,
+            13262,
+            13276,
+            13279,
+            13287,
+            13297,
+            13314,
+            13316
+          ]
+        },
+        {
+          "anchor": "buildUiRequest",
+          "lines": [
+            14160,
+            14163
+          ]
+        },
+        {
+          "anchor": "runCompaction",
+          "lines": [
+            11746,
+            11786,
+            11811
+          ]
+        },
+        {
+          "anchor": "/api/node/send",
+          "lines": [
+            10701,
+            11885,
+            11888
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "conversation-draft.js",
+      "sha256": "11d0668266f51ab93f66a0b3d4b7d1b1d3f9f83ff35923cf8b6fbc0d4b7c3eb4",
+      "lineCount": 494,
+      "anchors": [
+        {
+          "anchor": "newDraft",
+          "lines": [
+            26,
+            35,
+            185
+          ]
+        },
+        {
+          "anchor": "draftAsCurrent",
+          "lines": [
+            96,
+            197
+          ]
+        },
+        {
+          "anchor": "draftSetModels",
+          "lines": [
+            111
+          ]
+        },
+        {
+          "anchor": "showDraft",
+          "lines": [
+            176,
+            179,
+            329,
+            483,
+            484
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "conversation-reader.js",
+      "sha256": "d2d1e5480d2659a42bd3c469c32590210c44d2cd89242668d2586a8f85c6dc16",
+      "lineCount": 1305,
+      "anchors": [
+        {
+          "anchor": "openConversationMerge",
+          "lines": [
+            582,
+            694
+          ]
+        },
+        {
+          "anchor": "regenerateQuestion",
+          "lines": [
+            666,
+            668
+          ]
+        },
+        {
+          "anchor": "renderLiveInGroups",
+          "lines": [
+            637,
+            772,
+            1148
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "ask-bubble.js",
+      "sha256": "fdd1c4dadacd7081299d42d604a803b6b840b522352e0ea9695eb2cc668a25b2",
+      "lineCount": 810,
+      "anchors": [
+        {
+          "anchor": "askBubbleLoadTarget",
+          "lines": [
+            183,
+            421,
+            663,
+            808
+          ]
+        },
+        {
+          "anchor": "askSubmit",
+          "lines": [
+            652,
+            674
+          ]
+        },
+        {
+          "anchor": "askBubblePaintControls",
+          "lines": [
+            177,
+            224,
+            226,
+            238,
+            246,
+            256,
+            288,
+            407,
+            416,
+            428,
+            460,
+            536
+          ]
+        },
+        {
+          "anchor": "askBubbleCodexPick",
+          "lines": [
+            242,
+            251,
+            388
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "codex-ui.js",
+      "sha256": "0b183d8f1aa8a540d35e7471559794b76420e1c961ee57f29e2301a4590c3774",
+      "lineCount": 201,
+      "anchors": [
+        {
+          "anchor": "menusFor",
+          "lines": [
+            9,
+            48,
+            123,
+            142,
+            172,
+            200
+          ]
+        },
+        {
+          "anchor": "choices",
+          "lines": [
+            2,
+            23,
+            56,
+            125,
+            143,
+            174
+          ]
+        },
+        {
+          "anchor": "pickModel",
+          "lines": [
+            58,
+            121,
+            200
+          ]
+        },
+        {
+          "anchor": "pickEffort",
+          "lines": [
+            153,
+            200
+          ]
+        },
+        {
+          "anchor": "pickAccess",
+          "lines": [
+            71,
+            171,
+            200
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "harness-composer-ui.js",
+      "sha256": "c6b4c67d9c7ce0f93b17894a06022b54051710e4fa68831494a3ead559dedd9e",
+      "lineCount": 147,
+      "anchors": [
+        {
+          "anchor": "createClient",
+          "lines": [
+            11,
+            96,
+            146
+          ]
+        },
+        {
+          "anchor": "let uninstall",
+          "lines": [
+            53
+          ]
+        },
+        {
+          "anchor": "function install",
+          "lines": [
+            54
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "harness/pi-composer.js",
+      "sha256": "cb98576139f4ad60689988caea552508500e47ac6465a3ba700c9530083b6a3d",
+      "lineCount": 152,
+      "anchors": [
+        {
+          "anchor": "createPiComposer",
+          "lines": [
+            59,
+            152
+          ]
+        },
+        {
+          "anchor": "snapshot",
+          "lines": [
+            92,
+            120,
+            121,
+            126,
+            131,
+            147
+          ]
+        },
+        {
+          "anchor": "generation",
+          "lines": [
+            80,
+            88,
+            91,
+            131,
+            137
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "harness/codex-composer.js",
+      "sha256": "b81bf7fb7d7b92225b242a9163d481233bceac7095b6e13678c40e8505afd4c3",
+      "lineCount": 89,
+      "anchors": [
+        {
+          "anchor": "complete",
+          "lines": [
+            3,
+            20,
+            77
+          ]
+        },
+        {
+          "anchor": "apply",
+          "lines": [
+            3,
+            62,
+            77
+          ]
+        },
+        {
+          "anchor": "commands",
+          "lines": [
+            3,
+            8,
+            16,
+            42,
+            77
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "harness/codex-runs.js",
+      "sha256": "11023ad291cce610229ee8136f4421abe427af3d5fe9238ffcc1628b7ec8f276",
+      "lineCount": 204,
+      "anchors": [
+        {
+          "anchor": "async function send",
+          "lines": [
+            110
+          ]
+        },
+        {
+          "anchor": "followUps.get(sessionPath).push",
+          "lines": [
+            122
+          ]
+        },
+        {
+          "anchor": "target.onInjected",
+          "lines": [
+            97,
+            136
+          ]
+        },
+        {
+          "anchor": "async function start",
+          "lines": [
+            154
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "harness/codex.js",
+      "sha256": "025db879f0f0233ac6e424cf513f931737b6cc6c767d8d9495639ab2880ee06b",
+      "lineCount": 388,
+      "anchors": [
+        {
+          "anchor": "async function openThread",
+          "lines": [
+            205
+          ]
+        },
+        {
+          "anchor": "function release",
+          "lines": [
+            193
+          ]
+        },
+        {
+          "anchor": "function codexHeadlessRun",
+          "lines": [
+            234
+          ]
+        },
+        {
+          "anchor": "function forkThread",
+          "lines": [
+            325
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "harness/claude-code.js",
+      "sha256": "db523e52566b6021fcd2a1af5ba12c34022555740722f2e0cc375ad9ca9ec6b7",
+      "lineCount": 276,
+      "anchors": [
+        {
+          "anchor": "function claudeArgs",
+          "lines": [
+            24
+          ]
+        },
+        {
+          "anchor": "class ClaudeSession",
+          "lines": [
+            45
+          ]
+        },
+        {
+          "anchor": "function claudeHeadlessRun",
+          "lines": [
+            205
+          ]
+        },
+        {
+          "anchor": "claudeMenus",
+          "lines": [
+            248,
+            274
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "harness/codex-diffs.js",
+      "sha256": "d6dfa16d6f5147e362001e62e035cdd8b27bfe1d3e35ef2fbb307dc061f43933",
+      "lineCount": 192,
+      "anchors": [
+        {
+          "anchor": "function outcomeOf",
+          "lines": [
+            92
+          ]
+        },
+        {
+          "anchor": "function codexPatchCalls",
+          "lines": [
+            113
+          ]
+        },
+        {
+          "anchor": "function codexEditOps",
+          "lines": [
+            172
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "harness/codex-transcript.js",
+      "sha256": "4755f3ec9c5cdb2514fe21647c5cad379d05fb3065017a319992846abeece4e8",
+      "lineCount": 471,
+      "anchors": [
+        {
+          "anchor": "environmentCwd",
+          "lines": [
+            96,
+            319,
+            471
+          ]
+        },
+        {
+          "anchor": "parseCodexRollout",
+          "lines": [
+            219,
+            405,
+            471
+          ]
+        },
+        {
+          "anchor": "forked_from",
+          "lines": [
+            260,
+            400,
+            401
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "server.js",
+      "sha256": "7e4539d9bc12063913ee26041d1325faaa9f554794e8ce7c3d101eadcf254e7c",
+      "lineCount": 20096,
+      "anchors": [
+        {
+          "anchor": "function principalFor",
+          "lines": [
+            5533
+          ]
+        },
+        {
+          "anchor": "async function principalInProject",
+          "lines": [
+            5544
+          ]
+        },
+        {
+          "anchor": "const codexRefused",
+          "lines": [
+            11587
+          ]
+        },
+        {
+          "anchor": "function conversationKind",
+          "lines": [
+            9225
+          ]
+        },
+        {
+          "anchor": "function sessionPathsFor",
+          "lines": [
+            2753
+          ]
+        },
+        {
+          "anchor": "async function composeInPi",
+          "lines": [
+            3038
+          ]
+        },
+        {
+          "anchor": "function scanAgentProcs",
+          "lines": [
+            3078
+          ]
+        },
+        {
+          "anchor": "function runEventForwarder",
+          "lines": [
+            3283
+          ]
+        },
+        {
+          "anchor": "async function startAgentRun",
+          "lines": [
+            3506
+          ]
+        },
+        {
+          "anchor": "expectedVersion &&",
+          "lines": [
+            3626
+          ]
+        },
+        {
+          "anchor": "expectedLeaf &&",
+          "lines": [
+            2963,
+            3627
+          ]
+        },
+        {
+          "anchor": "function codexRuns",
+          "lines": [
+            9114
+          ]
+        },
+        {
+          "anchor": "async function openConversationInTerminal",
+          "lines": [
+            9601
+          ]
+        },
+        {
+          "anchor": "async function sendToConversation",
+          "lines": [
+            9724
+          ]
+        },
+        {
+          "anchor": "async function sendFileFeedback",
+          "lines": [
+            9812
+          ]
+        },
+        {
+          "anchor": "async function conversationDiffs",
+          "lines": [
+            10080
+          ]
+        },
+        {
+          "anchor": "async function ledgerIngestConversation",
+          "lines": [
+            11074
+          ]
+        },
+        {
+          "anchor": "async function filesAskTargetResponse",
+          "lines": [
+            11594
+          ]
+        },
+        {
+          "anchor": "async function filesAskResponse",
+          "lines": [
+            11760
+          ]
+        },
+        {
+          "anchor": "async function filesAskCodex",
+          "lines": [
+            11823
+          ]
+        },
+        {
+          "anchor": "const draftStarts",
+          "lines": [
+            14508
+          ]
+        },
+        {
+          "anchor": "async function startCodexConversation",
+          "lines": [
+            14514
+          ]
+        },
+        {
+          "anchor": "async function startConversationFromDraft",
+          "lines": [
+            14536
+          ]
+        },
+        {
+          "anchor": "async function startProjectConversation",
+          "lines": [
+            14601
+          ]
+        },
+        {
+          "anchor": "async function voiceDelegateStart",
+          "lines": [
+            16043
+          ]
+        },
+        {
+          "anchor": "async function voiceListen",
+          "lines": [
+            16272
+          ]
+        },
+        {
+          "anchor": "u.pathname === '/api/reviews/send'",
+          "lines": [
+            17303
+          ]
+        },
+        {
+          "anchor": "u.pathname === '/api/run/ui-response'",
+          "lines": [
+            17973
+          ]
+        },
+        {
+          "anchor": "composeCoauthorsOf",
+          "lines": [
+            5958,
+            14557,
+            17869
+          ]
+        },
+        {
+          "anchor": "restoreInterruptedRuns",
+          "lines": [
+            20011,
+            20079
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "people.js",
+      "sha256": "f07dad34f63107d9c744ffcbeff2b8de151a18615bce586be2cfedea7876ecd7",
+      "lineCount": 1090,
+      "anchors": [
+        {
+          "anchor": "composeShareAttach",
+          "lines": [
+            218,
+            267,
+            268
+          ]
+        },
+        {
+          "anchor": "composeShareCheck",
+          "lines": [
+            72,
+            263
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "collab-client.js",
+      "sha256": "fb83276a02c1f803f5c6a063818dd4eeded5ca129af49f86d47eb00a013a41d1",
+      "lineCount": 221,
+      "anchors": [
+        {
+          "anchor": "collabJoin",
+          "lines": [
+            51
+          ]
+        },
+        {
+          "anchor": "collabBindTextarea",
+          "lines": [
+            121
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "pair.js",
+      "sha256": "7dc4a908f14c18cae53db6696306ce0bbf09ce39b8624963ca4f1e3eaf00fa20",
+      "lineCount": 281,
+      "anchors": [
+        {
+          "anchor": "withConversation",
+          "lines": [
+            196,
+            278
+          ]
+        },
+        {
+          "anchor": "mountDocument",
+          "lines": [
+            227,
+            279
+          ]
+        },
+        {
+          "anchor": "showsConversation",
+          "lines": [
+            174,
+            278
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "ai-commands.js",
+      "sha256": "035548e385c58576ff34eb10eff69e3b5ba1ac0294fd90670300224e474e4e2d",
+      "lineCount": 228,
+      "anchors": [
+        {
+          "anchor": "const COMMANDS",
+          "lines": [
+            55
+          ]
+        },
+        {
+          "anchor": "validateRequest",
+          "lines": [
+            116,
+            169,
+            227
+          ]
+        },
+        {
+          "anchor": "buildPrompt",
+          "lines": [
+            172,
+            173,
+            209,
+            227
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "policy.js",
+      "sha256": "4ea552e278b0368a6d77b39c2afbef2b42787ebaac4943d1e3e230700aa09fa4",
+      "lineCount": 509,
+      "anchors": [
+        {
+          "anchor": "'/api/node/send'",
+          "lines": [
+            97
+          ]
+        },
+        {
+          "anchor": "'/api/file-feedback'",
+          "lines": [
+            217
+          ]
+        },
+        {
+          "anchor": "'GET /api/codex/menus'",
+          "lines": [
+            104
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "platform.js",
+      "sha256": "7016ebf0421808014732e2ed9ab8afaa8d9fac83033875f5e5b184fe6afcd3bf",
+      "lineCount": 279,
+      "anchors": [
+        {
+          "anchor": "findOnPath",
+          "lines": [
+            56,
+            180,
+            192,
+            195,
+            261,
+            269,
+            276
+          ]
+        },
+        {
+          "anchor": "isExecutable",
+          "lines": [
+            58,
+            65,
+            70,
+            194,
+            276
+          ]
+        },
+        {
+          "anchor": "isInside",
+          "lines": [
+            91,
+            277
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "step-changes.js",
+      "sha256": "b7f9ce7a5753ffa923788c7117a3da404745daf34a6ffbd5ae313c278bc4a535",
+      "lineCount": 571,
+      "anchors": [
+        {
+          "anchor": "const recorded =",
+          "lines": [
+            174
+          ]
+        },
+        {
+          "anchor": "recordedBy",
+          "lines": [
+            175,
+            176,
+            244
+          ]
+        },
+        {
+          "anchor": "rebuild",
+          "lines": [
+            460,
+            471,
+            545
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "conversation-reviews.js",
+      "sha256": "f492d2ec756240adb018f1708927a4021cd6cc2bc289a160193305246f49d0ff",
+      "lineCount": 138,
+      "anchors": [
+        {
+          "anchor": "buildConversationReview",
+          "lines": [
+            116,
+            138
+          ]
+        },
+        {
+          "anchor": "sourceGroup",
+          "lines": [
+            123,
+            124,
+            125
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "change-review-ui.js",
+      "sha256": "d7e69ec5e6ff8ae9ab1458f4102e2a5fd7e587ab8147e49a54aa7022beda3c8d",
+      "lineCount": 413,
+      "anchors": [
+        {
+          "anchor": "crPreview",
+          "lines": [
+            95,
+            144,
+            146,
+            147,
+            391,
+            394,
+            400
+          ]
+        },
+        {
+          "anchor": "/api/reviews/send",
+          "lines": [
+            407
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "design/90-computers-linked.md",
+      "sha256": "a5a67da177f5ded1d8eab52ff41b794f745de7ff3bcdf4578bf70d842dbca212",
+      "lineCount": 76,
+      "anchors": [
+        {
+          "anchor": "Separate conversations",
+          "lines": [
+            75
+          ]
+        },
+        {
+          "anchor": "Who may use a link",
+          "lines": [
+            34
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    },
+    {
+      "path": "design/tokens.css",
+      "sha256": "7f99930f347f91e73613f433676a744037cbc8dfe994c17fe9bf9819c2132639",
+      "lineCount": 518,
+      "anchors": [
+        {
+          "anchor": "--r-composer",
+          "lines": [
+            99
+          ]
+        },
+        {
+          "anchor": "--theme-mode",
+          "lines": [
+            77,
+            267,
+            340,
+            405,
+            448,
+            500
+          ]
+        }
+      ],
+      "review": "selected controlling paths, not every line"
+    }
+  ],
+  "callSiteCandidates": [
+    {
+      "path": "app.html",
+      "line": 3935,
+      "symbols": [
+        "openModelPicker"
+      ],
+      "text": "pickModel: (anchor, current, onPick) => openModelPicker(anchor, { multi: false, selected: new Set(current ? [current] : []) }, picked => {"
+    },
+    {
+      "path": "app.html",
+      "line": 10857,
+      "symbols": [
+        "openModelPicker"
+      ],
+      "text": "async function openModelPicker(anchor, opts, onPick) {"
+    },
+    {
+      "path": "app.html",
+      "line": 11159,
+      "symbols": [
+        "showThinkingPicker"
+      ],
+      "text": "function showThinkingPicker(anchor, { levels, current: selected, note, onPick }) {"
+    },
+    {
+      "path": "app.html",
+      "line": 11203,
+      "symbols": [
+        "showThinkingPicker"
+      ],
+      "text": "showThinkingPicker(anchor, {"
+    },
+    {
+      "path": "app.html",
+      "line": 11986,
+      "symbols": [
+        "openModelPicker"
+      ],
+      "text": "$('modelPick').onclick = e => openModelPicker(e.currentTarget, { multi: true, pickReplaces: true, selected: new Set(list.map(m => m.provider + '/' + m.modelId)) }, picked => setFanModels(picked));"
+    },
+    {
+      "path": "app.html",
+      "line": 16403,
+      "symbols": [
+        "openModelPicker"
+      ],
+      "text": "const pickFor = anchor => openModelPicker(anchor, { selected: p().provider ? [p().provider + '/' + p().model] : [] }, ([m]) => {"
+    },
+    {
+      "path": "app.html",
+      "line": 16474,
+      "symbols": [
+        "openModelPicker"
+      ],
+      "text": "if (pick) pick.onclick = () => openModelPicker(pick, { selected: [settingsOf().provider + '/' + settingsOf().model] }, ([m]) => {"
+    },
+    {
+      "path": "ask-bubble.js",
+      "line": 244,
+      "symbols": [
+        "openModelPicker"
+      ],
+      "text": "openModelPicker(e.currentTarget, { multi: false, selected: new Set(prefs.model ? [prefs.model] : []) }, picked => {"
+    },
+    {
+      "path": "ask-bubble.js",
+      "line": 253,
+      "symbols": [
+        "showThinkingPicker"
+      ],
+      "text": "showThinkingPicker(e.currentTarget, {"
+    },
+    {
+      "path": "conversation-draft.js",
+      "line": 147,
+      "symbols": [
+        "showThinkingPicker"
+      ],
+      "text": "showThinkingPicker(anchor, {"
+    },
+    {
+      "path": "conversation-reader.js",
+      "line": 721,
+      "symbols": [
+        "openModelPicker"
+      ],
+      "text": "openModelPicker(model, { multi: false, selected: new Set(state.model ? [state.model.provider + '/' + state.model.modelId] : []) }, picked => {"
+    },
+    {
+      "path": "harness/claude-code.js",
+      "line": 205,
+      "symbols": [
+        "claudeHeadlessRun"
+      ],
+      "text": "function claudeHeadlessRun(target, { message, images, onEvent }) {"
+    },
+    {
+      "path": "harness/codex-runs.js",
+      "line": 92,
+      "symbols": [
+        "codexHeadlessRun"
+      ],
+      "text": "const handle = driver.codexHeadlessRun(target, { message, images, onEvent: runEventForwarder(job), onThread });"
+    },
+    {
+      "path": "harness/codex.js",
+      "line": 234,
+      "symbols": [
+        "codexHeadlessRun"
+      ],
+      "text": "function codexHeadlessRun(target, { message, images, onEvent, onThread } = {}) {"
+    },
+    {
+      "path": "pirpc.js",
+      "line": 366,
+      "symbols": [
+        "piQueuePrompt"
+      ],
+      "text": "async function piQueuePrompt(target, message, behavior, images) {"
+    },
+    {
+      "path": "pirpc.js",
+      "line": 393,
+      "symbols": [
+        "piHeadlessRun"
+      ],
+      "text": "function piHeadlessRun(target, opts) {"
+    },
+    {
+      "path": "pirpc.js",
+      "line": 493,
+      "symbols": [
+        "piBeginWarm"
+      ],
+      "text": "async function piBeginWarm(target) {"
+    },
+    {
+      "path": "pisdk-runtime.js",
+      "line": 500,
+      "symbols": [
+        "piHeadlessRun"
+      ],
+      "text": "function piHeadlessRun(target, opts = {}) {"
+    },
+    {
+      "path": "pisdk-runtime.js",
+      "line": 684,
+      "symbols": [
+        "piQueuePrompt"
+      ],
+      "text": "async function piQueuePrompt(target, message, behavior, images) {"
+    },
+    {
+      "path": "pisdk-runtime.js",
+      "line": 751,
+      "symbols": [
+        "piBeginWarm"
+      ],
+      "text": "async function piBeginWarm(target) {"
+    },
+    {
+      "path": "pisdk-worker.js",
+      "line": 106,
+      "symbols": [
+        "piHeadlessRun"
+      ],
+      "text": "active.handle = engine.piHeadlessRun(...args);"
+    },
+    {
+      "path": "pisdk-worker.js",
+      "line": 115,
+      "symbols": [
+        "piBeginWarm"
+      ],
+      "text": "if (method === 'begin') return engine.piBeginWarm(...args);"
+    },
+    {
+      "path": "pisdk-worker.js",
+      "line": 165,
+      "symbols": [
+        "piQueuePrompt"
+      ],
+      "text": "if (message.method === 'queue') return reply(message, () => engine.piQueuePrompt(...message.args));"
+    },
+    {
+      "path": "pisdk.js",
+      "line": 260,
+      "symbols": [
+        "piHeadlessRun"
+      ],
+      "text": "function piHeadlessRun(target, opts = {}) {"
+    },
+    {
+      "path": "pisdk.js",
+      "line": 276,
+      "symbols": [
+        "piBeginWarm"
+      ],
+      "text": "async function piBeginWarm(target) {"
+    },
+    {
+      "path": "server.js",
+      "line": 3506,
+      "symbols": [
+        "startAgentRun"
+      ],
+      "text": "async function startAgentRun(key, { node, provider, modelId, message, images, force, allowQueue, fanout, context, customMessage, expectedLeaf, expectedVersion, recoveryAttempts = 0, principal = null, input = 'keyboard', coauthors = null, brief = null, thinking = null, intent = nu"
+    },
+    {
+      "path": "server.js",
+      "line": 3568,
+      "symbols": [
+        "piQueuePrompt"
+      ],
+      "text": "const queuedOk = await pisdk.piQueuePrompt({ sessionPath }, message, null, images).catch(() => false)"
+    },
+    {
+      "path": "server.js",
+      "line": 3569,
+      "symbols": [
+        "piQueuePrompt"
+      ],
+      "text": "|| await pirpc.piQueuePrompt({ sessionPath }, message, null, images).catch(() => false);"
+    },
+    {
+      "path": "server.js",
+      "line": 3680,
+      "symbols": [
+        "piHeadlessRun"
+      ],
+      "text": "const handle = engine.piHeadlessRun({ sessionPath, cwd, env: { ...agentEnv(principal), ...agentCallerEnv(principal), ...programCallerEnv(key, principal), ...sessionEnv }, sessionEnv, extraArgs, sandbox: principal.sandbox || undefined }, { provider, modelId, thinking: customMessag"
+    },
+    {
+      "path": "server.js",
+      "line": 3897,
+      "symbols": [
+        "startAgentRun"
+      ],
+      "text": "const job = await startAgentRun(key, { message: customMessage.customType === 'delegation-attention' ? 'Look at quiet delegated work' : 'Review returned delegated work', customMessage });"
+    },
+    {
+      "path": "server.js",
+      "line": 4021,
+      "symbols": [
+        "startAgentRun"
+      ],
+      "text": "const job = await startAgentRun(forked.key, { provider: m.provider, modelId: m.modelId, message, images, force, fanout, context: contextItems, principal, input, coauthors });"
+    },
+    {
+      "path": "server.js",
+      "line": 4221,
+      "symbols": [
+        "startAgentRun"
+      ],
+      "text": "return startAgentRun(key, { node: question, provider, modelId, force, principal, intent: { kind: 'merge', question },"
+    },
+    {
+      "path": "server.js",
+      "line": 4245,
+      "symbols": [
+        "startAgentRun"
+      ],
+      "text": "return startAgentRun(key, { node: found.parentId, provider, modelId, message, images, force, principal, intent: { kind: 'regenerate', question } });"
+    },
+    {
+      "path": "server.js",
+      "line": 4263,
+      "symbols": [
+        "startAgentRun"
+      ],
+      "text": "const job = await startAgentRun(key, { node, provider, modelId, message, force });"
+    },
+    {
+      "path": "server.js",
+      "line": 5402,
+      "symbols": [
+        "startAgentRun"
+      ],
+      "text": "return startAgentRun(r.key, {"
+    },
+    {
+      "path": "server.js",
+      "line": 9448,
+      "symbols": [
+        "spawnAlacritty"
+      ],
+      "text": "function spawnAlacritty(cwd, title, argv) {"
+    },
+    {
+      "path": "server.js",
+      "line": 9629,
+      "symbols": [
+        "spawnAlacritty"
+      ],
+      "text": "await spawnAlacritty(cwd, title, argv);"
+    },
+    {
+      "path": "server.js",
+      "line": 9724,
+      "symbols": [
+        "sendToConversation"
+      ],
+      "text": "async function sendToConversation(key, payload, principal = null) {"
+    },
+    {
+      "path": "server.js",
+      "line": 9862,
+      "symbols": [
+        "spawnAlacritty"
+      ],
+      "text": "await spawnAlacritty(cwd || entry.cwd || os.homedir(), windowTitleFor(key) + ' feedback', argv);"
+    },
+    {
+      "path": "server.js",
+      "line": 10885,
+      "symbols": [
+        "spawnAlacritty"
+      ],
+      "text": "await spawnAlacritty(cwd, name, argv);"
+    },
+    {
+      "path": "server.js",
+      "line": 11788,
+      "symbols": [
+        "startProjectConversation"
+      ],
+      "text": "const started = await startProjectConversation({"
+    },
+    {
+      "path": "server.js",
+      "line": 11804,
+      "symbols": [
+        "startAgentRun"
+      ],
+      "text": "const out = await startAgentRun(key, {"
+    },
+    {
+      "path": "server.js",
+      "line": 11844,
+      "symbols": [
+        "startAgentRun"
+      ],
+      "text": "const out = await startAgentRun(key, {"
+    },
+    {
+      "path": "server.js",
+      "line": 13714,
+      "symbols": [
+        "startProjectConversation"
+      ],
+      "text": "started = await startProjectConversation({"
+    },
+    {
+      "path": "server.js",
+      "line": 13779,
+      "symbols": [
+        "startProjectConversation"
+      ],
+      "text": "started = await startProjectConversation({"
+    },
+    {
+      "path": "server.js",
+      "line": 14536,
+      "symbols": [
+        "startConversationFromDraft"
+      ],
+      "text": "async function startConversationFromDraft(p, principal = null) {"
+    },
+    {
+      "path": "server.js",
+      "line": 14563,
+      "symbols": [
+        "startProjectConversation"
+      ],
+      "text": "const started = await startProjectConversation({"
+    },
+    {
+      "path": "server.js",
+      "line": 14585,
+      "symbols": [
+        "startAgentRun"
+      ],
+      "text": "else out.job = jobView(await startAgentRun(key, {"
+    },
+    {
+      "path": "server.js",
+      "line": 14601,
+      "symbols": [
+        "startProjectConversation"
+      ],
+      "text": "async function startProjectConversation(options) {"
+    },
+    {
+      "path": "server.js",
+      "line": 14724,
+      "symbols": [
+        "piBeginWarm"
+      ],
+      "text": "const begun = await engine.piBeginWarm({ cwd, env: { ...agentEnv(principal), ...agentCallerEnv(principal) }, extraArgs: ['--name', label, ...piProviderExtraArgs(), ...piCtxArgs], ...walls });"
+    },
+    {
+      "path": "server.js",
+      "line": 14739,
+      "symbols": [
+        "piHeadlessRun"
+      ],
+      "text": "handle = engine.piHeadlessRun({ sessionPath: begun.file, cwd, env: agentEnv(principal), extraArgs: [...piProviderExtraArgs(), ...piCtxArgs], ...walls }, {"
+    },
+    {
+      "path": "server.js",
+      "line": 14797,
+      "symbols": [
+        "spawnAlacritty"
+      ],
+      "text": "await spawnAlacritty(cwd, name, argv);"
+    },
+    {
+      "path": "server.js",
+      "line": 16051,
+      "symbols": [
+        "startProjectConversation"
+      ],
+      "text": "const started = await startProjectConversation(project"
+    },
+    {
+      "path": "server.js",
+      "line": 16057,
+      "symbols": [
+        "startAgentRun"
+      ],
+      "text": "const out = await startAgentRun(key, {"
+    },
+    {
+      "path": "server.js",
+      "line": 16354,
+      "symbols": [
+        "startAgentRun"
+      ],
+      "text": "await startAgentRun(item.job.key, {"
+    },
+    {
+      "path": "server.js",
+      "line": 17305,
+      "symbols": [
+        "startAgentRun"
+      ],
+      "text": "const out = await startAgentRun(delivery.target, { message: delivery.message, images: [], force: false, allowQueue: true });"
+    },
+    {
+      "path": "server.js",
+      "line": 17538,
+      "symbols": [
+        "startProjectConversation"
+      ],
+      "text": "json(res, 200, await startProjectConversation(parsed));"
+    },
+    {
+      "path": "server.js",
+      "line": 17548,
+      "symbols": [
+        "startConversationFromDraft"
+      ],
+      "text": "json(res, 200, await startConversationFromDraft(JSON.parse(body || '{}'), principalFor(identity)));"
+    },
+    {
+      "path": "server.js",
+      "line": 17873,
+      "symbols": [
+        "startAgentRun"
+      ],
+      "text": "const out = await startAgentRun(p.id, {"
+    },
+    {
+      "path": "server.js",
+      "line": 18995,
+      "symbols": [
+        "sendToConversation"
+      ],
+      "text": "try { assertCan(identity, 'act', targetOf(parsed.id), 'this conversation'); json(res, 200, await sendToConversation(parsed.id, parsed, principalFor(identity))); }"
+    }
+  ],
+  "limits": [
+    "Indirect calls and runtime extension actions require integration coverage, not grep.",
+    "Concurrent edits can invalidate line numbers; resolve named anchors and compare hashes."
+  ]
+}

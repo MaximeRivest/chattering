@@ -1,0 +1,39 @@
+{
+  "checkedAt": "2026-10-01T13:15:58.812Z",
+  "result": "passed",
+  "browser": "isolated Chromium",
+  "widths": [
+    1440,
+    1280,
+    390,
+    320
+  ],
+  "appearances": [
+    "paper",
+    "night",
+    "ink"
+  ],
+  "uncaughtExceptions": [],
+  "externalRequests": [],
+  "checks": [
+    "two independent completion menus",
+    "completion inserts without execution",
+    "unknown slash command blocked",
+    "IME send guard",
+    "draft preservation",
+    "explicit summary consent",
+    "failed handoff leaves source",
+    "other composer stale after switch",
+    "independent new destination",
+    "agent-specific absent/multiple controls",
+    "unsupported approvals not invented",
+    "single-use permission refusal",
+    "account restriction",
+    "unknown delivery reconciliation",
+    "reconnect without send",
+    "queue held on stop",
+    "Escape focus restoration",
+    "no horizontal overflow",
+    "local report loads"
+  ]
+}
