@@ -268,10 +268,10 @@ function createAnywhereHome(opts) {
     pc.onconnectionstatechange = () => { if (['failed', 'closed'].includes(pc.connectionState)) peer.close(); };
     pc.ondatachannel = e => {
       const dc = e.channel;
-      if (dc.label !== 'tunnel' || peer.mux) return;
+      if (peer.closed || dc.label !== 'tunnel' || peer.mux) return;
       dc.binaryType = 'arraybuffer';
       const start = () => {
-        if (peer.mux) return;
+        if (peer.closed || peer.mux) return;
         peer.mux = new P.Mux(dc, (t, s, b) => onFrame(peer, t, s, b));
         dc.onmessage = ev => peer.mux.receive(ev.data);
         peer.mux.onDrain(() => { for (const s of peer.streams.values()) if (s.resume) s.resume(); });
@@ -284,24 +284,30 @@ function createAnywhereHome(opts) {
   }
 
   async function hello(peer) {
+    if (peer.closed) return;
     const k = await ensureKey();
+    if (peer.closed) return;
     peer.nonce = P.b64u(P.random(16));
     peer.mux.send(T.CTRL, 0, { t: 'hello', v: P.VERSION, key: P.b64u(k.spki), nonce: peer.nonce, name: homeName() });
   }
   function transcriptOf(peer, phoneNonce) {
     return P.transcript({ homeId: key.homeId, homeFp: P.fingerprint(peer.pc.localDescription && peer.pc.localDescription.sdp), phoneFp: P.fingerprint(peer.pc.remoteDescription && peer.pc.remoteDescription.sdp), homeNonce: peer.nonce, phoneNonce });
   }
-  const refuse = (peer, why, message) => { peer.mux.send(T.CTRL, 0, { t: 'refused', why, message }); setTimeout(() => peer.close(), 200); };
+  const refuse = (peer, why, message) => { if (peer.closed) return; peer.mux.send(T.CTRL, 0, { t: 'refused', why, message }); setTimeout(() => peer.close(), 200); };
 
   async function control(peer, m) {
+    if (peer.closed) return;
     if (m.t === 'ping') return peer.mux.send(T.CTRL, 0, { t: 'pong', n: m.n });
     if (m.t === 'pong') return;
     if (m.t === 'path') { if (peer.authed && ['direct', 'relay'].includes(m.path) && peer.path !== m.path) { peer.path = m.path; changed(); } return; }
     if (m.t === 'hello' && !peer.phoneNonce) {
       peer.phoneNonce = String(m.nonce || '');
       await ensureKey();
+      if (peer.closed) return;
       peer.transcript = transcriptOf(peer, peer.phoneNonce);
-      return peer.mux.send(T.CTRL, 0, { t: 'proof', sig: P.b64u(await P.sign(key.privateKey, peer.transcript)) });
+      const sig = await P.sign(key.privateKey, peer.transcript);
+      if (peer.closed) return;
+      return peer.mux.send(T.CTRL, 0, { t: 'proof', sig: P.b64u(sig) });
     }
     if (m.t !== 'auth' || peer.authed || !peer.transcript) return;
     const sig = P.unb64u(m.sig || '');
@@ -311,8 +317,13 @@ function createAnywhereHome(opts) {
       const spki = P.unb64u(m.key || '');
       let pub;
       try { pub = await P.importPublic(spki); } catch { return refuse(peer, 'bad-key', 'This phone sent a key that cannot be read.'); }
+      if (peer.closed) return;
       const mac = await P.hmac(P.unb64u(pairing.secret), peer.transcript);
-      if (!P.sameBytes(mac, P.unb64u(m.mac || '')) || !(await P.verify(pub, sig, peer.transcript))) return refuse(peer, 'bad-code', 'The code did not match. Show a new one on your computer.');
+      if (peer.closed) return;
+      if (!P.sameBytes(mac, P.unb64u(m.mac || ''))) return refuse(peer, 'bad-code', 'The code did not match. Show a new one on your computer.');
+      const valid = await P.verify(pub, sig, peer.transcript);
+      if (peer.closed) return;
+      if (!valid) return refuse(peer, 'bad-code', 'The code did not match. Show a new one on your computer.');
       const name = String(m.name || 'Phone').slice(0, 60);
       let cred;
       try { cred = issueCredential(pairing.userId, name + ' · anywhere'); } catch (e) { return refuse(peer, 'no-person', e.message); }
@@ -330,10 +341,14 @@ function createAnywhereHome(opts) {
       return refuse(peer, 'removed', 'This phone was removed from this computer.');
     }
     const pub = await P.importPublic(P.unb64u(device.publicKey));
-    if (!(await P.verify(pub, sig, peer.transcript))) return refuse(peer, 'bad-signature', 'This phone could not prove who it is.');
+    if (peer.closed) return;
+    const valid = await P.verify(pub, sig, peer.transcript);
+    if (peer.closed) return;
+    if (!valid) return refuse(peer, 'bad-signature', 'This phone could not prove who it is.');
     return welcome(peer, device, pub);
   }
   async function welcome(peer, device) {
+    if (peer.closed) return;
     peer.authed = true;
     peer.device = device;
     clearTimeout(peer.authTimer);
@@ -348,6 +363,7 @@ function createAnywhereHome(opts) {
 
   /* ---- requests and sockets from an authenticated phone ---- */
   function onFrame(peer, type, id, bytes) {
+    if (peer.closed) return;
     if (id === 0) { let m; try { m = P.json(bytes); } catch { return; } control(peer, m).catch(e => log('anywhere: ' + e.message)); return; }
     if (!peer.authed) return;
     if (type === T.REQ) return startRequest(peer, id, P.json(bytes));
