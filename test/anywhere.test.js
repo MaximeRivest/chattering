@@ -105,6 +105,8 @@ async function world(t, { turn = false } = {}) {
     tunnels.push(tunnel);
     return tunnel;
   };
+  // Given a new home, wait for its initial key load before RTC pairing starts.
+  await until(() => home.status().homeId, 'the home initialized');
   return { dir, app, relay, relayUrl, home, creds, phone, changes };
 }
 
@@ -460,4 +462,67 @@ test('a computer links to another: its own local address, private, from anywhere
   await links.remove(link.id);
   await assert.rejects(fetch(base + '/who', { headers: me }));
   assert.deepEqual(links.list(), []);
+});
+
+test('Given native ICE before SDP, When a phone connects, Then descriptions precede candidate application', { skip, timeout: 30000 }, async t => {
+  const w = await world(t);
+  const pairing = await w.home.pair('u1');
+  const link = P.readPairingLink(new URL(pairing.url).hash);
+  await until(() => w.home.status().relayState === 'ready', 'registered');
+  const sent = [], received = [];
+  let prematureCandidates = 0;
+  let localCandidate;
+  const gathered = new Promise(resolve => { localCandidate = resolve; });
+  class EarlyIce extends rtc.RTCPeerConnection {
+    constructor(config) {
+      super(config);
+      this.addEventListener('icecandidate', e => { if (e.candidate) localCandidate(); });
+    }
+    async addIceCandidate(candidate) {
+      if (!this.remoteDescription.sdp) prematureCandidates++;
+      return super.addIceCandidate(candidate);
+    }
+    async createOffer() {
+      const offer = await super.createOffer();
+      // Real native gathering completes before the offer is allowed onto the wire.
+      await gathered;
+      return offer;
+    }
+  }
+  class CandidateFirst extends WebSocket {
+    constructor(url) {
+      super(url);
+      const held = [];
+      let reordered = false;
+      this.addEventListener('message', ev => {
+        const m = JSON.parse(ev.data);
+        if (!reordered && m.t === 'signal') {
+          held.push(m);
+          const answer = held.find(x => x.data.sdp);
+          const candidate = held.find(x => x.data.candidate);
+          if (!answer || !candidate) return;
+          reordered = true;
+          // A real answer and candidate, deterministically delivered candidate first.
+          for (const x of [candidate, answer, ...held.filter(x => x !== answer && x !== candidate)]) {
+            received.push(x.data.candidate ? 'candidate' : 'sdp');
+            this.deliver({ data: JSON.stringify(x) });
+          }
+        } else this.deliver(ev);
+      });
+    }
+    set onmessage(fn) { this.deliver = fn; }
+    send(text) {
+      const m = JSON.parse(text);
+      if (m.t === 'signal') sent.push(m.data.sdp ? 'sdp' : 'candidate');
+      return super.send(text);
+    }
+  }
+  const abort = new AbortController();
+  t.after(() => abort.abort());
+  const tunnel = await w.phone({ homeId: link.homeId, device: await newDevice(),
+    pairing: { id: link.id, secret: link.secret }, RTCPeerConnection: EarlyIce, WebSocket: CandidateFirst, signal: abort.signal });
+  assert.equal(prematureCandidates, 0, 'no native candidate is applied without remote SDP');
+  assert.equal(sent[0], 'sdp', 'the home sees an offer before trickled ICE');
+  assert.deepEqual(received.slice(0, 2), ['candidate', 'sdp'], 'the controlled real ordering was exercised');
+  assert.equal(tunnel.user.name, 'Maxime', 'the real encrypted pairing still authenticates');
 });

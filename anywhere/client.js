@@ -37,7 +37,8 @@
     return new Promise((resolve, reject) => {
       let ws = null, pc = null, dc = null, mux = null, done = false, timer = null;
       let homeHello = null, proof = null, phoneNonce = P.b64u(P.random(16));
-      const pendingCandidates = [];
+      const pendingCandidates = [], localCandidates = [];
+      let remoteReady = false, offerSent = false, signals = Promise.resolve();
       const finish = (err, tunnel) => {
         if (done) return;
         done = true;
@@ -60,6 +61,7 @@
       ws.onclose = () => { if (!mux) finish(fail(pc ? 'failed' : 'relay', pc ? 'the relay closed before your computer answered' : 'the relay closed the connection')); };
       ws.onopen = () => send({ t: 'call', to: opts.homeId, v: P.VERSION });
       ws.onmessage = async ev => {
+        if (done) return;
         let m;
         try { m = JSON.parse(typeof ev.data === 'string' ? ev.data : P.text(P.toBytes(ev.data))); } catch { return; }
         if (m.t === 'offline') {
@@ -72,15 +74,21 @@
         if (m.t === 'ice') return start(m.servers || []);
         if (m.t === 'gone') return pc && !mux && finish(fail('failed', 'your computer left before the connection was made'));
         if (m.t === 'signal' && pc && m.data) {
-          try {
+          // WebSocket callbacks do not await each other. In particular the
+          // native polyfill returns an empty *object* before remote SDP exists.
+          // Apply signals serially and mark readiness only after SDP succeeds.
+          signals = signals.then(async () => {
+            if (done) return;
             if (m.data.sdp) {
               await pc.setRemoteDescription(m.data.sdp);
+              if (done) return;
+              remoteReady = true;
               for (const c of pendingCandidates.splice(0)) await pc.addIceCandidate(c).catch(() => {});
             } else if (m.data.candidate) {
-              if (pc.remoteDescription) await pc.addIceCandidate(m.data.candidate).catch(() => {});
+              if (remoteReady) await pc.addIceCandidate(m.data.candidate).catch(() => {});
               else pendingCandidates.push(m.data.candidate);
             }
-          } catch (e) { finish(fail('failed', e.message)); }
+          }).catch(e => finish(fail('failed', e.message)));
         }
       };
 
@@ -93,7 +101,13 @@
         pc = new RTC({ iceServers: opts.mapIceServers ? opts.mapIceServers(servers) : servers, ...(opts.relayOnly ? { iceTransportPolicy: 'relay' } : {}) });
         dc = pc.createDataChannel('tunnel', { ordered: true });
         dc.binaryType = 'arraybuffer';
-        pc.onicecandidate = e => { if (e.candidate) send({ t: 'signal', data: { candidate: { candidate: String(e.candidate.candidate).replace(/^a=/, ''), sdpMid: e.candidate.sdpMid, sdpMLineIndex: e.candidate.sdpMLineIndex } } }); };
+        pc.onicecandidate = e => {
+          if (!e.candidate || done) return;
+          const m = { t: 'signal', data: { candidate: { candidate: String(e.candidate.candidate).replace(/^a=/, ''), sdpMid: e.candidate.sdpMid, sdpMLineIndex: e.candidate.sdpMLineIndex } } };
+          // Native gathering can run before createOffer() resolves. The home
+          // needs the offer to create its peer before it can take candidates.
+          if (offerSent) send(m); else localCandidates.push(m);
+        };
         pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed') finish(fail('failed', 'no network path to your computer')); };
         dc.onopen = () => {
           status('securing');
@@ -103,8 +117,13 @@
         };
         dc.onclose = () => finish(fail('failed', 'the connection closed while starting'));
         try {
-          await pc.setLocalDescription(await pc.createOffer());
+          const offer = await pc.createOffer();
+          if (done) return;
+          await pc.setLocalDescription(offer);
+          if (done) return;
           send({ t: 'signal', data: { sdp: { type: pc.localDescription.type, sdp: pc.localDescription.sdp } } });
+          offerSent = true;
+          for (const m of localCandidates.splice(0)) send(m);
         } catch (e) { finish(fail('failed', e.message)); }
       }
 

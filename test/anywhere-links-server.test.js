@@ -38,7 +38,7 @@ async function chattering(t, name, token, relayUrl, linkBase) {
   return { base, post, log: () => log };
 }
 
-test('a Chattering links to another through its settings, and opens it at a local address', { skip: rtc.error || false, timeout: 120000 }, async t => {
+test('Given delayed relay registration, When Chattering links through settings, Then its private local address works', { skip: rtc.error || false, timeout: 120000 }, async t => {
   const relay = createRelay({ env: {} });
   await new Promise(r => relay.server.listen(0, '127.0.0.1', r));
   t.after(() => relay.close());
@@ -47,8 +47,15 @@ test('a Chattering links to another through its settings, and opens it at a loca
   const A = await chattering(t, 'lambda', 'tok-a', relayUrl, linkBase + 100);
   const B = await chattering(t, 'xpswhite', 'tok-b', relayUrl, linkBase);
 
+  // Hold the real home WebSocket before its registration proof reaches the relay.
+  let held;
+  relay.server.on('upgrade', (req, socket) => { if (!held) { held = socket; socket.pause(); } });
   const code = await A.post('/api/anywhere/pair');
+  await until(() => held, 'the registration socket');
   assert.ok(code.url, JSON.stringify(code));
+  held.resume();
+  // pair() issues a code, not a relay-registration acknowledgement.
+  await until(async () => (await (await fetch(A.base + '/api/anywhere')).json()).relayState === 'ready', 'A registered on the relay');
   const linked = await B.post('/api/anywhere/links/add', { link: code.url });
   assert.equal(linked.error, undefined, linked.error);
   assert.equal(linked.links.length, 1);
