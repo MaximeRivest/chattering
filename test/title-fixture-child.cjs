@@ -23,8 +23,17 @@ function sanitize(text, secrets = []) {
     } catch { return '[redacted-url]'; }
   }).replace(/(Bearer\s+)[^\s"']+/gi, '$1[redacted]');
 }
-function observeChild(child, secrets = []) {
-  const state = { child, stdout: '', stderr: '', exit: null, closed: false, spawnError: null };
+function observeChild(child, secrets = [], options = {}) {
+  const state = { child, stdout: '', stderr: '', exit: null, closed: false, spawnError: null, phases: [] };
+  state.phase = operation => { state.phases.push({ at: Date.now(), operation }); if (state.phases.length > 16) state.phases.shift(); };
+  const progress = () => {
+    if (!options.progressFile) return 'not enabled';
+    try {
+      const snapshot = JSON.parse(require('node:fs').readFileSync(options.progressFile, 'utf8'));
+      return JSON.stringify({ ...snapshot, snapshotAgeMs: Date.now() - snapshot.at,
+        pending: snapshot.pending.map(item => ({ ...item, ageMs: Date.now() - item.started })) });
+    } catch { return 'not yet available (child preload not reached)'; }
+  };
   const clean = text => sanitize(text, secrets);
   child.stdout?.on('data', b => { state.stdout = (state.stdout + b).slice(-LIMIT); });
   child.stderr?.on('data', b => { state.stderr = (state.stderr + b).slice(-LIMIT); });
@@ -38,6 +47,7 @@ function observeChild(child, secrets = []) {
     `Title fixture ${operation}: ${error?.name || 'Error'}: ${error?.message || error}` +
     `${error?.code ? ' code=' + error.code : ''}${error?.cause ? ' cause=' + (error.cause.code || error.cause.name) + ': ' + error.cause.message : ''}\n` +
     `child pid=${child.pid ?? 'none'} exit=${JSON.stringify(state.exit)} closed=${state.closed} spawnError=${state.spawnError}\n` +
+    `parent phases: ${JSON.stringify(state.phases)}\nchild progress: ${progress()}\n` +
     `child stderr (tail):\n${state.stderr}\nchild stdout (tail):\n${state.stdout}`));
   return state;
 }
@@ -48,10 +58,12 @@ async function within(promise, ms) {
   })]); } finally { clearTimeout(timer); }
 }
 async function request(state, url, options, timeout = 5000) {
+  state.phase(`${options.method} ${sanitize(url)} started`);
   try {
     const response = await fetch(url, { ...options, signal: AbortSignal.timeout(timeout) });
     const text = await response.text();
     let data; try { data = JSON.parse(text); } catch { data = text; }
+    state.phase(`${options.method} ${sanitize(url)} completed ${response.status}`);
     return { status: response.status, data };
   } catch (error) {
     // A reset may reach fetch just before the crashing child's exit/stdio events.
@@ -61,6 +73,7 @@ async function request(state, url, options, timeout = 5000) {
 }
 let nextProbe = 0;
 function probe(state, operation, timeout = 2000) {
+  state.phase('probe ' + operation);
   const child = state.child;
   return new Promise((resolve, reject) => {
     let timer, settled = false;

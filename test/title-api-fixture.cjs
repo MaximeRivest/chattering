@@ -53,34 +53,52 @@ else if(at>=0) { fs.readFileSync(0,'utf8');setTimeout(()=>process.stdout.write(J
     CHATTERING_PI_CLI: cli, CHATTERING_PI_PACKAGE_DIR: path.resolve(__dirname, '../runtime/node_modules/@earendil-works/pi-coding-agent'),
     FUNCTAI_LOG_CALLS: path.join(data, 'functai/calls'), ...(options.env || {}),
   };
+  const progressFile = path.join(root, 'child-progress.json');
+  env.CHATTERING_TITLE_FIXTURE_PROGRESS = progressFile;
+  env.CHATTERING_TITLE_FIXTURE_PROJECT = work;
   let state;
   const start = () => {
-    const child = spawn(process.execPath, [...(options.instrument ? ['--require', path.resolve(__dirname, 'title-api-instrument.cjs')] : []), 'server.js'], { cwd: path.resolve(__dirname, '..'), env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
-    state = fixtureChild.observeChild(child, [token]);
+    fs.rmSync(progressFile, { force: true }); // never report the previous boot's progress
+    const child = spawn(process.execPath, ['--require', path.resolve(__dirname, 'title-fixture-progress.cjs'), ...(options.instrument ? ['--require', path.resolve(__dirname, 'title-api-instrument.cjs')] : []), 'server.js'], { cwd: path.resolve(__dirname, '..'), env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+    state = fixtureChild.observeChild(child, [token], { progressFile });
+    state.phase('child starting');
   };
   const stop = () => fixtureChild.stop(state);
-  t.after(async () => { await stop(); fs.rmSync(root, { recursive: true, force: true }); });
+  t.after(async () => {
+    if (t.signal.aborted && state) t.diagnostic(state.failure('test aborted', new Error('Test budget exhausted; no phase inferred')).message);
+    await stop(); fs.rmSync(root, { recursive: true, force: true });
+  });
   const base = 'http://127.0.0.1:' + p;
   const request = (route, body, method = body === undefined ? 'GET' : 'POST', credential = token) => fixtureChild.request(state, base + route, {
     method, headers: { Authorization: 'Bearer ' + credential, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   // Rescan includes upstream Git probes. Keep it within the original 30s test
   // budget instead of imposing the newly added 5s fast-request deadline.
   }, route === '/api/rescan' ? 25000 : 5000);
+  const wait = async (fn, label = 'fixture condition', timeout) => {
+    state.phase('wait ' + label);
+    try { return await until(fn, label, timeout); }
+    catch (error) { throw state.failure('wait ' + label, error); }
+  };
   const ready = async () => {
-    let lastError;
+    let lastError, lastStatus = 'no successful response';
+    state.phase('server scan readiness');
     try {
       await until(async () => {
-        if (state.closed || state.exit || state.spawnError) throw state.failure('server scan', new Error('Child stopped'));
-        try { return (await request('/api/sessions')).data.some(e => e.key === key); }
-        catch (error) { lastError = error; return false; }
+        if (state.closed || state.exit || state.spawnError) throw new Error('Child stopped');
+        try {
+          const response = await request('/api/sessions');
+          lastStatus = `HTTP ${response.status}; sessions=${Array.isArray(response.data) ? response.data.length : 'not an array'}`;
+          return Array.isArray(response.data) && response.data.some(e => e.key === key);
+        } catch (error) { lastError = error.message.split('\nchild pid=')[0]; return false; }
       }, 'server scan');
-    } catch (error) { throw state.failure('server scan GET ' + base + '/api/sessions', lastError || error); }
+      state.phase('server scan ready');
+    } catch (error) { throw state.failure('server scan GET ' + base + '/api/sessions', new Error(`${error.message}; last response: ${lastStatus}; last transport error: ${lastError || 'none'}`)); }
   };
   const calls = () => { try { return fs.readFileSync(callsFile, 'utf8').trim().split('\n').map(JSON.parse); } catch { return []; } };
   if (options.setup) await options.setup({ root, home, agent, work, notes, cache, config, env, source });
   start(); await ready();
   return { root, home, tmp, work, notes, config, cache, agent, source, key, settingsFile, answerFile, delayFile, env, base, token, previewPort, request, calls,
-    cachePath: path.join(cache, 'sessions', key.replace(/[:/\\]/g, '__') + '.json'), log: () => state.log(), stop,
+    cachePath: path.join(cache, 'sessions', key.replace(/[:/\\]/g, '__') + '.json'), log: () => state.log(), stop, until: wait,
     probe: operation => fixtureChild.probe(state, operation),
     restart: async () => { await stop(); start(); await ready(); } };
 }

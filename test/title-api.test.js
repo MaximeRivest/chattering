@@ -1,6 +1,6 @@
 'use strict';
 const test = require('node:test'), assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path');
-const { boot, until, sleep } = require('./title-api-fixture.cjs');
+const { boot, sleep } = require('./title-api-fixture.cjs');
 
 test('real server: manual AI title with consent off retains provenance; later human edits and indexing win', { timeout: 30000 }, async t => {
   const s = await boot(t);
@@ -14,7 +14,7 @@ test('real server: manual AI title with consent off retains provenance; later hu
   fs.writeFileSync(s.delayFile, '300');
   const before = s.calls().length;
   const stale = s.request('/api/conversation/retitle', { id: s.key });
-  await until(() => s.calls().length > before);
+  await s.until(() => s.calls().length > before, 'delayed conversation inference began');
   assert.equal((await s.request('/api/conversation/title', { id: s.key, title: 'Human wins' })).status, 200);
   assert.equal((await stale).status, 400, 'stale AI completion cannot publish');
   assert.equal(JSON.parse(fs.readFileSync(registryFile))[s.key].fullTitle, 'Human wins');
@@ -46,7 +46,7 @@ test('real server: awaited project/epic registry writes merge unrelated records 
     ['/api/project/retitle', { name: project }, '/api/project/title', 'Newest project'],
     ['/api/epic/retitle', { id: 'fixture' }, '/api/epic/title', 'Newest epic'],
   ]) {
-    const before = s.calls().length, running = s.request(route, target); await until(() => s.calls().length > before);
+    const before = s.calls().length, running = s.request(route, target); await s.until(() => s.calls().length > before, route + ' inference began');
     assert.equal((await s.request(editRoute, { ...target, title: human })).status, 200);
     assert.equal((await running).status, 400);
   }
@@ -59,19 +59,19 @@ test('real server: timeline per-key publication keeps unrelated work, manual int
   const s = await boot(t, { setup({ source, agent }) { fs.writeFileSync(path.join(agent, 'sessions/fixture/second.jsonl'), fs.readFileSync(source, 'utf8').replace('Keep fixture paths exact.', 'Second request')); } });
   fs.writeFileSync(s.answerFile, '<labels>[{"id":0,"label":"Auto zero"},{"id":1,"label":"Auto one"}]</labels>'); fs.writeFileSync(s.delayFile, '350');
   await s.request('/api/settings/background-ai', { names: true });
-  await until(() => s.calls().some(c => c.system.includes('Function: timeline_labels')));
+  await s.until(() => s.calls().some(c => c.system.includes('Function: timeline_labels')), 'timeline inference began');
   assert.equal((await s.request('/api/conversation/title', { id: s.key, title: 'Manual during batch' })).status, 200);
   fs.writeFileSync(path.join(s.agent, 'sessions/fixture/unrelated.jsonl'), fs.readFileSync(s.source, 'utf8').replace('Keep fixture paths exact.', 'Unrelated request'));
   await s.request('/api/rescan', {});
   const registry = path.join(s.cache, 'timeline-titles.json');
-  await until(() => { try { return JSON.parse(fs.readFileSync(registry))[secondKey]?.title === 'Auto zero'; } catch { return false; } });
+  await s.until(() => { try { return JSON.parse(fs.readFileSync(registry))[secondKey]?.title === 'Auto zero'; } catch { return false; } }, 'unrelated timeline key published');
   assert.equal(JSON.parse(fs.readFileSync(registry))[s.key].fullTitle, 'Manual during batch');
   const savedHash = JSON.parse(fs.readFileSync(registry))[secondKey].hash;
   fs.writeFileSync(path.join(s.agent, 'sessions/fixture/second.jsonl'), fs.readFileSync(s.source, 'utf8').replace('Keep fixture paths exact.', 'Changed request'));
   await s.request('/api/rescan', {});
   const prior = s.calls().filter(c => c.system.includes('Function: timeline_labels')).length;
   await s.request('/api/settings/background-ai', { names: false }); await s.request('/api/settings/background-ai', { names: true });
-  await until(() => s.calls().filter(c => c.system.includes('Function: timeline_labels')).length > prior);
+  await s.until(() => s.calls().filter(c => c.system.includes('Function: timeline_labels')).length > prior, 'new epoch timeline inference began');
   await s.request('/api/settings/background-ai', { names: false }); await s.request('/api/settings/background-ai', { names: true });
   await sleep(500);
   assert.equal(JSON.parse(fs.readFileSync(registry))[secondKey].hash, savedHash);

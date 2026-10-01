@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path');
-const { boot, until, sleep } = require('./title-api-fixture.cjs');
+const { boot, sleep } = require('./title-api-fixture.cjs');
 
 for (const corrupt of ['{invalid', '[]', '{"bad":{"title":42}}', '{"bad":{"title":"Name","manual":true}}']) {
   test(`automatic titles contain corrupt registry ${corrupt}`, { timeout: 30000 }, async t => {
@@ -49,11 +49,11 @@ test('queued fourth batch binds its actual prompt, ticket and hash to current so
     gate = timelineCli(env, root);
   } });
   const prompts = () => { try { return fs.readFileSync(gate.prompts, 'utf8').trim().split('\n').map(JSON.parse).sort((a, b) => a.n - b.n); } catch { return []; } };
-  await until(async () => (await s.request('/api/sessions')).data.length === 181);
+  await s.until(async () => (await s.request('/api/sessions')).data.length === 181, 'all 181 sessions indexed');
   const old = (await s.request('/api/session?id=' + encodeURIComponent(s.key))).data;
   assert.equal(old.title, 'Keep fixture paths exact.');
   await s.request('/api/settings/background-ai', { names: true });
-  await until(() => prompts().length === 3, 'first three real inference workers held');
+  await s.until(() => prompts().length === 3, 'first three real inference workers held');
   assert.ok(prompts().every(p => p.conversations.length === 60 && p.conversations.every(c => c.request !== old.title)), 'target is queued, not in any running prompt');
   fs.writeFileSync(s.source, fs.readFileSync(s.source, 'utf8').replace(old.title, 'Entirely different new current request.'));
   assert.equal((await s.request('/api/rescan', {})).status, 200);
@@ -62,7 +62,7 @@ test('queued fourth batch binds its actual prompt, ticket and hash to current so
   assert.notEqual(current.timelineTitleHash, old.timelineTitleHash);
   fs.writeFileSync(gate.release, 'release');
   const registry = path.join(s.cache, 'timeline-titles.json');
-  await until(() => { try { return JSON.parse(fs.readFileSync(registry))[s.key]; } catch { return false; } });
+  await s.until(() => { try { return JSON.parse(fs.readFileSync(registry))[s.key]; } catch { return false; } }, 'fourth batch target published');
   const saved = JSON.parse(fs.readFileSync(registry));
   const fourth = prompts().find(p => p.n === 4);
   console.log(JSON.stringify({ oldPrompt: old.title, oldHash: old.timelineTitleHash, currentPrompt: current.title, currentHash: current.timelineTitleHash, actualFourthPrompt: fourth, published: saved[s.key] }));
@@ -77,13 +77,13 @@ test('an unreadable current source skips only that key and finishes partially cr
   const s = await boot(t, { instrument: true, setup({ source, agent }) {
     for (let i = 0; i < 2; i++) fs.writeFileSync(path.join(agent, 'sessions/fixture/a' + i + '.jsonl'), fs.readFileSync(source));
   } });
-  await until(async () => (await s.request('/api/sessions')).data.length === 3);
+  await s.until(async () => (await s.request('/api/sessions')).data.length === 3, 'all three sessions indexed');
   fs.writeFileSync(s.answerFile, '<labels>[{"id":0,"label":"Valid zero"},{"id":1,"label":"Valid one"}]</labels>');
   await s.probe('unreadable-source');
   await s.request('/api/settings/background-ai', { names: true });
   const registry = path.join(s.cache, 'timeline-titles.json');
-  await until(() => { try { return Object.keys(JSON.parse(fs.readFileSync(registry))).length === 2; } catch { return false; } }, 'valid targets published despite unreadable target');
-  await until(async () => (await s.probe('tickets')).active === 0);
+  await s.until(() => { try { return Object.keys(JSON.parse(fs.readFileSync(registry))).length === 2; } catch { return false; } }, 'valid targets published despite unreadable target');
+  await s.until(async () => (await s.probe('tickets')).active === 0, 'all batch tickets finished');
   assert.deepEqual(await s.probe('tickets'), { active: 0, finished: 2 });
   assert.equal(JSON.parse(fs.readFileSync(registry))[s.key], undefined);
   assert.equal((await s.request('/health')).status, 200);

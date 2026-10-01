@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), { createHash } = require('node:crypto');
-const { boot, until } = require('./title-api-fixture.cjs');
+const { boot } = require('./title-api-fixture.cjs');
 
 for (const change of ['revoke-reenable', 'manual-intent', 'source', 'external-owner']) {
   test(`real server: ${change} at awaited automatic registry staging prevents stale publication`, { timeout: 30000 }, async t => {
@@ -10,7 +10,7 @@ for (const change of ['revoke-reenable', 'manual-intent', 'source', 'external-ow
     fs.writeFileSync(s.answerFile, '<labels>[{"id":0,"label":"Stale AI"}]</labels>');
     await s.probe('arm');
     await s.request('/api/settings/background-ai', { names: true });
-    await until(() => s.probe('entered'), 'real registry write is staged');
+    await s.until(() => s.probe('entered'), 'real registry write is staged');
     assert.equal(fs.existsSync(registry), false);
     let editing;
     if (change === 'revoke-reenable') {
@@ -19,7 +19,7 @@ for (const change of ['revoke-reenable', 'manual-intent', 'source', 'external-ow
     } else if (change === 'manual-intent') {
       const before = await s.probe('explicit');
       editing = s.request('/api/conversation/title', { id: s.key, title: 'Human at staging' });
-      await until(async () => (await s.probe('explicit')) > before, 'explicit intent began before queue');
+      await s.until(async () => (await s.probe('explicit')) > before, 'explicit intent began before queue');
     } else if (change === 'source') {
       const stat = fs.statSync(s.source);
       fs.writeFileSync(s.source, fs.readFileSync(s.source, 'utf8').replace('Keep fixture paths exact.', 'Keep changed paths exact.'));
@@ -29,7 +29,7 @@ for (const change of ['revoke-reenable', 'manual-intent', 'source', 'external-ow
     }
     await s.probe('release');
     if (editing) assert.equal((await editing).status, 200);
-    await until(() => fs.readdirSync(s.cache).every(f => !f.includes('.title-tmp-')), 'private staging cleaned');
+    await s.until(() => fs.readdirSync(s.cache).every(f => !f.includes('.title-tmp-')), 'private staging cleaned');
     const saved = fs.existsSync(registry) ? JSON.parse(fs.readFileSync(registry)) : {};
     assert.notEqual(saved[s.key]?.title, 'Stale AI');
     if (editing) {
@@ -51,7 +51,7 @@ test('real server: disabling the requesting actor cancels delayed title completi
   } });
   fs.writeFileSync(s.delayFile, '400');
   const running = s.request('/api/conversation/retitle', { id: s.key }, 'POST', 'actor-token');
-  await until(() => s.calls().some(c => c.system.includes('Function: conversation_title')));
+  await s.until(() => s.calls().some(c => c.system.includes('Function: conversation_title')), 'actor conversation inference began');
   assert.equal((await s.request('/api/users/update', { id: 'actor', disabled: true })).status, 200);
   assert.equal((await running).status, 400);
   assert.notEqual((await s.request('/api/session?id=' + encodeURIComponent(s.key))).data.title, 'Fixture generated title');
