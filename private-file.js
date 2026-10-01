@@ -17,12 +17,27 @@ function windowsOperation(file, operation, bytes) {
     ensure: "if ([ChatteringPrivateFile]::Inspect($file, $true)) { [Console]::Write('OK') } else { [Console]::Write('ABSENT') }",
     write: "[ChatteringPrivateFile]::Write($file, [Convert]::FromBase64String($request.bytes)); [Console]::Write('OK')",
   };
-  // Pipe code, filename and bytes, not an oversized -EncodedCommand or secret argv.
-  const script = "$ErrorActionPreference = 'Stop'; $request = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8).ReadToEnd() | ConvertFrom-Json; " +
-    "Add-Type -TypeDefinition ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($request.source))); $file = $request.file; try { " + actions[operation] + " } catch { " +
+  // Cmdlets trigger whole-module discovery on a fresh AppData cache. Use
+  // only language syntax/.NET; source, path and bytes remain stdin data.
+  // CodeDom loads the result in memory, never an executable cache. Its
+  // transient compiler files use the process's actual TEMP and are deleted.
+  const script = "$ErrorActionPreference = 'Stop'; $PSModuleAutoLoadingPreference = 'None'; " +
+    "[void][System.Reflection.Assembly]::Load('System.Web.Extensions, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35'); " +
+    "$json = [System.Web.Script.Serialization.JavaScriptSerializer]::new(); $json.MaxJsonLength = 4194304; " +
+    "$request = $json.DeserializeObject([System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8).ReadToEnd()); " +
+    "$provider = [Microsoft.CSharp.CSharpCodeProvider]::new(); $parameters = [System.CodeDom.Compiler.CompilerParameters]::new(); " +
+    "$parameters.GenerateInMemory = $true; $parameters.GenerateExecutable = $false; " +
+    "$parameters.TempFiles = [System.CodeDom.Compiler.TempFileCollection]::new([System.IO.Path]::GetTempPath(), $false); " +
+    "$framework = [System.IO.Path]::GetDirectoryName([object].Assembly.Location); " +
+    "[void]$parameters.ReferencedAssemblies.Add([System.IO.Path]::Combine($framework, 'System.dll')); " +
+    "[void]$parameters.ReferencedAssemblies.Add([System.IO.Path]::Combine($framework, 'System.Core.dll')); " +
+    "try { $compiled = $provider.CompileAssemblyFromSource($parameters, [string[]]@([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($request.source)))); " +
+    "if ($compiled.Errors.HasErrors) { throw [System.InvalidOperationException]::new('Native key-storage compilation failed') }; " +
+    "[void]$compiled.CompiledAssembly } finally { $parameters.TempFiles.Delete(); $provider.Dispose() }; " +
+    "$file = $request.file; try { " + actions[operation] + " } catch { " +
     "$e = $_.Exception; while (($e -is [System.Management.Automation.MethodInvocationException] -or $e -is [System.Reflection.TargetInvocationException]) -and $null -ne $e.InnerException) { $e = $e.InnerException }; " +
     "$code = $null; if ($e -is [System.ComponentModel.Win32Exception]) { $code = $e.NativeErrorCode }; " +
-    "$detail = @{ message = $e.Message; nativeErrorCode = $code; retainTemporaryState = [bool]$e.Data['RetainTemporaryState']; temporaryFile = $e.Data['TemporaryFile']; cleanupFailure = $e.Data['CleanupFailure'] } | ConvertTo-Json -Compress; " +
+    "$detail = $json.Serialize(@{ message = $e.Message; nativeErrorCode = $code; retainTemporaryState = [bool]$e.Data['RetainTemporaryState']; temporaryFile = $e.Data['TemporaryFile']; cleanupFailure = $e.Data['CleanupFailure'] }); " +
     "[Console]::Write('ERROR:' + [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($detail))) }";
   const input = JSON.stringify({ source: source.toString('base64'), file: path.resolve(file), bytes: bytes?.toString('base64') });
   const result = execFileSync(path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),

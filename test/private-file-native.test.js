@@ -2,6 +2,11 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const { execFileSync } = require('node:child_process');
+const { capture, nativeRequest } = require('./private-file-bootstrap-helper');
+function native(file, body, extra) {
+  const { exe, args, options } = nativeRequest(file, body, extra);
+  return execFileSync(exe, args, options).trim();
+}
 const { readPrivateFileSync, writePrivateFileSync, assertPrivateFileSync } = require('../private-file');
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'native-key-object-'));
@@ -32,9 +37,7 @@ test('Given native exclusive Windows handles or POSIX no-follow descriptors, Whe
   }
   // Execute the production C# helper against actual NTFS objects. This branch
   // must run natively before integration; a Linux adapter does NOT execute it.
-  const code = fs.readFileSync(path.join(__dirname, '../private-file-windows.cs'), 'utf8');
-  const script = "$ErrorActionPreference = 'Stop'; Add-Type -TypeDefinition ([System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8).ReadToEnd()); " +
-    `$file = '${file.replace(/'/g, "''")}'; ` + String.raw`
+  const out = native(file, String.raw`
     $s = [ChatteringPrivateFile]::Open($file, $true);
     try {
       [ChatteringPrivateFile]::Check($s);
@@ -61,9 +64,7 @@ test('Given native exclusive Windows handles or POSIX no-follow descriptors, Whe
       try { [ChatteringPrivateFile]::Read($file) } catch { $e = $_.Exception; while ($null -ne $e.InnerException) { $e = $e.InnerException }; if (!($e -is [System.ComponentModel.Win32Exception]) -or $e.NativeErrorCode -ne 32) { throw }; $denied = $true }
       if (!$denied) { throw 'Preexisting retained handle did not block protection/read' }
     } finally { $reader.Dispose() }
-    [Console]::Write('NATIVE-CONTROLS-OK');`;
-  const out = execFileSync(path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
-    ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { input: code, encoding: 'utf8', timeout: 30000, windowsHide: true });
+    [Console]::Write('NATIVE-CONTROLS-OK');`);
   assert.equal(out.trim(), 'NATIVE-CONTROLS-OK');
   assertPrivateFileSync(file);
 });
@@ -80,14 +81,39 @@ test('Given an existing empty key file, When the native reader opens it, Then em
 // These are actual NTFS tests, not emulated POSIX lock behavior. They are
 // declared on Windows; Linux runs do not establish either native result.
 if (process.platform === 'win32') {
-  function native(file, body) {
-    const code = fs.readFileSync(path.join(__dirname, '../private-file-windows.cs'), 'utf8');
-    const script = "$ErrorActionPreference = 'Stop'; Add-Type -TypeDefinition ([System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8).ReadToEnd()); " +
-      `$file = '${file.replace(/'/g, "''")}'; ` + body;
-    return execFileSync(path.join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powershell.exe'),
-      ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-      { input: code, encoding: 'utf8', timeout: 30000, windowsHide: true }).trim();
-  }
+  test('Given the dispatched bootstrap, When the native PowerShell parser examines every operation, Then no command AST or parse error can trigger module autoload', t => {
+    const file = fixture(t);
+    const scripts = ['read', 'assert', 'ensure', 'write'].map(operation => capture(operation, file).script);
+    assert.equal(native(file, String.raw`
+      foreach ($script in $request.scripts) {
+        $tokens = $null; $errors = $null;
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput($script, [ref]$tokens, [ref]$errors);
+        if ($errors.Length -ne 0) { throw 'Production bootstrap syntax errors' };
+        $commands = $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true);
+        if ($commands.Count -ne 0) { throw 'Production bootstrap invokes a command' }
+      }
+      [Console]::Write('NO-CMDLET-AUTOLOAD');`, { scripts }), 'NO-CMDLET-AUTOLOAD');
+  });
+
+  test('Given completely fresh Windows HOME/AppData/TEMP, When actual dispatch performs the initial absent read, Then it finishes within the unchanged overall 15-second deadline without compiler residue', t => {
+    const file = fixture(t), root = path.dirname(file);
+    const home = path.join(root, 'home'), appData = path.join(home, 'AppData', 'Roaming');
+    const localAppData = path.join(home, 'AppData', 'Local'), temp = path.join(root, 'compiler-temp');
+    for (const dir of [appData, localAppData, temp]) fs.mkdirSync(dir, { recursive: true });
+    const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: appData, LOCALAPPDATA: localAppData, TEMP: temp, TMP: temp };
+    const child = `const assert = require('node:assert/strict');
+      const { readPrivateFileSync } = require(process.argv[1]);
+      assert.equal(readPrivateFileSync(process.argv[2]), null);
+      process.stdout.write('COLD-READ-OK');`;
+    const started = performance.now();
+    const out = execFileSync(process.execPath, ['-e', child, require.resolve('../private-file'), file],
+      { env, timeout: 15000, windowsHide: true, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+    assert.equal(out, 'COLD-READ-OK');
+    assert.ok(performance.now() - started < 15000, 'overall cold read deadline, not a timeout per retry');
+    assert.equal(fs.existsSync(file), false, 'absence must not create credential storage');
+    assert.deepEqual(fs.readdirSync(temp), [], 'no executable compiler cache or temporary residue');
+  });
+
   const seedAndLock = String.raw`
     [ChatteringPrivateFile]::Write($file, [System.Text.Encoding]::UTF8.GetBytes('existing identity'));
     $locked = [ChatteringPrivateFile]::Open($file, $false);
