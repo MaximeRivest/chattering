@@ -79,6 +79,10 @@ test('timeline camera controls: quiet defaults, shared camera, safe keys, persis
   await ev(`selectTheme('light')`);
   for (const [width, height, mobile] of [[760, 800, false], [390, 844, true], [640, 360, true]]) {
     await size(width, height, mobile);
+    // CDP's resize acknowledgement precedes the media-query change callback.
+    // Wait for the pinned controls to reach the expected layout; keep every
+    // narrow-screen visibility, overflow and navigation assertion below.
+    await until(`innerWidth === ${width} && document.querySelector('.tc-inline').children.length === ${width <= 700 ? 0 : 1}`);
     await click('.tc-scale');
     assert.equal(await ev(`(()=>{const r=$('timelineControlPanel').getBoundingClientRect();return r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight})()`), true, 'popover fits ' + width);
     assert.equal(await ev(`document.documentElement.scrollWidth <= innerWidth`), true, 'no page overflow ' + width);

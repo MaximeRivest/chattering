@@ -255,7 +255,7 @@ function createPiSdkProxy(options = {}) {
     return W;
   }
   function wireTarget(target) {
-    return { sessionPath: target.sessionPath && path.resolve(target.sessionPath), cwd: target.cwd, extraArgs: target.extraArgs, sessionDir: target.sessionDir };
+    return { sessionPath: target.sessionPath && path.resolve(target.sessionPath), cwd: target.cwd, extraArgs: target.extraArgs, sessionDir: target.sessionDir, extensionPolicyGeneration: target.extensionPolicyGeneration };
   }
   function piHeadlessRun(target, opts = {}) {
     let W;

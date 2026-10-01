@@ -1,9 +1,8 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Editor, type EditorTheme, Input, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { homedir } from "node:os";
 
 const CUSTOM_TYPE = "mode-switch";
 // Opt-in tools. A mode without an explicit `tools` list never gets them.
@@ -44,7 +43,7 @@ const BUILTIN: ModeDef[] = [
   { key: "explain", label: "Explain", opener: "Explain the relevant code and decisions clearly before proposing changes." },
 ];
 
-function agentDir() { return process.env.PI_AGENT_DIR || join(homedir(), ".pi", "agent"); }
+function agentDir() { return getAgentDir(); }
 function modeDir() { return join(agentDir(), "modes"); }
 function modePath(key: string) { return join(modeDir(), `${key}.json`); }
 function slugifyKey(value: string) { return value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, ""); }
@@ -617,7 +616,7 @@ export default function(pi: ExtensionAPI) {
   function activate(mode: ModeDef, source: ModeSource, resolution: string, ctx: any, persist: boolean, strictTools = false) {
     const next = makeEffective(mode, source, resolution);
     const missing = selectedTools(mode).missing;
-    if (missing.length && strictTools) throw new Error(`mode ${mode.key} requests unavailable tool${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
+    if (missing.length && (strictTools || mode.tools !== undefined)) throw new Error(`mode ${mode.key} requests unavailable tool${missing.length === 1 ? "" : "s"}: ${missing.join(", ")}`);
     if (missing.length) warn(`mode ${mode.key} requests unavailable tools (disabled): ${missing.join(", ")}`, ctx);
     effective = next;
     activeMode = mode.key;
@@ -681,9 +680,7 @@ export default function(pi: ExtensionAPI) {
     if (typeof requestedEnv.file === "string" && requestedEnv.file.trim()) {
       try {
         const selected = modeByRequestedFile(requestedEnv.file, "env-file");
-        const missing = selectedTools(selected.mode).missing;
-        if (missing.length) throw new Error(`mode ${selected.mode.key} requests unavailable tools: ${missing.join(", ")}`);
-        return { ...selected, resolution: "env-file", persist: true, strictTools: false };
+        return { ...selected, resolution: "env-file", persist: true, strictTools: true };
       } catch (error: any) {
         warn(`PI_PROMPT_MODE_FILE ignored: ${error.message}`, ctx);
       }
@@ -691,9 +688,7 @@ export default function(pi: ExtensionAPI) {
     if (typeof requestedEnv.mode === "string" && requestedEnv.mode.trim()) {
       try {
         const selected = modeByRequestedKey(requestedEnv.mode, "env-key");
-        const missing = selectedTools(selected.mode).missing;
-        if (missing.length) throw new Error(`mode ${selected.mode.key} requests unavailable tools: ${missing.join(", ")}`);
-        return { ...selected, resolution: "env-key", persist: true, strictTools: false };
+        return { ...selected, resolution: "env-key", persist: true, strictTools: true };
       } catch (error: any) {
         warn(`PI_PROMPT_MODE ignored: ${error.message}`, ctx);
       }
@@ -703,8 +698,8 @@ export default function(pi: ExtensionAPI) {
   }
 
   function activateInteractive(mode: ModeDef, source: ModeSource, ctx: any) {
+    activate(mode, source, "interactive", ctx, true, true);
     startupError = undefined;
-    activate(mode, source, "interactive", ctx, true, false);
   }
 
   pi.registerCommand("mode", {
@@ -809,8 +804,11 @@ export default function(pi: ExtensionAPI) {
       if (ctx.hasUI) {
         ctx.ui.setStatus("mode", ctx.ui.theme.fg("error", "mode:error"));
         ctx.ui.notify(startupError, "error");
+        // Terminal/RPC shutdown stays explicit; SDK hosts also receive the
+        // session_start extension_error below and must reject creation.
         ctx.shutdown();
       }
+      throw new Error(startupError);
     }
   });
 

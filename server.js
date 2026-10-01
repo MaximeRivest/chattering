@@ -26,6 +26,7 @@ if (!process.env.CHATTERING_CACHE_DIR) require('./legacy-homes.js').migrateHome(
 const { claudeForkContent, groupFamilies } = require('./sessionfork.js');
 const { readSessionSnapshot, publishSession } = require('./session-snapshot.js');
 const settingsLib = require('./settings.js');
+const { webExtensionArgs, extensionPolicyFingerprint, createPaletteGeneration } = require('./web-extension-policy.js');
 const watchIgnore = require('./watch-ignore.js');
 const snippetsLib = require('./snippets.js');
 const memoryFingerprint = require('./memory-fingerprint.js');
@@ -2904,7 +2905,9 @@ function saveAgentRunsNow() {
 
 function headlessOwner(absPath) { return headlessRuns.get(absPath) || null; }
 
-const slashCommandsCache = new Map(); // cwd → { at, list } for the composer palette
+const slashCommandsCache = new Map(); // principal/cwd/policy → { at, list, generation }
+const slashGeneration = createPaletteGeneration();
+const slashBoot = crypto.randomUUID(); // Counters are comparable only within this incarnation.
 
 // Every pi/claude/bridge process on this machine, from /proc. The agents
 // view shows them all — including untracked strays — and can kill them.
@@ -3021,15 +3024,11 @@ function agentProcsView(running) {
   return out;
 }
 
-// Extension-backed providers (claude-code) exist only when their extension
-// loads inside the RPC process; `--no-extensions` would hide them.
+// Keep the existing explicit Claude provider mechanism; discovery is not
+// authorization. App tools and modes remain available under either policy.
 function piProviderExtraArgs() {
-  return [...(fs.existsSync(CLAUDE_CODE_EXT) ? ['-e', CLAUDE_CODE_EXT] : []),
-    '-e', path.join(__dirname, 'extensions', 'delegation.ts'),
-    '-e', path.join(__dirname, 'extensions', 'records.ts'),
-    '-e', path.join(__dirname, 'extensions', 'artifacts.ts'),
-    // Old images stop going out before a request passes the provider's size limit.
-    '-e', path.join(__dirname, 'extensions', 'image-budget.ts')];
+  return webExtensionArgs({ discovery: appSettings.webExtensionDiscovery,
+    providerExtension: fs.existsSync(CLAUDE_CODE_EXT) ? CLAUDE_CODE_EXT : undefined });
 }
 
 // Abort the headless run on a file and wait for it to let go.
@@ -6074,6 +6073,8 @@ function settingsResponse(identity = ownerIdentity()) {
       machines: (appSettings.machines || []).map(m => ({ name: m.name, url: m.url, token: '', publicKey: m.publicKey || '', hasToken: !!m.token })) },
     // What this person has spent this month against their limit (design/72).
     budget: identity && identity.user ? budgetStatus(identity.user) : null,
+    webExtensionGeneration: slashGeneration.current(),
+    webExtensionBoot: slashBoot,
     // The address company sign-in returns to, to register at the provider.
     ssoRedirectUri: PUBLIC_URL ? PUBLIC_URL + '/auth/sso/callback' : null,
     me: usersLib.publicUser(identity.user),
@@ -18291,8 +18292,13 @@ async function handleRequest(req, res) {
       }
       const prevSemTarget = (appSettings.semanticUrl || '') + '|' + semNs();
       const prevLan = lanWanted();
+      const previousDiscovery = appSettings.webExtensionDiscovery;
       appSettings = settingsLib.applyResolvedContext(parsed, listed, piDefault);
       saveAppSettings();
+      if (previousDiscovery !== appSettings.webExtensionDiscovery) {
+        slashGeneration.invalidate(); slashCommandsCache.clear();
+        broadcast({ type: 'web-extension-policy', discovery: appSettings.webExtensionDiscovery, generation: slashGeneration.current(), boot: slashBoot });
+      }
       reapplyGuestLimits();
       if (lanWanted() !== prevLan) {
         applyLanMode(lanWanted());
@@ -18439,20 +18445,28 @@ async function handleRequest(req, res) {
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/node/commands') {
       // pi's slash commands for this conversation's cwd, for the composer
-      // palette. Cached per cwd; a --no-session probe process fills it.
+      // palette. A principal/cwd/policy-specific --no-session probe fills it.
       const key = u.searchParams.get('id');
       const entry = key && index[key];
       if (!entry) return json(res, 404, { error: 'not found' });
       if (conversationKind(entry) !== 'pi') return json(res, 400, { error: 'slash commands over RPC need pi' });
       const { cwd } = sessionPathsFor(key);
-      const cached = slashCommandsCache.get(cwd);
-      if (cached && Date.now() - cached.at < 5 * 60 * 1000) return json(res, 200, { commands: cached.list, cwd, cached: true });
+      // Check walls before touching any shared cache or spawning a probe.
+      if (usersLib.isWalled(identity.user)) return json(res, 200, { commands: [], generation: slashGeneration.current(), boot: slashBoot });
+      const extraArgs = piProviderExtraArgs(), env = agentEnv(principalFor(identity));
+      const ticket = slashGeneration.current();
+      const cacheKey = JSON.stringify([identity.user?.id, identity.tier, cwd, extensionPolicyFingerprint({ cwd, env, extraArgs })]);
+      const cached = slashCommandsCache.get(cacheKey);
+      if (cached && cached.generation === ticket && Date.now() - cached.at < 5 * 60 * 1000) return json(res, 200, { commands: cached.list, cwd, cached: true, generation: ticket, boot: slashBoot });
       try {
-        if (usersLib.isWalled(identity.user)) return json(res, 200, { commands: [] });
-        const list = await piListCommands({ cwd, env: agentEnv(), extraArgs: piProviderExtraArgs() });
-        slashCommandsCache.set(cwd, { at: Date.now(), list });
-        json(res, 200, { commands: list, cwd });
-      } catch (e) { json(res, 500, { error: e.message }); }
+        const list = await piListCommands({ cwd, env, extraArgs });
+        if (!slashGeneration.isCurrent(ticket)) return json(res, 409, { error: 'extension policy changed; retry commands', generation: slashGeneration.current(), boot: slashBoot });
+        slashCommandsCache.set(cacheKey, { at: Date.now(), list, generation: ticket });
+        json(res, 200, { commands: list, cwd, generation: ticket, boot: slashBoot });
+      } catch (e) {
+        if (!slashGeneration.isCurrent(ticket)) return json(res, 409, { error: 'extension policy changed; retry commands', generation: slashGeneration.current(), boot: slashBoot });
+        json(res, 500, { error: e.message, generation: ticket, boot: slashBoot });
+      }
     } else if (u.pathname === '/api/agents/kill' && req.method === 'POST') {
       // Kill one agent process from the agents view. Refuses pids that are
       // not pi/claude/bridge processes. Web-owned RPC runs abort cleanly
@@ -19214,7 +19228,7 @@ async function handleRequest(req, res) {
       // it is under this id, and the row goes when the stream closes.
       const conn = crypto.randomBytes(8).toString('hex');
       sseByConn.set(conn, { res, identity, conn });
-      try { res.write('data: ' + JSON.stringify({ type: 'hello', conn, me: usersLib.publicUser(identity.user), tier: identity.tier, users: publicUsers(), people: presenceFor(identity, conn) }) + '\n\n'); } catch {}
+      try { res.write('data: ' + JSON.stringify({ type: 'hello', conn, boot: slashBoot, generation: slashGeneration.current(), me: usersLib.publicUser(identity.user), tier: identity.tier, users: publicUsers(), people: presenceFor(identity, conn) }) + '\n\n'); } catch {}
       // Seed the working-agent set right away: the periodic diff below only
       // broadcasts on change, so a fresh client would otherwise start blind.
       // boot + runs let a reconnecting client drop stale run cards and notice

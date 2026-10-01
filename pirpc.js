@@ -11,6 +11,7 @@ const crypto = require('crypto');
 const { spawn, execFile } = require('child_process');
 
 const PI_BRIDGE_PATH = path.join(__dirname, 'chattering-bridge.ts');
+const { extensionPolicyFingerprint, requiredExtensionError } = require('./web-extension-policy.js');
 
 // ---- protocol handshake -------------------------------------------------
 // Chattering depends on pi RPC details that have changed across pi versions
@@ -61,8 +62,9 @@ function piVersionHint() {
 function piProtocolInfo() { return { ...piProtocol, min: PI_MIN_VERSION }; }
 
 // One JSONL RPC process. Forks keep it short-lived. Headless sends keep it
-// warm (discoverExtensions) so follow-ups skip startup. target:
-// { sessionPath, cwd, extraArgs?, onEvent?, discoverExtensions? }
+// warm so follow-ups skip startup. `discoverExtensions` selects web vs
+// bridge-only operations; web all/minimal discovery is carried by extraArgs.
+// target: { sessionPath, cwd, extraArgs?, onEvent?, discoverExtensions? }
 function spawnPiRpc(target) {
   const sessionArgs = target.sessionPath ? ['--session', target.sessionPath] : [];
   const args = target.discoverExtensions
@@ -73,8 +75,10 @@ function spawnPiRpc(target) {
   let stderr = '', buffer = '', onEvent = target.onEvent || null;
   const waiters = [];
   const tail = () => stderr ? ' pi said: ' + stderr.trim().slice(-400) : '';
+  const pendingDialogs = new Set();
   const sess = {
-    alive: true,
+    alive: true, active: false,
+    get hasPendingUi() { return pendingDialogs.size > 0; },
     pid: child.pid,
     setOnEvent(fn) { onEvent = fn; },
     kill() { try { child.kill('SIGTERM'); } catch {} },
@@ -112,16 +116,23 @@ function spawnPiRpc(target) {
       buffer = buffer.slice(nl + 1);
       if (!line.trim()) continue;
       let event; try { event = JSON.parse(line); } catch { continue; }
-      if (event.type === 'extension_error' && !target.discoverExtensions) {
-        // Bridge-only mode loads exactly one extension — the Chattering bridge —
-        // and the whole operation depends on it, so its failure is fatal.
-        const err = new Error('pi bridge error: ' + (event.error || 'unknown'));
+      if (event.type === 'agent_start') sess.active = true;
+      if (event.type === 'agent_settled') sess.active = false;
+      if (event.type === 'extension_ui_request' && event.id && ['confirm', 'select', 'input', 'editor'].includes(event.method)) {
+        pendingDialogs.add(event.id);
+        if (event.timeout) { const timer = setTimeout(() => pendingDialogs.delete(event.id), event.timeout); timer.unref?.(); }
+      }
+      if (event.type === 'extension_error' && (!target.discoverExtensions || requiredExtensionError(event))) {
+        if (onEvent) { try { onEvent(event); } catch {} }
+        // Bridge operations and explicit app contracts cannot tolerate a
+        // broken extension. Pi's own hidden built-ins may also be present.
+        const err = sess.failure = new Error('pi required extension error: ' + event.extensionPath + ': ' + (event.error || 'unknown'));
         failWaiters(err);
         sess.kill();
         return;
       }
-      // With discovered extensions an extension_error is informational, the
-      // same as in the pi TUI: surface it through onEvent and keep running.
+      // Other discovered extension errors are informational: surface them
+      // through onEvent and keep running, like Pi's normal extension handling.
       // Killing here was the main cause of web runs dying while TUI runs
       // never did — any global extension hiccup aborted the whole run.
       if (onEvent) { try { onEvent(event); } catch {} }
@@ -130,6 +141,7 @@ function spawnPiRpc(target) {
     }
   });
   sess.request = cmd => {
+    if (sess.failure) return Promise.reject(sess.failure);
     if (!sess.alive) return Promise.reject(new Error('pi RPC process is gone.' + tail()));
     const id = crypto.randomUUID();
     const matched = new Promise((res, rej) => waiters.push({ test: e => e.type === 'response' && e.id === id, resolve: res, reject: rej }));
@@ -141,7 +153,10 @@ function spawnPiRpc(target) {
     });
   };
   sess.waitFor = test => new Promise((res, rej) => waiters.push({ test, resolve: res, reject: rej }));
-  sess.send = obj => { try { child.stdin.write(JSON.stringify(obj) + '\n'); } catch {} };
+  sess.send = obj => {
+    if (obj.type === 'extension_ui_response') pendingDialogs.delete(obj.id);
+    try { child.stdin.write(JSON.stringify(obj) + '\n'); } catch {}
+  };
   return sess;
 }
 
@@ -168,6 +183,8 @@ function piRpcOperation(target, run, timeoutMs = 60000) {
 const WARM_IDLE_MS = 5 * 60 * 1000;
 const warmSessions = new Map(); // resolved sessionPath → { sess, busy, idleTimer, model, fileSig }
 const warmQueues = new Map();   // resolved sessionPath → promise chain (serializes prompts per file)
+const warmCreating = new Map(); // serialize replacement through old process shutdown
+let warmStopGeneration = 0;
 
 function warmKey(sessionPath) { return path.resolve(sessionPath); }
 
@@ -193,44 +210,57 @@ function queueOn(key, work) {
   return run;
 }
 
+function warmBusy(w) { return !!(w.busy || w.sess.active || w.sess.hasPendingUi); }
+
 function armWarmIdle(w, key) {
   clearTimeout(w.idleTimer);
   w.idleTimer = setTimeout(() => {
     // Never idle-kill a process that is mid-run: re-arm and check again later.
-    if (w.busy) { armWarmIdle(w, key); return; }
+    if (warmBusy(w)) { armWarmIdle(w, key); return; }
     stopWarmSession(key);
   }, WARM_IDLE_MS);
 }
 
-function getWarmSession(target) {
+async function getWarmSession(target) {
   const key = warmKey(target.sessionPath);
-  let w = warmSessions.get(key);
-  if (w && w.sess.alive) {
-    // The file changed on disk behind this warm process: its in-memory tree
-    // is stale, and a continuation would branch from an old leaf. Do what
-    // the TUI does at open — load the current file — by respawning. A busy
-    // process is never yanked; its own writes update the signature after.
-    if (!w.busy && w.fileSig && w.fileSig !== fileSigOf(key)) stopWarmSession(key);
-    else return w;
-  }
-  const sess = spawnPiRpc({ ...target, discoverExtensions: true });
-  w = { sess, busy: false, idleTimer: null, model: null, fileSig: fileSigOf(key) };
-  warmSessions.set(key, w);
-  sess.dead.then(() => { if (warmSessions.get(key) === w) warmSessions.delete(key); });
-  return w;
+  if (warmCreating.has(key)) return warmCreating.get(key);
+  const stopGeneration = warmStopGeneration;
+  const work = (async () => {
+    let w = warmSessions.get(key);
+    if (w && w.sess.alive) {
+      const changed = w.policyFingerprint !== extensionPolicyFingerprint(target) ||
+        (w.fileSig && w.fileSig !== fileSigOf(key));
+      // Never replace active runs/dialogs, including autonomous extension turns.
+      if (!w.sess.failure && (warmBusy(w) || !changed)) return w;
+      stopWarmSession(key);
+      // Shutdown hooks may still write. Retire the old process completely
+      // before another runtime opens the same file.
+      await w.sess.dead;
+    }
+    if (stopGeneration !== warmStopGeneration) throw new Error('Pi RPC runtime stopped during replacement');
+    const sess = spawnPiRpc({ ...target, discoverExtensions: true });
+    w = { sess, busy: false, idleTimer: null, model: null, fileSig: fileSigOf(key), policyFingerprint: extensionPolicyFingerprint(target) };
+    warmSessions.set(key, w);
+    sess.dead.then(() => { if (warmSessions.get(key) === w) warmSessions.delete(key); });
+    return w;
+  })();
+  warmCreating.set(key, work);
+  try { return await work; }
+  finally { if (warmCreating.get(key) === work) warmCreating.delete(key); }
 }
 
 // The agents view lists these: every warm RPC process the server owns.
 function listWarmSessions() {
   const out = [];
   for (const [key, w] of warmSessions) {
-    out.push({ sessionPath: key, pid: w.sess.pid, busy: !!w.busy, model: w.model, alive: !!w.sess.alive });
+    out.push({ sessionPath: key, pid: w.sess.pid, busy: warmBusy(w), model: w.model, alive: !!w.sess.alive });
   }
   return out;
 }
 
 // Shutdown helper: kill every warm pi process (their runs were aborted first).
 function stopAllWarmSessions() {
+  warmStopGeneration++;
   let n = 0;
   for (const key of [...warmSessions.keys()]) { if (stopWarmSession(key)) n++; }
   return n;
@@ -252,7 +282,7 @@ function stopWarmSession(sessionPath) {
 // file is bound, nothing is written).
 async function piListCommands(target) {
   return piRpcOperation(
-    { cwd: target.cwd, env: target.env, discoverExtensions: true, extraArgs: ['--no-session', ...(target.extraArgs || [])] },
+    { ...target, discoverExtensions: true, extraArgs: ['--no-session', ...(target.extraArgs || [])] },
     async request => {
       const r = await request({ type: 'get_commands' });
       return ((r.data || {}).commands || []).map(c => ({
@@ -322,7 +352,7 @@ async function piForkBefore(target, nodeId) {
 // and forks inherit it. level 'cycle' steps to the next available level.
 async function piSetThinking(target, level) {
   await ensurePiProtocol(target.env);
-  const w = getWarmSession({ ...target, discoverExtensions: true });
+  const w = await getWarmSession({ ...target, discoverExtensions: true });
   clearTimeout(w.idleTimer);
   try {
     const avail = await w.sess.request({ type: 'get_available_thinking_levels' });
@@ -343,9 +373,9 @@ async function piSetThinking(target, level) {
 // in the terminal. No timeout: summarizing a long conversation takes a while.
 async function piCompact(target, instructions) {
   await ensurePiProtocol(target.env);
-  const w = getWarmSession({ ...target, discoverExtensions: true });
+  const w = await getWarmSession({ ...target, discoverExtensions: true });
   clearTimeout(w.idleTimer);
-  if (w.busy) throw new Error('This conversation is busy. Wait for the reply to finish, then compact.');
+  if (warmBusy(w)) throw new Error('This conversation is busy. Wait for the reply to finish, then compact.');
   w.busy = true;
   try {
     const out = await w.sess.request({ type: 'compact', ...(instructions ? { customInstructions: instructions } : {}) });
@@ -393,12 +423,11 @@ const DIALOG_METHODS = ['confirm', 'select', 'input', 'editor'];
 function piHeadlessRun(target, opts) {
   const handle = { abort: null, done: null, respondUi: null, uiAutoCancelled: 0, pid: null };
   const key = warmKey(target.sessionPath);
-  // Eager spawn hides startup latency; the freshness check runs again inside
-  // work(), at the moment this run actually starts.
-  handle.pid = getWarmSession({ ...target, discoverExtensions: true }).sess.pid;
+  // Spawn/replacement belongs to the serialized operation: an idle old
+  // process must finish shutdown before the next one opens the same file.
   const work = async () => {
     await ensurePiProtocol(target.env);
-    const w = getWarmSession({ ...target, discoverExtensions: true });
+    const w = await getWarmSession({ ...target, discoverExtensions: true });
     handle.pid = w.sess.pid;
     if (!w.sess.alive) throw new Error('pi RPC process is gone.');
     clearTimeout(w.idleTimer);
@@ -492,7 +521,7 @@ function piHeadlessRun(target, opts) {
 // Start a new pi session in cwd (no --session) and keep the RPC process warm.
 async function piBeginWarm(target) {
   await ensurePiProtocol(target.env);
-  const sess = spawnPiRpc({ cwd: target.cwd, env: target.env, extraArgs: target.extraArgs || [], discoverExtensions: true });
+  const sess = spawnPiRpc({ ...target, extraArgs: target.extraArgs || [], discoverExtensions: true });
   const t0 = Date.now();
   let file = null, sessionId = null;
   while (Date.now() - t0 < 15000) {
@@ -511,7 +540,7 @@ async function piBeginWarm(target) {
   const key = warmKey(file);
   // The file may not exist until the first prompt lands; a null signature
   // means "no baseline yet" and the freshness check stays quiet.
-  const w = { sess, busy: false, idleTimer: null, model: null, fileSig: fileSigOf(key) };
+  const w = { sess, busy: false, idleTimer: null, model: null, fileSig: fileSigOf(key), policyFingerprint: extensionPolicyFingerprint(target) };
   warmSessions.set(key, w);
   sess.dead.then(() => { if (warmSessions.get(key) === w) warmSessions.delete(key); });
   armWarmIdle(w, file);

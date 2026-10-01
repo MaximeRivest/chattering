@@ -74,6 +74,8 @@ const DEFAULT_SETTINGS = {
   // Engine for web sends: 'sdk' embeds pi in-process (fast forks, full
   // extension UI); 'rpc' spawns pi child processes (isolation fallback).
   piEngine: 'sdk',
+  // Web discovery only; terminal discovery and Pi trust remain unchanged.
+  webExtensionDiscovery: 'all',
   // Artifacts (design/67). artifactNetwork: 'open' lets artifact pages load
   // and call anything (trust is the default); 'libraries' limits scripts,
   // styles, fonts and network calls to the public library sites.
@@ -223,6 +225,7 @@ const MODEL_NAME = /^[\w./:@-]{1,200}$/;
 // types by hand are checked; everything else is normalized as before.
 function settingsInputError(src) {
   if (!src || typeof src !== 'object') return 'settings must be an object';
+  if (src.webExtensionDiscovery !== undefined && !['all', 'minimal'].includes(src.webExtensionDiscovery)) return 'web extension discovery must be all or minimal';
   const urls = { semanticUrl: 'the search server', speechUrl: 'the speech-to-text server', ttsUrl: 'the read-aloud server', voiceModelUrl: 'the spoken-digest model endpoint' };
   for (const [k, what] of Object.entries(urls)) {
     const v = String(src[k] || '').trim();
@@ -461,6 +464,7 @@ function normalizeSettings(input) {
     backgroundAi,
     welcome,
     piEngine,
+    webExtensionDiscovery: src.webExtensionDiscovery === 'minimal' ? 'minimal' : 'all',
     artifactNetwork,
     previewBase,
     programsRecordAgents,

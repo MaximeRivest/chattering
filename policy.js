@@ -478,6 +478,8 @@ const EVENTS = {
   },
   // This machine's agents, speaker and delegations: the household's.
   'agent-recovery': () => can => can.member,
+  // Discovery mode and cache generation only; no paths or credentials.
+  'web-extension-policy': () => can => can.member,
   'delegation-update': () => can => can.member,
   'voice-playing': () => can => can.member,
   'voice-state': () => can => can.member,
