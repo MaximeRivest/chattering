@@ -190,7 +190,8 @@ async function until(check) { for (let i = 0; i < 400; i++) { if (check()) retur
     // must be retired, not reused to execute healthy work and rethrow an old error.
     const recovery = await engine.piBeginWarm(target('minimal'));
     failedRuntime = runtimes.at(-1);
-    const modePath = REQUIRED_EXTENSIONS.find(p => p.endsWith('/modes.ts'));
+    const modePath = REQUIRED_EXTENSIONS.find(p => path.basename(p) === 'modes.ts');
+    assert.ok(modePath, 'required modes entry resolves using native path separators');
     failedRuntime.services.resourceLoader.getExtensions().extensions.find(e => e.path === modePath)
       .handlers.get('before_agent_start').push(async event => {
         if (event.prompt === 'fixture-runtime-failure') throw new Error('fixture required runtime failure');
