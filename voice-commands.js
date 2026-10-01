@@ -397,7 +397,7 @@ function voiceOpenLists() {
 function voiceTextTarget() {
   if (voiceAskOpen()) return { ta: askBox.ta, label: 'the ask box', grow: askBubbleGrow, send: () => askBubbleSend() };
   const ta = $('agentText');
-  if (ta && voiceVisible(ta)) return { ta, label: 'the message box', grow: autoGrowCompose, send: () => { const run = $('agentRun'); if (!run) throw new Error('this conversation sends from the terminal'); return headlessSendFromComposer(run); } };
+  if (ta && voiceVisible(ta)) return { ta, conversationKey: ta.closest('[data-conversation-key]')?.dataset.conversationKey, label: 'the message box', grow: autoGrowCompose, send: () => { const run = $('agentRun'); if (!run) throw new Error('this conversation sends from the terminal'); return headlessSendFromComposer(run); } };
   // A file: written at the cursor (over the selection), as typing would.
   const ed = voiceEditor();
   if (ed && !(typeof fileWs !== 'undefined' && fileWs && fileWs.readOnly)) return { file: true, label: 'the file', ed };
@@ -1364,10 +1364,21 @@ function voiceEndDictation() {
   voice.target = null;
   voicePaint();
 }
+// Live-tail rendering replaces the DOM, not the conversation being dictated.
+// Rebind only to that same composer's identity, never to another open box.
+function voiceDictationBox() {
+  const t = voice.target;
+  if (t && t.ta && !t.ta.isConnected && t.conversationKey) {
+    const ta = $('agentText');
+    if (ta?.closest('[data-conversation-key]')?.dataset.conversationKey === t.conversationKey) t.ta = ta;
+  }
+  if (!t || !t.ta?.isConnected) { voiceEndDictation(); throw new Error('the box went away; dictation stopped'); }
+  return t.ta;
+}
 function voiceWrite(text) {
   const t = voice.target;
   if (t && t.file) return voiceWriteFile(text);
-  if (!t || !t.ta.isConnected) { voiceEndDictation(); throw new Error('the box went away; dictation stopped'); }
+  voiceDictationBox();
   t.ta.value = joinAgentSpeech(t.ta.value, text);
   t.ta.selectionStart = t.ta.selectionEnd = t.ta.value.length;
   t.ta.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1513,9 +1524,9 @@ async function voiceDictation(entry, d) {
   try {
     if (voice.target && voice.target.file && ['new_line', 'new_paragraph', 'scratch', 'fix'].includes(d.action)) entry.summary = await voiceFileDictationStep(d.action);
     if (d.action === 'text' || d.action === 'text_send') { if (d.text) voiceWrite(d.text); entry.summary = 'wrote it'; }
-    if (d.action === 'text_send' || d.action === 'send') { voice.target.send(); entry.summary = 'sent'; voiceEndDictation(); }
+    if (d.action === 'text_send' || d.action === 'send') { if (!voice.target?.file) voiceDictationBox(); voice.target.send(); entry.summary = 'sent'; voiceEndDictation(); }
     else if (d.action === 'stop') { voiceEndDictation(); entry.summary = 'stopped dictating'; }
-    else if (d.action === 'clear') { voice.target.ta.value = ''; voice.target.ta.dispatchEvent(new Event('input', { bubbles: true })); entry.summary = 'cleared the box'; }
+    else if (d.action === 'clear') { voiceDictationBox().value = ''; voice.target.ta.dispatchEvent(new Event('input', { bubbles: true })); entry.summary = 'cleared the box'; }
     entry.status = 'done';
   } catch (e) { entry.status = 'failed'; entry.note = e.message; }
   voiceOutcome(entry.id, entry.status === 'done' ? 'done' : 'failed', entry.note);

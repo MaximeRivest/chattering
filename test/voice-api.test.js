@@ -16,6 +16,7 @@ const net = require('node:net');
 const http = require('node:http');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { waitForUtterance } = require('./helpers/voice-utterance');
 const { FRAME_BYTES } = require('../voice-window.js');
 
 const root = path.join(__dirname, '..');
@@ -37,11 +38,11 @@ function recognize(pcm) {
   return out.join(' ');
 }
 
-async function standIns(t) {
+async function standIns(t, { speechGate = null } = {}) {
   const jevCalls = [];
   const speech = http.createServer((req, res) => {
     const chunks = []; req.on('data', c => chunks.push(c));
-    req.on('end', () => { res.writeHead(200, { 'content-type': 'text/plain' }); res.end(recognize(Buffer.concat(chunks))); });
+    req.on('end', async () => { if (speechGate) await speechGate(); res.writeHead(200, { 'content-type': 'text/plain' }); res.end(recognize(Buffer.concat(chunks))); });
   });
   // Jev: the action named by the words said; arguments from their candidates.
   const jev = http.createServer((req, res) => {
@@ -63,8 +64,8 @@ async function standIns(t) {
   return { speechUrl: 'http://127.0.0.1:' + speech.address().port, jevUrl: 'http://127.0.0.1:' + jev.address().port + '/v1/systemone', jevCalls, jev };
 }
 
-async function boot(t, { key = 'test-key-0123456789abcdef', setup = null } = {}) {
-  const stand = await standIns(t);
+async function boot(t, { key = 'test-key-0123456789abcdef', setup = null, speechGate = null } = {}) {
+  const stand = await standIns(t, { speechGate });
   const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'voice-api-')));
   fs.mkdirSync(path.join(home, '.config', 'chattering'), { recursive: true });
   fs.mkdirSync(path.join(home, '.pi', 'agent', 'sessions'), { recursive: true });
@@ -92,18 +93,30 @@ async function boot(t, { key = 'test-key-0123456789abcdef', setup = null } = {})
 const post = (base, p, body) => fetch(base + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
 test('listening: streamed speech becomes heard text and utterances, with context', async t => {
-  const s = await boot(t);
+  // Given recognition is still in flight when the PCM pause ends.
+  let release, requested;
+  const gate = new Promise(r => release = r), arrived = new Promise(r => requested = r);
+  t.after(() => release());
+  const s = await boot(t, { speechGate: () => { requested(); return gate; } });
   const ws = new WebSocket('ws://127.0.0.1:' + s.port + '/api/voice/listen?window=45', { headers: { Authorization: 'Bearer ' + TEST_TOKEN } });
+  t.after(() => ws.close());
   const events = [];
   ws.onmessage = m => events.push(JSON.parse(m.data));
   await new Promise((r, j) => { ws.onopen = r; ws.onerror = () => j(new Error('no socket: ' + s.log().slice(-400))); });
   const send = async buf => { for (let at = 0; at < buf.length; at += FRAME_BYTES * 2) { ws.send(buf.subarray(at, at + FRAME_BYTES * 2)); await sleep(5); } };
   await send(quiet(2500));
+  const first = waitForUtterance(ws, 'open the settings');
   await send(speak(['open', 'the', 'settings']));
   await send(quiet(1200));
+  await arrived;
+  assert.equal(events.some(e => e.type === 'utterance'), false, 'PCM silence alone is not published completion');
+  // When the published first utterance completes, only then feed the next.
+  release();
+  await first;
+  const second = waitForUtterance(ws, 'reasoning off please');
   await send(speak(['reasoning', 'off', 'please']));
   await send(quiet(1200));
-  for (let i = 0; i < 300 && events.filter(e => e.type === 'utterance').length < 2; i++) await sleep(30);
+  await second;
   ws.close();
   assert.equal(events[0].type, 'ready');
   assert.equal(events[0].windowSeconds, 45);
@@ -204,4 +217,22 @@ test('a page on plain http is told the https address, where the browser gives th
   const get = host => new Promise((resolve, reject) => http.get({ host: '127.0.0.1', port: s.port, path: '/api/voice/status', headers: { host, Authorization: 'Bearer ' + TEST_TOKEN } }, res => { let b = ''; res.on('data', c => b += c); res.on('end', () => resolve(JSON.parse(b))); }).on('error', reject));
   assert.match((await get('100.86.49.54:7433')).secureUrl, /^https:\/\/100\.86\.49\.54:\d+\/\?token=/);
   assert.equal((await get('localhost:7433')).secureUrl, null, 'localhost is secure already');
+});
+
+
+test('Given a completion waiter, When only heard or another utterance arrives, Then it remains pending until the exact published utterance', async () => {
+  const socket = new EventTarget();
+  const publish = event => socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(event) }));
+  let completed = false;
+  const done = waitForUtterance(socket, 'first').then(event => { completed = true; return event; });
+  publish({ type: 'heard', text: 'first' });
+  publish({ type: 'utterance', text: 'other' });
+  await Promise.resolve();
+  assert.equal(completed, false, 'neither recognition nor a different sentence is completion');
+  publish({ type: 'utterance', text: 'first' });
+  assert.deepEqual(await done, { type: 'utterance', text: 'first' });
+  assert.equal(completed, true, 'the actual publication resolves the predicate');
+  const missing = waitForUtterance(socket, 'missing', 0);
+  publish({ type: 'heard', text: 'missing' });
+  await assert.rejects(missing, /utterance not published: missing/);
 });

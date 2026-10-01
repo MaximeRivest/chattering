@@ -20,9 +20,12 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
   let passes = 0;
   const speech = http.createServer((req, res) => { req.resume(); req.on('end', () => { res.writeHead(200); res.end(++passes <= 3 ? 'hello there' : ''); }); });
   // Jev's stand-in: the action named in what was said; sure unless "maybe".
+  let textArrived, releaseText;
+  const textRequest = new Promise(r => textArrived = r), textGate = new Promise(r => releaseText = r);
+  t.after(() => releaseText());
   const jev = http.createServer((req, res) => {
     const chunks = []; req.on('data', c => chunks.push(c));
-    req.on('end', () => {
+    req.on('end', async () => {
       const body = JSON.parse(Buffer.concat(chunks)), said = body.state.said, q = body.questions;
       const opts = name => Object.keys(q[name].criteria);
       const answer = (choice, confidence = 0.97) => ({ type: 'choice', choice, confidence, probabilities: { [choice]: confidence } });
@@ -41,6 +44,7 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
           answers['open.name'] = answer(hit || '(not said)', 0.9, hit ? { '(not said)': 0.1 } : {});
         }
       }
+      if (said === 'fix the flaky test in the queue') { textArrived(); await textGate; }
       res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ answers }));
     });
   });
@@ -150,11 +154,33 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
   await hear('start the microphone');
   await until(`voice.mode === 'dictation'`, 'dictation did not start');
   assert.match(await ev(`document.querySelector('#voiceListenPill .vl-state').textContent`), /dictating into the message box/);
+  // Given a live-tail render replaces the composer while Jev is deciding.
   await hear('fix the flaky test in the queue');
-  await until(`$('agentText').value === 'fix the flaky test in the queue'`, 'the words were not written');
+  await textRequest;
+  await ev(`window.voiceOldBox = voice.target.ta; renderConv('preserve')`);
+  assert.equal(await ev(`voiceOldBox.isConnected`), false, 'the original dictation box really was replaced');
+  releaseText();
+  await until(`$('agentText').value === 'fix the flaky test in the queue'`, () => ev(`'the words were not written: ' + JSON.stringify({ mode: voice.mode, targetConnected: voice.target?.ta?.isConnected, decisions: voice.decisions.map(d => ({ said: d.said, status: d.status, note: d.note })) })`));
   await hear('stop dictating');
   await until(`voice.mode === 'command'`, 'dictation did not stop');
   await b.screenshot('voice-overlay.png');
+  // Negative controls: neither another conversation nor a vanished ask box
+  // may receive a pending dictation just because it has a text field.
+  const refused = await ev(`(() => {
+    const ta = $('agentText'), host = ta.closest('[data-conversation-key]'), key = host.dataset.conversationKey;
+    voiceBeginDictation(voiceTextTarget());
+    const replacement = ta.cloneNode(true); ta.replaceWith(replacement);
+    host.dataset.conversationKey = 'another-conversation';
+    let otherError; try { voiceWrite('must not leak'); } catch (e) { otherError = e.message; }
+    const untouched = replacement.value;
+    host.dataset.conversationKey = key;
+    voiceBeginDictation({ ta, label: 'the ask box' });
+    let askError; try { voiceWrite('must not leak'); } catch (e) { askError = e.message; }
+    return { otherError, askError, untouched, mode: voice.mode };
+  })()`);
+  assert.deepEqual(refused, { otherError: 'the box went away; dictation stopped', askError: 'the box went away; dictation stopped', untouched: 'fix the flaky test in the queue', mode: 'command' });
+  await ev(`renderConv('preserve')`);
+
 
   // Files in the right panel, by place: the last of the recent files is the
   // one opened first (newest on top). Picking clicks its row, as the mouse does.
