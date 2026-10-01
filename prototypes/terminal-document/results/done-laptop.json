@@ -1,0 +1,221 @@
+{
+  "device": "laptop",
+  "when": "2026-10-01T22:26:02.585Z",
+  "agents": {
+    "claude": {
+      "key": "claude:-home-maxime--cache-chattering-live-test-scratch-laptop-muq3scr5-claude/d9f8fbd0-4d85-47b5-b4a0-529ee6eed477.jsonl",
+      "new conversation": {
+        "ok": true,
+        "ms": 3454
+      },
+      "type with its own editor": {
+        "ok": true,
+        "ms": 863
+      },
+      "pick from its / list": {
+        "ok": true,
+        "ms": 382,
+        "note": "/add-dir"
+      },
+      "open and close a panel": {
+        "ok": true,
+        "ms": 1505
+      },
+      "answer a permission question": {
+        "ok": true,
+        "ms": 6250
+      },
+      "stop a running reply": {
+        "ok": true,
+        "ms": 8867,
+        "note": "stopped 122 ms after the tap"
+      },
+      "switch back to Chattering's box": {
+        "ok": false,
+        "ms": 0,
+        "note": "n/a"
+      },
+      "continue an existing one": {
+        "ok": false,
+        "ms": 180383,
+        "error": "timed out: the reply",
+        "focus": [
+          [
+            13393,
+            "in",
+            "ltKeys",
+            1
+          ],
+          [
+            13668,
+            "out",
+            "ltKeys",
+            1
+          ],
+          [
+            13673,
+            "in",
+            "ltKeys",
+            1
+          ],
+          [
+            14539,
+            "out",
+            "ltKeys",
+            1
+          ],
+          [
+            14549,
+            "in",
+            "ltKeys",
+            1
+          ],
+          [
+            16849,
+            "out",
+            "ltKeys",
+            1
+          ],
+          [
+            16853,
+            "in",
+            "ltKeys",
+            1
+          ],
+          [
+            19473,
+            "out",
+            "ltKeys",
+            1
+          ],
+          [
+            19483,
+            "in",
+            "ltKeys",
+            1
+          ],
+          [
+            23165,
+            "out",
+            "ltKeys",
+            1
+          ],
+          [
+            23223,
+            "in",
+            "ltDraft",
+            1
+          ],
+          [
+            23249,
+            "out",
+            "ltDraft",
+            1
+          ]
+        ]
+      },
+      "every message shown once": {
+        "ok": false,
+        "ms": 2504,
+        "error": "not once: [[\"Reply with exactly this text and nothing else: aga\",0]]",
+        "focus": [
+          [
+            13393,
+            "in",
+            "ltKeys",
+            1
+          ],
+          [
+            13668,
+            "out",
+            "ltKeys",
+            1
+          ],
+          [
+            13673,
+            "in",
+            "ltKeys",
+            1
+          ],
+          [
+            14539,
+            "out",
+            "ltKeys",
+            1
+          ],
+          [
+            14549,
+            "in",
+            "ltKeys",
+            1
+          ],
+          [
+            16849,
+            "out",
+            "ltKeys",
+            1
+          ],
+          [
+            16853,
+            "in",
+            "ltKeys",
+            1
+          ],
+          [
+            19473,
+            "out",
+            "ltKeys",
+            1
+          ],
+          [
+            19483,
+            "in",
+            "ltKeys",
+            1
+          ],
+          [
+            23165,
+            "out",
+            "ltKeys",
+            1
+          ],
+          [
+            23223,
+            "in",
+            "ltDraft",
+            1
+          ],
+          [
+            23249,
+            "out",
+            "ltDraft",
+            1
+          ]
+        ]
+      },
+      "stats": {
+        "frames": 245,
+        "kb": 106,
+        "errors": [
+          "the input box is not on screen"
+        ]
+      }
+    }
+  },
+  "notes": [],
+  "flicker": {
+    "changes": 14,
+    "flips": 2,
+    "examples": [
+      [
+        "panel",
+        240
+      ],
+      [
+        "choice",
+        320
+      ]
+    ]
+  },
+  "pageExceptions": []
+}

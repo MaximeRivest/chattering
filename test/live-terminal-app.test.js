@@ -63,6 +63,17 @@ test('the live strip: laptop keyboard, its list, a question, a panel, stop, phon
   // A screen reader reads the focused field: it holds the program's text.
   await until(`document.getElementById('ltKeys').value === 'hello'`, 'the field holds the program\'s text');
   assert.equal(await ev(`document.getElementById('ltKeys').getAttribute('role')`), 'combobox');
+  // The conversation is redrawn while typing (the agent wrote to its file):
+  // the field keeps the focus, and the next letter goes to the program, not
+  // to the page's shortcuts ("r" opens the reading view).
+  await ev(`open(${JSON.stringify(claudeKey)}, 'preserve')`);
+  await new Promise(r => setTimeout(r, 400));
+  assert.equal(await ev(`document.activeElement && document.activeElement.id`), 'ltKeys', 'the focus survives a redraw');
+  await type('r');
+  await until(`LiveTerminal.sessions.get(${JSON.stringify(claudeKey)}).state.composer.text === 'hellor'`, 'the letter went to the program');
+  assert.equal(await ev(`document.getElementById('readOverlay').hidden`), true, 'not to the page\'s shortcut');
+  await key('Backspace', 'Backspace', 8);
+  await until(`LiveTerminal.sessions.get(${JSON.stringify(claudeKey)}).state.composer.text === 'hello'`, 'back to hello');
   // Its own editor keys: Home, then a letter.
   await key('Home', 'Home', 36); await type('X');
   await until(`LiveTerminal.sessions.get(${JSON.stringify(claudeKey)}).state.composer.text === 'Xhello'`, 'Home then X');

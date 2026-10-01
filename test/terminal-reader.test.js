@@ -89,3 +89,14 @@ test('Pi\'s list with its mark on a later row: the rows above it are items too, 
   assert.equal(d.menu.selected, 2);
   assert.equal(d.footer.length, 0);
 });
+test('working from the window title: Claude Code writing its answer has no working line, its title turns ("◐"); idle it shows "✳"', () => {
+  const claude = require('../harness/terminal/profiles').profileFor('claude');
+  const rows = ['❯ Count from 1 to 600', '', '● 1', '  2', '  3', '', RULE, '❯ ', RULE];
+  const writing = readDocument({ ...screen(rows, { x: 2, y: 7 }), title: '◐ Count to 600' }, claude);
+  assert.equal(writing.mode, 'working'); assert.equal(writing.status.fromTitle, true);
+  const idle = readDocument({ ...screen(rows, { x: 2, y: 7 }), title: '✳ Count to 600' }, claude);
+  assert.equal(idle.mode, 'compose');
+  // A question still comes first.
+  const asking = readDocument({ ...screen([' Do you want to proceed?', ' ❯ 1. Yes', '   2. No'], { x: 0, y: 0 }), title: '◐ x' }, claude);
+  assert.equal(asking.mode, 'choice');
+});

@@ -88,6 +88,10 @@ function createLiveTerminals({
     sessions.set(key, s);
     host.on('exit', e => {
       log('live terminal: ' + profile.id + ' ended for ' + s.key + ' (' + JSON.stringify(e) + ')');
+      // A program already replaced by a new one for this conversation (ended
+      // here, then started again) says nothing: its end is not the new one's.
+      const now = sessions.get(s.key);
+      if (now && now !== s) return;
       onState(s.key, { ...s.hub.state(), harness: profile.id });
       // Devices see "ended" for a while, then the hub goes.
       setTimeout(() => { if (sessions.get(s.key) === s) { s.hub.close(); sessions.delete(s.key); } }, 60000).unref?.();

@@ -256,6 +256,10 @@ function readDocument(snap, profileOrRules = CLAUDE) {
     if (profile.workingRe.some(re => re.test(t))) { doc.status = { working: true, text: t.trim(), rows: [y] }; used.add(y); break; }
   }
 
+  // No working line on screen, but the window title says it works (Claude
+  // Code while it writes its answer): working, with no row of its own.
+  if (!doc.status && profile.titleWorkingRe && snap.title && profile.titleWorkingRe.test(snap.title)) doc.status = { working: true, text: 'Working…', rows: [], fromTitle: true };
+
   // ---- transcript: everything above the live area, scrollback included ----
   let liveTop = Math.min(...[doc.composer && doc.composer.rows[0], doc.choice && doc.choice.rows[0], doc.status && doc.status.rows[0]].filter(v => v != null), bottom);
   // No input box, dialog or status on screen: the program is showing a

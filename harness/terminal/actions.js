@@ -8,7 +8,7 @@ const { readDocument } = require('./reader');
 
 function waitFor(host, test, { timeoutMs = 3000, profile } = {}) {
   return new Promise((resolve, reject) => {
-    const check = () => { const d = readDocument(host.snapshot(), profile); if (test(d)) { done(); resolve(d); return true; } return false; };
+    const check = () => { const d = readDocument(host.snapshot({ screenOnly: true }), profile); if (test(d)) { done(); resolve(d); return true; } return false; };
     const onFrame = () => check();
     const timer = setTimeout(() => { done(); reject(new Error('the screen did not reach the expected state')); }, timeoutMs);
     const done = () => { clearTimeout(timer); host.off('frame', onFrame); };
@@ -48,17 +48,17 @@ function quiet(host, ms = 150, maxMs = 3000) {
 //   the region must disappear; if it is back, start over. Never a blind key.
 async function selectAndConfirm(host, { profile, read, index, confirmKey, gone, rounds = 4 }) {
   for (let round = 0; round < rounds; round++) {
-    let r = read(readDocument(host.snapshot(), profile));
+    let r = read(readDocument(host.snapshot({ screenOnly: true }), profile));
     if (!r) throw new Error('it is no longer on screen');
     for (let guard = 0; r.selected !== index; guard++) {
       if (guard > r.count * 2 + 2) throw new Error('the highlight did not reach the target');
       const from = r.selected;
       await keyUntil(host, index > from ? '\x1b[B' : '\x1b[A', d => { const x = read(d); return x && x.selected !== from; }, { profile });
-      r = read(readDocument(host.snapshot(), profile));
+      r = read(readDocument(host.snapshot({ screenOnly: true }), profile));
       if (!r) throw new Error('it closed while moving');
     }
     await quiet(host);
-    r = read(readDocument(host.snapshot(), profile));
+    r = read(readDocument(host.snapshot({ screenOnly: true }), profile));
     if (!r) throw new Error('it closed before confirming');
     if (r.selected !== index) continue; // redrawn under us: navigate again
     host.input(confirmKey);
@@ -70,7 +70,7 @@ async function selectAndConfirm(host, { profile, read, index, confirmKey, gone, 
 
 // Choose option `index` of the dialog on screen (as read now).
 async function choose(host, index, { profile, confirmKey = '\r' } = {}) {
-  const doc = readDocument(host.snapshot(), profile);
+  const doc = readDocument(host.snapshot({ screenOnly: true }), profile);
   if (!doc.choice) throw new Error('no choice on screen');
   const options = doc.choice.options;
   if (!options[index]) throw new Error('no such option');
@@ -80,7 +80,7 @@ async function choose(host, index, { profile, confirmKey = '\r' } = {}) {
 
 // Highlight menu item `index` and accept it with Tab (completion, not run).
 async function pickMenu(host, index, { profile, acceptKey = '\t' } = {}) {
-  const doc = readDocument(host.snapshot(), profile);
+  const doc = readDocument(host.snapshot({ screenOnly: true }), profile);
   if (!doc.menu) throw new Error('no menu on screen');
   const items = doc.menu.items.map(i => i.label), label = items[index];
   if (!label) throw new Error('no such item');
@@ -100,7 +100,7 @@ const sameText = (a, b) => String(a).replace(/\s+/g, ' ').trim() === String(b).r
 // screen. Never clears with a shortcut (Esc Esc opens Claude Code's rewind
 // on an empty box; Ctrl+U clears one line).
 async function setComposerText(host, target, { profile, timeoutMs = 3000 } = {}) {
-  const read = () => readDocument(host.snapshot(), profile);
+  const read = () => readDocument(host.snapshot({ screenOnly: true }), profile);
   let d = read();
   if (!d.composer) throw new Error('the input box is not on screen');
   if (d.composer.text === target) return d;
@@ -142,8 +142,17 @@ async function submitComposer(host, target, { profile } = {}) {
     host.input('\x1b');
     d = await waitFor(host, x => !x.menu && x.composer && x.composer.text === text, { profile, timeoutMs: 1500 });
   }
-  host.input('\r');
-  return waitFor(host, x => x.status || x.choice || x.panel || (x.composer && x.composer.text === ''), { profile, timeoutMs: 5000 });
+  // Enter, checked: sent, the box empties (or it works, asks, shows a
+  // panel). A program settling (just resumed, an interrupted turn) may not
+  // read it: Enter again only while the box still holds exactly the message.
+  const sentOff = x => x.status || x.choice || x.panel || (x.composer && x.composer.text === '');
+  const stillThere = () => { const x = readDocument(host.snapshot({ screenOnly: true }), profile); return x.composer && !sentOff(x) && sameText(x.composer.text, d.composer.text); };
+  for (let i = 0; i < 6; i++) {
+    host.input('\r');
+    try { return await waitFor(host, sentOff, { profile, timeoutMs: 700 * (i + 1) }); }
+    catch (e) { if (!stillThere()) return waitFor(host, sentOff, { profile, timeoutMs: 5000 }); }
+  }
+  throw new Error('the program did not take the message');
 }
 
 module.exports = { waitFor, keyUntil, quiet, choose, pickMenu, setComposerText, submitComposer, sameText };

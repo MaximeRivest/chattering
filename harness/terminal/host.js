@@ -59,6 +59,9 @@ class TerminalHost extends EventEmitter {
     this.cols = cols; this.rows = rows;
     this.term = new deps.Terminal({ cols, rows, scrollback, allowProposedApi: true });
     this.restarts = watchRepaints(this.term);
+    // The window title the program sets (some show "working" there).
+    this.title = '';
+    this.term.onTitleChange(t => { this.title = t; });
     this.t0 = performance.now();
     this.recorder = recorder;
     this.pending = [];          // inputs written, waiting for the program's reaction
@@ -188,6 +191,7 @@ class TerminalHost extends EventEmitter {
       alternate: b.type === 'alternate',
       modes: { bracketedPaste: this.term.modes.bracketedPasteMode, appCursor: this.term.modes.applicationCursorKeysMode },
       restarts: screenOnly ? [] : (this.restarts || []).slice(),
+      title: this.title || '',
       revision: this.revision,
     };
   }

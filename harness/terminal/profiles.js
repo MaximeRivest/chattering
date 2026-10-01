@@ -27,6 +27,7 @@
 //     glyphless  an input box may have no prompt mark (a framed region)
 //     working    patterns of a line that says the program is working
 //     frameWorking  pattern of a label inside a frame line saying the same
+//     titleWorking  pattern of the terminal's window title while it works
 //   keys.stop    the key that stops a reply (a key as the page describes
 //                it; host.js encodes it). Line breaks inside a message are
 //                pasted, which every line editor reads as text.
@@ -37,6 +38,10 @@ const WORKING_LINES = [
   '^\\s*[\\u2800-\\u28ff]\\s+\\S',            // a braille spinner and a word: "⠦ Working"
 ];
 const FRAME_WORKING = '[\\u2800-\\u28ff]|^(?:[✻✶✳✢✽·*∗⋆◐◓◑◒]\\s+)?\\S+…|\\b(working|thinking)\\b';
+// A window title that starts with a turning spinner: Claude Code sets
+// "◐ <name>" while it works (also while it writes its answer, when its
+// status line is gone) and "✳ <name>" when it is idle.
+const TITLE_WORKING = '^[◐◓◑◒\\u2800-\\u28ff]';
 
 const GENERIC_SCREEN = {
   prompts: ['❯', '>', '›', '$'],
@@ -46,6 +51,7 @@ const GENERIC_SCREEN = {
   glyphless: true,
   working: WORKING_LINES,
   frameWorking: FRAME_WORKING,
+  titleWorking: TITLE_WORKING,
 };
 
 const PROFILES = {
@@ -98,6 +104,7 @@ function screenRules(profile) {
     c = { ...GENERIC_SCREEN, ...screen };
     c.workingRe = (c.working || []).map(p => new RegExp(p, 'i'));
     c.frameWorkingRe = new RegExp(c.frameWorking || FRAME_WORKING, 'i');
+    c.titleWorkingRe = c.titleWorking ? new RegExp(c.titleWorking) : null;
     c.name = (profile && profile.id) || 'generic';
     compiled.set(screen, c);
   }

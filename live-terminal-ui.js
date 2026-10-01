@@ -194,7 +194,16 @@
     const keys = $('ltKeys');
     $('ltField').onmousedown = e => { e.preventDefault(); keys.focus({ preventScroll: true }); };
     keys.onfocus = () => { S.focused = true; $('ltCompose').classList.add('focused'); };
-    keys.onblur = () => { if (keys.isConnected) S.focused = false; $('ltCompose').classList.remove('focused'); };
+    // The page redraws the conversation (the agent wrote to its file): this
+    // field is replaced, and the browser reports a blur while it is still on
+    // the page. Decided a moment later: replaced, the new field already took
+    // the focus back (mount, in the same redraw); left, it is not on the page
+    // any more or another element has the focus. Typing never lands on the
+    // page's shortcuts because a message arrived.
+    keys.onblur = () => {
+      const c = $('ltCompose'); if (c) c.classList.remove('focused');
+      setTimeout(() => { if (keys.isConnected && document.activeElement !== keys) S.focused = false; }, 0);
+    };
     let composing = false;
     const typeText = text => { const t0 = performance.now(); const n = send(S, { t: 'text', text }); if (n != null) S.pending.set(n, { t0, text }); paint(S); };
     keys.addEventListener('compositionstart', () => { composing = true; });
