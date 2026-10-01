@@ -41,7 +41,7 @@ function loadDraft(id) {
   } catch { return null; }
 }
 function draftHasContent(d) {
-  return !!(d && ((d.text || '').trim() || (d.images && d.images.length) || (d.context && d.context.length) || d.folder || d.mode || d.thinking || (d.models && d.models.length) || d.harness === 'codex' || d.access));
+  return !!(d && ((d.text || '').trim() || (d.images && d.images.length) || (d.context && d.context.length) || d.folder || d.mode || d.thinking || (d.models && d.models.length) || d.harness === 'codex' || d.harness === 'claude' || d.access));
 }
 // Persist what has content; an untouched blank page leaves no trace. Images
 // that do not fit stay in memory for this page and the draft says so.
@@ -226,6 +226,9 @@ async function showDraft(id) {
   }
   renderAgentThumbs();
   draftWireSetup(d);
+  // Claude Code chooses its own model and effort (in its own box, once
+  // started): Pi's buttons have nothing to do here.
+  if (d.harness === 'claude') document.querySelectorAll('#modelStrip, #agentThink, #agentMode, #ctxMeter, #agentSlash').forEach(el => { el.style.display = 'none'; });
   draftPaintMeter();
   // Defaults and the folder's meaning arrive after the page is usable.
   const mine = draftState;
@@ -255,7 +258,7 @@ function draftSetupHtml(d) {
   return `<div class="draft-setup" id="draftSetup">
     <div class="ds-line">
       <span class="ds-state">not started</span><span class="ds-sep">·</span>runs in <b class="ds-folder">${esc(d.folder || '~')}</b><span class="ds-implies"></span>
-      <span class="ds-harness" role="radiogroup" aria-label="Which agent runs this conversation">${[['pi', 'Pi', 'Pi: every provider, modes, parallel answers'], ['codex', 'Codex', 'Codex: OpenAI\'s agent, on your ChatGPT plan']].map(([h, label, title]) => `<button type="button" role="radio" class="ghost${(d.harness || 'pi') === h ? ' on' : ''}" aria-checked="${(d.harness || 'pi') === h}" data-harness="${h}" title="${esc(title)}">${label}</button>`).join('')}</span>
+      <span class="ds-harness" role="radiogroup" aria-label="Which agent runs this conversation">${[['pi', 'Pi', 'Pi: every provider, modes, parallel answers'], ['codex', 'Codex', 'Codex: OpenAI\'s agent, on your ChatGPT plan'], ...(window.LiveTerminal && LiveTerminal.enabled ? [['claude', 'Claude Code', 'Claude Code: the real program, live (experimental)']] : [])].map(([h, label, title]) => `<button type="button" role="radio" class="ghost${(d.harness || 'pi') === h ? ' on' : ''}" aria-checked="${(d.harness || 'pi') === h}" data-harness="${h}" title="${esc(title)}">${label}</button>`).join('')}</span>
       <button type="button" class="ghost ds-toggle" aria-expanded="false" aria-controls="draftSetupPanel">setup</button>
     </div>
     <div class="ds-panel" id="draftSetupPanel" hidden>
@@ -408,6 +411,22 @@ async function sendDraft(btn) {
   if (draftState.folderInfo && !draftState.folderInfo.exists) { draftToggleSetup(true); return errToast('that folder does not exist — pick another'); }
   if (prompt.startsWith('/')) return errToast('slash commands need a started conversation — send a first message, then use /');
   if (window._draftSendBusy) return;
+  if (d.harness === 'claude' && window.LiveTerminal && LiveTerminal.enabled) {
+    // The real Claude Code, started in the folder; its live part takes the
+    // box's place (it may ask whether to trust the folder), the message is
+    // sent once it is ready, and the conversation opens once written.
+    window._draftSendBusy = true;
+    d.text = ta.value; saveDraft(d);
+    const state = $('draftSetup') && $('draftSetup').querySelector('.ds-state');
+    try {
+      const key = await LiveTerminal.startNew(d.folder || '', prompt, text => { if (state) state.textContent = text; });
+      deleteDraft(d.id);
+      draftState = null;
+      await open(key, 'bottom');
+    } catch (e) { errToast(e.message); if (state) state.textContent = 'not started'; }
+    finally { window._draftSendBusy = false; }
+    return;
+  }
   window._draftSendBusy = true;
   d.text = ta.value;
   saveDraft(d);

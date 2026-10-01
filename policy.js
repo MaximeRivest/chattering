@@ -102,6 +102,8 @@ const ROUTES = {
   // Codex (design/87) runs as this machine's account: not for guests.
   // The handlers check the conversation (see or act) as well.
   'GET /api/codex/menus': 'member',
+  // Claude Code live (experimental, live-terminal.js): this machine's account.
+  '/api/live-terminal/*': 'owner',
   'PUT /api/codex/prefs': 'member',
   'POST /api/codex/release': 'member',
   'POST /api/codex/open-terminal': 'owner', // opens a window on this machine

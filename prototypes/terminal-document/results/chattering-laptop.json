@@ -1,0 +1,34 @@
+{
+  "name": "chattering-laptop",
+  "when": "2026-10-01T18:10:30.838Z",
+  "folder": "/home/maxime/scratch/live-test-GF9RKc",
+  "newToTrustQuestionMs": 358,
+  "permission": "not asked (Claude Code auto mode)",
+  "newToConversationOpenMs": 2006,
+  "newToDoneMs": 7320,
+  "file": "# Plan\n\n- Write unit tests for each new function.\n- Run all tests before each commit.\n",
+  "view": {
+    "userBubbles": 1,
+    "mentionsWrite": true,
+    "logoRepeats": 0,
+    "promptCount": 1,
+    "dockMounted": true
+  },
+  "keystroke": {
+    "n": 45,
+    "p50": 14.5,
+    "p95": 94.6
+  },
+  "panelShown": true,
+  "afterPanel": {
+    "logoRepeats": 0,
+    "usageInView": false
+  },
+  "stats": {
+    "frames": 82,
+    "bytes": 51675,
+    "errors": []
+  },
+  "pageExceptions": [],
+  "key": "claude:-home-maxime-scratch-live-test-GF9RKc/33637fd7-3463-4ed7-bb89-da3b88e9d380.jsonl"
+}

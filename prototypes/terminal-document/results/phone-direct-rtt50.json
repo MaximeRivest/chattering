@@ -1,0 +1,57 @@
+{
+  "name": "phone-direct-rtt50",
+  "when": "2026-10-01T16:31:26.958Z",
+  "relay": "https://encrypted-link-to-your-devices.rockfrog.ai",
+  "relayOnly": false,
+  "pairToAppMs": 1951,
+  "firstDocumentMs": 1952,
+  "simulatedRoundTripMs": 50,
+  "linkRoundTrip": {
+    "n": 30,
+    "p50": 50.8,
+    "p95": 51.4,
+    "max": 52
+  },
+  "path": null,
+  "localCandidate": "host",
+  "touchMode": true,
+  "trustTapMs": 656,
+  "draft": {
+    "text": "Please add a unit test for the empty input case",
+    "lastEditToProgramShowsItMs": 437,
+    "syncs": [
+      {
+        "ms": 14.5,
+        "roundTripMs": 66.2,
+        "chars": 47
+      }
+    ]
+  },
+  "menuOnPhoneMs": 636,
+  "menuTapToPhoneBoxMs": 263,
+  "secondTypistRefused": {
+    "t": "refused",
+    "seq": 1,
+    "error": "phone is typing"
+  },
+  "afterLeaseAndReplay": {
+    "box": "xQ",
+    "qCount": 1
+  },
+  "bytes": {
+    "phone": {
+      "updates": 0,
+      "bytes": 0
+    },
+    "eink": {
+      "updates": 1,
+      "bytes": 785
+    },
+    "wholeDocumentEachTime": {
+      "updates": 0,
+      "bytesIfSentWhole": 5567
+    }
+  },
+  "errors": [],
+  "pageExceptions": []
+}

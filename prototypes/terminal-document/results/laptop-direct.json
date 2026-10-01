@@ -1,0 +1,56 @@
+{
+  "name": "laptop-direct",
+  "when": "2026-10-01T17:14:44.130Z",
+  "relay": "https://encrypted-link-to-your-devices.rockfrog.ai",
+  "relayOnly": false,
+  "pairToAppMs": 1895,
+  "firstDocumentMs": 1895,
+  "linkRoundTrip": {
+    "n": 30,
+    "p50": 2.2,
+    "p95": 3.1,
+    "max": 3.5
+  },
+  "path": "direct",
+  "localCandidate": "host",
+  "touchMode": false,
+  "trustTapMs": 1037,
+  "keystroke": {
+    "n": 45,
+    "p50": 25.2,
+    "p95": 40.1,
+    "max": 95.3,
+    "programP50": 7.9
+  },
+  "dropped": {
+    "box": "make the parser handle empty input gracefully now",
+    "nowCount": 1,
+    "unconfirmedShown": 4,
+    "reconnects": 1
+  },
+  "secondTypistRefused": {
+    "t": "refused",
+    "seq": 1,
+    "error": "laptop is typing"
+  },
+  "afterLeaseAndReplay": {
+    "box": "xQ",
+    "qCount": 1
+  },
+  "bytes": {
+    "phone": {
+      "updates": 0,
+      "bytes": 0
+    },
+    "eink": {
+      "updates": 1,
+      "bytes": 794
+    },
+    "wholeDocumentEachTime": {
+      "updates": 0,
+      "bytesIfSentWhole": 5629
+    }
+  },
+  "errors": [],
+  "pageExceptions": []
+}

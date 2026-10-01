@@ -1,0 +1,376 @@
+{
+  "name": "claude-live",
+  "command": "claude --permission-mode manual --effort low",
+  "when": "2026-10-01T16:01:19.394Z",
+  "cwd": "/tmp/tdoc-bench-Bu9zQ5",
+  "steps": {
+    "firstInteractiveMs": 550,
+    "trustDialog": {
+      "question": "Accessing workspace:   /tmp/tdoc-bench-Bu9zQ5",
+      "options": [
+        "No, exit",
+        "Yes, I trust this folder"
+      ],
+      "selected": 0,
+      "verifiedChooseMs": 506
+    },
+    "composerReadyMs": 2545,
+    "idle": {
+      "mode": "compose",
+      "placeholder": "Try \"create a util logging.py that...\"",
+      "footer": [
+        "maxime@lambda:/tmp/tdoc-bench-Bu9zQ5  0 tokens",
+        "⏸ manual mode on · ← for agents  ○ low · /effort /rc connecting…"
+      ]
+    },
+    "keystroke": {
+      "programFirstByte": {
+        "n": 39,
+        "p50": 7.6,
+        "p95": 31.34,
+        "max": 73.62
+      },
+      "composerShowsIt": {
+        "n": 48,
+        "p50": 10.15,
+        "p95": 34.27,
+        "max": 76.79
+      }
+    },
+    "burst": {
+      "chars": 43,
+      "lastKeyToCompleteMs": 16.4,
+      "allInOrder": true
+    },
+    "editing": {
+      "text": "burst typing keeps every character in orXder",
+      "caret": 41,
+      "expected": "burst typing keeps every character in orXder",
+      "matches": true
+    },
+    "newline": {
+      "text": "line one\nline two",
+      "ok": true,
+      "mode": "compose"
+    },
+    "clearedBeforePaste": "",
+    "pasteShort": {
+      "ms": 32.6,
+      "text": "pasted one\npasted two"
+    },
+    "pasteLarge": {
+      "chars": 2930,
+      "ms": 317.8,
+      "shownAs": "[Pasted text #1 +59 lines]"
+    },
+    "menu": {
+      "appearMs": 62.3,
+      "items": [
+        "/model",
+        "/mobile",
+        "/morning",
+        "/auto-mode-setup"
+      ],
+      "selected": 0,
+      "verifiedPickMs": 197.7,
+      "composerAfter": "/mobile"
+    },
+    "livePromptSoftWraps": 1,
+    "live": {
+      "enterToWorkingMs": 207,
+      "enterToPermissionMs": 2566,
+      "permission": {
+        "question": "Bash command\n Tip: auto mode handles these prompts for you — choose \"switch to auto mode\" below\n Create hello.txt with the word hi\n╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n printf 'hi' > /tmp/tdoc-bench-Bu9zQ5/hello.txt\n╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n Do you want to proceed?",
+        "options": [
+          "Yes",
+          "Yes, and always allow access to /tmp/tdoc-bench-Bu9zQ5 from this project",
+          "Yes, and switch to auto mode · auto mode handles these prompts for you",
+          "No"
+        ],
+        "selected": 0,
+        "hint": "Esc to cancel · Tab to amend"
+      },
+      "verifiedAllowMs": 285,
+      "enterToDoneMs": 5775,
+      "transcript": [
+        {
+          "kind": "user",
+          "text": "Create a file named hello.txt containing exactly the word hi. Then reply with one short sentence."
+        },
+        {
+          "kind": "tool",
+          "text": "Bash(printf 'hi' > /tmp/tdoc-bench-Bu9zQ5/hello.txt)\n   file or directory",
+          "result": " PreToolUse:Bash hook error\n Failed with non-blocking status code: /bin/sh: line 1: /home/maxime/.local/bin/pi-rust: No such\n (No output)"
+        },
+        {
+          "kind": "assistant",
+          "text": "I created hello.txt, and it contains the word \"hi\"."
+        },
+        {
+          "kind": "assistant",
+          "text": "Ran 1 stop hook"
+        },
+        {
+          "kind": "other",
+          "text": "⎿  /home/maxime/.claude/claude-notify-completion.sh"
+        },
+        {
+          "kind": "other",
+          "text": "⎿  Stop hook error: Failed with non-blocking status code: sndfile: failed to open audio\nfile \"/home/maxime/.claude/jobs-done.wav\": System error : No such file or directory.\nerror: open failed: Input/o"
+        }
+      ],
+      "file": "hi",
+      "journal": [
+        {
+          "kind": "tool",
+          "name": "Bash",
+          "path": null,
+          "error": false
+        },
+        {
+          "kind": "text",
+          "text": "I created hello.txt, and it contains the word \"hi\"."
+        }
+      ],
+      "timeline": [
+        {
+          "t": 198,
+          "mode": "compose",
+          "blocks": 1,
+          "last": "notice: ▐▛███▛█   Claude Code v2.1.286\n▝▜██████▀  Opus 5.5 with low",
+          "status": null
+        },
+        {
+          "t": 205,
+          "mode": "working",
+          "blocks": 2,
+          "last": "user:Create a file named hello.txt containing exactly the word hi",
+          "status": "* Whirlpooling… (0s)"
+        },
+        {
+          "t": 306,
+          "mode": "working",
+          "blocks": 2,
+          "last": "user:Create a file named hello.txt containing exactly the word hi",
+          "status": "✢ Whirlpooling… (0s)"
+        },
+        {
+          "t": 423,
+          "mode": "working",
+          "blocks": 2,
+          "last": "user:Create a file named hello.txt containing exactly the word hi",
+          "status": "· Whirlpooling… (0s)"
+        },
+        {
+          "t": 870,
+          "mode": "working",
+          "blocks": 2,
+          "last": "user:Create a file named hello.txt containing exactly the word hi",
+          "status": "✢ Whirlpooling… (0s)"
+        },
+        {
+          "t": 976,
+          "mode": "working",
+          "blocks": 2,
+          "last": "user:Create a file named hello.txt containing exactly the word hi",
+          "status": "* Whirlpooling… (0s)"
+        },
+        {
+          "t": 1093,
+          "mode": "working",
+          "blocks": 2,
+          "last": "user:Create a file named hello.txt containing exactly the word hi",
+          "status": "✶ Whirlpooling… (1s)"
+        },
+        {
+          "t": 1246,
+          "mode": "working",
+          "blocks": 2,
+          "last": "user:Create a file named hello.txt containing exactly the word hi",
+          "status": "✶ Canoodling… (1s)"
+        },
+        {
+          "t": 1315,
+          "mode": "working",
+          "blocks": 2,
+          "last": "user:Create a file named hello.txt containing exactly the word hi",
+          "status": "✻ Canoodling… (1s)"
+        },
+        {
+          "t": 1459,
+          "mode": "working",
+          "blocks": 2,
+          "last": "user:Create a file named hello.txt containing exactly the word hi",
+          "status": "✽ Canoodling… (1s)"
+        },
+        {
+          "t": 1884,
+          "mode": "working",
+          "blocks": 2,
+          "last": "user:Create a file named hello.txt containing exactly the word hi",
+          "status": "✻ Canoodling… (1s · ↓ 8 tokens)"
+        },
+        {
+          "t": 1993,
+          "mode": "working",
+          "blocks": 2,
+          "last": "user:Create a file named hello.txt containing exactly the word hi",
+          "status": "✶ Canoodling… (1s · ↓ 12 tokens)"
+        },
+        {
+          "t": 2125,
+          "mode": "working",
+          "blocks": 2,
+          "last": "user:Create a file named hello.txt containing exactly the word hi",
+          "status": "* Canoodling… (2s · ↓ 14 tokens)"
+        },
+        {
+          "t": 2212,
+          "mode": "working",
+          "blocks": 2,
+          "last": "user:Create a file named hello.txt containing exactly the word hi",
+          "status": "✢ Canoodling… (2s · ↓ 16 tokens)"
+        },
+        {
+          "t": 2476,
+          "mode": "working",
+          "blocks": 3,
+          "last": "tool:Bash(printf 'hi' > /tmp/tdoc-bench-Bu9zQ5/hello.txt)",
+          "status": "✢ Canoodling… (running PreToolUse hook · 2s · ↓ 17 tokens)"
+        },
+        {
+          "t": 2565,
+          "mode": "choice",
+          "blocks": 4,
+          "last": "notice:────────────────────────────────────────────────────────────",
+          "status": null
+        },
+        {
+          "t": 2850,
+          "mode": "working",
+          "blocks": 3,
+          "last": "tool:Bash(printf 'hi' > /tmp/tdoc-bench-Bu9zQ5/hello.txt)",
+          "status": "· Canoodling… (2s · ↓ 113 tokens)"
+        },
+        {
+          "t": 2904,
+          "mode": "working",
+          "blocks": 3,
+          "last": "tool:Bash(printf 'hi' > /tmp/tdoc-bench-Bu9zQ5/hello.txt)",
+          "status": "✢ Canoodling… (2s · ↓ 113 tokens)"
+        },
+        {
+          "t": 2929,
+          "mode": "working",
+          "blocks": 3,
+          "last": "other:⎿  Running…",
+          "status": "✢ Canoodling… (2s · ↓ 113 tokens)"
+        },
+        {
+          "t": 3080,
+          "mode": "working",
+          "blocks": 3,
+          "last": "tool:Bash(printf 'hi' > /tmp/tdoc-bench-Bu9zQ5/hello.txt)\n   file",
+          "status": "✢ Canoodling… (2s · ↓ 113 tokens)"
+        },
+        {
+          "t": 3099,
+          "mode": "working",
+          "blocks": 3,
+          "last": "tool:Bash(printf 'hi' > /tmp/tdoc-bench-Bu9zQ5/hello.txt)\n   file",
+          "status": "* Canoodling… (2s · ↓ 113 tokens)"
+        },
+        {
+          "t": 3120,
+          "mode": "working",
+          "blocks": 3,
+          "last": "tool:Bash(printf 'hi' > /tmp/tdoc-bench-Bu9zQ5/hello.txt)\n   file",
+          "status": "✶ Canoodling… (2s · ↓ 113 tokens)"
+        },
+        {
+          "t": 3229,
+          "mode": "working",
+          "blocks": 3,
+          "last": "tool:Bash(printf 'hi' > /tmp/tdoc-bench-Bu9zQ5/hello.txt)\n   file",
+          "status": "✻ Canoodling… (3s · ↓ 113 tokens)"
+        },
+        {
+          "t": 3453,
+          "mode": "working",
+          "blocks": 3,
+          "last": "tool:Bash(printf 'hi' > /tmp/tdoc-bench-Bu9zQ5/hello.txt)\n   file",
+          "status": "✽ Canoodling… (3s · ↓ 113 tokens)"
+        },
+        {
+          "t": 3897,
+          "mode": "working",
+          "blocks": 3,
+          "last": "tool:Bash(printf 'hi' > /tmp/tdoc-bench-Bu9zQ5/hello.txt)\n   file",
+          "status": "✻ Canoodling… (3s · ↓ 113 tokens)"
+        },
+        {
+          "t": 4008,
+          "mode": "working",
+          "blocks": 3,
+          "last": "tool:Bash(printf 'hi' > /tmp/tdoc-bench-Bu9zQ5/hello.txt)\n   file",
+          "status": "✶ Canoodling… (3s · ↓ 113 tokens)"
+        },
+        {
+          "t": 4129,
+          "mode": "working",
+          "blocks": 4,
+          "last": "assistant:I created hello.txt, and it contains the word \"hi\".",
+          "status": "✶ Canoodling… (running Stop hook · 3s · ↓ 113 tokens)"
+        },
+        {
+          "t": 4136,
+          "mode": "working",
+          "blocks": 4,
+          "last": "assistant:I created hello.txt, and it contains the word \"hi\".",
+          "status": "* Canoodling… (running Stop hook · 3s · ↓ 117 tokens)"
+        },
+        {
+          "t": 4271,
+          "mode": "compose",
+          "blocks": 8,
+          "last": "notice:✻ Churned for 3s · done 12:01 p.m.",
+          "status": null
+        }
+      ],
+      "assistantTextUpdates": 2
+    },
+    "frames": {
+      "count": 248,
+      "bytesFromProgram": 24991,
+      "snapshotMs": {
+        "n": 248,
+        "p50": 0.58,
+        "p95": 1.38,
+        "max": 6.1
+      },
+      "readerMs": {
+        "n": 248,
+        "p50": 0.27,
+        "p95": 0.78,
+        "max": 3.58
+      },
+      "parseMsTotal": 356.3
+    }
+  },
+  "notes": [],
+  "final": {
+    "mode": "compose",
+    "composer": "",
+    "live": 0,
+    "transcriptKinds": [
+      "notice",
+      "user",
+      "tool",
+      "assistant",
+      "assistant",
+      "other",
+      "other",
+      "notice"
+    ]
+  }
+}

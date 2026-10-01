@@ -1,0 +1,39 @@
+{
+  "harness": "codex",
+  "when": "2026-10-01T19:28:21.641Z",
+  "folder": "/home/maxime/scratch/live-codex-6Vwkdz",
+  "key": "codex:2026/10/01/rollout-2026-10-01T15-28-22-01a0f8f0-707b-7cf3-b65c-14f435141eac.jsonl",
+  "startToBoxMs": 210,
+  "box": {
+    "text": "",
+    "placeholder": "Ask Codex to do anything",
+    "footer": [
+      "gpt-5.6-sol low · ~/scratch/live-codex-6Vwkdz"
+    ]
+  },
+  "keystroke": {
+    "n": 34,
+    "p50": 22.8,
+    "p95": 24.2
+  },
+  "homeThenX": "Xmake the parser handle empty input",
+  "clearedTo": "",
+  "slashMenu": [
+    "/model (selected)",
+    "/fast",
+    "/ide",
+    "/permissions"
+  ],
+  "sawWorking": true,
+  "sendToReplyInViewMs": 6141,
+  "view": {
+    "askShown": 1,
+    "firstShown": 1,
+    "length": 517
+  },
+  "backToChatteringBox": true,
+  "stats": {
+    "errors": []
+  },
+  "pageExceptions": []
+}

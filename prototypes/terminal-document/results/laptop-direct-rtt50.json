@@ -1,0 +1,57 @@
+{
+  "name": "laptop-direct-rtt50",
+  "when": "2026-10-01T16:30:41.223Z",
+  "relay": "https://encrypted-link-to-your-devices.rockfrog.ai",
+  "relayOnly": false,
+  "pairToAppMs": 1918,
+  "firstDocumentMs": 1918,
+  "simulatedRoundTripMs": 50,
+  "linkRoundTrip": {
+    "n": 30,
+    "p50": 50.9,
+    "p95": 51.5,
+    "max": 51.7
+  },
+  "path": null,
+  "localCandidate": "host",
+  "touchMode": false,
+  "trustTapMs": 630,
+  "keystroke": {
+    "n": 45,
+    "p50": 63.1,
+    "p95": 70.6,
+    "max": 72,
+    "programP50": 2.4
+  },
+  "dropped": {
+    "box": "make the parser handle empty input gracefully",
+    "nowCount": 0,
+    "unconfirmedShown": 4,
+    "reconnects": 1
+  },
+  "secondTypistRefused": {
+    "t": "refused",
+    "seq": 1,
+    "error": "laptop is typing"
+  },
+  "afterLeaseAndReplay": {
+    "box": "xQ",
+    "qCount": 1
+  },
+  "bytes": {
+    "phone": {
+      "updates": 0,
+      "bytes": 0
+    },
+    "eink": {
+      "updates": 1,
+      "bytes": 803
+    },
+    "wholeDocumentEachTime": {
+      "updates": 0,
+      "bytesIfSentWhole": 5622
+    }
+  },
+  "errors": [],
+  "pageExceptions": []
+}

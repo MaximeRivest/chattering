@@ -1,0 +1,105 @@
+{
+  "name": "claude-input",
+  "command": "claude --permission-mode manual --effort low",
+  "when": "2026-10-01T16:09:34.315Z",
+  "cwd": "/tmp/tdoc-bench-xwrpff",
+  "steps": {
+    "firstInteractiveMs": 866,
+    "trustDialog": {
+      "question": "Accessing workspace:   /tmp/tdoc-bench-xwrpff",
+      "options": [
+        "No, exit",
+        "Yes, I trust this folder"
+      ],
+      "selected": 0,
+      "verifiedChooseMs": 475
+    },
+    "composerReadyMs": 2885,
+    "idle": {
+      "mode": "compose",
+      "placeholder": "Try \"write a test for <filepath>\"",
+      "footer": [
+        "maxime@lambda:/tmp/tdoc-bench-xwrpff  0 tokens",
+        "⏸ manual mode on · ← for agents  ○ low · /effort /rc connecting…"
+      ]
+    },
+    "keystroke": {
+      "programFirstByte": {
+        "n": 39,
+        "p50": 12.33,
+        "p95": 93.75,
+        "max": 162.02
+      },
+      "composerShowsIt": {
+        "n": 48,
+        "p50": 14.55,
+        "p95": 96.17,
+        "max": 165.58
+      }
+    },
+    "burst": {
+      "chars": 43,
+      "lastKeyToCompleteMs": 22.3,
+      "allInOrder": true
+    },
+    "editing": {
+      "text": "burst typing keeps every character in orXder",
+      "caret": 41,
+      "expected": "burst typing keeps every character in orXder",
+      "matches": true
+    },
+    "newline": {
+      "text": "line one\nline two",
+      "ok": true,
+      "mode": "compose"
+    },
+    "clearedBeforePaste": "",
+    "pasteShort": {
+      "ms": 39.5,
+      "text": "pasted one\npasted two"
+    },
+    "pasteLarge": {
+      "chars": 2930,
+      "ms": 343.4,
+      "shownAs": "[Pasted text #1 +59 lines]"
+    },
+    "menu": {
+      "appearMs": 83.9,
+      "items": [
+        "/model",
+        "/mobile",
+        "/morning",
+        "/auto-mode-setup"
+      ],
+      "selected": 0,
+      "verifiedPickMs": 199.9,
+      "composerAfter": "/mobile "
+    },
+    "frames": {
+      "count": 128,
+      "bytesFromProgram": 12951,
+      "snapshotMs": {
+        "n": 128,
+        "p50": 0.59,
+        "p95": 1.64,
+        "max": 4.75
+      },
+      "readerMs": {
+        "n": 128,
+        "p50": 0.27,
+        "p95": 0.9,
+        "max": 2.61
+      },
+      "parseMsTotal": 191.9
+    }
+  },
+  "notes": [],
+  "final": {
+    "mode": "compose",
+    "composer": "",
+    "live": 0,
+    "transcriptKinds": [
+      "notice"
+    ]
+  }
+}

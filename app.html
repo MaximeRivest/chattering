@@ -2515,6 +2515,8 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <script src="/harness/compose-commands.js"></script>
 <script src="/harness-composer-ui.js"></script>
 <script src="/codex-ui.js"></script>
+<script src="/live-terminal-ui.js"></script>
+<link rel="stylesheet" href="/live-terminal.css">
 <script src="/linediff.js"></script>
 <script src="/notebook-env.js"></script>
 <script src="/ai-commands.js"></script>
@@ -11659,6 +11661,8 @@ function agentComposerHtml(d) {
     <span class="hint">Continue it there, or fork it: the fork is a conversation of this machine, in your checkout.</span>
     <button type="button" class="ghost" id="mirrorFork">fork here</button></div></div>`;
   if (!['claude', 'pi', 'pi-remote', 'codex'].includes(d.source)) return '';
+  // Claude Code continued live, when switched on (live-terminal-ui.js).
+  if (window.LiveTerminal && LiveTerminal.enabled && LiveTerminal.useFor(d)) return LiveTerminal.dockHtml(d);
   // A text-only copy the Codex app imported is read here, never continued.
   const codexNotice = window.CodexUI ? CodexUI.noticeHtml(d) : '';
   if (codexNotice && (d.importCopyOf || (d.codex && d.codex.imported))) return `<div class="composer-dock mirror-dock" id="composerDock" data-conversation-key="${esc(d.key)}">${codexNotice}</div>`;
@@ -11689,6 +11693,7 @@ function agentComposerHtml(d) {
       ${d.source !== 'claude' && !d.draft ? '<button id="agentCompact" type="button" title="Summarize the older messages so the model reads less (or type /compact)">Compact conversation…</button>' : ''}
       ${codex ? '<button id="codexAccess" type="button" hidden></button>' : ''}
       ${codex && !d.draft ? '<button id="codexTerminal" type="button" title="Continue in Codex\'s own terminal. Chattering lets go of the conversation first (Codex allows one writer).">Open in Codex (terminal)</button>' : ''}
+      ${window.LiveTerminal && LiveTerminal.offerFor(d) ? `<button id="ltUseHere" type="button" title="Continue in ${codex ? 'Codex' : 'Pi'}'s own terminal program, shown here: its own box, commands and questions (experimental)">Continue in ${codex ? 'Codex' : 'Pi'}'s own program</button>` : ''}
       <button id="agentAttach" type="button">Attach image</button>
       <input id="agentFiles" type="file" accept="image/*" multiple hidden>
       </div></details>
@@ -13419,6 +13424,8 @@ function wireComposeMin(ta) {
 }
 
 function wireAgentComposer() {
+  if (window.LiveTerminal && LiveTerminal.mount()) return;
+  if ($('ltUseHere')) $('ltUseHere').onclick = () => LiveTerminal.useHere(activeRel);
   const tools = $('composeTools');
   if (tools) {
     tools.addEventListener('click', e => {
@@ -18999,7 +19006,8 @@ fetch('/api/git/repos').then(r => r.json()).then(d => {
   gitReposCache = (d && d.repos) || [];
   if (viewKind === 'home' && tab === 'conv') render();
 }).catch(() => {});
-load().then(() => {
+// Claude Code live (experimental): known before the first conversation renders.
+Promise.all([load(), window.LiveTerminal ? LiveTerminal.init().catch(() => false) : false]).then(() => {
   // The stack finds its place (a reload) or starts here (a new tab); the
   // page then renders from the hash as it always did.
   try { history.scrollRestoration = 'manual'; } catch {}

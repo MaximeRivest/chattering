@@ -1,0 +1,13 @@
+{
+  "composerReadyMs": 669,
+  "echo": {
+    "n": 19,
+    "p50": 9.6,
+    "p95": 117,
+    "max": 117
+  },
+  "menu": [
+    "thinking (selected)",
+    "btw:thinking"
+  ]
+}

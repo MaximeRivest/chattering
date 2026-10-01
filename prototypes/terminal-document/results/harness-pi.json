@@ -1,0 +1,41 @@
+{
+  "harness": "pi",
+  "when": "2026-10-01T19:27:56.428Z",
+  "folder": "/home/maxime/scratch/live-pi-aSKkWW",
+  "key": "pi:--home-maxime-scratch-live-pi-aSKkWW--/2026-10-01T19-27-57-383Z_01a0f8f0-0fc7-728e-b0fe-72c4e7f436aa.jsonl",
+  "startToBoxMs": 527,
+  "box": {
+    "text": "",
+    "placeholder": "",
+    "footer": [
+      "~/scratch/live-pi-aSKkWW • Project: live-pi-aSKkWW",
+      "↑8 ↓173 R10k W3.3k CH97.9% $0.052 0.7%/1.0M                    (claude-code) claude-fable-5-1 • high",
+      "mode:Coding orchestrator inbox: ready"
+    ]
+  },
+  "keystroke": {
+    "n": 34,
+    "p50": 9.7,
+    "p95": 17.1
+  },
+  "homeThenX": "Xmake the parser handle empty input",
+  "clearedTo": "",
+  "slashMenu": [
+    "settings (selected)",
+    "model",
+    "tree",
+    "thinking"
+  ],
+  "sawWorking": true,
+  "sendToReplyInViewMs": 5675,
+  "view": {
+    "askShown": 1,
+    "firstShown": 1,
+    "length": 1315
+  },
+  "backToChatteringBox": true,
+  "stats": {
+    "errors": []
+  },
+  "pageExceptions": []
+}

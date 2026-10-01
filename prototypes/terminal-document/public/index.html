@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,interactive-widget=resizes-content">
+<title>Terminal document · prototype</title><link rel="stylesheet" href="style.css"></head>
+<body>
+<header class="bar">
+  <span class="brand">chattering <span class="dim">/ terminal document prototype</span></span>
+  <span id="mode" class="pill">connecting…</span>
+  <span id="lat" class="lat" title="Keystroke → terminal program → back on this page (confirmed by the program, not local echo)"></span>
+  <label class="toggle"><input type="checkbox" id="einkToggle"> e-ink</label>
+  <label class="toggle"><input type="checkbox" id="touchToggle"> phone keyboard</label>
+  <label class="toggle"><input type="checkbox" id="showScreen"> terminal beside</label>
+</header>
+<div id="conn" class="banner" hidden>Reconnecting… nothing is re-sent</div>
+<div id="note" class="banner note" hidden></div>
+<main id="main">
+  <section id="conv" class="conv" aria-label="Conversation">
+    <div id="transcript"></div>
+    <div id="live"></div>
+    <div id="keybar" class="keybar" hidden aria-label="Terminal keys">
+      <button data-key="Escape">Esc</button><button data-key="Tab">Tab</button><button data-key="Tab" data-shift="1">⇧Tab</button>
+      <button data-key="ArrowLeft" aria-label="Left">←</button><button data-key="ArrowUp" aria-label="Up">↑</button><button data-key="ArrowDown" aria-label="Down">↓</button><button data-key="ArrowRight" aria-label="Right">→</button>
+      <button data-key="Enter">Enter</button>
+    </div>
+    <div id="status" hidden><span id="statusText"></span><button id="stopBtn">Stop</button></div>
+    <div id="choice" hidden></div>
+    <div id="composer" class="composer" aria-label="Claude Code’s input, shown here">
+      <div id="menu" class="menu" hidden role="listbox" aria-label="Suggestions"></div>
+      <div id="field" class="field" tabindex="-1"><span id="before"></span><span id="caret" class="caret"></span><span id="after"></span><span id="ph" class="ph"></span></div>
+      <textarea id="keys" class="keys" aria-label="Message" autocomplete="off" autocapitalize="off" spellcheck="false" rows="1"></textarea>
+      <div class="touchrow"><textarea id="draft" class="draft" rows="1" aria-label="Message" enterkeyhint="enter"></textarea><button id="sendBtn" class="send">Send</button></div>
+      <div id="footer" class="footer"></div>
+    </div>
+  </section>
+  <aside id="screenPane" class="screen-pane" hidden aria-label="The terminal as the program drew it"><pre id="screen"></pre></aside>
+</main>
+<script src="client.js"></script>
+</body></html>

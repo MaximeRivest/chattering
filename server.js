@@ -9180,6 +9180,17 @@ function codexComposerFor(key, principal) {
   return c;
 }
 
+// Experimental: Claude Code continued live from Chattering, through the
+// real interactive `claude` on an invisible terminal (live-terminal.js).
+// Off unless CHATTERING_LIVE_TERMINAL=1: nothing of it loads otherwise.
+let liveTerminalsLib = null;
+function liveTerminals() {
+  if (process.env.CHATTERING_LIVE_TERMINAL !== '1') return null;
+  return liveTerminalsLib ||= require('./live-terminal.js').createLiveTerminals({
+    cacheDir: CACHE_DIR, claudeBin: () => claudeBin(), claudeProjects: SOURCES.claude, log: m => console.error(m),
+  });
+}
+
 function claudeBin() {
   return process.env.CHATTERING_CLAUDE
     || firstExisting([
@@ -16747,6 +16758,8 @@ async function handleRequest(req, res) {
       '/file-completion-ui.js': { file: 'file-completion-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/harness-composer-ui.js': { file: 'harness-composer-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/codex-ui.js': { file: 'codex-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/live-terminal-ui.js': { file: 'live-terminal-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/live-terminal.css': { file: 'live-terminal.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/harness/compose-commands.js': { file: 'harness/compose-commands.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/linediff.js': { file: 'linediff.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/notebook-env.js': { file: 'notebook-env.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
@@ -18860,6 +18873,54 @@ async function handleRequest(req, res) {
         if (!snippetsLib.isSnippetPath(abs)) throw new Error('not a snippet path');
         json(res, 200, await snippetsLib.bumpUse(SNIPPET_USES_FILE, abs));
       } catch (e) { json(res, 400, { error: e.message }); }
+    } else if (u.pathname.startsWith('/api/live-terminal/')) {
+      // Claude Code live (experimental; live-terminal.js). Owner only
+      // (policy.js): it runs as this machine's account.
+      const lt = liveTerminals();
+      try {
+        if (u.pathname === '/api/live-terminal/status' && req.method === 'GET') {
+          const key = u.searchParams.get('id');
+          if (!lt) return json(res, 200, { enabled: false });
+          return json(res, 200, { enabled: true, ...(key ? { ...lt.status(key), indexed: !!index[key] } : { available: lt.available, why: lt.why }) });
+        }
+        if (!lt) return json(res, 404, { error: 'The live terminal is not switched on here.' });
+        let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 16384) throw Object.assign(new Error('request too large'), { status: 413 }); }
+        const p = JSON.parse(raw || '{}');
+        if (u.pathname === '/api/live-terminal/start' && req.method === 'POST') {
+          // The conversation continues in its own program: Claude Code,
+          // Pi or Codex, each the one installed here.
+          const entry = index[p.id];
+          if (!entry || !['claude', 'pi', 'codex'].includes(entry.source)) return json(res, 404, { error: 'conversation not found (Claude Code, Pi or Codex)' });
+          assertCan(identity, 'act', targetOf(p.id), 'this conversation');
+          const { cwd, sessionPath } = sessionPathsFor(p.id);
+          if (!lt.sessions.has(p.id)) {
+            const running = findRunningConversation(p.id);
+            if (running) return json(res, 409, { error: 'This conversation is open in a terminal (pid ' + running.pid + '). Close it there first: one program writes a conversation at a time.' });
+            if (headlessRuns.has(sessionPath)) return json(res, 409, { error: 'A reply is being written here. Wait for it, then continue in the terminal.' });
+          }
+          let command = null;
+          if (entry.source === 'pi') {
+            // Chattering lets go of the conversation first (its warm session).
+            stopAnyWarmSession(sessionPath);
+            command = piArgv(['--session', sessionPath]);
+          } else if (entry.source === 'codex') {
+            if (!entry.sessionId) return json(res, 400, { error: 'This Codex conversation has no thread id.' });
+            if (entry.importCopyOf || (entry.codex && entry.codex.imported)) return json(res, 400, { error: 'A text-only copy Codex imported: continue the original.' });
+            // Codex allows one writer: Chattering's own Codex lets go first.
+            try { await codexDriver.release(entry.sessionId); } catch (e) { return json(res, 409, { error: e.message }); }
+            command = [codexBin(), 'resume', entry.sessionId];
+          }
+          lt.start(p.id, { cwd, sessionId: entry.sessionId, resume: true, command, harness: entry.source });
+          return json(res, 200, { ok: true, ...lt.status(p.id) });
+        }
+        if (u.pathname === '/api/live-terminal/new' && req.method === 'POST') {
+          const where = describeStartFolder(p.folder || '');
+          if (!where.exists) return json(res, 404, { error: 'folder not found: ' + where.display });
+          return json(res, 200, { ok: true, ...lt.newSession(where.path) });
+        }
+        if (u.pathname === '/api/live-terminal/stop' && req.method === 'POST') return json(res, 200, { ok: lt.stop(String(p.id || '')) });
+        json(res, 404, { error: 'not found' });
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/codex/menus' && req.method === 'GET') {
       // Codex's own menus, for a Codex conversation (?id=) or a draft (?cwd=).
       try {
@@ -19842,6 +19903,7 @@ let shuttingDown = false;
 async function shutdownGracefully() {
   if (shuttingDown) return;
   shuttingDown = true;
+  try { if (liveTerminalsLib) liveTerminalsLib.stopAll(); } catch {}
   try { anywhere.stop(); } catch {}
   try { anywhereLinks.stop(); } catch {}
   clearInterval(delegationTimer);
@@ -19989,6 +20051,16 @@ function upgradeRequestInner(req, socket, head) {
   if (!gate.ok) return refuseUpgrade(socket, 403, 'Forbidden');
   if (u.pathname.startsWith('/api/collab/')) return collabUpgrade(req, socket, head).catch(() => { try { socket.destroy(); } catch {} });
   if (u.pathname === '/api/voice/listen') return voiceListenUpgrade(req, socket, head);
+  if (u.pathname === '/api/live-terminal/ws') {
+    const lt = liveTerminals(), key = u.searchParams.get('id') || '';
+    if (!lt) return refuseUpgrade(socket, 404, 'Not Found');
+    // A new conversation is in the hub before its file exists: its key is
+    // known from the start (live-terminal.js newSession).
+    if (index[key] && !canDo(identity, 'act', targetOf(key))) return refuseUpgrade(socket, 403, 'Forbidden');
+    const conn = acceptWebSocket(req, socket, head);
+    if (conn) lt.attach(key, conn, { name: 'a page' });
+    return;
+  }
   return speechStreamUpgrade(req, socket, head);
 }
 server.on('upgrade', upgradeRequest);

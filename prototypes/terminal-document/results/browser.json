@@ -1,0 +1,24 @@
+{
+  "when": "2026-10-01T16:07:49.748Z",
+  "trustClickToComposerMs": 939,
+  "keystroke": {
+    "n": 45,
+    "p50": 27.4,
+    "p95": 49.1,
+    "max": 83.7,
+    "programP50": 9
+  },
+  "composerMatches": true,
+  "homeThenType": "please make the parser handle empty input gracefully",
+  "menuClickToComposerMs": 234,
+  "paste": "first line\nsecond line",
+  "livePermissionMs": 2431,
+  "liveDoneMs": 5331,
+  "liveDiffShown": "/tmp/tdoc-browser-wLiPBC/notes.md · new file+ # Plan+ + - Write unit tests for each new function.+ - Run the full test suite before each commit.",
+  "frames": {
+    "frames": 251,
+    "bytes": 1504199,
+    "avgFrameBytes": 5993
+  },
+  "errors": []
+}

@@ -1,0 +1,25 @@
+{
+  "name": "chattering-phone",
+  "when": "2026-10-01T18:12:49.179Z",
+  "folder": "/home/maxime/scratch/live-test-M0XfRQ",
+  "pairToAppMs": 3243,
+  "openToLiveMs": 3425,
+  "touchMode": true,
+  "phoneTextInClaudeBoxMs": 255,
+  "sendToReplyInViewMs": 4125,
+  "view": {
+    "prompts": 2,
+    "logo": 0,
+    "phoneBox": ""
+  },
+  "einkTheme": {
+    "mode": "binary",
+    "calmDock": true
+  },
+  "stats": {
+    "frames": 13,
+    "bytes": 9233,
+    "errors": []
+  },
+  "pageExceptions": []
+}
