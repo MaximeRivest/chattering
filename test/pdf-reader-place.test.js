@@ -212,4 +212,3 @@ for (const [name, type, event, navigate] of [
     assert.equal(b.messages.at(-1).page, 3);
   });
 }
-

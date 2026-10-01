@@ -54,4 +54,3 @@ for (const zoom of ['page-width', '1.5']) {
     assert.deepEqual(b.exceptions, []);
   });
 }
-
