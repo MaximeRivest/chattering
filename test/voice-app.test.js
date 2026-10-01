@@ -127,9 +127,7 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
   // is numbered on screen while listening.
   const listed = `voicePicks().items.some(it => it.kind === 'conversation' && it.region === 'left panel')`;
   await until(listed, 'no conversation listed');
-  await new Promise(r => setTimeout(r, 500));
-  await until(listed, 'the conversation list emptied');
-  await until(`document.querySelectorAll('#voiceHints .vh').length > 0`, 'nothing is numbered on screen');
+  await until(`voice.numbers.get('conv:pi:fixture/media.jsonl') >= 1 && [...document.querySelectorAll('#voiceHints .vh')].some(h => Number(h.textContent) === voice.numbers.get('conv:pi:fixture/media.jsonl'))`, 'nothing is numbered on screen');
   const n = await ev(`voice.numbers.get('conv:pi:fixture/media.jsonl')`);
   assert.ok(n >= 1, 'the conversation has a number');
   // What can I say: the actions here, and the lists to pick from.
@@ -145,7 +143,6 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
   assert.deepEqual(await ev(`voice.decisions.at(-1).decision.args`), { number: n });
   await ev(`goHome()`);
   await until(listed, 'the list did not come back');
-  await new Promise(r => setTimeout(r, 500));
   // … and by place: the one at the top of the left list.
   await hear('open the top one');
   await until(`viewKind === 'conversation' && $('agentText')`, 'the voice did not open the conversation').catch(async e => { console.log('VOICEDEC', await ev(`JSON.stringify(voice.decisions.map(d => [d.said, d.status, d.decision && d.decision.action, d.summary, d.note]))`)); throw e; });

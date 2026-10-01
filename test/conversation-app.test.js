@@ -252,6 +252,7 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   assert.equal(await evaluate(`fileWs.path`), path.join(work, 'docs', 'example.js'));
   assert.equal(await evaluate(`document.querySelector('#liveBack .lf-wide').textContent`), 'Files', 'a file opened from the browser returns to the browser');
   assert.equal(await evaluate(`document.querySelectorAll('.live-file-head').length`), 1, 'one header row, nothing above the file');
+  await require('./helpers/changed-file').installChangedFiles(evaluate);
   await evaluate(`open(${JSON.stringify(key)},'restore')`);
   assert.equal(await evaluate(`document.querySelector('#agentText').value`), 'Unsent draft', 'Files toggle lost conversation draft');
   await evaluate(`fbConversationFiles()`);
@@ -335,9 +336,9 @@ test('complete app and server: conversation reading, Files browsing, MRMD, diffs
   await evaluate(`moveReading(${JSON.stringify(key)},'a',{anchor:'p'})`);
   // Under the steps, the file they changed (design/88); the other task's file is not theirs.
   const waitFor = async (expr, what) => { for (let i = 0; i < 300; i++) { if (await evaluate(expr)) return; await new Promise(r => setTimeout(r, 30)); } assert.fail('Timed out: ' + what); };
-  await waitFor(`!!document.querySelector('.sc-strip:not([hidden]) .sc-row[data-file-diff$="docs/example.js"]:not(.sc-wait)')`, 'the file under the steps');
-  assert.equal(await evaluate(`!!document.querySelector('.sc-row[data-file-diff$="concurrent.txt"]')`), false, 'an edit is not credited with what changed beside it');
-  await evaluate(`document.querySelector('.sc-row[data-file-diff$="docs/example.js"]').click()`);
+  await waitFor(`!!scFile('.sc-strip:not([hidden]) .sc-row:not(.sc-wait)', 'docs/example.js')`, 'the file under the steps');
+  assert.equal(await evaluate(`!!scFile('.sc-row', 'concurrent.txt')`), false, 'an edit is not credited with what changed beside it');
+  await evaluate(`scFile('.sc-row', 'docs/example.js').click()`);
   await waitFor(`!!document.querySelector('.sc-card [data-sc-act="review"]')`, 'the change, read in place');
   assert.equal(await evaluate(`viewKind`), 'conversation');
   await evaluate(`document.querySelector('.sc-card [data-sc-act="review"]').click()`);

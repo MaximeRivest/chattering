@@ -271,7 +271,7 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   // Rockfrog follows the system: paper by day, the deck's night by night, and
   // the installed app's color with it. The fixed variants ignore the system.
   const palette = `[getComputedStyle(document.body).backgroundColor,getComputedStyle(document.documentElement).colorScheme,$('appManifest').getAttribute('href')]`;
-  const scheme = async value => { await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value }] }, sid); await new Promise(r => setTimeout(r, 50)); };
+  const scheme = async value => { await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value }] }, sid); await until(`matchMedia('(prefers-color-scheme: ' + ${JSON.stringify(value)} + ')').matches && $('appManifest').getAttribute('href') === '/manifest.webmanifest?theme=' + encodeURIComponent(window.shownTheme())`, 'system palette and manifest published'); };
   await evaluate(`selectTheme('rockfrog',false)`);
   await scheme('light');
   assert.deepEqual(await evaluate(palette), ['rgb(243, 245, 241)', 'light', '/manifest.webmanifest?theme=rockfrog-light']);

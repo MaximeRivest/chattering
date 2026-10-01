@@ -115,6 +115,10 @@ test('phone shell: bottom bar, sheets, one-row head, back hook, desktop untouche
   assert.equal(await ev(`$('view').scrollHeight-$('view').clientHeight < 48`), true, 'the short conversation fits');
   await ev(`$('agentText').focus()`);
   await until(`document.body.classList.contains('chrome-min')`, 'typing hides the chrome in a short conversation too');
+  // Given keyboard focus, When a queued layout scroll reaches the top,
+  // Then typing keeps the chrome hidden until blur.
+  await ev(`$('view').scrollTop=0;$('view').dispatchEvent(new Event('scroll'))`);
+  assert.equal(await ev(`document.body.classList.contains('chrome-min') && !$('phoneBar').checkVisibility()`), true, 'a queued scroll cannot undo keyboard focus');
   await ev(`$('agentText').blur()`);
   await until(`!document.body.classList.contains('chrome-min') && $('phoneBar').checkVisibility()`, 'with nothing to scroll, the keyboard leaving brings the bar back');
 

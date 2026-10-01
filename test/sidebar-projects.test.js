@@ -43,7 +43,19 @@ test('sort modes are stable and unknown measurements are never treated as zero',
 });
 
 test('project timeline bounds, quiet badges and scroll-loaded lists in the real app', { timeout: 60000 }, async t => {
-  const { home, base, evaluate: ev, until, size, command, screenshot, exceptions, auth } = await viewerBrowser(t);
+  // Seed the real isolated store before the server starts. Browser-only
+  // records are overwritten by the first recent-files snapshot/reconnect.
+  // Distinct projects respect the store's per-project retention budget.
+  const setup = home => {
+    const dir = path.join(home, 'notes', 'chattering');
+    fs.mkdirSync(dir, { recursive: true });
+    const files = Array.from({ length: 205 }, (_, i) => ({
+      path: path.join(home, 'work', 'file-' + i + '.md'), project: 'fixture-' + i,
+      actor: 'human', kind: 'opened', at: Date.now() - i,
+    }));
+    fs.writeFileSync(path.join(dir, 'recent-files.json'), JSON.stringify({ version: 2, files, dismissed: {} }));
+  };
+  const { home, base, evaluate: ev, until, size, command, screenshot, exceptions, auth } = await viewerBrowser(t, { setup });
   // Temporary cwd paths are intentionally classified as loose conversations.
   // Give this fixture a real project-shaped cwd outside /tmp.
   const projectHome = fs.mkdtempSync(path.join(os.homedir(), '.sidebar-projects-test-'));
@@ -86,7 +98,7 @@ test('project timeline bounds, quiet badges and scroll-loaded lists in the real 
   await ev(`window.beforeBadgeReload=true`); await command('Page.reload');
   await until(`!window.beforeBadgeReload && !!document.querySelector('#setRailCounts')`);
   assert.equal(await ev(`$('setRailCounts').checked`), true, 'badge preference survives reload');
-  await ev(`$('setRailCounts').checked=false;$('setRailCounts').dispatchEvent(new Event('change'));goHome()`);
+  await ev(`$('setRailCounts').checked=false;$('setRailCounts').dispatchEvent(new Event('change'));closeSettings();goHome()`);
 
   // Long lists page by a hundred, load more on scroll, and reach the last
   // record: the side list and the Files panel. Synthetic records: the
@@ -103,8 +115,12 @@ test('project timeline bounds, quiet badges and scroll-loaded lists in the real 
   await ev(`document.querySelector('#agentsUnread [data-panel-more=open]').click()`);
   await until(`${rows}===205`, 'the last page is reachable');
   assert.equal(await ev(`!!document.querySelector('#agentsUnread [data-panel-more=open]')`), false, 'no dead end before the last record');
-  await ev(`recentFilesList=Array.from({length:205},(_,i)=>({path:'/fixture/file-'+i+'.md',project:'fixture',actor:'human',kind:'opened',at:Date.now()-i}));agentSecState['files:actor']='human';panelListLimits.clear();setRightFiles('recent-files',true)`);
+  await ev(`loadRecentFiles()`);
+  await ev(`agentSecState['files:actor']='human';panelListLimits.clear();setRightFiles('recent-files',true)`);
   assert.equal(await ev(`document.querySelectorAll('#rightFileList .ag-file').length`), 100, 'files page by a hundred');
+  // Reconnect/panel opening can publish a recent-files snapshot at any time.
+  // A pagination fixture must survive that real publication too.
+  await ev(`loadRecentFiles()`);
   await ev(`$('rightFileList').scrollTop=$('rightFileList').scrollHeight;$('rightFileList').dispatchEvent(new Event('scroll'))`);
   await until(`document.querySelectorAll('#rightFileList .ag-file').length===200`, async () => 'scrolling the files loads the next page: ' + await ev(`JSON.stringify((() => { const l = $('rightFileList'); return { rows: l.querySelectorAll('.ag-file').length, scrollTop: l.scrollTop, clientHeight: l.clientHeight, scrollHeight: l.scrollHeight, overflowY: getComputedStyle(l).overflowY, open: rightFilesOpen }; })())`));
   await ev(`document.querySelector('#rightFileList [data-panel-more=files]').click()`);
