@@ -6,8 +6,8 @@
 //   one opened the other);
 // - what the app opens by itself (a script, X, a search, a return) lasts for
 //   the visit; only a person's click is kept for next time; any close forgets;
-// - work still being done comes in closed, whatever is open above it, and so
-//   do its boxes in the open live stream;
+// - work in the transcript comes in closed, whatever is open above it;
+//   the bottom live monitor opens everything without changing the transcript;
 // - the open live stream belongs to its run: the next run starts it closed;
 // - the keyboard help names x / X where a conversation's keys are listed.
 const { test } = require('node:test');
@@ -97,13 +97,35 @@ test('browser: boxes of steps open only when a person opens them, one at a time'
   await until(`document.querySelector('#liveReplies .toolgroup[data-live-work]')`, 'the live box');
   assert.equal(await evaluate(`document.querySelector('#liveReplies .toolgroup[data-live-work]').open`), false, 'a coming box is closed');
 
-  // The open live stream: its boxes closed too; it stays open for its run
-  // (also once finished), and the next run starts it closed.
+  // The bottom monitor opens groups and nested inputs, independently of
+  // transcript folds. New steps open too, without resetting manual choices.
   await until(`!document.getElementById('lsLine').closest('[hidden]')`, 'the live line');
   await evaluate(`document.getElementById('lsLine').click()`);
   await until(`!document.getElementById('lsFull').hidden && document.querySelector('#lsBlocks .toolgroup')`, 'the stream opens');
-  assert.equal(await evaluate(`[...document.querySelectorAll('#lsBlocks .toolgroup')].some(g => g.open)`), false, 'opening the stream opens none of its boxes');
-  await runEvent('run-1', { status: 'done', final: true, finishedAt: Date.now() });
+  await until(`[...document.querySelectorAll('#lsBlocks details')].every(g => g.open)`, 'monitor details open');
+  assert.equal(await evaluate(`document.querySelector('#liveReplies .toolgroup').open`), false, 'monitor opening does not open transcript work');
+  assert.deepEqual(await kept(), {}, 'monitor opening is not remembered as a transcript choice');
+  await personClick('#lsBlocks .toolgroup > summary');
+  await until(`!document.querySelector('#lsBlocks .toolgroup').open`, 'monitor can still be manually folded');
+  const tail = [
+    { id: 1, kind: 'tool', callId: 'live-run-1', name: 'bash', args: 'npm test', out: 'Tests passed', phase: 'done' },
+    { id: 2, kind: 'text', text: 'Now checking another command.', done: true },
+    { id: 3, kind: 'text', think: 'Looking at its output.', done: false },
+    { id: 4, kind: 'tool', callId: 'live-next', name: 'bash', rawArgs: '{"command":"pwd"}', out: '/work', phase: 'running' },
+  ];
+  await runEvent('run-1', { tail });
+  await until(`document.querySelectorAll('#lsBlocks .toolgroup').length === 2`, 'new group appears');
+  assert.equal(await evaluate(`document.querySelector('#lsBlocks .toolgroup').open`), false, 'updates respect a manual fold');
+  assert.equal(await evaluate(`[...document.querySelectorAll('#lsBlocks .toolgroup')][1].open`), true, 'new monitor groups open');
+  assert.equal(await evaluate(`document.querySelector('#lsBlocks [data-blk="4"] details').open`), true, 'new raw input opens');
+  assert.match(await evaluate(`document.getElementById('lsBlocks').innerText`), /Looking at its output\./);
+  assert.match(await evaluate(`document.getElementById('lsBlocks').innerText`), /\/work/);
+  await evaluate(`document.getElementById('lsLine').click()`);
+  await until(`!liveOpen`, 'monitor closes');
+  assert.equal(await evaluate(`[...document.querySelectorAll('#liveReplies .toolgroup')].every(g => !g.open)`), true, 'closing monitor leaves transcript folded');
+  assert.deepEqual(await kept(), {}, 'manual monitor folds stay local');
+  await evaluate(`document.getElementById('lsLine').click()`);
+  await runEvent('run-1', { tail, status: 'done', final: true, finishedAt: Date.now() });
   await evaluate(`window._lsLast = 0; renderRunCards(); 1`);
   assert.equal(await evaluate(`liveOpen && !document.getElementById('lsFull').hidden`), true, 'the finished run stays open until closed');
   await runEvent('run-2');

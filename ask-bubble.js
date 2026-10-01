@@ -51,6 +51,9 @@ function askPrefs() {
   return {
     model: raw && typeof raw.model === 'string' && raw.model.includes('/') ? raw.model : null,
     thinking: raw && THINKING_LEVELS.includes(raw.thinking) ? raw.thinking : null,
+    // Codex's own choices, kept apart: a Pi model never answers a Codex ask.
+    codexModel: raw && typeof raw.codexModel === 'string' && /^[\w.:-]{1,80}$/.test(raw.codexModel) ? raw.codexModel : null,
+    codexEffort: raw && typeof raw.codexEffort === 'string' && /^[a-z]{1,16}$/.test(raw.codexEffort) ? raw.codexEffort : null,
     review: !(raw && raw.review === false),
     more: !!(raw && raw.more === true),
     include: { edits: inc.edits !== false, asks: inc.asks !== false, memory: inc.memory === true },
@@ -232,10 +235,11 @@ function askBubbleWire(b) {
   q('[data-ask="image"]').onclick = () => menu(() => q('.ask-files').click());
   q('[data-ask="open"]').onclick = () => menu(() => { const key = askBubbleTargetKey(); if (key) open(key, 'bottom'); });
   q('[data-ask="open"]').textContent = 'Open the conversation’s own page';
-  q('[data-ask="own-model"]').onclick = () => menu(() => { saveAskPrefs({ model: null }); askBubblePaintControls(); ta.focus(); });
+  q('[data-ask="own-model"]').onclick = () => menu(() => { saveAskPrefs(askBubbleHarness() === 'codex' ? { codexModel: null } : { model: null }); askBubblePaintControls(); ta.focus(); });
   q('.ask-files').onchange = e => { askBubbleAddImages(e.target.files); e.target.value = ''; };
 
   q('.ask-model').onclick = e => {
+    if (askBubbleHarness() === 'codex') return askBubbleCodexPick(e.currentTarget, 'model');
     const prefs = askPrefs();
     openModelPicker(e.currentTarget, { multi: false, selected: new Set(prefs.model ? [prefs.model] : []) }, picked => {
       if (picked[0]) saveAskPrefs({ model: picked[0].provider + '/' + picked[0].modelId });
@@ -244,6 +248,7 @@ function askBubbleWire(b) {
     });
   };
   q('.ask-think').onclick = e => {
+    if (askBubbleHarness() === 'codex') return askBubbleCodexPick(e.currentTarget, 'effort');
     const prefs = askPrefs();
     showThinkingPicker(e.currentTarget, {
       levels: ['default', ...THINKING_LEVELS], current: prefs.thinking || 'default',
@@ -364,7 +369,53 @@ function askBubblePaintWhere() {
 function askBubbleTargetKey() {
   const b = askBox;
   const v = b && b.target.value;
-  return v && v !== 'new' && v !== 'auto' ? v : null;
+  return v && v !== 'new' && v !== 'new-codex' && v !== 'auto' ? v : null;
+}
+
+// Which agent answers (design/87): the conversation's own; for a new one,
+// the one chosen in the list ("new Codex conversation"). Codex keys start
+// with "codex:".
+function askBubbleHarness() {
+  const b = askBox;
+  const v = b && b.target.value;
+  if (v === 'new-codex') return 'codex';
+  const key = v === 'auto' ? b && b.info && b.info.continue && b.info.continue.key : askBubbleTargetKey();
+  return key && String(key).startsWith('codex:') ? 'codex' : 'pi';
+}
+const askCodexScope = b => askBubbleTargetKey() || 'cwd:' + String(b.ws.path || '').replace(/\/[^/]*$/, '');
+
+// The Codex model or reasoning for asks from this box: Codex's own menus.
+async function askBubbleCodexPick(anchor, what) {
+  const b = askBox;
+  if (!b || typeof CodexUI === 'undefined') return;
+  const scope = askCodexScope(b);
+  const menus = await CodexUI.menusFor(scope).catch(e => { errToast(e.message); return null; });
+  if (!menus || askBox !== b || askCodexScope(b) !== scope) return;
+  const prefs = askPrefs();
+  const own = menus.prefs && menus.prefs.model;
+  const model = menus.models.find(m => m.id === (prefs.codexModel || own)) || (!prefs.codexModel && own ? CodexUI.unlisted(own) : null) || menus.models.find(m => m.isDefault) || menus.models[0];
+  const key = askBubbleTargetKey();
+  if (what === 'model') {
+    CodexUI.popup(anchor, [{ value: null, label: key ? 'The conversation’s own' : 'Codex’s default', description: own || (model && model.displayName) || '', on: !prefs.codexModel },
+      ...menus.models.map(m => ({ value: m.id, label: m.displayName, description: m.description, on: prefs.codexModel === m.id }))], {
+      title: 'Codex model for asks from this box',
+      onPick: row => {
+        const picked = row.value && menus.models.find(m => m.id === row.value);
+        const patch = { codexModel: row.value };
+        // A model offers its own reasoning levels: drop one it lacks.
+        if (picked && prefs.codexEffort && !picked.efforts.some(x => x.effort === prefs.codexEffort)) patch.codexEffort = null;
+        saveAskPrefs(patch); askBubblePaintControls(); b.ta.focus();
+      },
+    });
+  } else {
+    if (model && model.unlisted) return toast('Codex lists no reasoning levels for ' + model.id + '. Choose one of its current models for the box first.');
+    const levels = (model && model.efforts) || [];
+    CodexUI.popup(anchor, [{ value: null, label: 'default', description: 'the conversation’s own level', on: !prefs.codexEffort },
+      ...levels.map(x => ({ value: x.effort, label: x.effort, description: x.description, on: prefs.codexEffort === x.effort }))], {
+      title: 'How hard ' + (model ? model.displayName : 'Codex') + ' thinks, for asks from this box',
+      onPick: row => { saveAskPrefs({ codexEffort: row.value }); askBubblePaintControls(); b.ta.focus(); },
+    });
+  }
 }
 
 async function askBubbleLoadTarget(b) {
@@ -383,22 +434,23 @@ async function askBubbleLoadTarget(b) {
     const c = (info.candidates || []).find(x => x.key === beside);
     const s = typeof sessions !== 'undefined' ? sessions.find(x => x.key === beside) : null;
     const title = (c && c.title) || (s && (s.title || s.timelineTitle)) || 'the conversation beside';
-    options.push(`<option value="${esc(beside)}">↳ continues “${esc(title)}” (beside)</option>`);
+    options.push(`<option value="${esc(beside)}">↳ continues “${esc(title)}”${beside.startsWith('codex:') ? ' · Codex' : ''} (beside)</option>`);
     seen.add(beside);
   }
   // The conversation of the last ask from this box comes first: the next
   // request continues where that one left off.
   const last = ws.askLast || null;
   if (last && !seen.has(last.key) && !(info.candidates || []).some(c => c.key === last.key)) {
-    options.push(`<option value="${esc(last.key)}">↳ continues “${esc(last.title || 'the last ask')}” (last ask)</option>`);
+    options.push(`<option value="${esc(last.key)}">↳ continues “${esc(last.title || 'the last ask')}”${String(last.key).startsWith('codex:') ? ' · Codex' : ''} (last ask)</option>`);
     seen.add(last.key);
   }
   for (const c of info.candidates || []) {
     if (seen.has(c.key)) continue;
     seen.add(c.key);
-    options.push(`<option value="${esc(c.key)}">↳ continues “${esc(c.title)}” · ${esc(askAgo(c.lastMs))}${c.busy ? ' · busy (queues)' : ''}</option>`);
+    options.push(`<option value="${esc(c.key)}">↳ continues “${esc(c.title)}”${c.harness === 'codex' ? ' · Codex' : ''} · ${esc(askAgo(c.lastMs))}${c.busy ? ' · busy (queues)' : ''}</option>`);
   }
   if (info.newAllowed !== false) options.push(`<option value="new">↳ new conversation in ${esc(info.project)}${info.area ? '/' + esc(info.area) : ''}</option>`);
+  if (info.codexAllowed) options.push(`<option value="new-codex">↳ new Codex conversation in ${esc(info.project)}</option>`);
   b.target.innerHTML = options.join('') || '<option value="auto">no conversation can take this</option>';
   const origin = typeof fbConversationHash === 'function' ? fbConversationHash(ws.back) : null;
   const values = [...b.target.options].map(o => o.value);
@@ -453,6 +505,33 @@ function askBubblePaintHistory() {
   el.innerHTML = rows.map(h => `<div class="ask-history-row" title="${esc(h.prompt)}${h.title ? '\n' + esc(h.title) : ''}${h.model ? '\n' + esc(h.model) : ''}"><span class="dim">${esc(askAgo(h.ts))}</span> “${esc(h.prompt)}” <span class="dim">→ ${esc(h.outcome)}</span></div>`).join('');
 }
 
+// A Codex target: Codex's model and reasoning (its own, or the box's Codex
+// choice), named as Codex so the agent answering is never a guess.
+function askBubblePaintCodex(b, prefs) {
+  const key = askBubbleTargetKey();
+  const model = b.root.querySelector('.ask-model');
+  model.classList.add('ask-codex');
+  const paint = name => {
+    model.innerHTML = `◇ <span class="mharness">Codex ·</span> <span class="mname">${esc(name)}</span> ▾`;
+    model.title = 'Codex answers' + (key ? ' in its own conversation' : ' in a new Codex conversation') + ', with ' + name + (prefs.codexModel ? ' (chosen for the ask box)' : '') + '. Click to choose (Alt+M).';
+  };
+  paint(prefs.codexModel || (key ? 'its model' : 'default'));
+  if (!prefs.codexModel && typeof CodexUI !== 'undefined') {
+    const scope = askCodexScope(b);
+    CodexUI.menusFor(scope).then(menus => {
+      if (askBox !== b || askCodexScope(b) !== scope || askPrefs().codexModel) return;
+      const id = (menus.prefs && menus.prefs.model) || ((menus.models.find(m => m.isDefault) || {}).id);
+      const m = menus.models.find(x => x.id === id);
+      if (m || id) paint(m ? m.displayName : id); // an older model Codex no longer lists: its id
+    }).catch(() => {});
+  }
+  const think = b.root.querySelector('.ask-think');
+  think.textContent = '∴ ' + (prefs.codexEffort || 'default') + ' ▾';
+  think.title = (prefs.codexEffort ? 'Codex reasoning for asks from this box: ' + prefs.codexEffort + '.' : 'Reasoning: the conversation’s own level.') + ' Click to choose (Shift+Tab).';
+  b.root.querySelector('[data-ask="own-model"]').hidden = !prefs.codexModel;
+  askBubblePaintCommon(b, prefs, key);
+}
+
 // The model and reasoning buttons, the menu entries that depend on the target.
 function askBubblePaintControls() {
   const b = askBox;
@@ -461,7 +540,10 @@ function askBubblePaintControls() {
   const info = b.info || {};
   const key = askBubbleTargetKey();
   const candidate = key ? (info.candidates || []).find(c => c.key === key) : null;
-  const own = key ? candidate && candidate.model : info.defaultModel ? info.defaultModel.provider + '/' + info.defaultModel.modelId : null;
+  if (askBubbleHarness() === 'codex') return askBubblePaintCodex(b, prefs);
+  b.root.querySelector('.ask-model').classList.remove('ask-codex');
+  const ownRaw = key ? candidate && candidate.model : info.defaultModel;
+  const own = ownRaw && typeof ownRaw === 'object' ? ownRaw.provider + '/' + ownRaw.modelId : ownRaw || null;
   const model = b.root.querySelector('.ask-model');
   const shown = prefs.model || own;
   model.innerHTML = `◇ <span class="mname">${esc(shown ? shortModelName(shown) : key ? 'its model' : 'default model')}</span> ▾`;
@@ -470,6 +552,13 @@ function askBubblePaintControls() {
   const think = b.root.querySelector('.ask-think');
   think.textContent = '∴ ' + (prefs.thinking || 'default') + ' ▾';
   think.title = (prefs.thinking ? 'Reasoning for asks from this box: ' + prefs.thinking + '.' : 'Reasoning: the conversation’s own level.') + ' Click to choose (Shift+Tab). Less reasoning answers sooner.';
+  b.root.querySelector('[data-ask="own-model"]').hidden = !prefs.model;
+  askBubblePaintCommon(b, prefs, key, shown);
+}
+
+// What the box shows whichever agent answers.
+function askBubblePaintCommon(b, prefs, key, shown = null) {
+  const codex = askBubbleHarness() === 'codex';
   // Review needs an editor that can show it (mrmd-document 0.19+).
   const canReview = !!(b.ws.editor && b.ws.editor.review);
   const review = canReview && prefs.review;
@@ -482,7 +571,6 @@ function askBubblePaintControls() {
   b.root.querySelector('[data-ask="open"]').hidden = !key;
   // An existing conversation (not a new one): it can be read beside the text.
   b.root.querySelector('.ask-convo').hidden = !key || (typeof Pair !== 'undefined' && Pair.showsConversation(key));
-  b.root.querySelector('[data-ask="own-model"]').hidden = !prefs.model;
   // Plain words for what will happen; the options' state in the tooltip.
   const hint = b.root.querySelector('.ask-hint');
   hint.textContent = !canReview ? '' : review ? 'you approve each change before it stays' : 'changes go straight in · ' + modKey('Z') + ' undoes';
@@ -492,7 +580,8 @@ function askBubblePaintControls() {
   more.textContent = prefs.more ? 'fewer options' : 'options';
   const targetText = b.target.selectedOptions[0] ? b.target.selectedOptions[0].textContent.replace(/^↳\s*/, '') : '';
   more.title = (prefs.more ? 'Hide' : 'Show') + ' the options' + (targetText ? '\nGoes to: ' + targetText : '')
-    + '\nModel: ' + (shown || (key ? 'the conversation’s own' : 'your last pick')) + ' · reasoning: ' + (prefs.thinking || 'the conversation’s own')
+    + '\nModel: ' + (codex ? 'Codex · ' + (prefs.codexModel || (key ? 'the conversation’s own' : 'its default')) : shown || (key ? 'the conversation’s own' : 'your last pick'))
+    + ' · reasoning: ' + ((codex ? prefs.codexEffort : prefs.thinking) || 'the conversation’s own')
     + (canReview ? '\nChanges: ' + (review ? 'shown for approval first' : 'applied directly') : '');
   askBubblePaintChips();
   askBubblePaintHistory();
@@ -543,7 +632,7 @@ async function askBubblePreview(refresh = false) {
   if (!box.hidden && !refresh) { box.hidden = true; box.innerHTML = ''; return; }
   box.hidden = false;
   box.innerHTML = '<div class="dim">assembling…</div>';
-  const out = await postJson('/api/files/ask-preview', { path: b.ws.path, project: b.ws.project, target: b.target.value || 'auto', include: askPrefs().include, ...askBubbleSelection(b.ws).body });
+  const out = await postJson('/api/files/ask-preview', { path: b.ws.path, project: b.ws.project, target: b.target.value === 'new-codex' ? 'new' : b.target.value || 'auto', include: askPrefs().include, ...askBubbleSelection(b.ws).body });
   if (askBox !== b || box.hidden) return;
   if (out.error) { box.innerHTML = `<div class="dim">⚠ ${esc(out.error)}</div>`; return; }
   box.innerHTML = `<div class="dim">~${Number(out.tokens || 0).toLocaleString()} tokens · rides in the agent’s system prompt; your request is the message${out.target === 'new' ? ' of a new conversation' : ''}</div><pre class="fw-preview">${esc(out.text)}</pre>`;
@@ -587,11 +676,16 @@ async function askSubmit(ws, { prompt, images = [], target = 'auto' }) {
   if (ws.run) { toast('an agent is already working on this file — wait, or stop it'); return null; }
   const prefs = askPrefs();
   const body = {
-    path: ws.path, project: ws.project, prompt, target, include: prefs.include,
+    path: ws.path, project: ws.project, prompt, target: target === 'new-codex' ? 'new' : target, include: prefs.include,
     ...askBubbleSelection(ws).body,
   };
+  if (target === 'new-codex') body.harness = 'codex';
+  // Both agents' choices go: the server applies the answering agent's own
+  // (a target of 'auto' is resolved there).
   if (prefs.model) body.models = [askModelOf(prefs.model)];
   if (prefs.thinking) body.thinking = prefs.thinking;
+  if (prefs.codexModel) body.codexModel = prefs.codexModel;
+  if (prefs.codexEffort) body.codexEffort = prefs.codexEffort;
   const ask = {
     prompt, mode: prefs.review && ws.editor && ws.editor.review ? 'review' : 'apply',
     model: prefs.model, thinking: prefs.thinking, include: prefs.include, selection: { line: body.line || null, range: body.range || null },

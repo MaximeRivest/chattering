@@ -13,6 +13,8 @@ const { installCustomPromptPreparation, waitForCustomTurns } = require('./pisdk-
 const { forkPiSnapshot } = require('./session-snapshot.js');
 const { captureRewriteRequest } = require('./pisdk-rewrite.js');
 const { createSpeedMeter } = require('./responsespeed.js');
+const { createPiComposer } = require('./harness/pi-composer.js');
+const { parse: parseComposeCommand } = require('./harness/compose-commands.js');
 
 const { PI_TESTED_VERSION } = require('./runtime.js'); // runtime/package.json
 const WARM_IDLE_MS = 5 * 60 * 1000;
@@ -201,7 +203,7 @@ function makeUiContext(S, loaded) {
       }
     },
     setTitle(title) { emit({ method: 'setTitle', title }); },
-    setEditorText(text) { emit({ method: 'set_editor_text', text }); },
+    setEditorText(text) { S.editorText = String(text || ''); emit({ method: 'set_editor_text', text: S.editorText }); },
     pasteToEditor(text) { this.setEditorText(text); },
     getEditorText() { return S.editorText || ''; },
     onTerminalInput() { return () => {}; },
@@ -281,7 +283,8 @@ function makeUiContext(S, loaded) {
           });
       });
     },
-    addAutocompleteProvider() {}, setEditorComponent() {},
+    addAutocompleteProvider(factory) { S.composer.addProvider(factory); },
+    setEditorComponent() {},
     getEditorComponent() { return undefined; },
     get theme() { return loaded.theme; },
     getAllThemes() { return []; },
@@ -342,6 +345,8 @@ function persistSpeedSamples(S) {
 async function bindS(S, loaded) {
   const session = S.runtime.session;
   S.session = session;
+  S.composer?.reset();
+  S.composer = createPiComposer({ session: () => S.session, ...(hooks.loadAutocomplete ? { load: hooks.loadAutocomplete } : {}) });
   const previousFile = S.file;
   S.file = path.resolve(session.sessionFile || S.file);
   if (previousFile !== S.file && sdkSessions.get(previousFile) === S) sdkSessions.delete(previousFile);
@@ -396,7 +401,9 @@ async function bindS(S, loaded) {
         return { cancelled: r.cancelled };
       },
       switchSession: async (p, options) => S.runtime.switchSession(p, options),
-      reload: async () => { await session.reload(); },
+      reload: async () => {
+        await session.reload({ beforeSessionStart: () => S.composer.reset() });
+      },
     },
     shutdownHandler: () => { if (hooks.onShutdown) hooks.onShutdown(); },
     onError: err => S.emit({ type: 'extension_error', extensionPath: err.extensionPath, event: err.event, error: err.error }),
@@ -531,7 +538,7 @@ function piHeadlessRun(target, opts = {}) {
         } catch (error) { S.emit({ type: 'run_note', text: 'could not set the reasoning level: ' + String(error.message || error) }); }
       }
       if (aborted) throw new Error('Pi run aborted before prompt');
-      if (opts.simplifyAnswers && !opts.customMessage) rewrite = captureRewriteRequest(S.session, opts.simplifyPrompt);
+      if (opts.simplifyAnswers && !opts.customMessage && !parseComposeCommand(opts.message)) rewrite = captureRewriteRequest(S.session, opts.simplifyPrompt);
       // Who is sending: one entry in the session tree right before the user
       // message, so it travels with the file (forks, copies) and the index
       // reads it back. Not for callbacks: nobody typed those.
@@ -544,6 +551,11 @@ function piHeadlessRun(target, opts = {}) {
         if (typeof customType !== 'string' || !customType) throw new Error('customMessage.customType is required');
         await S.session.sendCustomMessage({ customType, content, display: true, details },
           { triggerTurn: true, deliverAs: 'followUp' });
+      } else if (parseComposeCommand(opts.message)) {
+        const command = parseComposeCommand(opts.message);
+        if (command.name !== 'reload' || command.args) throw new Error('Use the HTML ' + command.name + ' control; this is not a model prompt');
+        await S.session.reload({ beforeSessionStart: () => S.composer.reset() });
+        S.emit({ type: 'run_note', text: 'Pi extensions, skills and prompts reloaded.' });
       } else {
         await S.session.prompt(opts.message, {
           images: Array.isArray(opts.images) && opts.images.length ? opts.images : undefined,
@@ -648,9 +660,29 @@ async function piDeriveAt(target, opts = {}) {
   }
 }
 
+// Read-only editor requests share the actual session (including its extension
+// wrappers), and are serviced during a streaming run rather than queued behind
+// it. There is no probe session, prompt, or terminal rendering involved.
+async function piComposer(target, input = {}) {
+  const S = await ensureS(target);
+  try {
+    if (typeof input.text === 'string') S.editorText = input.text;
+    if (input.action === 'commands') return { commands: S.composer.commands(), cwd: S.session.sessionManager.getCwd(), live: true };
+    if (input.action === 'complete') return await S.composer.complete(input);
+    if (input.action === 'apply') {
+      const result = await S.composer.apply(input);
+      S.editorText = result.text;
+      return { text: result.text, cursor: result.cursor };
+    }
+    if (input.action === 'cancel') return S.composer.cancel(input);
+    throw new Error('Unknown composer action');
+  } finally { if (!S.stopped) armIdle(S); }
+}
+
 // Queue into a run that is ALREADY STREAMING (same semantics as typing in
 // the TUI while the model works). Resolves at prompt acceptance, not end.
 async function piQueuePrompt(target, message, behavior, images) {
+  if (parseComposeCommand(message)) throw new Error('Wait for the reply to finish before changing Pi controls.');
   const key = path.resolve(target.sessionPath);
   const S = sdkSessions.get(key);
   if (!S || S.rewriteController || !S.session.isStreaming) return false;
@@ -771,6 +803,7 @@ function stopWarmSession(sessionPath) {
   const S = sdkSessions.get(key);
   if (!S) return false;
   S.stopped = true;
+  S.composer?.reset();
   S.rewriteController?.abort();
   clearTimeout(S.idleTimer);
   sdkSessions.delete(key);
@@ -820,7 +853,7 @@ function setEditorTextFor(sessionPath, text) {
 }
 
 return {
-  piForkAt, piForkBefore, piSetThinking, piCompact, piHeadlessRun, piQueuePrompt, piBeginWarm, piDeriveAt,
+  piForkAt, piForkBefore, piSetThinking, piCompact, piHeadlessRun, piQueuePrompt, piBeginWarm, piDeriveAt, piComposer,
   stopWarmSession, stopAllWarmSessions, listWarmSessions,
   setEditorTextFor, abort, respondUi, uiInput, waitForIdle, dispose,
 };

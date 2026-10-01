@@ -1041,9 +1041,9 @@ function liveStepsBoxKey(blocks) {
   return call ? 't:' + call.callId : null;
 }
 
-// Live boxes are closed like saved ones (the reader opens what they want to
-// watch), in the transcript and in the open live stream alike.
-function renderLiveReplyLedger(host, jobId, L, saved = new Map()) {
+// Transcript boxes follow the reader's saved choices. The bottom monitor
+// opens every new group and its details, without changing those choices.
+function renderLiveReplyLedger(host, jobId, L, saved = new Map(), expanded = false) {
   const selection = window.getSelection();
   let previous = null;
   const place = el => {
@@ -1068,19 +1068,19 @@ function renderLiveReplyLedger(host, jobId, L, saved = new Map()) {
         work.innerHTML = '<summary><span class="tg-label"><span class="tg-count"></span><span class="tg-detail"></span></span></summary><div class="ls-flow"></div>';
         work._ledger = { order: [], blocks: new Map() };
         const firstKey = liveStepsBoxKey(unit.blocks);
-        if (firstKey && stepsFoldOpen(L.key, firstKey)) work.open = true;
+        if (expanded) work.dataset.liveExpanded = '';
+        if (expanded || (firstKey && stepsFoldOpen(L.key, firstKey))) work.open = true;
         // A person's click (or Enter on the line) is kept; the summary's
         // own default action then does the toggling.
         work.querySelector(':scope > summary').addEventListener('click', e => {
-          if (!e.isTrusted) return;
+          if (!e.isTrusted || expanded) return;
           stepsFoldChosen(work._ledger.key, liveStepsBoxKey(work._ledger.blocks), !work.open);
         });
       }
       place(work);
-      // The same box can be on two surfaces (the transcript and the open
-      // live stream): both follow what is open on this screen.
+      // The monitor's folds stay local; transcript choices must not close it.
       const boxKey = liveStepsBoxKey(unit.blocks);
-      const want = boxKey ? toolGroupOpen.get(L.key + '|' + boxKey) : undefined;
+      const want = !expanded && boxKey ? toolGroupOpen.get(L.key + '|' + boxKey) : undefined;
       if (want !== undefined && want !== work.open) work.open = want;
       const blocks = [...unit.blocks.values()];
       const names = [...new Set(blocks.map(b => b.kind === 'tool' ? b.name || 'tool' : 'thinking'))];
@@ -1094,11 +1094,12 @@ function renderLiveReplyLedger(host, jobId, L, saved = new Map()) {
       if (detail.dataset.tech !== undefined) detail.dataset.tech = names.join(' · ');
       work._ledger.order = unit.order; work._ledger.blocks = unit.blocks;
       work._ledger.jobId = jobId; work._ledger.key = L.key;
+      work._ledger.expanded = expanded;
       // Plain words for each step as soon as it has finished (plain-steps-ui.js).
       if (typeof PlainSteps !== 'undefined') PlainSteps.live(work, L.key, jobId, blocks);
       if (work.open) renderLsBlocks(work._ledger, work.querySelector(':scope > .ls-flow'));
       work.ontoggle = () => {
-        stepsFoldSeen(L.key, liveStepsBoxKey(work._ledger.blocks), work.open);
+        if (!expanded) stepsFoldSeen(L.key, liveStepsBoxKey(work._ledger.blocks), work.open);
         if (work.open) renderLsBlocks(work._ledger, work.querySelector(':scope > .ls-flow'));
       };
       continue;
@@ -1117,6 +1118,7 @@ function renderLiveReplyLedger(host, jobId, L, saved = new Map()) {
     const now = Date.now(), interval = isEink() ? 1200 : 160;
     if (el._text !== b.text && !selected && (!el._paintAt || now - el._paintAt >= interval || b.done || L.done)) {
       el.querySelector('.md').innerHTML = mdRender(b.text, '');
+      wireCodeCopyButtons(el);
       el._text = b.text; el._paintAt = now;
     }
   }
@@ -1139,7 +1141,7 @@ function renderOpenLiveStream(L, jobId) {
     host.scrollTop = 0;
   }
   const pin = host.scrollHeight - host.scrollTop - host.clientHeight < 40;
-  renderLiveReplyLedger(host, jobId, L, new Map());
+  renderLiveReplyLedger(host, jobId, L, new Map(), true);
   if (pin) host.scrollTop = host.scrollHeight;
 }
 
@@ -1220,6 +1222,7 @@ function restoreLiveReplyHandoff(handoff) {
     const message = current.messages.find(m => m.eid === eid && m.role === 'assistant');
     if (message && el._text !== message.text) {
       el.querySelector('.md').innerHTML = mdRender(message.text, '');
+      wireCodeCopyButtons(el);
       el._text = message.text;
     }
     readerLiveMessages.delete(el.dataset.eid);

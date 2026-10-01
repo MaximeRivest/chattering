@@ -55,7 +55,7 @@
       : edits.length ? 'edit' : content !== undefined ? 'write' : /^(edit|write)$/.test(name) ? name : null;
     return { path, edits, content, command, kind };
   }
-  function render(host, block, _setText, diff) {
+  function render(host, block, _setText, diff, { expanded = false } = {}) {
     const setText = (node, text) => {
       if (node._streamText === text) return;
       const previous = node._streamText || '';
@@ -65,11 +65,14 @@
     };
     const raw = block.rawArgs ?? block.args ?? '';
     const p = preview(raw, block.name);
-    if (!host.firstChild) host.innerHTML = '<div class="st-title"></div><div class="st-parts"></div><div class="st-limit"></div><details><summary>Raw arguments</summary><pre class="ls-args"></pre></details>';
+    if (!host.firstChild) {
+      host.innerHTML = '<div class="st-title"></div><div class="st-parts"></div><div class="st-limit"></div><details><summary>Raw arguments</summary><pre class="ls-args"></pre></details>';
+      host.querySelector('details').open = expanded;
+    }
     setText(host.querySelector('.ls-args'), raw);
     const details = host.querySelector('details');
-    if (!p.kind && !host.dataset.recognized) details.open = true;
-    if (p.kind && !host.dataset.recognized) { details.open = false; host.dataset.recognized = '1'; }
+    if (!expanded && !p.kind && !host.dataset.recognized) details.open = true;
+    if (p.kind && !host.dataset.recognized) { if (!expanded) details.open = false; host.dataset.recognized = '1'; }
     host.classList.toggle('st-shell', p.kind === 'bash');
     const status = block.phase === 'done' ? block.error ? 'Failed' : p.kind === 'bash' ? 'Finished' : 'Applied'
       : block.phase === 'running' ? p.kind === 'bash' ? 'Running…' : 'Applying…'

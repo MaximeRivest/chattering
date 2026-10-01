@@ -266,7 +266,50 @@ function normalizeSpeedSample(raw, fallback = {}) {
 // Facts (token usage per model call) and reply-speed samples from one
 // transcript. Speed entries name the reply they measured, so a copied fork
 // yields the same sample key and counts once.
+// Codex (~/.codex/sessions rollouts): token_count events carry the thread's
+// running total. Per-call usage is the growth of that total, so a repeated
+// event (Codex emits some twice) never counts twice. OpenAI reports cached
+// input inside input_tokens and reasoning inside output_tokens; stored here
+// in the same shape as Pi facts (input excludes cache reads).
+async function parseCodexUsageFile(file, context, catalog) {
+  const facts = [];
+  let model = null, previous = null, ordinal = 0, provider = 'openai-codex';
+  const lines = readline.createInterface({ input: fs.createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
+  for await (const line of lines) {
+    ordinal++;
+    if (!line) continue;
+    let d; try { d = JSON.parse(line); } catch { continue; }
+    const p = d.payload;
+    if (d.type === 'session_meta' && p && p.model_provider && p.model_provider !== 'openai') provider = String(p.model_provider);
+    if (d.type === 'turn_context' && p && p.model) { model = p.model; continue; }
+    if (d.type !== 'event_msg' || !p || p.type !== 'token_count' || !p.info || !p.info.total_token_usage) continue;
+    const t = p.info.total_token_usage;
+    const cur = { input: number(t.input_tokens), cached: number(t.cached_input_tokens), output: number(t.output_tokens), reasoning: number(t.reasoning_output_tokens) };
+    const base = previous || { input: 0, cached: 0, output: 0, reasoning: 0 };
+    // A total that went down is a new count (a compaction or a resume in
+    // another process): take it as a fresh start rather than a negative.
+    const shrank = cur.input < base.input || cur.output < base.output;
+    const delta = shrank ? cur : { input: cur.input - base.input, cached: Math.max(0, cur.cached - base.cached), output: cur.output - base.output, reasoning: Math.max(0, cur.reasoning - base.reasoning) };
+    previous = cur;
+    if (!delta.input && !delta.output) continue;
+    const cacheRead = Math.min(delta.cached, delta.input);
+    const usage = { input: delta.input - cacheRead, output: delta.output, cacheRead, cacheWrite: 0, cacheWrite1h: 0, reasoning: delta.reasoning, totalTokens: delta.input + delta.output, cost: null };
+    const price = catalog.resolve(provider, model) || catalog.resolve('openai', model);
+    const cost = price ? calculateCost(price.rates, usage) : null;
+    facts.push({
+      eventKey: 'codex:' + (context.sessionId || file) + ':' + ordinal, id: String(ordinal), ts: timestampMs(d.timestamp, context.mtimeMs), source: 'codex',
+      provider, model: String(model || 'unknown'), api: 'openai-codex-responses', category: 'assistant', stopReason: '',
+      ...usage, estimatedCost: cost ? cost.total : null,
+      costInput: cost ? cost.input : null, costOutput: cost ? cost.output : null,
+      costCacheRead: cost ? cost.cacheRead : null, costCacheWrite: cost ? cost.cacheWrite : null,
+      priceSource: price ? price.source : null, priceConfidence: price ? price.confidence : null, person: null,
+    });
+  }
+  return { facts, speed: [] };
+}
+
 async function parseUsageFile(file, context = {}, catalog = new PricingCatalog()) {
+  if (context.source === 'codex') return parseCodexUsageFile(file, context, catalog);
   const facts = [];
   const speed = [];
   const source = context.source === 'claude' ? 'claude' : 'pi';
@@ -662,7 +705,7 @@ class UsageIndex {
 
   async _updateFile(key, entry, absPath, catalog) {
     let facts = [], speed = [], error = null;
-    try { ({ facts, speed } = await parseUsageFile(absPath, { source: entry.source, mtimeMs: entry.mtimeMs }, catalog)); }
+    try { ({ facts, speed } = await parseUsageFile(absPath, { source: entry.source, mtimeMs: entry.mtimeMs, sessionId: entry.sessionId }, catalog)); }
     catch (e) { error = String(e.message || e).slice(0, 500); }
     this.db.exec('BEGIN IMMEDIATE');
     try {

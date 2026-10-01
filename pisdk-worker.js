@@ -163,6 +163,9 @@ function createWorkerController({ send, exit, engineFactory = createRuntimeEngin
       });
     }
     if (message.method === 'queue') return reply(message, () => engine.piQueuePrompt(...message.args));
+    // Completion reads must not wait behind a model reply or a blocking dialog.
+    // ensureS coalesces startup; each editor has its own cancellable query.
+    if (message.method === 'composer') return reply(message, () => engine.piComposer(...message.args));
     if (message.method === 'run') queuedRuns.add(message.id);
     chain = chain.then(() => reply(message, () => operation(message))).finally(() => {
       queuedRuns.delete(message.id);

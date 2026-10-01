@@ -294,6 +294,7 @@ function createPiSdkProxy(options = {}) {
   }
   return {
     piHeadlessRun, piBeginWarm,
+    piComposer: async (target, input) => request(start(target), 'composer', [wireTarget(target), input]),
     piQueuePrompt: async (target, message, behavior, images) => {
       const W = sessions.get(path.resolve(target.sessionPath));
       return W && !W.dead ? request(W, 'queue', [wireTarget(target), message, behavior, images]) : false;

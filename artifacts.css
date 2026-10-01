@@ -18,9 +18,9 @@
 .art-card-text small { color: var(--text-dim); font-size: var(--fs-meta); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .art-card .art-open { min-height: 32px; }
 .md pre.md-code:has(.md-preview)[data-lang]::before { display: none; }
-.md-preview { position: absolute; top: 4px; right: 4px; height: 20px; padding: 0 8px; font-size: 10px; color: var(--text-dim); background: var(--surface-2); border: 1px solid var(--border); }
+.md-preview { position: absolute; top: 4px; right: calc(4px + var(--md-copy-space, 0px)); height: 20px; padding: 0 8px; font-size: 10px; color: var(--text-dim); background: var(--surface-2); border: 1px solid var(--border); }
 .md-preview:hover { color: var(--text); border-color: var(--border-strong); }
-.md pre.md-code:has(.md-run):has(.md-preview) .md-preview { right: 64px; }
+.md pre.md-code:has(.md-run):has(.md-preview) .md-preview { right: calc(64px + var(--md-copy-space, 0px)); }
 
 /* ---- the panel ---- */
 #artifactPane { display: none; }

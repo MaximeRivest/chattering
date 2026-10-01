@@ -25,7 +25,7 @@ function isDraftOpen() { return !!(viewKind === 'draft' && draftState && current
 
 function newDraft() {
   const id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2)).replace(/-/g, '').slice(0, 20);
-  return { id, createdAt: Date.now(), updatedAt: Date.now(), text: '', folder: '', mode: null, models: [], thinking: null, context: [], images: [] };
+  return { id, createdAt: Date.now(), updatedAt: Date.now(), text: '', folder: '', mode: null, models: [], thinking: null, context: [], images: [], harness: 'pi', access: null };
 }
 function loadDraft(id) {
   if (!id || !/^[A-Za-z0-9_-]{6,64}$/.test(id)) return null;
@@ -41,7 +41,7 @@ function loadDraft(id) {
   } catch { return null; }
 }
 function draftHasContent(d) {
-  return !!(d && ((d.text || '').trim() || (d.images && d.images.length) || (d.context && d.context.length) || d.folder || d.mode || d.thinking || (d.models && d.models.length)));
+  return !!(d && ((d.text || '').trim() || (d.images && d.images.length) || (d.context && d.context.length) || d.folder || d.mode || d.thinking || (d.models && d.models.length) || d.harness === 'codex' || d.access));
 }
 // Persist what has content; an untouched blank page leaves no trace. Images
 // that do not fit stay in memory for this page and the draft says so.
@@ -88,11 +88,13 @@ function draftSummary(d) {
 // The draft's own pick, else what a new conversation starts with: the
 // person's last pick (pi's default before their first), from the server.
 function draftModels(d, defaults) {
+  // A Codex draft answers with Codex's own models (none picked: Codex's default).
+  if (d.harness === 'codex') return (d.models || []).filter(m => m.provider === 'codex');
   if (d.models && d.models.length) return d.models;
   return defaults && Array.isArray(defaults.models) ? defaults.models : [];
 }
 function draftAsCurrent(d) {
-  return { key: draftKey(d.id), draft: true, source: 'pi', messages: [], selectedModels: draftModels(d, null).slice(), attachedContext: (d.context || []).slice(), cwd: null };
+  return { key: draftKey(d.id), draft: true, source: d.harness === 'codex' ? 'codex' : 'pi', messages: [], selectedModels: draftModels(d, null).slice(), attachedContext: (d.context || []).slice(), cwd: null };
 }
 function draftScheduleSave() {
   if (!draftState) return;
@@ -140,6 +142,7 @@ function draftSetMode(key) {
 // offers the list and says when it takes effect.
 function draftPickThinking(anchor) {
   if (!isDraftOpen()) return;
+  if (draftState.d.harness === 'codex' && window.CodexUI) return CodexUI.pickEffort(anchor);
   const draft = draftState.d, key = activeRel;
   showThinkingPicker(anchor, {
     levels: draftState.defaults?.thinkingLevels || THINKING_LEVELS,
@@ -237,7 +240,7 @@ async function showDraft(id) {
       if (!d.thinking && mine.defaults.thinking) thinkLevels.set(activeRel, mine.defaults.thinking);
       if (!d.mode && mine.defaults.mode) convModes.set(activeRel, mine.defaults.mode);
       // No pick in this draft yet: show the models it will start with.
-      if (!(d.models && d.models.length) && isDraftOpen()) {
+      if (!(d.models && d.models.length) && isDraftOpen() && d.harness !== 'codex') {
         current.selectedModels = draftModels(d, mine.defaults).slice();
         renderModelStrip();
       }
@@ -252,6 +255,7 @@ function draftSetupHtml(d) {
   return `<div class="draft-setup" id="draftSetup">
     <div class="ds-line">
       <span class="ds-state">not started</span><span class="ds-sep">·</span>runs in <b class="ds-folder">${esc(d.folder || '~')}</b><span class="ds-implies"></span>
+      <span class="ds-harness" role="radiogroup" aria-label="Which agent runs this conversation">${[['pi', 'Pi', 'Pi: every provider, modes, parallel answers'], ['codex', 'Codex', 'Codex: OpenAI\'s agent, on your ChatGPT plan']].map(([h, label, title]) => `<button type="button" role="radio" class="ghost${(d.harness || 'pi') === h ? ' on' : ''}" aria-checked="${(d.harness || 'pi') === h}" data-harness="${h}" title="${esc(title)}">${label}</button>`).join('')}</span>
       <button type="button" class="ghost ds-toggle" aria-expanded="false" aria-controls="draftSetupPanel">setup</button>
     </div>
     <div class="ds-panel" id="draftSetupPanel" hidden>
@@ -312,6 +316,18 @@ function draftWireSetup(d) {
   if (!box) return;
   const q = s => box.querySelector(s);
   q('.ds-toggle').onclick = () => draftToggleSetup();
+  // The agent that runs the conversation. Its models, reasoning levels and
+  // controls differ, so the composer is rebuilt for it.
+  box.querySelectorAll('[data-harness]').forEach(b => b.onclick = () => {
+    const h = b.dataset.harness;
+    if ((d.harness || 'pi') === h) return;
+    const ta = $('agentText');
+    if (ta) d.text = ta.value;
+    d.harness = h; d.models = []; d.thinking = null; d.mode = null; d.access = null;
+    thinkLevels.delete(activeRel);
+    saveDraft(d);
+    showDraft(d.id);
+  });
   q('.ds-done').onclick = () => draftToggleSetup(false);
   const input = q('.ds-folder-input');
   let infoSeq = 0;
@@ -408,6 +424,7 @@ async function sendDraft(btn) {
     const payload = {
       draftId: d.id, folder: d.folder || '', mode: d.mode || null, models,
       thinking: d.thinking || null, context: attachedContext(), prompt, images,
+      ...(d.harness === 'codex' ? { harness: 'codex', access: d.access || 'config', mode: null } : {}),
     };
     const out = await postJson('/api/conversation/start-loose', payload);
     if (!out || out.error || !out.key) throw new Error((out && out.error) || 'no conversation came back');

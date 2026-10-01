@@ -166,6 +166,16 @@ test('browser: work steps in plain words above their commands; live steps one at
   assert.equal(await evaluate(`document.querySelector('.ls-b[data-step="t:call-t"] .step-more .st-preview') !== null`), true, 'the technical view is inside');
   await evaluate(`document.querySelector('.ls-b[data-step="t:call-t"] .step-line').click()`);
   await until(`document.querySelector('.ls-b[data-step="t:call-t"] .step-more').open && document.querySelector('.ls-b[data-step="t:call-t"] .st-preview').innerText.includes('npm test')`, 'one click opens it');
+  // The bottom monitor is the full stream, even while an explanation is
+  // unfinished: no hidden next step or nested technical details.
+  await evaluate(`document.getElementById('lsLine').click()`);
+  await until(`document.querySelectorAll('#lsBlocks .ls-b').length === 3`, 'monitor rows');
+  assert.equal(await evaluate(`[...document.querySelectorAll('#lsBlocks .ls-b')].every(el => !el.hidden)`), true, 'explanations do not gate the monitor');
+  assert.equal(await evaluate(`[...document.querySelectorAll('#lsBlocks details')].every(el => el.open)`), true, 'plain-word technical details also open');
+  await evaluate(`window._lsLast = 0; renderRunCards(); 1`);
+  assert.equal(await evaluate(`[...document.querySelectorAll('#lsBlocks details')].every(el => el.open)`), true, 'repaint keeps monitor details open');
+  await evaluate(`document.getElementById('lsLine').click()`);
+  assert.equal(await evaluate(`document.querySelector('#liveReplies .ls-b[data-step="t:call-u"]').hidden`), true, 'transcript keeps its own pacing');
   fs.writeFileSync(path.join(dir, 'go-tests'), '');
   await until(`document.querySelector('.ls-b[data-step="t:call-u"]') && !document.querySelector('.ls-b[data-step="t:call-u"]').hidden`, async () => 'the next step: ' + JSON.stringify(await liveRows()));
   assert.equal(await evaluate(`document.querySelector('.ls-b[data-step="t:call-t"] .step-say').textContent`), 'Checking nothing broke: running the project tests.');

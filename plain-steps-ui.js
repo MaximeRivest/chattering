@@ -148,6 +148,7 @@
     if (!more) {
       more = document.createElement('details');
       more.className = 'step-more';
+      more.open = !!el.closest('[data-live-expanded]');
       more.innerHTML = '<summary class="step-line"><span class="step-glyph"></span><code class="step-cmd"></code><span class="step-state"></span><span class="step-open"></span></summary>';
       for (const child of [...el.children]) if (!child.classList.contains('step-say')) more.append(child);
       el.append(more);
@@ -220,6 +221,9 @@
   function gate(g, i) {
     const st = g._gate;
     const now = Date.now();
+    // The full bottom monitor shows every available step immediately;
+    // explanations may catch up without holding back tools or their output.
+    if (g.hasAttribute('data-live-expanded')) st.open = i.steps.length;
     while (st.open < i.steps.length) {
       const head = i.steps[st.open - 1];
       // A thought never holds the stream: only a tool call's sentence does.

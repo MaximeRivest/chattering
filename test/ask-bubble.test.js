@@ -15,7 +15,9 @@ const { MOD } = require('./helpers/chromium.js'); // the system's command key: C
 const DOC = '# Notes\n\n' + Array.from({ length: 12 }, (_, i) => `Paragraph ${i + 1} says little.\n\n`).join('') + 'The paragraph to change.\n\n```python\nx = 1\n```\n';
 
 test('the ask box: over the text, what goes along, choices that stick, a send and its run', { timeout: 60000 }, async t => {
-  const b = await viewerBrowser(t);
+  // A computer without Codex: the box offers Pi only (codex-app.test.js
+  // covers the box with Codex).
+  const b = await viewerBrowser(t, { env: { CHATTERING_CODEX: '/nonexistent/codex' } });
   const { evaluate: ev, until, command } = b;
   fs.writeFileSync(path.join(b.work, 'notes.md'), DOC);
   await until(`sessions.length && nav.current()`);

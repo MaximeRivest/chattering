@@ -1,0 +1,52 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { chromiumAvailable } = require('./helpers/chromium');
+const { viewerBrowser } = require('./helpers/viewer-browser');
+
+test('HTML composer uses the live Pi extension, keeps edits native, and never opens a terminal', { timeout: 90000 }, async t => {
+  if (!chromiumAvailable() || !require('./helpers/pi-package').piPackageForTests()) return t.skip('Chromium and Pi are required');
+  const fixture = path.join(__dirname, 'fixtures/pisdk-probe.ts'), completion = path.join(__dirname, 'fixtures/pi-composer-extension.ts');
+  const b = await viewerBrowser(t, { env: { PI_OFFLINE: '1', JITI_FS_CACHE: 'false', NODE_NO_WARNINGS: '1' }, setup(home) {
+    fs.writeFileSync(path.join(home, '.pi/agent/settings.json'), JSON.stringify({ defaultProvider: 'fixture', defaultModel: 'one', defaultThinkingLevel: 'off', extensions: [fixture, completion] }));
+  } });
+  const key = 'pi:fixture/media.jsonl';
+  const source = path.join(b.home, '.pi/agent/sessions/fixture/media.jsonl');
+  const original = fs.readFileSync(source, 'utf8');
+  await b.evaluate(`location.hash = ${JSON.stringify('#' + encodeURIComponent(key))}`);
+  await b.until(`!!document.querySelector('#agentText')?._harnessComposer`, 'native completion was not installed');
+  const set = text => b.evaluate(`(()=>{const t=document.querySelector('#agentText');t.focus();t.value=${JSON.stringify(text)};t.setSelectionRange(t.value.length,t.value.length);t.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await set('/composer-choice red');
+  await b.until(`document.querySelector('.file-completion [role=option]')?.textContent.includes('Blue')`, 'live command argument suggestions');
+  await b.command('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+  await b.until(`document.querySelector('#agentText').value==='/composer-choice redblue'`, 'provider applies argument edit');
+  await set('#cell');
+  await b.until(`document.querySelector('.file-completion [role=option]')?.textContent.includes('Cell seven')`, 'extension trigger suggestions');
+  assert.match(await b.evaluate(`document.querySelector('.file-completion [role=option]').textContent`), /#cell/, 'extension sees the HTML draft');
+  await b.evaluate(`renderConv('preserve')`);
+  await b.until(`document.querySelector('.file-completion [role=option]')?.textContent.includes('Cell seven')`, 'completion survives a transcript refresh');
+  // Pointer selection, also used by touch screens.
+  await b.evaluate(`document.querySelector('.file-completion [role=option]').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,cancelable:true}))`);
+  await b.until(`document.querySelector('#agentText').value==='cell:7'`, 'custom insertion');
+  assert.equal(await b.evaluate(`document.querySelector('#agentText').selectionStart`), 5, 'provider owns cursor position');
+  await b.size(390, 844, true);
+  await set('#mobile');
+  await b.until(`!document.querySelector('.file-completion').hidden && !!document.querySelector('.file-completion [role=option]')`, async () => 'mobile completion: ' + await b.evaluate(`JSON.stringify({draft:document.querySelector('#agentText')?.value,native:document.querySelector('#agentText')?._harnessComposer,pop:[...document.querySelectorAll('.file-completion')].map(p=>({hidden:p.hidden,text:p.textContent})),snip:window._snipOpen,slash:window._slashDetached,at:window._atDetached})`));
+  assert.equal(await b.evaluate(`(()=>{const r=document.querySelector('.file-completion').getBoundingClientRect();return r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight})()`), true, 'popup fits the phone');
+  await b.command('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  assert.equal(await b.evaluate(`document.querySelector('#agentText').value`), '#mobile', 'Escape keeps the draft');
+  const after = fs.readFileSync(source, 'utf8');
+  assert.ok(after.startsWith(original), 'existing history is untouched');
+  assert.ok(after.slice(original.length).trim().split('\n').filter(Boolean).map(JSON.parse).every(e => ['model_change', 'thinking_level_change'].includes(e.type)), 'only SDK startup settings may be appended, never a prompt');
+  assert.ok(!b.requests.some(r => /agent-live|live-keys|open-terminal|node\/send/.test(r.url)), 'no terminal or model request');
+  await b.evaluate(`headlessSendFromComposer(document.querySelector('#agentRun'), '/model')`);
+  await b.until(`!!document.querySelector('.mpick')`, '/model opens the HTML picker');
+  assert.ok(!b.requests.some(r => /node\/send/.test(r.url)), 'model UI command is not sent to a model');
+  const menu = await fetch(b.base + '/api/node/commands?id=' + encodeURIComponent(key), { headers: b.auth }).then(r => r.json());
+  assert.equal(menu.live, true); assert.ok(menu.commands.some(c => c.name === 'composer-choice'));
+  const denied = await fetch(b.base + '/api/node/compose', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: key, action: 'commands' }) });
+  assert.ok([401,403].includes(denied.status), 'unsigned callers cannot start completion workers');
+  assert.deepEqual(b.exceptions, []);
+});

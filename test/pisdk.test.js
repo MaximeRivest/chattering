@@ -156,7 +156,7 @@ function harness(t, config = {}) {
       };
       child.controller = createWorkerController({ shutdownMs: 40, exit,
         send: packet => queueMicrotask(() => { if (child.connected) child.emit('message', packet); }),
-        engineFactory: hooks => createRuntimeEngine({ ...hooks, ...sdk, idleMs: config.idleMs ?? 300000 }),
+        engineFactory: hooks => createRuntimeEngine({ ...hooks, ...sdk, loadAutocomplete: config.loadAutocomplete, idleMs: config.idleMs ?? 300000 }),
       });
       child.send = (packet, callback) => {
         child.sent.push(packet);
@@ -185,6 +185,37 @@ test('live engine surface remains exported without loading the installed SDK', (
     'piQueuePrompt', 'piBeginWarm', 'stopWarmSession', 'stopAllWarmSessions', 'listWarmSessions',
     'setEditorTextFor', 'loadSdk', 'sdkInfo', 'setAutonomousRunHandler']) assert.equal(typeof api[key], 'function');
   assert.equal(api.sdkInfo(), null);
+});
+
+test('composer reads the live worker during a model run, including extension wrappers and editor text', async t => {
+  class BaseProvider {
+    async getSuggestions() { return null; }
+    applyCompletion() { throw new Error('wrapper should own the edit'); }
+  }
+  const { proxy, workers } = harness(t, {
+    loadAutocomplete: async () => ({ CombinedAutocompleteProvider: BaseProvider, fdPath: null }),
+    bind(s) {
+      s.extensionRunner = { getRegisteredCommands: () => [{ name: 'choose', invocationName: 'choose', description: 'choose a mode' }] };
+      s.ui.addAutocompleteProvider(base => ({ triggerCharacters: ['#'],
+        getSuggestions: async () => ({ prefix: '#a', items: [{ value: s.ui.getEditorText(), label: 'live draft' }] }),
+        applyCompletion: (lines, row, col, item) => ({ lines: ['selected: ' + item.value], cursorLine: 0, cursorCol: 3 }),
+      }));
+    },
+  });
+  const run = proxy.piHeadlessRun(target('compose'), { message: 'keep running' });
+  await until(() => workers[0]?.sdk.sessions[0]?.isStreaming);
+  const menu = await proxy.piComposer(target('compose'), { action: 'commands' });
+  assert.ok(menu.commands.some(c => c.name === 'choose'));
+  const input = { action: 'complete', clientId: 'a', text: '#a', cursor: 2 };
+  const r = await proxy.piComposer(target('compose'), input);
+  assert.equal(r.items[0].value, '#a', 'extension reads the actual HTML editor draft');
+  const edit = await proxy.piComposer(target('compose'), { ...input, action: 'apply', snapshot: r.snapshot, itemIndex: 0 });
+  assert.deepEqual(edit, { text: 'selected: #a', cursor: 3 });
+  assert.equal(workers[0].sdk.sessions[0].ui.getEditorText(), 'selected: #a');
+  assert.equal(workers.length, 1, 'no throwaway probe');
+  assert.equal(workers[0].sdk.sessions[0].prompts.length, 1, 'no prompt submitted by completion');
+  assert.equal(proxy.listWarmSessions()[0].busy, true, 'completion never steals the run');
+  workers[0].sdk.sessions[0].finish(); await run.done;
 });
 
 test('worker environment removes stale scoped inheritance and preserves deliberate values', () => {

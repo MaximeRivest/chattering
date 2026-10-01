@@ -99,6 +99,12 @@ const ROUTES = {
   '/api/node/merge': 'guest',
   '/api/node/commands': 'guest', // act checked before loading session extensions
   'POST /api/node/compose': 'guest', // act checked in body; guest completion stays inside its sandbox
+  // Codex (design/87) runs as this machine's account: not for guests.
+  // The handlers check the conversation (see or act) as well.
+  'GET /api/codex/menus': 'member',
+  'PUT /api/codex/prefs': 'member',
+  'POST /api/codex/release': 'member',
+  'POST /api/codex/open-terminal': 'owner', // opens a window on this machine
   '/api/branch': 'guest',
   '/api/fork': 'guest',
   '/api/run/abort': 'guest', // act on the run's conversation, checked in the handler

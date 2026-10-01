@@ -1499,6 +1499,14 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
    right-hand group (model · fan chips · send), the meter floats mid-row */
 .agent-compose-row .model-strip { padding: 0; margin-left: auto; }
 .agent-compose-row #agentSend { margin-left: auto; }
+/* Codex conversations (design/87) */
+.codex-missing { font-size: 12px; color: var(--warn); align-self: center; }
+.codex-notice { padding: 10px 14px; line-height: 1.5; }
+.codex-pick .mp-row span:last-child { color: var(--text-dim); font-size: 12px; }
+.ds-harness { display: inline-flex; gap: 2px; margin-left: 8px; border: 1px solid var(--border); border-radius: var(--r); padding: 1px; }
+.ds-harness button { padding: 1px 9px; border-radius: var(--r-sm); font-size: 12px; }
+.ds-harness button.on { background: var(--surface-3); color: var(--text); font-weight: 600; }
+
 .agent-compose-row .ctxmeter { overflow: hidden; text-overflow: ellipsis; }
 /* ---- the live strip — one element, two states ----
    Folded: one quiet line. steps count · the active unit · the streaming
@@ -1728,6 +1736,18 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
 .md pre.md-code:has(.md-run)[data-lang]::before { display: none; }
 .md-run { position: absolute; top: 4px; right: 4px; height: 20px; padding: 0 8px; font-size: 10px; color: var(--text-dim); background: var(--surface-2); border: 1px solid var(--border); }
 .md-run:hover { color: var(--text); border-color: var(--border-strong); }
+/* Copy stays quiet until the code is approached, without moving its text.
+   Reserve a small control row so short first lines are never covered. */
+.md pre.md-code:has(.md-copy) { --md-copy-space: 64px; padding-top: 32px; }
+.md pre.md-code:has(.md-copy)[data-lang]::before { position: absolute; top: 8px; right: 68px; margin: 0; }
+.md-copy { position: absolute; top: 4px; right: 4px; min-width: 56px; height: 24px; padding: 0 6px; font-size: 10px; color: var(--text-dim); background: var(--surface-2); border: 1px solid transparent; border-radius: var(--r-sm); opacity: 0; pointer-events: none; }
+.md-code:hover > .md-copy, .md-code:focus-within > .md-copy { opacity: 1; pointer-events: auto; }
+.md-copy:hover, .md-copy:focus-visible { color: var(--text); border-color: var(--border-strong); }
+.md pre.md-code:has(.md-copy) > .md-run { right: 68px; }
+@media (hover: none), (pointer: coarse) {
+  .md-copy { opacity: 1; pointer-events: auto; min-height: 32px; }
+  .md pre.md-code:has(.md-copy) { padding-top: 40px; }
+}
 .run-out { background: var(--bg); border-left: 3px solid var(--border-strong); color: var(--text-dim); font-size: 12px; padding: 8px 12px; margin: 4px 0 8px; max-height: 50vh; overflow: auto; white-space: pre-wrap; word-break: break-word; }
 /* inline code (mostly paths): no ground, just a quieter italic voice */
 .md code { background: transparent; padding: 0; font-size: 13px; font-style: italic; color: var(--text-dim); }
@@ -2244,6 +2264,7 @@ body.side-layout:not(.home) #view:has(.agent-compose) { padding-bottom: calc(var
 .compose-tools-menu > button[hidden] { display: none; }
 .compose-tools-menu > button:hover { background: var(--surface-2); }
 .compose-tools-menu #agentMode::before { content: 'Mode'; color: var(--text-dim); margin-right: auto; }
+.compose-tools-menu #codexAccess::before { content: 'Access'; color: var(--text-dim); margin-right: auto; }
 .thinking-picker { width: 260px; max-height: min(480px, calc(100dvh - 16px)); }
 .thinking-picker .mp-foot { font-size: var(--fs-micro); }
 .compose-right > .think-pick { margin-left: 0; white-space: nowrap; padding-inline: 6px; }
@@ -2253,6 +2274,7 @@ body.side-layout:not(.home) #view:has(.agent-compose) { padding-bottom: calc(var
   .compose-left { grid-column: 1; }
   .compose-right { grid-column: 2; }
   .agent-compose-row > #ctxMeter { grid-column: 1 / -1; grid-row: 2; }
+  .model-pick .mharness { display: none; } /* narrow: the model name, not the harness */
 }
 /* Usage occupies the true center track. It may wrap inside its slot,
    but its center never shifts to make room for the neighboring controls. */
@@ -2490,6 +2512,9 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <script src="/ai-connect.js"></script>
 <script src="/welcome.js"></script>
 <script src="/file-completion-ui.js"></script>
+<script src="/harness/compose-commands.js"></script>
+<script src="/harness-composer-ui.js"></script>
+<script src="/codex-ui.js"></script>
 <script src="/linediff.js"></script>
 <script src="/notebook-env.js"></script>
 <script src="/ai-commands.js"></script>
@@ -5522,7 +5547,7 @@ function mobileConversationCard(s) {
   const project = projectOf(s);
   const live = isActive(s) || (s._famMembers || []).some(isActive);
   const work = isWorking(s) || (s._famMembers || []).some(isWorking);
-  const source = s.source === 'pi-remote' ? 'R' : s.source === 'pi' ? 'P' : 'C';
+  const source = s.source === 'pi-remote' ? 'R' : s.source === 'pi' ? 'P' : s.source === 'codex' ? 'X' : 'C';
   return `<div class="item mobile-work${live || work ? ' live' : ''}" data-rel="${esc(s._openKey || s.key)}">
     <div class="mobile-work-mark">${work ? '●' : live ? '○' : source}</div>
     <div class="mobile-work-body"><div class="title">${esc(s.title || s.timelineTitle || '(untitled)')}</div>
@@ -9571,7 +9596,7 @@ let current = null;
 // keepOpen: in search mode, messages containing the query stay expanded
 // so the highlight is never hidden in a collapsed part.
 // File-writing tool calls get a link into the whole-file diff view.
-const FILE_WRITE_TOOLS = /^(write|edit|multiedit|multi_edit|notebookedit|notebook_edit|str_replace_editor)$/i;
+const FILE_WRITE_TOOLS = /^(write|edit|multiedit|multi_edit|notebookedit|notebook_edit|str_replace_editor|apply_patch)$/i;
 const isFileWriteTool = m => m && m.role === 'tool' && m.path && FILE_WRITE_TOOLS.test(m.name || '');
 const shortFilePath = p => String(p).split('/').slice(-2).join('/');
 // A `delegate` tool call: its title from the arguments, the task ID from
@@ -10061,9 +10086,10 @@ function msgBlock(m, hl, keepOpen = false, q = '', copyIndex = -1, messageKey = 
       (versionSwitch ? `<button type="button" data-answer-version="${versionSwitch}" title="${versionSwitch === 'original' ? 'Show the original answer' : 'Show the simpler version'}">${versionSwitch === 'original' ? 'original' : 'simpler'}</button>` : '') +
       (copyIndex >= 0 && m.role === 'assistant' && m.eid && !ConversationFlow.transport(m) && ['pi', 'pi-remote'].includes((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) ? `<button type="button" class="msg-notebook-make" title="Write this answer as a self-standing notebook in the project (documents/notebooks). One model call; nothing runs.">notebook</button>` : '') +
       (copyIndex >= 0 && !ConversationFlow.transport(m) ? `<details class="msg-more-actions"><summary aria-label="More message actions">more…</summary><div>` : '') +
-      (copyIndex >= 0 && !ConversationFlow.transport(m) ? `<button type="button" class="msg-edit" data-msg-index="${copyIndex}" title="${['pi', 'pi-remote'].includes((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) ? 'Edit this message on a new path' : 'Edit the original message'}">edit</button>` : '') +
-      (copyIndex >= 0 && !ConversationFlow.transport(m) && m.role === 'assistant' ? `<button type="button" class="msg-regenerate" data-msg-index="${copyIndex}" title="Create another answer from the node before this reply">regenerate</button>` : '') +
-      (copyIndex >= 0 && !ConversationFlow.transport(m) && m.eid ? `<button type="button" data-reader-continue-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Use this conversation context. Files on disk are not rewound.">continue here</button><button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Copy the conversation through this message into a separate conversation">fork</button>` : '') +
+      (copyIndex >= 0 && !ConversationFlow.transport(m) && !(((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) === 'codex' && m.role !== 'user') ? `<button type="button" class="msg-edit" data-msg-index="${copyIndex}" title="${['pi', 'pi-remote'].includes((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) ? 'Edit this message on a new path' : 'Edit the original message'}">edit</button>` : '') +
+      (copyIndex >= 0 && !ConversationFlow.transport(m) && m.role === 'assistant' && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) !== 'codex' ? `<button type="button" class="msg-regenerate" data-msg-index="${copyIndex}" title="Create another answer from the node before this reply">regenerate</button>` : '') +
+      (copyIndex >= 0 && !ConversationFlow.transport(m) && m.eid && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) === 'codex' ? `<button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="A new Codex conversation through this turn">fork</button>` : '') +
+      (copyIndex >= 0 && !ConversationFlow.transport(m) && m.eid && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) !== 'codex' ? `<button type="button" data-reader-continue-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Use this conversation context. Files on disk are not rewound.">continue here</button><button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Copy the conversation through this message into a separate conversation">fork</button>` : '') +
       (copyIndex >= 0 && m.role === 'user' ? `<button type="button" class="msg-snippet" data-msg-index="${copyIndex}" title="Save this message as a snippet you can insert later">snippet</button>` : '') +
       (copyIndex >= 0 && !ConversationFlow.transport(m) ? `</div></details>` : '') + `</div>`;
     const words = m.text.length > LONG_MESSAGE_CHARS ? countWords(m.text) : m.text.split(/\s+/).length;
@@ -10142,6 +10168,40 @@ async function deriveNotebookFromMessage(button) {
   if (out.dropped && out.dropped.length) notes.push('dropped an invented prerequisite: ' + out.dropped.join(', '));
   toast('📓 ' + name + (notes.length ? ' · ' + notes.join(' · ') : ''), () => openLiveFile(out.path, { project: out.project, root: out.root, back: currentHash }));
   await ensureNotebookCards(key, { force: true });
+}
+
+// Read the code at click time: highlighting and search marks contribute text,
+// but language labels, run/preview controls, and their output never do.
+function wireCodeCopyButtons(root = $('conversationTranscript')) {
+  for (const pre of root?.querySelectorAll('pre.md-code') || []) {
+    if (!pre.querySelector('code') || pre.querySelector('.md-copy')) continue;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'md-copy';
+    btn.textContent = 'copy';
+    btn.title = 'Copy code';
+    btn.setAttribute('aria-label', 'Copy code');
+    btn.onclick = async e => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (btn.disabled) return;
+      btn.disabled = true;
+      try {
+        await copyText(pre.querySelector('code').textContent);
+        btn.textContent = 'copied ✓';
+        btn.setAttribute('aria-label', 'Code copied');
+        setTimeout(() => {
+          btn.textContent = 'copy';
+          btn.setAttribute('aria-label', 'Copy code');
+          btn.disabled = false;
+        }, 1500);
+      } catch (err) {
+        btn.disabled = false;
+        errToast(err.message || 'Could not copy code.');
+      }
+    };
+    pre.appendChild(btn);
+  }
 }
 
 // Every bash fence in a reply gets a ▶ run button: the block executes in
@@ -10592,6 +10652,20 @@ async function openTranscriptEditor(btn) {
   const i = Number(btn.dataset.msgIndex);
   const key = current && current.key;
   if (!key || !current.messages[i]) return;
+  if (current.source === 'codex') {
+    // Codex keeps its own file: ask the question differently on a fork
+    // through the turn before it, with the words back in the compose box.
+    const m = current.messages[i];
+    if (m.role !== 'user' || !m.eid) return errToast('In a Codex conversation you can edit your questions.');
+    btn.disabled = true;
+    const out = await postJson('/api/fork-edit', { id: key, node: m.eid });
+    btn.disabled = false;
+    if (out.error) return errToast(out.error);
+    readerDrafts.set(out.key, out.text || m.text);
+    await open(out.key, 'bottom');
+    toast('a new Codex conversation, just before that question: change it and send');
+    return;
+  }
   const branchEdit = ['pi', 'pi-remote'].includes(current.source) && ['user', 'assistant'].includes(current.messages[i].role);
   const pickedModels = fanModels().slice(0, 1);
   const msg = btn.closest('.msg');
@@ -11123,6 +11197,7 @@ function showThinkingPicker(anchor, { levels, current: selected, note, onPick })
 function pickThinking() {
   const key = activeRel, anchor = $('agentThink');
   if (!key || !anchor || window._thinkBusy) return;
+  if (window.CodexUI && CodexUI.isCodex()) return CodexUI.pickEffort(anchor);
   if (thinkingPickerClose) { thinkingPickerClose(true); return; }
   if (current?.draft) return draftPickThinking(anchor);
   showThinkingPicker(anchor, {
@@ -11135,6 +11210,7 @@ async function cycleThinking(level = 'cycle') {
   const key = activeRel;
   const btn = $('agentThink');
   if (!key || !btn || window._thinkBusy) return;
+  if (window.CodexUI && CodexUI.isCodex()) return level === 'cycle' ? CodexUI.cycleEffort() : CodexUI.setEffort(level);
   if (current && current.draft) return draftPickThinking(btn); // no session to cycle: pick the level to start with
   window._thinkBusy = true;
   // Invalidate context reads that started before this operation. Show the
@@ -11297,7 +11373,10 @@ function paintCtxMeter(el, c) {
   } else {
     parts.push(`${fmtTokens(c.ctxTokens)} window`);
   }
-  if (c.traceCost > 0) {
+  if (c.harness === 'codex') {
+    // A ChatGPT plan is not charged per message: its usage window is the cost.
+    parts.push(window.CodexUI ? CodexUI.usageText() : 'on your ChatGPT plan');
+  } else if (c.traceCost > 0) {
     const extra = c.familyCost - c.traceCost;
     parts.push('est. ' + money(c.traceCost) + (extra > 0.0005 ? ` (+${money(extra)} branches)` : ''));
   } else if (c.usedTokens > 0) {
@@ -11579,7 +11658,11 @@ function agentComposerHtml(d) {
     <div class="mirror-notice"><b>This conversation lives on ${esc(d.mirror.peerName)}.</b> It is mirrored here read-only and stays current as that machine syncs.
     <span class="hint">Continue it there, or fork it: the fork is a conversation of this machine, in your checkout.</span>
     <button type="button" class="ghost" id="mirrorFork">fork here</button></div></div>`;
-  if (!['claude', 'pi', 'pi-remote'].includes(d.source)) return '';
+  if (!['claude', 'pi', 'pi-remote', 'codex'].includes(d.source)) return '';
+  // A text-only copy the Codex app imported is read here, never continued.
+  const codexNotice = window.CodexUI ? CodexUI.noticeHtml(d) : '';
+  if (codexNotice && (d.importCopyOf || (d.codex && d.codex.imported))) return `<div class="composer-dock mirror-dock" id="composerDock" data-conversation-key="${esc(d.key)}">${codexNotice}</div>`;
+  const codex = d.source === 'codex';
   return `<div class="composer-dock" id="composerDock" data-conversation-key="${esc(d.key)}">
     <div class="live-strip" id="liveStrip" hidden>
       <div class="ls-full" id="lsFull" hidden><div class="ls-blocks ls-flow" id="lsBlocks"></div><button type="button" class="ls-livechip" id="lsChip" hidden>⤓ live</button></div>
@@ -11598,12 +11681,14 @@ function agentComposerHtml(d) {
       <details class="compose-tools" id="composeTools">
       <summary aria-label="Attachments and conversation options" title="Attachments and conversation options">+</summary>
       <div class="compose-tools-menu">
-      ${d.source !== 'claude' ? '<button id="agentMode" class="model-pick mode-pick" type="button" hidden></button>' : ''}
-      ${d.source !== 'claude' ? '<button id="agentSlash" type="button" title="Slash commands (extensions, skills, prompts). Or type /.">Commands /</button>' : ''}
+      ${d.source !== 'claude' && !codex ? '<button id="agentMode" class="model-pick mode-pick" type="button" hidden></button>' : ''}
+      ${d.source !== 'claude' ? `<button id="agentSlash" type="button" title="${codex ? 'Commands: model, reasoning, compaction. Or type /.' : 'Slash commands (extensions, skills, prompts). Or type /.'}">Commands /</button>` : ''}
       <button id="agentAt" type="button" title="Inspect and attach background knowledge to this conversation">Context</button>
       <button id="agentSnip" type="button" title="Insert a snippet at the cursor (alt+;). Or type the trigger while writing.">Snippets ;;</button>
       <button id="agentTree" type="button" title="Open the conversation tree (shift+T): branches, forks, parallel replies">Conversation tree</button>
       ${d.source !== 'claude' && !d.draft ? '<button id="agentCompact" type="button" title="Summarize the older messages so the model reads less (or type /compact)">Compact conversation…</button>' : ''}
+      ${codex ? '<button id="codexAccess" type="button" hidden></button>' : ''}
+      ${codex && !d.draft ? '<button id="codexTerminal" type="button" title="Continue in Codex\'s own terminal. Chattering lets go of the conversation first (Codex allows one writer).">Open in Codex (terminal)</button>' : ''}
       <button id="agentAttach" type="button">Attach image</button>
       <input id="agentFiles" type="file" accept="image/*" multiple hidden>
       </div></details>
@@ -11726,19 +11811,47 @@ async function headlessSendFromComposer(btn, promptOverride) {
     runCompaction(activeRel, (compactCmd[1] || '').trim());
     return;
   }
+  // Pi's UI commands open their HTML controls, never a hidden terminal or
+  // a model request. Extensions/templates still execute in the live session.
+  const control = window.ComposeCommands?.parse(prompt);
+  if (control && control.action !== 'runtime' && control.action !== 'compact') {
+    const key = activeRel;
+    if (control.args && !['model', 'thinking'].includes(control.action)) return errToast('/' + control.name + ' does not take arguments here');
+    let picked;
+    if (control.action === 'model' && control.args && window.CodexUI && CodexUI.isCodex()) {
+      const menus = await CodexUI.menusFor(current.draft ? 'cwd:' + ((draftState && draftState.d.folder) || '') : key).catch(() => null);
+      const m = menus && menus.models.find(x => x.id === control.args || x.displayName === control.args);
+      if (!m) return errToast('Codex has no model “' + control.args + '”. Type /model to see its models.');
+      picked = [{ provider: 'codex', modelId: m.id }];
+    } else if (control.action === 'model' && control.args) {
+      const catalog = await modelCatalog();
+      if (key !== activeRel) return;
+      const matches = (catalog.models || []).filter(m => m.provider + '/' + m.model === control.args || m.model === control.args);
+      if (matches.length !== 1) return errToast('Use /model provider/model, or /model to open the picker');
+      picked = [{ provider: matches[0].provider, modelId: matches[0].model }];
+    }
+    if (fromBox && ta && ta.value.trim() === prompt) { ta.value = ''; readerDrafts.delete(key); autoGrowCompose(); updateComposeMin(); }
+    hideSlashPop();
+    if (control.action === 'model') { if (picked) await setFanModels(picked); else $('modelPick')?.click(); }
+    else if (control.action === 'thinking') { if (control.args) await cycleThinking(control.args); else pickThinking(); }
+    else if (control.action === 'settings') await showSettings();
+    else if (control.action === 'tree') await showTree(key);
+    return true;
+  }
+  if (control?.name === 'reload' && control.args) return errToast('/reload does not take arguments');
   // The heartbeat answers the send instantly — the reader sees life
   // before the first run event arrives.
   if ($('lsSum')) setLiveText($('lsSum'), '◌ sent — waiting for the model…');
   if ($('liveStrip')) $('liveStrip').hidden = false;
   const key = activeRel;
   if (prompt.startsWith('/')) {
-    // pi executes its own commands over RPC (extensions, skills, templates).
-    // TUI built-ins (/settings, /model, …) exist only in the terminal.
+    // Executable commands come from the same session as the run. Built-in
+    // HTML controls were handled above; never forward an unknown slash to a model.
     const name = prompt.slice(1).split(/\s+/)[0];
     let cmds = null;
     try { cmds = await ensureSlashCmds(key); } catch {}
     if (!cmds || !cmds.some(c => c.name === name)) {
-      return errToast('/' + name + ' is not available over RPC — TUI-only commands need the terminal (continue in alacritty)');
+      return errToast('/' + name + ' is not available in this composer yet. Use its HTML control or open the native app.');
     }
     hideSlashPop();
   }
@@ -11854,6 +11967,7 @@ function agentRunLabel() {
 function renderModelStrip() {
   const host = $('modelStrip');
   if (!host) return;
+  if (window.CodexUI && CodexUI.isCodex()) return CodexUI.renderModelStrip(host);
   const list = fanModels();
   const run = $('agentRun');
   if (run && !run.disabled) {
@@ -11873,14 +11987,14 @@ function renderModelStrip() {
 }
 
 // ---- slash palette: pi's own commands, autocompleting like the TUI ----
-const slashCmdCache = new Map(); // conversation key → Promise<[{name,description,source}]>
+const slashCmdCache = new Map(); // in-flight requests only; the session's commands can change on reload
 function ensureSlashCmds(key) {
   if (isDraftKey(key)) return Promise.reject(new Error('slash commands run inside a started conversation — send the first message, then use /'));
   if (!slashCmdCache.has(key)) {
     slashCmdCache.set(key, fetch('/api/node/commands?id=' + encodeURIComponent(key))
       .then(r => r.json())
       .then(d => { if (d.error) throw new Error(d.error); return d.commands || []; })
-      .catch(e => { slashCmdCache.delete(key); throw e; }));
+      .finally(() => { slashCmdCache.delete(key); }));
   }
   return slashCmdCache.get(key);
 }
@@ -11901,7 +12015,7 @@ async function sendSlashCmd(text) {
 }
 
 function slashGroupOf(source) {
-  return source === 'extension' ? 'extensions' : source === 'skill' ? 'skills' : 'prompts';
+  return source === 'builtin' ? 'Pi controls' : source === 'extension' ? 'extensions' : source === 'skill' ? 'skills' : 'prompts';
 }
 
 // Keep the shared / and @ palette inside the visible reading area. A full
@@ -13356,6 +13470,8 @@ function wireAgentComposer() {
   renderAgentContext();
   const treeBtn = $('agentTree');
   if (treeBtn) treeBtn.onclick = () => { if (activeRel) showTree(activeRel); };
+  const codexTerm = $('codexTerminal');
+  if (codexTerm) codexTerm.onclick = () => { if ($('composeTools')) $('composeTools').open = false; CodexUI.openInCodex(); };
   const compactBtn = $('agentCompact');
   if (compactBtn) compactBtn.onclick = () => { if (activeRel) openCompactDialog(activeRel); };
   window._slashOpen = false;
@@ -13385,10 +13501,9 @@ function wireAgentComposer() {
       // and @ handlers stand back.
       if (!window._agentLiveOn && updateSnipPop(ta)) return;
       if (isPi) {
-        // pi: the palette autocompletes pi's real commands over RPC. No
-        // hidden terminal, no keystroke streaming — the TUI adapter is
-        // pi's own get_commands + prompt.
-        if (v.startsWith('/')) updateSlashPop(ta);
+        // The SDK-backed HTML popup owns inline /, arguments, @ and
+        // extension triggers. The legacy palette is only an RPC fallback.
+        if (!ta._harnessComposer && v.startsWith('/')) updateSlashPop(ta);
         else if (!window._slashDetached) hideSlashPop();
         return;
       }
@@ -13415,7 +13530,10 @@ function wireAgentComposer() {
         }
       }
     };
-    if (isPi) window.installFileCompletion(ta, activeRel);
+    if (isPi && !isDraftKey(activeRel)) {
+      if (window.installHarnessComposer) window.installHarnessComposer(ta, activeRel);
+      else window.installFileCompletion(ta, activeRel); // older server during an update
+    }
     ta.onkeydown = e => {
       // Shift+tab cycles the reasoning level, TUI-style, even while typing.
       if (isPi && e.key === 'Tab' && e.shiftKey) { e.preventDefault(); cycleThinking(); return; }
@@ -13536,6 +13654,7 @@ function wireAgentComposer() {
 // after a partial re-render (moving the head patches blocks in place).
 function wireTranscript() {
   wireConversationReader();
+  wireCodeCopyButtons();
   foldLongMessages();
   wireRunButtons();
   $('view').querySelectorAll('[data-file-diff]').forEach(b => b.onclick = e => handleFileControlClick(e, b));
@@ -14176,7 +14295,7 @@ function renderLsBlocks(L, target = null) {
         : b.phase === 'running' ? '● running' + (b.t0 ? ' · ' + fmtElapsed(Date.now() - b.t0) : '')
         : b.phase === 'ready' ? '◌ queued' : '◌ call streaming in';
       setLiveText(head, '⚙ ' + (b.name || 'tool') + ' · ' + phase);
-      StreamingTool.render(el.querySelector('.st-preview'), b, setLiveText, diffLinesAsync);
+      StreamingTool.render(el.querySelector('.st-preview'), b, setLiveText, diffLinesAsync, { expanded: L.expanded });
       const shell = el.querySelector('.st-preview').classList.contains('st-shell');
       el.classList.toggle('ls-shell', shell);
       el.querySelector('.st-output-label').hidden = !shell || !b.out;
@@ -15279,10 +15398,10 @@ async function forkFrom(key, n, btn) {
       const d = await res.json();
       if (!res.ok || d.error || !d.key) throw new Error(d.error || 'The fork could not be confirmed. Refresh the conversation list before retrying.');
       forkKey = d.key;
-      btn._forkResult = { source: key, node: n.id, key: forkKey };
+      btn._forkResult = { source: key, node: n.id, key: forkKey, note: d.note || '' };
     }
     btn.textContent = 'opening fork…';
-    toast('fork created — its conversation is independent; project files are shared');
+    toast('fork created — its conversation is independent; project files are shared' + (btn._forkResult && btn._forkResult.note ? '. ' + btn._forkResult.note : ''));
     // Opening the new session must not wait for a refresh of the entire list.
     await open(forkKey);
     void load().catch(() => {});
@@ -17478,7 +17597,7 @@ function modalSearchGroups(data) {
   return (data.groups || []).map(g => {
     const n = `${g.semantic ? '≈ ' : ''}${g.matchCount} match${g.matchCount === 1 ? '' : 'es'}`;
     const headAttrs = g.kind === 'conversation' ? `data-rel="${esc(g.key)}"` : `data-md="${esc(g.file)}" data-md-kind="${esc(g.kind)}"`;
-    const head = `<div class="item sr-head" ${headAttrs}><span class="sr-kind">${g.kind === 'conversation' ? (g.source === 'pi' ? 'P' : g.source === 'pi-remote' ? 'R' : 'C') : (SR_KIND[g.kind] || '✓')}</span><span class="sr-title">${esc(g.title || g.file || '(untitled)')}</span><span class="sr-meta">${esc(g.project || g.kind || '')} · ${n}</span></div>`;
+    const head = `<div class="item sr-head" ${headAttrs}><span class="sr-kind">${g.kind === 'conversation' ? (g.source === 'pi' ? 'P' : g.source === 'pi-remote' ? 'R' : g.source === 'codex' ? 'X' : 'C') : (SR_KIND[g.kind] || '✓')}</span><span class="sr-title">${esc(g.title || g.file || '(untitled)')}</span><span class="sr-meta">${esc(g.project || g.kind || '')} · ${n}</span></div>`;
     const hits = (g.matches || []).map(m => {
       const attrs = g.kind === 'conversation'
         ? `data-rel="${esc(g.key)}"${m.i != null ? ` data-i="${m.i}" data-role="${esc(m.role || '')}"` : ''}`

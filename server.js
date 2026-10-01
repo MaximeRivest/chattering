@@ -46,6 +46,9 @@ const themesLib = require('./themes.js');
 const fanoutLib = require('./fanout.js');
 const conversationFlow = require('./conversation-flow.js');
 const { createClaudeChain } = require('./claude-chain.js');
+const codexTranscript = require('./harness/codex-transcript.js');
+const codexDiffs = require('./harness/codex-diffs.js');
+const codexLinks = require('./harness/codex-links.js');
 const conversationTree = require('./conversation-tree.js');
 const fanoutMerge = require('./fanoutmerge.js');
 const usageLib = require('./usageanalytics.js');
@@ -75,6 +78,9 @@ const SOURCES = {
   pi: path.join(PI_AGENT_DIR, 'sessions'),
   'pi-remote': path.join(os.homedir(), '.pi', 'remote', 'sessions'),
   mirror: process.env.CHATTERING_MIRROR_DIR || path.join(DATA_DIR, 'mirrors', 'sessions'),
+  // Codex (design/87): read here, written only by Codex (its own files, its
+  // own app-server for new turns).
+  codex: path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'sessions'),
 };
 // The name this machine goes by in memory documents and towards peers.
 const HOST_NAME = String(process.env.CHATTERING_HOSTNAME || '').trim() || os.hostname();
@@ -969,6 +975,16 @@ function isNoise(text) {
   );
 }
 
+// Any conversation file: Codex rollouts have their own reader (three
+// generations of its format); Pi and Claude Code files are parseFile's.
+async function parseConversationFile(absPath) {
+  if (codexTranscript.isRollout(absPath)) {
+    const st = await fsp.stat(absPath).catch(() => null);
+    return codexTranscript.parseCodexRollout(absPath, { mtimeMs: st ? st.mtimeMs : null });
+  }
+  return parseFile(absPath);
+}
+
 async function parseFile(absPath) {
   const messages = [];
   let meta = { sessionId: null, cwd: null, gitBranch: null, firstTs: null, lastTs: null, rootId: null, parentSession: null };
@@ -1161,6 +1177,7 @@ async function parseFile(absPath) {
 
 async function transcriptImage(key, entry, blockPath) {
   if (!index[key] || !entry || !/^\d+(?:\.\d+)*$/.test(blockPath || '')) throw new Error('bad image reference');
+  if (index[key].source === 'codex') return codexTranscript.codexImageAt(absPathForKey(key), entry, blockPath);
   const wanted = blockPath.split('.').map(Number);
   const stream = fs.createReadStream(absPathForKey(key), { encoding: 'utf8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -1593,7 +1610,7 @@ async function indexFile(source, relPath, stat) {
   const absPath = path.join(SOURCES[source], relPath);
   const prev = index[key];
   try {
-    const { meta, messages, entryParents } = await parseFile(absPath);
+    const { meta, messages, entryParents } = await parseConversationFile(absPath);
     let delegated = null;
     if (source === 'pi' && relPath.startsWith('--delegated--' + path.sep) && meta.sessionId) {
       try {
@@ -1638,6 +1655,10 @@ async function indexFile(source, relPath, stat) {
       // Parallel generation forks are implementation storage, not standalone
       // conversations. Preserve their hidden group identity across re-indexes.
       hiddenFanout: prev && prev.hiddenFanout || undefined,
+      // An imported Codex copy of another conversation (codex-links.js),
+      // and on an original, the copies. Recomputed by linkCodexImports.
+      importCopyOf: prev && prev.importCopyOf || undefined,
+      codexCopies: prev && prev.codexCopies || undefined,
       fanoutId: prev && prev.fanoutId || undefined,
       fanoutRootKey: prev && prev.fanoutRootKey || undefined,
       fanoutNode: prev && prev.fanoutNode || undefined,
@@ -1668,6 +1689,12 @@ async function indexFile(source, relPath, stat) {
       // Tokens the next turn carries and the model whose window they fill.
       ctx: meta.ctx || undefined,
       cv: CTX_INDEX_V,
+      // Codex (design/87): who wrote the file and how, for labels, the
+      // harness controls and the imported-copy link.
+      codex: meta.codex ? { originator: meta.codex.originator || undefined, cliVersion: meta.codex.cliVersion || undefined,
+        source: meta.codex.source || undefined, subagent: meta.codex.subagent || undefined, forkedFromId: meta.codex.forkedFromId || undefined,
+        imported: meta.codex.imported || undefined, model: meta.codex.model || undefined, effort: meta.codex.effort || undefined,
+        timesApproximate: meta.codex.timesApproximate || undefined, lastMessageEid: meta.codex.lastMessageEid || undefined } : undefined,
       densityChat: densityProfile(messages, meta.firstTs, meta.lastTs, false),
       densityAll: densityProfile(messages, meta.firstTs, meta.lastTs, true),
     };
@@ -1679,7 +1706,7 @@ async function indexFile(source, relPath, stat) {
     scheduleProjectFoldRefresh(meta.cwd);
     // Local transcript tools have explicit paths and completion results.
     // Remote-only paths must never be offered as local files.
-    if (source === 'pi' || source === 'claude') {
+    if (source === 'pi' || source === 'claude' || source === 'codex') {
       const activity = recentFilesLib.fromMessages(messages, {
         project: projectOfEntry(entry, key), key,
         resolvePath: p => {
@@ -1696,7 +1723,8 @@ async function indexFile(source, relPath, stat) {
     saveIndexSoon();
     broadcast({ type: 'update', key, ...entry, project: projectNameOf(entry.cwd, key) });
     markLeafDirty(key, prev, entry, stat.mtimeMs);
-    if (searchIdx) {
+    if (entry.source === 'codex' ? entry.codex && entry.codex.imported : true) scheduleCodexImportLinks();
+    if (searchIdx && !entry.importCopyOf) {
       try {
         searchIdx.putConversation(key, { ...entry, project: projectNameOf(entry.cwd, key) }, messages);
         scheduleSemanticSync(10000); // batch live edits before pushing
@@ -1711,9 +1739,41 @@ async function indexFile(source, relPath, stat) {
   }
 }
 
+// Codex desktop's text-only imports of other agents' conversations are
+// linked to their originals (harness/codex-links.js): the copy leaves the
+// lists and search, the original says a copy exists. The link is rebuilt
+// from the whole index, a moment after changes settle.
+let codexImportLinkTimer = null;
+function scheduleCodexImportLinks() {
+  clearTimeout(codexImportLinkTimer);
+  codexImportLinkTimer = setTimeout(linkCodexImports, 1500);
+  codexImportLinkTimer.unref?.();
+}
+function linkCodexImports() {
+  const links = codexLinks.linkImportCopies(Object.entries(index));
+  const copiesOf = new Map();
+  for (const [copy, original] of links) { if (!copiesOf.has(original)) copiesOf.set(original, []); copiesOf.get(original).push(copy); }
+  let changed = false;
+  for (const [key, e] of Object.entries(index)) {
+    const of = links.get(key);
+    const copies = copiesOf.get(key);
+    if (e.importCopyOf !== of) {
+      changed = true;
+      e.importCopyOf = of;
+      if (of) { if (searchIdx) try { searchIdx.removeConversation(key); } catch {} }
+      else { e.mtimeMs = 0; scheduleIndex(key); } // unlinked: back into search on the next pass
+      broadcast({ type: 'update', key, ...e, project: projectNameOf(e.cwd, key) });
+    }
+    const had = (e.codexCopies || []).join('\n'), want = (copies || []).sort().join('\n');
+    if (had !== want) { changed = true; e.codexCopies = copies ? copies.sort() : undefined; broadcast({ type: 'update', key, ...e, project: projectNameOf(e.cwd, key) }); }
+  }
+  if (changed) { indexRevision++; saveIndexSoon(); }
+}
+
 // Skip subagent/sidechain transcript files.
 function isMainTranscript(relPath) {
-  return relPath.endsWith('.jsonl') && !relPath.includes('subagents');
+  // Codex's mid-2025 conversations are single JSON documents (rollout-*.json).
+  return (relPath.endsWith('.jsonl') && !relPath.includes('subagents')) || codexTranscript.isRollout(relPath);
 }
 
 async function* walk(dir, base) {
@@ -1764,6 +1824,7 @@ async function fullScan() {
     if (!seen.has(key)) dropIndexed(key);
   }
   console.log(`scan done: ${Object.keys(index).length} conversations, ${n} (re)indexed`);
+  linkCodexImports();
   scheduleTimelineTitles();
 }
 
@@ -1990,6 +2051,8 @@ async function syncSearchIndex() {
   try {
     // Conversations: the index entry's mtime+size is the signature.
     for (const [key, entry] of Object.entries(index)) {
+      // A linked Codex import is its original's duplicate: one hit, not two.
+      if (entry.importCopyOf) { try { searchIdx.removeConversation(key); } catch {} continue; }
       if (searchIdx.hasCurrent('conv:' + key, SearchIndex.conversationSig(entry))) continue;
       let data;
       try { data = JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8')); } catch { continue; }
@@ -2355,6 +2418,26 @@ function parseTreeEntries(kind, raw) {
   return out;
 }
 
+// Codex: tree nodes from the parsed transcript (a line; each entry's parent
+// is the one before). Words are boxes; tools, results and reasoning are work.
+function codexTreeNodes(parsed) {
+  const byEid = new Map();
+  for (const m of parsed.messages) if (m.eid) { if (!byEid.has(m.eid)) byEid.set(m.eid, []); byEid.get(m.eid).push(m); }
+  return parsed.entryParents.map(([id, parent]) => {
+    const ms = byEid.get(id) || [];
+    const words = ms.find(m => m.role === 'user' || m.role === 'assistant');
+    const tool = ms.find(m => m.role === 'tool');
+    const node = { id, parent, role: words ? words.role : null, text: words ? words.text : '', ts: (ms[0] && ms[0].ts) || null };
+    if (words && words.role === 'assistant') { node.model = words.model; node.provider = 'codex'; }
+    if (tool) { node.names = [tool.name]; node.calls = 1; }
+    if (ms.some(m => m.role === 'toolresult')) node.tres = true;
+    if (ms.some(m => m.role === 'event' && m.customType === 'compaction')) node.compaction = { tokensBefore: null };
+    node.box = !!(words && words.text.trim());
+    node.work = !node.box && !!(tool || node.tres || ms.some(m => m.role === 'thinking'));
+    return node;
+  });
+}
+
 // A conversation's key: its source and its path inside that source, with
 // forward slashes on every system (keys travel in URLs, records and sync;
 // on Linux this is the path as it always was). absPathForKey turns one
@@ -2402,7 +2485,8 @@ async function familyEntryGraph(key) {
     const e = index[k];
     let raw;
     try { raw = await fsp.readFile(absPathForKey(k), 'utf8'); } catch { continue; }
-    for (const parsedNode of parseTreeEntries(e.source === 'claude' ? 'claude' : 'pi', raw)) {
+    const nodes = e.source === 'codex' ? codexTreeNodes(await parseConversationFile(absPathForKey(k))) : parseTreeEntries(e.source === 'claude' ? 'claude' : 'pi', raw);
+    for (const parsedNode of nodes) {
       let n = byId.get(parsedNode.id);
       if (!n) {
         n = parsedNode;
@@ -2547,6 +2631,17 @@ async function sessionTreeFor(key, opts = {}) {
 // sizes pi reports for its models. Context is trace-scoped (siblings do not
 // share a window); Pi cost is a catalog estimate, including subscription routes.
 async function conversationContextResponse(key, leafId) {
+  if (index[key] && index[key].source === 'codex') {
+    // Codex counts its own context (token_count) against its own window.
+    // Cost: a ChatGPT plan is not billed per token; the ledger estimates.
+    const e = index[key], p = codexRuns().prefsOf(key);
+    const used = (e.ctx && e.ctx.used) || 0, window = (e.ctx && e.ctx.window) || null;
+    return { key, source: 'codex', harness: 'codex', leaf: null, provider: 'codex', model: p.model || (e.ctx && e.ctx.model) || (e.codex && e.codex.model) || null,
+      thinking: p.effort || null, access: p.access, mode: null, ctxTokens: window, usedTokens: used,
+      leftTokens: window ? Math.max(0, window - used) : null,
+      pctLeft: window ? Math.max(0, Math.min(100, Math.round(100 * (1 - used / window)))) : null,
+      traceCost: 0, familyCost: 0, usedModel: e.ctx && e.ctx.model || null, usedTs: e.lastTs || null, estimate: !used };
+  }
   const graph = await familyEntryGraph(key);
   const { entry, byId, all } = graph;
   const leaf = (leafId && byId.get(leafId)) || leafBoxFor(graph, key);
@@ -2649,6 +2744,7 @@ function stopAnyWarmSession(sessionPath) {
 }
 function stopAllEngineSessions() {
   let n = 0;
+  try { n += codexDriver.holding().length; codexDriver.stopCodex(); } catch {}
   try { n += pirpc.stopAllWarmSessions(); } catch {}
   try { n += pisdk.stopAllWarmSessions(); } catch {}
   return n;
@@ -2753,9 +2849,36 @@ async function forkMirroredSession(key, nodeId) {
   return { key: newKey, path: newAbs, cwd, fromMirror: true };
 }
 
+// Codex forks (harness/codex.js forkThread) are whole turns: a turn is one
+// question and everything Codex did to answer it. `before`: through the
+// turn before this message's (to ask it differently).
+const CANONICAL_TURN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+async function forkCodexSession(key, nodeId, { before = false } = {}) {
+  const { entry, cwd } = sessionPathsFor(key);
+  const principal = await currentPrincipal(projectNameOf(entry.cwd, key));
+  if (principal.guest || principal.sandbox) throw Object.assign(new Error('Codex runs from Chattering for this machine\'s own account only.'), { status: 403 });
+  if (entry.importCopyOf || (entry.codex && entry.codex.imported)) throw new Error('This is a text-only copy Codex imported from another agent. Fork the original instead.');
+  const data = JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8'));
+  const msg = data.messages.find(m => m.eid === nodeId);
+  if (!msg) throw new Error('message not found');
+  const turns = [...new Set(data.messages.map(m => m.turnId).filter(Boolean))];
+  if (!msg.turnId || !CANONICAL_TURN.test(msg.turnId)) throw Object.assign(new Error('This conversation comes from an older Codex that did not save its turns, so it cannot fork at a chosen message. It can still continue from its newest message.'), { status: 409 });
+  const at = turns.indexOf(msg.turnId);
+  const through = before ? turns[at - 1] : msg.turnId;
+  if (!through) throw Object.assign(new Error('This is the first question: start a new conversation to ask it differently.'), { status: 409 });
+  const forked = await codexDriver.forkThread({ threadId: entry.sessionId, cwd, env: agentEnv(principal), bin: codexBin() }, through);
+  if (!forked.path || !fs.existsSync(forked.path)) throw new Error('Codex did not create the forked conversation.');
+  const newKey = await indexNewSessionFile(forked.path);
+  await markForkTitle(newKey, entry);
+  const inTurn = data.messages.filter(m => m.turnId === msg.turnId && (m.role === 'assistant' || m.role === 'user'));
+  const note = !before && inTurn.length && inTurn[inTurn.length - 1].eid !== nodeId ? 'Codex forks at whole turns: the copy includes the rest of this reply.' : undefined;
+  return { key: newKey, path: forked.path, sessionId: forked.threadId, text: before ? msg.text : undefined, note };
+}
+
 async function forkSession(key, nodeId) {
   if (syncLib.isMirrorKey(key)) return forkMirroredSession(key, nodeId);
   const { entry, sessionPath, cwd } = sessionPathsFor(key);
+  if (entry.source === 'codex') return forkCodexSession(key, nodeId);
   await assertDelegationOwnership(sessionPath);
   // Copying immutable saved history is not a mutation of the source. Never
   // wait behind its live turn or stop its warm runtime. This native utility
@@ -2780,6 +2903,11 @@ async function forkSession(key, nodeId) {
 // UI opens the new session with the prompt ready to edit and resend.
 async function forkSessionForEdit(key, nodeId) {
   const { entry, sessionPath, cwd } = sessionPathsFor(key);
+  if (entry.source === 'codex') {
+    const m = JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8')).messages.find(x => x.eid === nodeId);
+    if (!m || m.role !== 'user') throw new Error('Edit a question you asked.');
+    return forkCodexSession(key, nodeId, { before: true });
+  }
   if (entry.source === 'claude') throw new Error('Editing a past message needs pi. Claude conversations can only fork.');
   await assertDelegationOwnership(sessionPath);
   const forked = await pisdk.piForkBefore({ sessionPath, cwd }, nodeId);
@@ -2806,6 +2934,8 @@ async function branchSession(key, nodeId, expectedLeaf = null) {
   if (!entry) throw new Error('not found');
   if (entry.source === 'claude')
     throw new Error('Claude cannot branch in place — its CLI always continues at the file end. Use fork instead.');
+  if (entry.source === 'codex')
+    throw Object.assign(new Error('A Codex conversation is one line: it continues from its newest message. Fork to continue from an earlier point.'), { status: 409 });
   const sessionPath = absPathForKey(key);
   if (headlessRuns.has(sessionPath) || [...agentRunJobs.values()].some(j => j.fanoutRootKey === key && j.status === 'running')) {
     throw new Error('Wait for the active answers to finish, or stop them, before changing continuation.');
@@ -2904,7 +3034,33 @@ function saveAgentRunsNow() {
 
 function headlessOwner(absPath) { return headlessRuns.get(absPath) || null; }
 
-const slashCommandsCache = new Map(); // cwd → { at, list } for the composer palette
+const slashCommandsCache = new Map(); // RPC fallback only; SDK commands come from the live session
+async function composeInPi(key, input, identity) {
+  const { entry, sessionPath, cwd } = sessionPathsFor(key);
+  assertCan(identity, 'act', targetOf(key), 'this conversation');
+  if (conversationKind(entry) === 'codex') {
+    const principal = await principalInProject(principalFor(identity), projectNameOf(entry.cwd, key));
+    if (principal.guest || principal.sandbox) throw Object.assign(new Error('Codex runs from Chattering for this machine\'s own account only.'), { status: 403 });
+    const c = codexComposerFor(key, principal);
+    const scoped = { ...input, clientId: String(principal.user.id) + ':' + String(input.clientId || 'commands'), model: codexRuns().prefsOf(key).model };
+    if (input.action === 'commands') return { commands: c.commands(), cwd, live: true, harness: 'codex' };
+    if (input.action === 'complete') return c.complete(scoped);
+    if (input.action === 'apply') return c.apply(scoped);
+    if (input.action === 'cancel') return c.cancel(scoped);
+    throw new Error('Unknown composer action');
+  }
+  if (conversationKind(entry) !== 'pi') throw Object.assign(new Error('Live completion currently supports Pi conversations.'), { status: 400 });
+  const principal = await principalInProject(principalFor(identity), projectNameOf(entry.cwd, key));
+  assertPrincipalCanRun(principal, 'the composer');
+  if (piEng() !== pisdk && !principal.sandbox) return { supported: false, reason: 'Live extension completion needs the SDK engine.' };
+  // Merely typing must never seize a terminal session or a delegated worker.
+  if (findRunningConversation(key)) throw Object.assign(new Error('This conversation is open in a terminal; close it before using live completion here.'), { status: 409 });
+  await assertDelegationOwnership(sessionPath);
+  return pisdk.piComposer({ sessionPath, cwd, env: { ...agentEnv(principal), ...agentCallerEnv(principal), ...programCallerEnv(key, principal) },
+    extraArgs: piProviderExtraArgs(), sandbox: principal.sandbox || undefined }, {
+    ...input, clientId: String(principal.user.id) + ':' + String(input.clientId || 'commands'),
+  });
+}
 
 // Every pi/claude/bridge process on this machine, from /proc. The agents
 // view shows them all — including untracked strays — and can kill them.
@@ -3356,6 +3512,13 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
   // rpc engine cannot, so the sidecar remembers it for the indexer.
   const author = customMessage ? null : { id: principal.user.id, name: principal.user.name, input, coauthors: coauthors || undefined };
   if (conversationKind(entry) === 'claude') throw new Error('Headless runs need pi. Claude conversations use the terminal.');
+  if (conversationKind(entry) === 'codex') {
+    // Codex runs in Codex (harness/codex-runs.js): its own models only.
+    if (customMessage) throw new Error('This action needs a Pi conversation.');
+    if (provider && provider !== 'codex') throw new Error('A Codex conversation answers with Codex\'s own models. Pick one in the model menu.');
+    if (context !== undefined) saveConversationContext(key, normalizeContextItems(context));
+    return codexRuns().send(key, { message, images, principal, model: modelId || null, effort: thinking || null, author, input, coauthors, node, allowQueue, brief });
+  }
   let modelNote = '';
   if (principal.guest) {
     // The guest's Pi holds only the providers the key proxy can serve.
@@ -3840,6 +4003,7 @@ function markFanoutFork(key, fanout) {
 }
 
 async function startFanOut(key, { node, models, message, images, force, context, principal = null, input = 'keyboard', coauthors = null }) {
+  if (index[key] && index[key].source === 'codex') throw Object.assign(new Error('Side-by-side answers need Pi. A Codex conversation answers with one Codex model.'), { status: 400 });
   if (!Array.isArray(models) || models.length < 2) throw new Error('fan-out needs two or more models');
   const runs = [];
   const fanoutId = 'fan:' + crypto.randomUUID().slice(0, 8);
@@ -4061,6 +4225,7 @@ async function startMerge(key, { question, answers, provider, modelId, instructi
 async function startRegenerate(key, { question, provider, modelId, force, principal }) {
   const { entry, sessionPath } = sessionPathsFor(key);
   if (conversationKind(entry) === 'claude') throw new Error('Claude conversations cannot branch in place. Fork to try again.');
+  if (conversationKind(entry) === 'codex') throw Object.assign(new Error('Codex keeps one line of answers. To ask again, fork before the question (edit it) or fork at its answer.'), { status: 409 });
   if (typeof question !== 'string' || !question) throw new Error('which question?');
   const raw = await fsp.readFile(sessionPath, 'utf8');
   let found = null;
@@ -4128,6 +4293,14 @@ async function ensureBothBridge(key, node) {
 async function setConversationThinking(key, level, force) {
   const { entry, sessionPath, cwd } = sessionPathsFor(key);
   if (conversationKind(entry) === 'claude') throw new Error('Reasoning control needs pi.');
+  if (conversationKind(entry) === 'codex') {
+    // Codex takes the effort with each message; the choice is kept here.
+    if (typeof level !== 'string' || !/^[a-z][a-z-]{0,23}$/.test(level) || level === 'cycle') throw new Error('Pick one of the reasoning levels the model offers.');
+    codexRuns(); modelPrefs.codex = modelPrefs.codex || {};
+    modelPrefs.codex[key] = { ...(modelPrefs.codex[key] || {}), effort: level };
+    saveModelPrefs();
+    return { ok: true, level, levels: null };
+  }
   if (level !== 'cycle' && !settingsLib.THINKING_LEVELS.includes(level)) throw new Error('bad level: ' + level);
   const running = findRunningConversation(key);
   let reopen = false;
@@ -4165,6 +4338,25 @@ const compactingSessions = new Set(); // resolved session paths being compacted
 async function compactConversation(key, instructions, force) {
   const { entry, sessionPath, cwd } = sessionPathsFor(key);
   if (conversationKind(entry) === 'claude') throw new Error('Compacting needs pi. Claude conversations compact in the terminal.');
+  if (conversationKind(entry) === 'codex') {
+    // Codex's own compaction (its /compact). It takes no focus instructions.
+    if (headlessRuns.has(sessionPath)) throw new Error('A reply is being written in this conversation. Wait for it to finish, or stop it, then compact.');
+    if (compactingSessions.has(path.resolve(sessionPath))) throw new Error('This conversation is already being compacted.');
+    const principal = await currentPrincipal(projectNameOf(entry.cwd, key));
+    if (principal.guest || principal.sandbox) throw Object.assign(new Error('Codex runs from Chattering for this machine\'s own account only.'), { status: 403 });
+    compactingSessions.add(path.resolve(sessionPath));
+    broadcast({ type: 'compaction', key, state: 'running' });
+    try {
+      const p = codexRuns().prefsOf(key);
+      await codexDriver.compactThread({ threadId: entry.sessionId, cwd, env: agentEnv(principal), bin: codexBin(), ...(codexRuns().ACCESS[p.access] || {}) });
+      await reindexIfChanged(key);
+      broadcast({ type: 'compaction', key, state: 'done', tokensBefore: null, tokensAfter: null });
+      return { ok: true, tokensBefore: null, tokensAfter: null, reopened: false, note: instructions && String(instructions).trim() ? 'Codex compacts on its own terms; the focus instructions were not used.' : undefined };
+    } catch (e) {
+      broadcast({ type: 'compaction', key, state: 'failed', error: e.message });
+      throw e;
+    } finally { compactingSessions.delete(path.resolve(sessionPath)); }
+  }
   const focus = typeof instructions === 'string' ? instructions.trim().slice(0, 4000) : '';
   const running = findRunningConversation(key);
   let reopen = false;
@@ -8311,7 +8503,7 @@ function jobView(job) {
     done: job.done || 0, total: job.total || 0,
     startedAt: job.startedAt, finishedAt: job.finishedAt || null,
     result: job.result || null, error: job.error || null,
-    model: job.model || null,
+    model: job.model || null, harness: job.harness || undefined,
     recoveryEligible: job.recoveryEligible === true, recoveryAttempts: job.recoveryAttempts || 0,
     recoveryPromptSaved: job.recoveryPromptSaved === true,
     fanoutId: job.fanoutId || null, fanoutRootKey: job.fanoutRootKey || null,
@@ -8900,6 +9092,94 @@ function keyForLaunchedTitle(title) {
 // `<node> <cli.js>`, from the one runtime answer (runtime.js).
 function piArgv(args = []) { return runtimeLib.piArgv(args); }
 
+// Codex (design/87): the person's own installed CLI.
+function codexBin() {
+  return process.env.CHATTERING_CODEX
+    || firstExisting([path.join(os.homedir(), '.nix-profile/bin/codex'), path.join(os.homedir(), '.local/bin/codex'), '/usr/local/bin/codex', '/run/current-system/sw/bin/codex'])
+    || 'codex';
+}
+// Whether Codex is on this machine (the chosen binary, or `codex` on PATH).
+// Checked at most once a minute: only offered choices depend on it.
+let codexInstalledAt = 0, codexInstalledWas = false;
+function codexInstalled() {
+  if (Date.now() - codexInstalledAt < 60000) return codexInstalledWas;
+  const bin = codexBin();
+  const onPath = name => String(process.env.PATH || '').split(path.delimiter).some(dir => { try { fs.accessSync(path.join(dir, name), fs.constants.X_OK); return true; } catch { return false; } });
+  codexInstalledWas = bin.includes('/') ? fs.existsSync(bin) : onPath(bin);
+  codexInstalledAt = Date.now();
+  return codexInstalledWas;
+}
+const codexDriver = require('./harness/codex.js').createCodexDriver();
+let codexRunsLib = null; // created once the run machinery below exists
+function codexRuns() {
+  return codexRunsLib ||= require('./harness/codex-runs.js').createCodexRuns({
+    index, headlessRuns, agentRunJobs, driver: codexDriver,
+    // One source for the model: the conversation's chosen model (the model
+    // menu's). Codex keeps its reasoning and access choices beside it.
+    prefs: {
+      get: key => {
+        const picked = normalizePickedModels(modelPrefs.conversations[key]).find(m => m.provider === 'codex');
+        const own = (modelPrefs.codex || {})[key] || {};
+        return { effort: own.effort || null, access: own.access || null, model: picked ? picked.modelId : null, contextSig: own.contextSig || '' };
+      },
+      set: (key, value) => {
+        const { model, ...rest } = value;
+        if (model) { modelPrefs.conversations[key] = [{ provider: 'codex', modelId: model }]; }
+        modelPrefs.codex = modelPrefs.codex || {}; modelPrefs.codex[key] = { ...(modelPrefs.codex[key] || {}), ...rest };
+        saveModelPrefs();
+      },
+    },
+    sessionPathsFor, jobChanged, runEventForwarder, reindexIfChanged, refreshUsageForKey, endLiveRunTail,
+    broadcastRunFinal, speakRunDone, recordAuthorship, indexNewSessionFile,
+    agentEnv: principal => agentEnv(principal), codexBin, withSessionOp, sleep,
+    repaintRun: job => { const t = liveRunTails.get(job.id); if (t && t.push) t.push(true); },
+    contextFor: async key => {
+      const items = conversationContextOf(key);
+      const sig = contextSig(items);
+      if (!items.length) return { sig, text: '' };
+      const bundle = await writeAttachedContextFile(items);
+      return { sig: sig + '#' + contextBundleHash(bundle.text), text: bundle.text };
+    },
+  });
+}
+
+// Codex's menus: models (with the reasoning levels each offers), the plan,
+// usage limits. From Codex itself (no model call, no thread lock). Models
+// are kept five minutes; limits are asked fresh.
+let codexModelCache = { at: 0, models: null };
+async function codexMenusFor(cwd, principal) {
+  const target = { cwd: cwd || os.homedir(), env: agentEnv(principal), bin: codexBin() };
+  const raw = await codexDriver.codexMenus(target);
+  const { modelsOfList } = require('./harness/codex-composer.js');
+  if (!raw.models.error) codexModelCache = { at: Date.now(), models: modelsOfList(raw.models) };
+  const account = raw.account && raw.account.account;
+  return {
+    models: codexModelCache.models || [], modelsError: raw.models.error || null,
+    // The plan, never the address: menus reach every screen of the household.
+    account: account ? { type: account.type || null, plan: account.planType || null } : null,
+    limits: raw.limits && !raw.limits.error ? (raw.limits.rateLimits || raw.limits) : null,
+    access: Object.entries(require('./harness/codex-runs.js').ACCESS_LABELS).map(([id, label]) => ({ id, label })),
+  };
+}
+async function codexModels(principal) {
+  if (codexModelCache.models && Date.now() - codexModelCache.at < 5 * 60 * 1000) return codexModelCache.models;
+  return (await codexMenusFor(os.homedir(), principal)).models;
+}
+const codexComposers = new Map(); // conversation key → its composer
+function codexComposerFor(key, principal) {
+  let c = codexComposers.get(key);
+  if (!c) {
+    const { cwd } = sessionPathsFor(key);
+    c = require('./harness/codex-composer.js').createCodexComposer({
+      fileSearch: q => codexDriver.codexFileSuggestions({ cwd, env: agentEnv(principal), bin: codexBin() }, q),
+      models: () => codexModels(principal),
+    });
+    codexComposers.set(key, c);
+    if (codexComposers.size > 64) codexComposers.delete(codexComposers.keys().next().value);
+  }
+  return c;
+}
+
 function claudeBin() {
   return process.env.CHATTERING_CLAUDE
     || firstExisting([
@@ -8944,6 +9224,7 @@ function agentLaunch(principal, file, args = [], { cwd } = {}) {
 }
 function conversationKind(entry) {
   if (entry.source === 'claude') return 'claude';
+  if (entry.source === 'codex') return 'codex';
   if (entry.source === 'pi' || entry.source === 'pi-remote') return 'pi';
   return null;
 }
@@ -9337,8 +9618,11 @@ async function openConversationInTerminal(key, opts) {
     }
     if (focus && focusWindow(title)) return { ok: true, created: false, focused: true, title, kind };
     const { sessionPath, cwd } = sessionPathsFor(key);
+    // Codex allows one writer per conversation: Chattering lets go first.
+    if (kind === 'codex') await codexDriver.release(entry.sessionId);
     const argv = kind === 'claude'
       ? [claudeBin(), '--resume', entry.sessionId]
+      : kind === 'codex' ? [codexBin(), 'resume', entry.sessionId]
       : piArgv(['--session', sessionPath]);
     if (!argv[2]) throw new Error('This conversation has no session identifier.');
     await assertDelegationLaunch(file);
@@ -9525,10 +9809,11 @@ async function sendToConversation(key, payload, principal = null) {
   return { ok: true, sent: true, via: 'xdotool', images: files.length, files, chars: text.length, ...opened };
 }
 
-async function sendFileFeedback(body) {
+async function sendFileFeedback(body, identity = null) {
   const key = body.key || '';
   const entry = index[key];
   if (!entry) throw new Error('conversation not found');
+  if (entry.source === 'codex' && identity && codexRefused(identity)) throw Object.assign(new Error('Codex runs from Chattering for this machine\'s own account only.'), { status: 403 });
   await assertDelegationOwnership(absPathForKey(key));
   const image = String(body.image || '');
   const match = image.match(/^data:image\/png;base64,(.+)$/);
@@ -9559,11 +9844,18 @@ async function sendFileFeedback(body) {
   const kind = conversationKind(entry);
   const { sessionPath, cwd } = sessionPathsFor(key);
   const prompt = `Read ${mdPath} and the PNG at ${pngPath}. The red ink is requested file feedback for ${rel} lines ${body.fromLine}–${body.toLine} (page ${body.page}/${body.pages}). Apply those edits.`;
+  // Each agent in its own terminal. Never Pi on a Codex file: Pi would
+  // read it as its own session and could write into it.
+  if (kind === 'codex' && (entry.importCopyOf || (entry.codex && entry.codex.imported))) throw new Error('This is a text-only copy Codex imported from another agent. Send the feedback to the original.');
+  if (kind !== 'claude' && kind !== 'codex' && kind !== 'pi') throw new Error('This conversation cannot take file feedback.');
   const argv = kind === 'claude'
     ? [claudeBin(), '--resume', entry.sessionId, prompt]
+    : kind === 'codex' ? [codexBin(), 'resume', entry.sessionId, '--image', pngPath, prompt]
     : piArgv(['--session', sessionPath, '@' + pngPath, prompt]);
   await assertDelegationOwnership(sessionPath);
   await releaseHeadless(sessionPath, 'terminal feedback opened');
+  // Codex allows one writer per conversation: Chattering lets go first.
+  if (kind === 'codex') await codexDriver.release(entry.sessionId).catch(() => {});
   return withSessionOp(sessionPath, async () => {
     await assertDelegationLaunch(sessionPath);
     if (findRunningConversation(key)) throw new Error('A terminal now owns this conversation.');
@@ -9583,6 +9875,10 @@ async function sendFileFeedback(body) {
 const DIFF_CACHE_FILE = path.join(CACHE_DIR, 'diff-cache.json');
 const DIFF_CACHE_DIR = path.join(CACHE_DIR, 'diff-cache');
 const DIFF_CACHE_VERSION = 'v7-locations:';
+// Codex edits (harness/codex-diffs.js) came later: their own version, so
+// adding them re-reads Codex conversations only, not every Pi and Claude one.
+const CODEX_DIFF_VERSION = 'cx1:';
+const diffVersionOf = entry => DIFF_CACHE_VERSION + (entry && entry.source === 'codex' ? CODEX_DIFF_VERSION : '');
 let diffCache = {};
 const diffCacheDiskChecked = new Set();
 
@@ -9656,7 +9952,7 @@ function makeDiffEvent(key, entry, pathValue, kind, oldText, newText, ts, editIn
     id, key, source: entry.source || 'claude', project: projectOfEntry(entry, key),
     path: String(pathValue), relativePath, ts: ts || null, kind,
     conversationTitle: entry.timelineTitle || entry.title || key,
-    agent: entry.source === 'claude' ? 'claude' : 'pi', branch: entry.gitBranch || null,
+    agent: entry.source === 'claude' ? 'claude' : entry.source === 'codex' ? 'codex' : 'pi', branch: entry.gitBranch || null,
     oldText: oldText || null, newText: newText || null, editIndex, callId,
     outcome: 'unknown', resultSummary: null,
     stats: {
@@ -9790,14 +10086,33 @@ async function conversationDiffs(key) {
     const st = await fsp.stat(absPathForKey(key));
     mtimeMs = st.mtimeMs; size = st.size;
   } catch {}
-  const cacheKey = DIFF_CACHE_VERSION + String(mtimeMs) + ':' + String(size);
+  const cacheKey = diffVersionOf(entry) + String(mtimeMs) + ':' + String(size);
   const cached = await loadDiffCacheRow(key);
   if (cached && cached.cacheKey === cacheKey) return cached.events;
   const raw = await fsp.readFile(absPathForKey(key), 'utf8');
   const records = [];
-  for (const line of raw.split('\n')) {
+  if (entry.source === 'codex' && /\.json$/.test(absPathForKey(key))) { try { records.push(JSON.parse(raw)); } catch {} }
+  else for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
     try { records.push(JSON.parse(line)); } catch {}
+  }
+  if (entry.source === 'codex') {
+    // Codex's apply_patch edits, one per hunk (harness/codex-diffs.js).
+    const events = [];
+    for (const op of codexDiffs.codexEditOps(records, { cwd: entry.cwd || null })) {
+      const ev = op.kind === 'delete'
+        ? makeDiffEvent(key, entry, op.path, 'shell', null, null, op.ts, op.editIndex, op.callId)
+        : makeDiffEvent(key, entry, op.path, op.kind, op.oldText, op.newText, op.ts, op.editIndex, op.callId);
+      if (!ev) continue;
+      if (op.kind === 'delete') ev.command = 'deleted by Codex (apply_patch)';
+      ev.outcome = op.outcome;
+      ev.resultSummary = op.result ? clipped(op.result, 500) : null;
+      events.push(ev);
+    }
+    events.sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')) || a.path.localeCompare(b.path) || a.editIndex - b.editIndex);
+    diffCache[key] = { cacheKey, events, createdAt: Date.now() };
+    saveDiffCacheRow(key, diffCache[key]);
+    return events;
   }
   const results = new Map();
   for (const d of records) {
@@ -10719,7 +11034,7 @@ const ledgerConvQueue = new Set();
 let ledgerConvTimer = null;
 let ledgerBroadcastPending = new Map();
 
-function ledgerVersionOf(entry) { return DIFF_CACHE_VERSION + String(entry.mtimeMs || 0) + ':' + String(entry.size || 0); }
+function ledgerVersionOf(entry) { return diffVersionOf(entry) + String(entry.mtimeMs || 0) + ':' + String(entry.size || 0); }
 
 // Debounced per path: one SSE event per file per 250 ms, whatever the
 // producer. Consumers patch data in place; nobody navigates.
@@ -11269,6 +11584,13 @@ function askIncludeOf(raw) {
   return { edits: o.edits !== false, asks: o.asks !== false, memory: o.memory === true };
 }
 
+const codexRefused = identity => { const p = principalFor(identity); return !!(p.guest || p.sandbox); };
+// A Codex conversation's own model, as the ask box shows it.
+function codexOwnModel(key) {
+  const m = codexRuns().prefsOf(key).model;
+  return m ? { provider: 'codex', modelId: m } : null;
+}
+
 async function filesAskTargetResponse(pathValue, projectValue, identity) {
   const abs = path.resolve(expandHomePath(pathValue || ''));
   assertPathAccess(identity, abs, 'see');
@@ -11281,15 +11603,19 @@ async function filesAskTargetResponse(pathValue, projectValue, identity) {
     for (const sn of touched.sessions) {
       if (!sn.convKey || !index[sn.convKey]) continue;
       const entry = index[sn.convKey];
-      if (entry.source !== 'pi' || isDelegatedKey(sn.convKey)) continue;
+      const codex = entry.source === 'codex';
+      if ((entry.source !== 'pi' && !codex) || isDelegatedKey(sn.convKey)) continue;
+      // Codex runs on the owner's account: not a target for guests, nor a
+      // text-only copy the Codex app imported.
+      if (codex && (codexRefused(identity) || entry.importCopyOf || (entry.codex && entry.codex.imported))) continue;
       if (projectOfEntry(entry, sn.convKey) !== project) continue;
       if (candidates.some(c => c.key === sn.convKey)) continue;
       if (identity && !canDo(identity, 'act', targetOf(sn.convKey))) continue;
       const lastMs = Date.parse(entry.lastTs || '') || 0;
       if (Date.now() - lastMs > ASK_CONTINUE_WINDOW_MS) continue;
       if (findRunningConversation(sn.convKey)) continue;
-      const model = normalizePickedModels(modelPrefs.conversations[sn.convKey])[0] || null;
-      candidates.push({ key: sn.convKey, title: entry.timelineTitle || entry.title || sn.convKey, lastMs, busy: headlessRuns.has(absPathForKey(sn.convKey)), model });
+      const model = codex ? codexOwnModel(sn.convKey) : normalizePickedModels(modelPrefs.conversations[sn.convKey])[0] || null;
+      candidates.push({ key: sn.convKey, title: entry.timelineTitle || entry.title || sn.convKey, lastMs, busy: headlessRuns.has(absPathForKey(sn.convKey)), model, harness: codex ? 'codex' : 'pi' });
     }
   }
   candidates.sort((a, b) => b.lastMs - a.lastMs);
@@ -11298,6 +11624,7 @@ async function filesAskTargetResponse(pathValue, projectValue, identity) {
   const inherited = newConversationModels(identity).models[0] || null;
   return {
     path: abs, project, area, continue: candidates[0] || null, candidates: candidates.slice(0, 5), newAllowed: !!(meta && meta.cwd),
+    codexAllowed: !!(meta && meta.cwd) && !codexRefused(identity) && codexInstalled(),
     defaultModel: inherited,
     // For the box to show where things stand: the recent edits it would
     // send, and the earlier asks (with their conversation, so the box can
@@ -11447,6 +11774,9 @@ async function filesAskResponse(body, identity) {
   let key = fileAskTargetKey(pick, body.target);
   if (key) assertCan(identity, 'act', targetOf(key), 'this conversation');
   const brief = await fileAskBriefFor(abs, item, key, include, askSelectedOf(body));
+  // Which agent answers: the conversation's own, or the one chosen for a new one.
+  const harness = key ? conversationKind(index[key]) : body.harness === 'codex' ? 'codex' : 'pi';
+  if (harness === 'codex') return filesAskCodex({ abs, body, pick, key, prompt, item, include, brief, images, principal, identity });
   let context, created = false;
   if (!key) {
     if (!pick.newAllowed) throw new Error('no project folder to start a conversation in');
@@ -11483,6 +11813,47 @@ async function filesAskResponse(body, identity) {
   const notes = [];
   if (out && out.queued && (out.briefDropped || out.thinkingDropped)) notes.push('queued into the running reply: it keeps its own instructions and reasoning level');
   return { ok: true, key, created, queued: !!(out && out.queued), job: job ? jobView(job) : null, title, notes };
+}
+
+// An ask answered by Codex (design/87): a Codex conversation continued, or
+// a new one. The box's model and reasoning apply only when they are Codex's
+// (a Pi model chosen for the box is not used). The brief goes to Codex as
+// instructions for this request.
+const CODEX_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+async function filesAskCodex({ abs, body, pick, key, prompt, item, include, brief, images, principal, identity }) {
+  if (codexRefused(identity)) throw Object.assign(new Error('Codex runs from Chattering for this machine\'s own account only.'), { status: 403 });
+  // The box's Codex choices; its Pi model and level are for Pi answers.
+  const model = typeof body.codexModel === 'string' && /^[\w.:-]{1,80}$/.test(body.codexModel) ? { provider: 'codex', modelId: body.codexModel }
+    : normalizePickedModels(body.models).find(m => m.provider === 'codex') || null;
+  const effort = typeof body.codexEffort === 'string' && CODEX_EFFORTS.includes(body.codexEffort) ? body.codexEffort : null;
+  const notes = [];
+  let created = false, job, queued = false;
+  if (!key) {
+    if (!pick.newAllowed) throw new Error('no project folder to start a conversation in');
+    // The same folder a new Pi conversation from the box starts in: the
+    // project's, or its declared area's.
+    const meta = projectMetaFor(pick.project);
+    if (!meta || !meta.cwd || !fs.existsSync(meta.cwd)) throw new Error('the project folder is missing: ' + ((meta && meta.cwd) || '(unknown)'));
+    const areaRel = pick.area ? areasLib.normalizeAreaRel(pick.area) : null;
+    const folder = areaRel && areaRel in declaredAreasFor(pick.project) ? path.join(meta.cwd, areaRel) : meta.cwd;
+    const items = [item, ...(include.memory ? [{ project: pick.project, kind: 'map' }] : [])];
+    const started = await startCodexConversation({ folder, prompt, images, principal, models: model ? [model] : [], effort, items, brief });
+    key = started.key; job = started.job; created = true;
+  } else {
+    const context = conversationContextOf(key).filter(c => !(c.type === 'file' && c.path === abs)).concat([item]);
+    const out = await startAgentRun(key, {
+      node: null, provider: model ? 'codex' : undefined, modelId: model ? model.modelId : undefined,
+      message: prompt, images, force: false, allowQueue: true, context, brief, thinking: effort, principal,
+    });
+    job = out && out.job ? out.job : out;
+    queued = !!(out && out.queued);
+    if (queued) notes.push('queued into the running reply: Codex reads it after this one');
+  }
+  askLog.record(abs, { prompt, key, model: job && job.model || (model ? 'codex/' + model.modelId : null), user: principal.user.id });
+  const entry = index[key];
+  const rawTitle = entry ? (entry.timelineTitle || entry.title || '') : '';
+  const title = created || !rawTitle || /^\(no user message\)$/.test(rawTitle) ? null : rawTitle;
+  return { ok: true, key, created, harness: 'codex', queued, job: job ? jobView(job) : null, title, notes };
 }
 
 // Boot: backfill every conversation, ingest Git for every active project's
@@ -12901,7 +13272,7 @@ async function transcriptTarget(key, i) {
   const abs = absPathForKey(key);
   if (!abs) throw new Error('no session file for this conversation');
   const rawText = await fsp.readFile(abs, 'utf8');
-  const { messages } = await parseFile(abs);
+  const { messages } = await parseConversationFile(abs);
   const m = messages[i];
   if (!m) throw new Error('message not found — reload the conversation');
   if (!m.eid) throw new Error('this row has no entry in the session file');
@@ -12984,6 +13355,8 @@ async function transcriptRawResponse(key, i) {
 async function transcriptEditResponse(body) {
   const { id: key, i, baseSha, text } = body;
   if (typeof text !== 'string') throw new Error('missing text');
+  // Codex owns its files: Chattering reads them and never rewrites one.
+  if (sessionPathsFor(key).entry.source === 'codex') throw Object.assign(new Error('Codex keeps its own conversation file; Chattering does not edit it. Edit the question to ask it on a new path (a fork).'), { status: 409 });
   if (body.branch) {
     const { entry, sessionPath } = sessionPathsFor(key);
     if (entry.source !== 'pi' && entry.source !== 'pi-remote') throw new Error('Branch edits need a Pi conversation.');
@@ -14133,10 +14506,49 @@ function draftDefaults(identity) {
 // draftId makes the call idempotent for one hour: a retry after a lost
 // connection returns the conversation already created instead of a twin.
 const draftStarts = new Map(); // draftId → { at, promise }
+
+// A new Codex conversation (design/87). Attached context rides as Codex
+// developer instructions, as the system prompt does for Pi: once, at the
+// start of the thread, and remembered as given. brief: instructions for
+// this first request only (the file ask box's), after the context.
+async function startCodexConversation({ folder, prompt, images = [], principal, models, effort = null, access = 'config', items = [], brief = null, input = 'keyboard' }) {
+  const bundle = items.length || brief ? await writeAttachedContextFile(items, brief ? { brief } : undefined) : null;
+  const model = normalizePickedModels(models).find(m => m.provider === 'codex');
+  const started = await codexRuns().start({
+    folder, message: prompt, images, principal,
+    model: model ? model.modelId : null, effort: effort || null, access,
+    developerInstructions: bundle ? bundle.text : null,
+    author: { id: principal.user.id, name: principal.user.name, input: input || 'keyboard' },
+    input, describeStartFolder,
+  });
+  if (items.length) {
+    saveConversationContext(started.key, items);
+    // Codex was given this context at the start: not again next message.
+    // (The signature is of the context alone; a brief is for one request.)
+    const alone = brief ? await writeAttachedContextFile(items) : bundle;
+    modelPrefs.codex = modelPrefs.codex || {};
+    modelPrefs.codex[started.key] = { ...(modelPrefs.codex[started.key] || {}), contextSig: contextSig(items) + '#' + contextBundleHash(alone.text) };
+    saveModelPrefs();
+  }
+  if (model) saveConversationModels(started.key, [model]);
+  return started;
+}
 async function startConversationFromDraft(p, principal = null) {
   principal = principal || principalFor(null);
   const draftId = typeof p.draftId === 'string' && /^[A-Za-z0-9_-]{6,64}$/.test(p.draftId) ? p.draftId : null;
   if (draftId && draftStarts.has(draftId)) return draftStarts.get(draftId).promise;
+  if (p.harness === 'codex') {
+    const work = (async () => {
+      const started = await startCodexConversation({
+        folder: p.folder, prompt: typeof p.prompt === 'string' ? p.prompt.trim() : '', images: rpcImagesOf(p.images), principal,
+        models: p.models, effort: typeof p.thinking === 'string' ? p.thinking : null,
+        access: typeof p.access === 'string' ? p.access : 'config', items: normalizeContextItems(p.context), input: p.input,
+      });
+      return { key: started.key, cwd: started.cwd, project: projectNameOf(started.cwd, started.key), harness: 'codex', job: jobView(started.job), warnings: [] };
+    })();
+    if (draftId) { draftStarts.set(draftId, { at: Date.now(), promise: work }); work.catch(() => draftStarts.delete(draftId)); }
+    return work;
+  }
   const work = (async () => {
     const items = normalizeContextItems(p.context);
     const models = normalizePickedModels(p.models);
@@ -14833,7 +15245,7 @@ function notebookRootFor(key) {
 const derivingNotebooks = new Set();
 async function deriveNotebookFromAnswer(key, entryId) {
   const { entry, sessionPath, cwd } = sessionPathsFor(key);
-  if (entry.source === 'claude') throw new Error('Deriving a notebook needs pi. Claude conversations cannot be replayed.');
+  if (entry.source === 'claude' || entry.source === 'codex') throw new Error('Deriving a notebook needs Pi. ' + (entry.source === 'codex' ? 'Codex' : 'Claude') + ' conversations cannot be replayed here.');
   const lockKey = key + '#' + entryId;
   if (derivingNotebooks.has(lockKey)) throw new Error('A notebook is already being written from this answer.');
   derivingNotebooks.add(lockKey);
@@ -16333,6 +16745,9 @@ async function handleRequest(req, res) {
       '/sw.js': { file: 'sw.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/context-panel.js': { file: 'context-panel.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/file-completion-ui.js': { file: 'file-completion-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/harness-composer-ui.js': { file: 'harness-composer-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/codex-ui.js': { file: 'codex-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/harness/compose-commands.js': { file: 'harness/compose-commands.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/linediff.js': { file: 'linediff.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/notebook-env.js': { file: 'notebook-env.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/ai-commands.js': { file: 'ai-commands.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
@@ -16473,7 +16888,7 @@ async function handleRequest(req, res) {
       const see = visibleKeysFor(identity);
       const all = accessLib.seesAll(identity);
       for (const pair of Object.entries(index)) {
-        if (pair[1].hiddenFanout) continue;
+        if (pair[1].hiddenFanout || pair[1].importCopyOf) continue;
         if (!all && !see(targetOf(pair[0]))) continue;
         visibleEntries.push(pair);
         n++;
@@ -16506,6 +16921,10 @@ async function handleRequest(req, res) {
       data.canAct = !data.mirror && canDo(identity, 'act', targetOf(key));
       data.participants = (index[key].participants || []).map(p => userById(usersLib.resolveId(roster, p.id)) || p);
       data.project = projectNameOf(index[key].cwd, key);
+      // Facts linked across the index after this file was parsed.
+      data.importCopyOf = index[key].importCopyOf || null;
+      if (index[key].source === 'codex') data.codexPrefs = codexRuns().prefsOf(key);
+      data.codexCopies = index[key].codexCopies || null;
       data.selectedModels = await inferredConversationModels(key, data);
       data.attachedContext = conversationContextOf(key);
       data.reading = readingFor(key, identity);
@@ -16826,7 +17245,10 @@ async function handleRequest(req, res) {
           json(res, 200, { id: review.id, title: review.title, files: review.files.length, agents: review.agents.length });
         } else if (u.pathname === '/api/reviews' && req.method === 'GET') {
           const review = service.get(id);
-          const targets = Object.entries(index).filter(([key, e]) => conversationKind(e) !== 'claude' && projectNameOf(e.cwd, key) === review.project).map(([key, e]) => ({ key, title: e.title || key }));
+          // Where a review can be sent: Pi conversations, and Codex ones for
+          // this machine's own account (not the Codex app's imported copies).
+          const codexOk = !codexRefused(identity);
+          const targets = Object.entries(index).filter(([key, e]) => (conversationKind(e) === 'pi' || (codexOk && conversationKind(e) === 'codex' && !e.importCopyOf && !(e.codex && e.codex.imported))) && projectNameOf(e.cwd, key) === review.project).map(([key, e]) => ({ key, title: e.title || key, harness: conversationKind(e) }));
           const step = u.searchParams.get('step'), scope = ['other', 'branch'].includes(u.searchParams.get('scope')) ? u.searchParams.get('scope') : 'task';
           if (review.kind === 'conversation') { json(res, 200, { ...await conversationReviewView(service, review, step, scope, u.searchParams.get('agent')), targets }); return; }
           const paired = review.schema !== 2 && !step ? null : await service.pair(review, step, scope);
@@ -16875,7 +17297,8 @@ async function handleRequest(req, res) {
           service.mark(id, body.path, body.checked); json(res, 200, { ok: true });
         } else if (u.pathname === '/api/reviews/prepare' && req.method === 'POST') {
           const review = service.get(id), target = String(body.target || review.key);
-          if (!index[target] || conversationKind(index[target]) === 'claude' || projectNameOf(index[target].cwd, target) !== review.project) throw Error('Select a Pi conversation in this project');
+          const tk = index[target] && conversationKind(index[target]);
+          if (!index[target] || !(tk === 'pi' || (tk === 'codex' && !codexRefused(identity) && !index[target].importCopyOf)) || projectNameOf(index[target].cwd, target) !== review.project) throw Error('Select a Pi or Codex conversation in this project');
           json(res, 200, await service.prepare(id, target, String(body.note || '')));
         } else if (u.pathname === '/api/reviews/send' && req.method === 'POST') {
           const result = await service.deliver(String(body.token || ''), async delivery => {
@@ -17048,7 +17471,7 @@ async function handleRequest(req, res) {
       let body = '';
       for await (const chunk of req) body += chunk;
       try { json(res, 200, await transcriptEditResponse(JSON.parse(body || '{}'))); }
-      catch (e) { json(res, 400, { error: e.message }); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/diff-event') {
       const id = u.searchParams.get('id') || '';
       const event = await findDiffEvent(id, u.searchParams.get('project') || '', u.searchParams.get('key') || '');
@@ -17594,8 +18017,8 @@ async function handleRequest(req, res) {
       for await (const chunk of req) body += chunk;
       const parsed = JSON.parse(body);
       if (!parsed.id || !index[parsed.id]) return json(res, 404, { error: 'not found' });
-      try { json(res, 200, await forkSessionForEdit(parsed.id, parsed.node)); }
-      catch (e) { json(res, 400, { error: e.message }); }
+      try { assertCan(identity, 'act', targetOf(parsed.id), 'this conversation'); json(res, 200, await forkSessionForEdit(parsed.id, parsed.node)); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/epics') {
       const list = Object.values(epics).sort((a, b) => b.updatedAt - a.updatedAt);
       json(res, 200, list);
@@ -18437,13 +18860,87 @@ async function handleRequest(req, res) {
         if (!snippetsLib.isSnippetPath(abs)) throw new Error('not a snippet path');
         json(res, 200, await snippetsLib.bumpUse(SNIPPET_USES_FILE, abs));
       } catch (e) { json(res, 400, { error: e.message }); }
+    } else if (u.pathname === '/api/codex/menus' && req.method === 'GET') {
+      // Codex's own menus, for a Codex conversation (?id=) or a draft (?cwd=).
+      try {
+        const key = u.searchParams.get('id');
+        if (key && !index[key]) return json(res, 404, { error: 'conversation not found' });
+        if (key) assertCan(identity, 'see', targetOf(key), 'this conversation');
+        const cwd = key ? sessionPathsFor(key).cwd : (u.searchParams.get('cwd') ? describeStartFolder(u.searchParams.get('cwd')).path : os.homedir());
+        const principal = principalFor(identity);
+        if (principal.guest || principal.sandbox) return json(res, 403, { error: 'Codex runs from Chattering for this machine\'s own account only.' });
+        const menus = await codexMenusFor(cwd, principal);
+        if (key) menus.prefs = codexRuns().prefsOf(key);
+        json(res, 200, menus);
+      } catch (e) { json(res, e.code === 'CODEX_MISSING' ? 503 : e.status || 500, { error: e.message, code: e.code || undefined }); }
+    } else if (u.pathname === '/api/codex/prefs' && req.method === 'PUT') {
+      // A Codex conversation's choices: its model, reasoning and access.
+      try {
+        let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 16384) throw Object.assign(new Error('request too large'), { status: 413 }); }
+        const p = JSON.parse(raw || '{}');
+        if (!index[p.id] || index[p.id].source !== 'codex') return json(res, 404, { error: 'Codex conversation not found' });
+        assertCan(identity, 'act', targetOf(p.id), 'this conversation');
+        const patch = {};
+        if (p.access !== undefined) { if (!(p.access in require('./harness/codex-runs.js').ACCESS)) throw new Error('unknown access level'); patch.access = p.access; }
+        if (p.model !== undefined) {
+          if (typeof p.model !== 'string' || !/^[\w.:-]{1,80}$/.test(p.model)) throw new Error('bad model id');
+          saveConversationModels(p.id, [{ provider: 'codex', modelId: p.model }]);
+        }
+        if (p.effort !== undefined) { if (typeof p.effort !== 'string' || !/^[a-z][a-z-]{0,23}$/.test(p.effort)) throw new Error('bad reasoning level'); patch.effort = p.effort; }
+        modelPrefs.codex = modelPrefs.codex || {};
+        modelPrefs.codex[p.id] = { ...(modelPrefs.codex[p.id] || {}), ...patch };
+        saveModelPrefs();
+        json(res, 200, { ok: true, prefs: codexRuns().prefsOf(p.id) });
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/codex/open-terminal' && req.method === 'POST') {
+      // Continue in Codex's own terminal: Chattering lets go of the lock first.
+      try {
+        let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 4096) throw Object.assign(new Error('request too large'), { status: 413 }); }
+        const p = JSON.parse(raw || '{}');
+        if (!index[p.id] || index[p.id].source !== 'codex') return json(res, 404, { error: 'Codex conversation not found' });
+        assertCan(identity, 'act', targetOf(p.id), 'this conversation');
+        json(res, 200, await openConversationInTerminal(p.id, { focus: true }));
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/codex/release' && req.method === 'POST') {
+      // Let go of a Codex conversation now, so the Codex app or terminal can
+      // open it (Codex allows one writer per conversation).
+      try {
+        let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 4096) throw Object.assign(new Error('request too large'), { status: 413 }); }
+        const p = JSON.parse(raw || '{}');
+        if (!index[p.id] || index[p.id].source !== 'codex') return json(res, 404, { error: 'Codex conversation not found' });
+        assertCan(identity, 'act', targetOf(p.id), 'this conversation');
+        json(res, 200, { ok: true, released: await codexDriver.release(index[p.id].sessionId) });
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/node/compose' && req.method === 'POST') {
+      try {
+        let raw = ''; for await (const chunk of req) {
+          raw += chunk;
+          if (Buffer.byteLength(raw) > 256 * 1024) throw Object.assign(new Error('Composer request is too large'), { status: 413 });
+        }
+        const p = JSON.parse(raw || '{}');
+        if (!index[p.id]) return json(res, 404, { error: 'conversation not found' });
+        assertCan(identity, 'act', targetOf(p.id), 'this conversation');
+        if (!['commands', 'complete', 'apply', 'cancel'].includes(p.action)) return json(res, 400, { error: 'Unknown composer action' });
+        if (p.action !== 'commands') {
+          if (typeof p.clientId !== 'string' || !p.clientId || p.clientId.length > 120) return json(res, 400, { error: 'Composer client id is required' });
+          try { require('./harness/pi-composer.js').editorState(p); }
+          catch (e) { return json(res, 400, { error: e.message }); }
+        }
+        const result = await composeInPi(p.id, { action: p.action, clientId: p.clientId, text: p.text, cursor: p.cursor,
+          snapshot: p.snapshot, itemIndex: p.itemIndex, force: p.force === true }, identity);
+        if (!res.destroyed) json(res, 200, result);
+      } catch (e) { if (!res.destroyed) json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/node/commands') {
-      // pi's slash commands for this conversation's cwd, for the composer
-      // palette. Cached per cwd; a --no-session probe process fills it.
+      // SDK: resources from this conversation's actual worker. The old probe
+      // remains only for the deliberately selected RPC fallback engine.
       const key = u.searchParams.get('id');
       const entry = key && index[key];
       if (!entry) return json(res, 404, { error: 'not found' });
-      if (conversationKind(entry) !== 'pi') return json(res, 400, { error: 'slash commands over RPC need pi' });
+      if (!['pi', 'codex'].includes(conversationKind(entry))) return json(res, 400, { error: 'slash commands need a Pi or Codex conversation' });
+      try {
+        const live = await composeInPi(key, { action: 'commands' }, identity);
+        if (live.supported !== false) return json(res, 200, live);
+      } catch (e) { return json(res, e.status || 400, { error: e.message }); }
       const { cwd } = sessionPathsFor(key);
       const cached = slashCommandsCache.get(cwd);
       if (cached && Date.now() - cached.at < 5 * 60 * 1000) return json(res, 200, { commands: cached.list, cwd, cached: true });
@@ -18489,7 +18986,7 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/file-feedback' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
-      try { json(res, 200, await sendFileFeedback(JSON.parse(body || '{}'))); }
+      try { json(res, 200, await sendFileFeedback(JSON.parse(body || '{}'), identity)); }
       catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/conversation/send' && req.method === 'POST') {
       let body = '';
