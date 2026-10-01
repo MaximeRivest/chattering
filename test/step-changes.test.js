@@ -11,6 +11,7 @@ const { execFileSync } = require('node:child_process');
 const { CheckpointStore } = require('../checkpoint-store');
 const { stepTargets } = require('../checkpoint-extension');
 const { createStepChanges, namedPaths } = require('../step-changes');
+const { fixtureCleanup } = require('./helpers/fixture-cleanup');
 
 function gitIn(cwd, args) {
   const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
@@ -22,7 +23,7 @@ function gitIn(cwd, args) {
 // checkpoint-extension.js does in a live Pi session).
 async function world(t) {
   const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'step-changes-')));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const cleanup = fixtureCleanup(t, () => fs.rm(dir, { recursive: true, force: true }));
   const root = path.join(dir, 'proj'); await fs.mkdir(root);
   gitIn(root, ['init', '-q', '-b', 'main']);
   await fs.writeFile(path.join(root, 'app.js'), 'one\ntwo\nthree\n');
@@ -30,7 +31,7 @@ async function world(t) {
   await fs.writeFile(path.join(root, '.gitignore'), 'out/\n');
   gitIn(root, ['add', '-A']); gitIn(root, ['commit', '-qm', 'start']);
   const cp = new CheckpointStore(path.join(dir, 'private'));
-  t.after(() => cp.close());
+  cleanup.add(() => cp.close());
   const session = path.join(dir, 'conv.jsonl');
   const rows = [{ type: 'session', version: 3, id: 'c', cwd: root }];
   const recorded = [];
@@ -59,10 +60,10 @@ async function world(t) {
 const summary = files => files.map(f => [f.rel, f.kind, f.how, f.add, f.del]);
 
 test('what a step names: an edit tool\u2019s path, a command\u2019s outputs', () => {
-  const cwd = '/w';
-  assert.deepEqual([...namedPaths({ name: 'edit', input: { path: 'a.js' } }, cwd)], ['/w/a.js']);
-  assert.deepEqual([...namedPaths({ name: 'Write', input: { file_path: '/x/b.md' } }, cwd)], ['/x/b.md']);
-  assert.deepEqual([...namedPaths({ name: 'bash', input: { command: 'python gen.py > out/a.txt && cp a b' } }, cwd)].sort(), ['/w/b', '/w/out/a.txt']);
+  const cwd = path.resolve('/w');
+  assert.deepEqual([...namedPaths({ name: 'edit', input: { path: 'a.js' } }, cwd)], [path.join(cwd, 'a.js')]);
+  assert.deepEqual([...namedPaths({ name: 'Write', input: { file_path: '/x/b.md' } }, cwd)], [path.resolve('/x/b.md')]);
+  assert.deepEqual([...namedPaths({ name: 'bash', input: { command: 'python gen.py > out/a.txt && cp a b' } }, cwd)].sort(), [path.join(cwd, 'b'), path.join(cwd, 'out/a.txt')].sort());
   assert.deepEqual([...namedPaths({ name: 'read', input: { path: 'a.js' } }, cwd)], []);
 });
 
@@ -221,11 +222,14 @@ test('a step still running: listed, and asked about again', async t => {
 
 test('many snapshot pairs compared by one Git process: paths with spaces, binaries', async t => {
   const w = await world(t);
+  // Win32 filenames cannot contain a tab. Keep the actual snapshot-pair
+  // comparison there with a space and Unicode; POSIX still covers tabs.
+  const textName = process.platform === 'win32' ? 'a b λ.txt' : 'a b\tc.txt';
   await w.step('b1', 'bash', { command: 'x' }, async () => {
-    await fs.writeFile(w.file('a b\tc.txt'), 'x\n');
+    await fs.writeFile(w.file(textName), 'x\n');
     await fs.writeFile(w.file('pic.bin'), Buffer.from([0, 1, 2, 3]));
   });
   const out = await w.service().changes('k', [['b1']]);
-  assert.deepEqual(summary(out.groups[0].files), [['a b\tc.txt', 'added', 'observed', 1, 0], ['pic.bin', 'added', 'observed', null, null]]);
+  assert.deepEqual(summary(out.groups[0].files), [[textName, 'added', 'observed', 1, 0], ['pic.bin', 'added', 'observed', null, null]]);
   assert.equal(out.groups[0].files[1].binary, true);
 });

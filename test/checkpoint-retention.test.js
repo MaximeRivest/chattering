@@ -14,6 +14,7 @@ const { ChangeReviews } = require('../change-reviews');
 const { packIndex } = require('../checkpoint-maintenance');
 const { FileArchive } = require('../file-archive');
 const DAY = 86400000;
+const { fixtureCleanup } = require('./helpers/fixture-cleanup');
 
 async function fixture(t, { mb } = {}) {
   const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'retention-')));
@@ -24,10 +25,11 @@ async function fixture(t, { mb } = {}) {
   const previous = process.env.CHATTERING_CHECKPOINT_MB;
   if (mb) process.env.CHATTERING_CHECKPOINT_MB = String(mb);
   const store = new CheckpointStore(path.join(dir, 'private'), { autoMaintain: false });
-  t.after(async () => {
+  const cleanup = fixtureCleanup(t, async () => {
     if (mb) { if (previous === undefined) delete process.env.CHATTERING_CHECKPOINT_MB; else process.env.CHATTERING_CHECKPOINT_MB = previous; }
-    store.close(); await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true });
   });
+  cleanup.add(() => store.close());
   let n = 0;
   const capture = async (extra = {}) => {
     const call = 'call-' + (++n);
@@ -35,7 +37,7 @@ async function fixture(t, { mb } = {}) {
     assert.equal(r.error, '');
     return { ...r, call };
   };
-  return { dir, root, store, capture, reviews: new ChangeReviews(store) };
+  return { dir, root, store, capture, cleanup, reviews: new ChangeReviews(store) };
 }
 const loose = async repo => (await fs.readdir(path.join(repo, 'objects'))).filter(e => /^[0-9a-f]{2}$/.test(e)).length;
 const age = (store, boundary, when) => store.db.prepare('UPDATE checkpoint_boundaries SET started=?, finished=? WHERE id=?').run(when, when, boundary);
@@ -175,9 +177,9 @@ test('when everything left is protected, it says so instead of removing recent w
 });
 
 test('an exclusive lease waits for a running capture and holds new captures off', async t => {
-  const { store, root, capture } = await fixture(t);
+  const { store, root, capture, cleanup } = await fixture(t);
   const other = new CheckpointStore(store.dir, { autoMaintain: false });
-  t.after(() => other.close());
+  cleanup.add(() => other.close());
   const key = await store.root(root);
   const running = await other.lease(key, 'capture');
   let granted = false;
@@ -217,13 +219,13 @@ test('per-file history keeps each file\u2019s newest version, the last day and p
 });
 
 test('only the server upgrades a store that already holds history', async t => {
-  const { store, capture } = await fixture(t);
+  const { store, capture, cleanup } = await fixture(t);
   await capture();
   // As a store written by the previous version: no new columns yet.
   store.db.exec(`ALTER TABLE checkpoint_snapshots DROP COLUMN format; ALTER TABLE checkpoint_objects DROP COLUMN added; DELETE FROM checkpoint_meta;`);
   assert.throws(() => new CheckpointStore(store.dir), /being upgraded; it resumes once Chattering has restarted/);
   const owner = new CheckpointStore(store.dir, { owner: true, autoMaintain: false });
-  t.after(() => owner.close());
+  cleanup.add(() => owner.close());
   assert.ok(owner.db.prepare('PRAGMA table_info(checkpoint_snapshots)').all().some(c => c.name === 'format'));
   const worker = new CheckpointStore(store.dir, { autoMaintain: false });
   worker.close();

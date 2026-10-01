@@ -12,6 +12,8 @@ const { CheckpointStore } = require('../checkpoint-store');
 const { ChangeReviews } = require('../change-reviews');
 const L = require('../task-locations');
 const { branchWork, committingDirs, stripHeredocs } = require('../branch-work');
+const { fixtureCleanup } = require('./helpers/fixture-cleanup');
+const { shellPath } = require('./helpers/shell-path');
 
 const T0 = Date.UTC(2026, 8, 1, 12, 0, 0);
 const at = minutes => T0 + minutes * 60000;
@@ -26,20 +28,21 @@ async function commit(cwd, file, text, when) {
   return gitIn(cwd, ['rev-parse', 'HEAD']);
 }
 // A shell step that ran `git commit` in `dir` around `when`.
-const committed = (dir, when) => ({ name: 'bash', input: { command: `cd ${dir} && git add -A && git commit -q -F - <<'EOF'\ncd /elsewhere && git commit\nEOF` }, ts: new Date(when - 500).toISOString(), endTs: new Date(when + 500).toISOString() });
+const committed = (dir, when) => ({ name: 'bash', input: { command: `cd ${shellPath(dir)} && git add -A && git commit -q -F - <<'EOF'\ncd /elsewhere && git commit\nEOF` }, ts: new Date(when - 500).toISOString(), endTs: new Date(when + 500).toISOString() });
 
 test('committing folders follow cd and -C, never a heredoc body', () => {
-  assert.deepEqual([...committingDirs('cd /a && git add -A && git commit -m x', '/w')], ['/a']);
-  assert.deepEqual([...committingDirs('git -C ../b commit -m x; git status', '/w/c')], ['/w/b']);
-  assert.deepEqual([...committingDirs('git log --oneline', '/w')], [], 'reading history commits nothing');
-  assert.deepEqual([...committingDirs("git commit -F - <<'EOF'\ncd /x && git merge y\nEOF", '/w')], ['/w']);
+  const cwd = path.resolve('/w'); // a rooted local path uses the current drive on Windows
+  assert.deepEqual([...committingDirs('cd /a && git add -A && git commit -m x', cwd)], [path.resolve('/a')]);
+  assert.deepEqual([...committingDirs('git -C ../b commit -m x; git status', path.join(cwd, 'c'))], [path.join(cwd, 'b')]);
+  assert.deepEqual([...committingDirs('git log --oneline', cwd)], [], 'reading history commits nothing');
+  assert.deepEqual([...committingDirs("git commit -F - <<'EOF'\ncd /x && git merge y\nEOF", cwd)], [cwd]);
   assert.equal(stripHeredocs("a <<EOF\nsecret\nEOF\nb"), 'a <<EOF\nb');
-  assert.deepEqual([...committingDirs('cd $DIR && git commit', '/w')], ['/w'], 'an unknown folder is not guessed');
+  assert.deepEqual([...committingDirs('cd $DIR && git commit', cwd)], [cwd], 'an unknown folder is not guessed');
 });
 
 async function repos(t) {
   const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'conv-review-')));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const cleanup = fixtureCleanup(t, () => fs.rm(dir, { recursive: true, force: true }));
   const main = path.join(dir, 'proj'); await fs.mkdir(main);
   gitIn(main, ['init', '-q', '-b', 'main']);
   const c0 = await commit(main, 'a.txt', 'zero', at(0));
@@ -54,9 +57,9 @@ async function repos(t) {
   const sources = [
     { agent: 1, cwd: w1, tools: [committed(w1, at(10)), committed(w1, at(30))] },
     { agent: 2, cwd: w2, tools: [committed(w2, at(40))] },
-    { agent: 3, cwd: '/nowhere', tools: [{ name: 'bash', input: { command: `git -C ${w3} commit -qm five` }, ts: new Date(at(50) - 500).toISOString(), endTs: new Date(at(50) + 500).toISOString() }] },
+    { agent: 3, cwd: '/nowhere', tools: [{ name: 'bash', input: { command: `git -C ${shellPath(w3)} commit -qm five` }, ts: new Date(at(50) - 500).toISOString(), endTs: new Date(at(50) + 500).toISOString() }] },
   ];
-  return { dir, main, w1, w2, w3, c: [c0, c1, c2, c3, c4, c5], sources };
+  return { dir, main, w1, w2, w3, c: [c0, c1, c2, c3, c4, c5], sources, cleanup };
 }
 
 test('branch work: ranges from the agents\u2019 own commits, others\u2019 commits named', async t => {
@@ -88,10 +91,10 @@ test('branch work: a repair branch that continues another joins it', async t => 
 });
 
 test('conversation review: one file edited by two agents, and their commits', async t => {
-  const { dir, main, w1, sources } = await repos(t);
+  const { dir, main, w1, sources, cleanup } = await repos(t);
   const cp = new CheckpointStore(path.join(dir, 'private'));
   const reviews = new ChangeReviews(cp);
-  t.after(() => cp.close());
+  cleanup.add(() => cp.close());
   // Two agents edit the same file in turn, each with its own saved steps.
   const file = path.join(main, 'notes.md');
   await fs.writeFile(file, 'first');
@@ -140,9 +143,9 @@ test('conversation review: one file edited by two agents, and their commits', as
 
 test('a finished agent\u2019s review is reused while its session and checkpoints are unchanged', async t => {
   const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'conv-cache-')));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const cleanup = fixtureCleanup(t, () => fs.rm(dir, { recursive: true, force: true }));
   const cp = new CheckpointStore(path.join(dir, 'private')), reviews = new ChangeReviews(cp);
-  t.after(() => cp.close());
+  cleanup.add(() => cp.close());
   const session = path.join(dir, 's.jsonl'); await fs.writeFile(session, '{}\n');
   const sig = reviews.agentSignature(session, await fs.stat(session));
   assert.equal(reviews.cachedAgent(session, sig), undefined);

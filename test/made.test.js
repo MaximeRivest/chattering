@@ -12,6 +12,8 @@ const { CheckpointStore } = require('../checkpoint-store');
 const { ChangeReviews } = require('../change-reviews');
 const L = require('../task-locations');
 const { createMade, parseStatus, kindOf, isScratch } = require('../made');
+const { fixtureCleanup } = require('./helpers/fixture-cleanup');
+const { shellPath } = require('./helpers/shell-path');
 
 function gitIn(cwd, args, when) {
   const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
@@ -45,7 +47,7 @@ test('kinds and scratch folders', () => {
 // shell command that writes a picture and something in a temporary folder.
 async function fixture(t, { withScratch = false } = {}) {
   const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'made-')));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const cleanup = fixtureCleanup(t, () => fs.rm(dir, { recursive: true, force: true }));
   const root = path.join(dir, 'proj'); await fs.mkdir(root);
   gitIn(root, ['init', '-q', '-b', 'main']);
   await fs.writeFile(path.join(root, 'app.js'), 'one\ntwo\nthree\n');
@@ -53,7 +55,7 @@ async function fixture(t, { withScratch = false } = {}) {
   gitIn(root, ['add', '-A']); gitIn(root, ['commit', '-qm', 'start']);
   const cp = new CheckpointStore(path.join(dir, 'private'));
   const reviews = new ChangeReviews(cp);
-  t.after(() => cp.close());
+  cleanup.add(() => cp.close());
   const session = path.join(dir, 'conv.jsonl'); await fs.writeFile(session, '{}\n');
   const edit = { id: 'e1', name: 'edit', ts: new Date().toISOString(), success: true, input: { path: path.join(root, 'app.js'), edits: [{ oldText: 'two\n', newText: 'TWO\nand a half\n' }] } };
   const meta = { session, call: 'e1', run: 'run', tool: 'edit', targets: L.directTargets(edit.name, edit.input, root) };
@@ -61,7 +63,7 @@ async function fixture(t, { withScratch = false } = {}) {
   await fs.writeFile(path.join(root, 'app.js'), 'one\nTWO\nand a half\nthree\n');
   await cp.capture(root, { ...meta, phase: 'after' });
   const scratchDir = path.join(dir, 'tmpish');
-  const shell = { id: 'b1', name: 'bash', ts: new Date().toISOString(), success: true, input: { command: `mkdir -p out && echo png > out/plot.png && echo x > ${scratchDir}/probe.txt; echo y > /dev/null` } };
+  const shell = { id: 'b1', name: 'bash', ts: new Date().toISOString(), success: true, input: { command: `mkdir -p out && echo png > out/plot.png && echo x > ${shellPath(path.join(scratchDir, 'probe.txt'))}; echo y > /dev/null` } };
   await fs.mkdir(path.join(root, 'out')); await fs.writeFile(path.join(root, 'out', 'plot.png'), 'png');
   await fs.mkdir(scratchDir); await fs.writeFile(path.join(scratchDir, 'probe.txt'), 'x');
   const tools = [edit, shell];
@@ -168,7 +170,7 @@ test('restart: the server compiled an older version than the one on disk', async
 test('commits an agent made are listed with the branch state', async t => {
   const f = await fixture(t);
   const when = Date.now() + 3600000; // an hour after the fixture's own first commit
-  const commitTool = { id: 'c1', name: 'bash', ts: new Date(when - 1000).toISOString(), endTs: new Date(when + 1000).toISOString(), success: true, input: { command: `cd ${f.root} && git add -A && git commit -qm "agent work"` } };
+  const commitTool = { id: 'c1', name: 'bash', ts: new Date(when - 1000).toISOString(), endTs: new Date(when + 1000).toISOString(), success: true, input: { command: `cd ${shellPath(f.root)} && git add -A && git commit -qm "agent work"` } };
   gitIn(f.root, ['add', '-A']); gitIn(f.root, ['commit', '-qm', 'agent work'], when);
   f.tools.push(commitTool);
   const s = await createMade(f.deps).summary('conv');
