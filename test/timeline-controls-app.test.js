@@ -8,7 +8,17 @@ test('timeline camera controls: quiet defaults, shared camera, safe keys, persis
   await until(`homeTimeline?.state.width > 0 && !$('helpOverlay').checkVisibility() && !document.querySelector('dialog[open]')`);
   const click = selector => ev(`document.querySelector(${JSON.stringify(selector)}).click()`);
   const key = (key, extra = {}) => ev(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', ${JSON.stringify({ key, bubbles: true, cancelable: true, ...extra })}))`);
-  const cameraAt = scale => until(`Math.abs(homeTimeline.state.scale / PX_DAY_BASE - ${scale}) < 0.000001`, async () => `scale ${scale}: ` + JSON.stringify(await ev(`({camera:homeTimeline.state,zoom:ganttZoom,panel:$('timelineControlPanel').matches(':popover-open')})`)));
+  // Camera state can lead the onChange publication (e.g. reduced motion).
+  // Wait for the same buttons even when pinning moves them out of the panel.
+  const cameraAt = scale => until(`(()=>{
+    const id = TimelineControls.presetAt(${scale});
+    const label = id ? TimelineControls.ACTIONS.find(action => action.id === id).label : 'Custom';
+    const presets = [...document.querySelectorAll('.tc-camera [aria-pressed]')];
+    return Math.abs(homeTimeline.state.scale / PX_DAY_BASE - ${scale}) < 0.000001
+      && document.querySelector('.tc-scale')?.textContent === label + ' ▾'
+      && presets.length === Object.keys(TimelineControls.PRESETS).length
+      && presets.every(button => button.getAttribute('aria-pressed') === String(button.dataset.action === id));
+  })()`, async () => `scale ${scale}: ` + JSON.stringify(await ev(`({camera:homeTimeline.state,zoom:ganttZoom,label:document.querySelector('.tc-scale')?.textContent,presets:[...document.querySelectorAll('.tc-camera [aria-pressed]')].map(button=>[button.dataset.action,button.getAttribute('aria-pressed')]),panel:$('timelineControlPanel').matches(':popover-open')})`)));
   assert.equal(await ev(`$('timelineControls').checkVisibility()`), true);
   assert.equal(await ev(`document.querySelector('.tc-inline').children.length`), 0);
   assert.equal(await ev(`(()=>{const b=document.querySelector('#timelineControls [data-action=help]'),r=b.getBoundingClientRect();return b.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))})()`), true, 'Files toggle cannot cover the shortcut button');
@@ -79,6 +89,9 @@ test('timeline camera controls: quiet defaults, shared camera, safe keys, persis
   await ev(`selectTheme('light')`);
   for (const [width, height, mobile] of [[760, 800, false], [390, 844, true], [640, 360, true]]) {
     await size(width, height, mobile);
+    // CDP metrics can answer before media-query listeners relocate the pinned
+    // controls and phone navigation. Observe their outputs, not elapsed time.
+    await until(`innerWidth === ${width} && innerHeight === ${height} && document.querySelector('.tc-inline').children.length === ${width <= 700 ? 0 : 1} && $('phoneBar').checkVisibility() === ${width <= 700}`, 'timeline layout ' + width);
     await click('.tc-scale');
     assert.equal(await ev(`(()=>{const r=$('timelineControlPanel').getBoundingClientRect();return r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight})()`), true, 'popover fits ' + width);
     assert.equal(await ev(`document.documentElement.scrollWidth <= innerWidth`), true, 'no page overflow ' + width);

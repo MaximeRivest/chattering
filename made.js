@@ -34,9 +34,10 @@ const { joinAgents } = require('./conversation-reviews');
 const { branchWork } = require('./branch-work');
 const { git, blobId } = require('./checkpoint-store');
 const gitmeta = require('./gitmeta');
+const platform = require('./platform.js');
 
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
-const within = (root, file) => !!root && !!file && (file === root || file.startsWith(root + path.sep));
+const within = (root, file) => platform.isInside(file, root);
 const posix = p => p.split(path.sep).join('/');
 const READ_MAX = 2 * 1024 * 1024;
 const OTHER_SHOWN = 60;
@@ -59,7 +60,7 @@ const MEDIA = new Set(['image', 'video', 'audio', 'pdf']);
 // Kinds a person looks at, as opposed to code a command also wrote.
 const SHOWN = new Set(['image', 'video', 'audio', 'pdf', 'web', 'page', 'data']);
 // A temporary or system folder: an agent's scratch space, not its product.
-const SCRATCH = [...new Set(['/tmp', '/var/tmp', os.tmpdir(), (() => { try { return fs.realpathSync(os.tmpdir()); } catch { return os.tmpdir(); } })()])];
+const SCRATCH = [...new Set([...(platform.IS_WIN ? [] : ['/tmp', '/var/tmp']), os.tmpdir(), platform.realFolder(os.tmpdir())])];
 const isScratch = abs => !!abs && (SCRATCH.some(dir => within(dir, abs)) || /^\/(dev|proc|sys)(\/|$)/.test(abs));
 
 // A small LRU: finished agents never change, live ones replace their entry.

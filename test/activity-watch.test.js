@@ -105,8 +105,15 @@ test('the quiet paragraph gives the facts a parent needs to decide, and draws a 
   assert.doesNotMatch(W.describeQuiet({ title: 'T', quietMs: 30 * MIN, openTools: [{ what: 'bash: x' }], processes: null }), /No process/);
 });
 
-test('process usage reads real lifetime and processor time, and ps durations parse', { skip: !['linux', 'darwin'].includes(process.platform) }, () => {
-  const u = P.usage(process.pid);
+test('process usage reads real lifetime and processor time, and ps durations parse', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
+  // macOS ps reports whole seconds: sample until this process is measurable.
+  let u;
+  const deadline = Date.now() + 3000;
+  do {
+    u = P.usage(process.pid);
+    if (u && u.ageMs > 0) break;
+    await new Promise(r => setTimeout(r, 20));
+  } while (Date.now() < deadline);
   assert.ok(u && u.ageMs > 0 && u.cpuMs >= 0);
   assert.equal(P.usage(-1), null);
   assert.equal(P.psDurationMs('04:09:45'), (4 * 3600 + 9 * 60 + 45) * 1000);
@@ -128,4 +135,12 @@ test('a real idle process under an agent process is reported with its command an
   assert.equal(sleeper.idle, true);
   assert.match(W.describeQuiet({ title: 'fixture', quietMs: 25 * MIN, openTools: [{ what: 'bash: sleep 30' }], processes: report }),
     /pid \d+ sleep 30 \(alive \d+ s, 0 s of processor time, idle\)/);
+});
+
+test('Given a zero-duration or invalid sample, When reporting activity, Then processor use stays unknown', () => {
+  const table = [{ pid: 10, ppid: 1, argv: ['agent'] }, { pid: 11, ppid: 10, argv: ['tool'] }];
+  for (const sample of [{ ageMs: 0, cpuMs: 0 }, { ageMs: NaN, cpuMs: 0 }, { ageMs: 1000, cpuMs: -1 }]) {
+    const report = W.processReport(10, { list: () => table, descendantsOf: P.descendantsOf, usage: () => sample });
+    assert.equal(report, null, 'no idle conclusion from an unmeasurable interval');
+  }
 });

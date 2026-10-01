@@ -19,6 +19,7 @@
    its public key, its person, its credential. Pairing codes live in memory
    only; a restart ends any that were showing. */
 const fs = require('fs');
+const { readPrivateFileSync, writePrivateFileSync } = require('./private-file');
 const path = require('path');
 const http = require('http');
 const zlib = require('zlib');
@@ -92,31 +93,39 @@ function createAnywhereHome(opts) {
   const state = load();
   const pairings = new Map();              // id → { id, secret, userId, expiresAt, pairedDevice }
   const peers = new Map();                 // relay session id → Peer
+  let keyInit = null;
   let key = null;                          // { privateKey, spki, homeId }
   let ws = null, relayState = 'off', relayError = '', retry = 0, retryTimer = null, stopped = false, iceServers = [];
 
   function load() {
-    try {
-      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-      return { key: raw.key || null, devices: Array.isArray(raw.devices) ? raw.devices : [] };
-    } catch { return { key: null, devices: [] }; }
+    const bytes = readPrivateFileSync(file);
+    if (bytes === null) return { key: null, devices: [] }; // initial open proved absence
+    const raw = JSON.parse(bytes);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !raw.key ||
+        typeof raw.key.jwk !== 'object' || typeof raw.key.spki !== 'string' || !Array.isArray(raw.devices))
+      throw new Error('Corrupt Anywhere identity store');
+    return { key: raw.key, devices: raw.devices };
   }
-  function save() {
-    fs.mkdirSync(dataDir, { recursive: true });
-    const tmp = file + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 1) + '\n', { mode: 0o600 });
-    fs.renameSync(tmp, file);
+  function save(next = state) {
+    writePrivateFileSync(file, JSON.stringify(next, null, 1) + '\n');
   }
-  async function ensureKey() {
-    if (key) return key;
+  // One initialization, including the constructor's request. A rejected
+  // promise is deliberately latched: never return an unpersisted identity.
+  function ensureKey() {
+    if (!keyInit) keyInit = initializeKey();
+    return keyInit;
+  }
+  async function initializeKey() {
     const subtle = P.subtle();
-    if (!state.key) {
+    let material = state.key;
+    if (!material) {
       const pair = await subtle.generateKey(P.ECDSA, true, ['sign', 'verify']);
-      state.key = { jwk: await subtle.exportKey('jwk', pair.privateKey), spki: P.b64u(new Uint8Array(await subtle.exportKey('spki', pair.publicKey))) };
-      save();
+      material = { jwk: await subtle.exportKey('jwk', pair.privateKey), spki: P.b64u(new Uint8Array(await subtle.exportKey('spki', pair.publicKey))) };
+      save({ ...state, key: material });
+      state.key = material; // publish only after persistence succeeds
     }
-    const privateKey = await subtle.importKey('jwk', state.key.jwk, P.ECDSA, false, ['sign']);
-    const spki = P.unb64u(state.key.spki);
+    const privateKey = await subtle.importKey('jwk', material.jwk, P.ECDSA, false, ['sign']);
+    const spki = P.unb64u(material.spki);
     key = { privateKey, spki, homeId: await P.homeIdOf(spki) };
     return key;
   }
@@ -187,28 +196,57 @@ function createAnywhereHome(opts) {
       }
       peer = createPeer(from, send);
     }
-    try {
+    // Relay callbacks overlap: a truthy native remoteDescription may still be
+    // empty, or setRemoteDescription may be awaiting platform work. Serialize
+    // each peer's SDP and ICE, independently of every other phone.
+    peer.signals = peer.signals.then(async () => {
+      if (peer.closed) return;
       if (data.sdp) {
+        peer.remoteReady = false;
         await peer.pc.setRemoteDescription(data.sdp);
-        for (const c of peer.pending.splice(0)) await peer.pc.addIceCandidate(c).catch(() => {});
-        await peer.pc.setLocalDescription(await peer.pc.createAnswer());
+        if (peer.closed) return;
+        peer.remoteReady = true;
+        for (const c of peer.pending.splice(0)) {
+          if (peer.closed) return;
+          await peer.pc.addIceCandidate(c).catch(() => {});
+        }
+        if (peer.closed) return;
+        const answer = await peer.pc.createAnswer();
+        if (peer.closed) return;
+        await peer.pc.setLocalDescription(answer);
+        if (peer.closed) return;
         send({ t: 'signal', to: from, data: { sdp: { type: peer.pc.localDescription.type, sdp: peer.pc.localDescription.sdp } } });
+        peer.answerSent = true;
+        for (const m of peer.localCandidates.splice(0)) {
+          if (peer.closed) return;
+          send(m);
+        }
       } else if (data.candidate) {
-        if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(data.candidate).catch(() => {});
+        if (peer.remoteReady) await peer.pc.addIceCandidate(data.candidate).catch(() => {});
         else peer.pending.push(data.candidate);
       }
-    } catch (e) { log('anywhere: signalling failed: ' + e.message); peer.close('signalling failed'); }
+    }).catch(e => {
+      if (peer.closed) return;
+      log('anywhere: signalling failed: ' + e.message);
+      peer.close('signalling failed');
+    });
+    return peer.signals;
   }
 
   /* ---- one phone's connection ---- */
   function createPeer(sid, send) {
     const { RTCPeerConnection } = rtc();
     const pc = new RTCPeerConnection({ iceServers: iceForNode(iceServers), ...(relayOnly ? { iceTransportPolicy: 'relay' } : {}) });
-    const peer = { sid, pc, pending: [], at: Date.now(), authed: false, device: null, mux: null, streams: new Map(), closed: false, path: null };
+    const peer = {
+      sid, pc, pending: [], localCandidates: [], remoteReady: false,
+      answerSent: false, signals: Promise.resolve(), at: Date.now(),
+      authed: false, device: null, mux: null, streams: new Map(), closed: false, path: null,
+    };
     peers.set(sid, peer);
     peer.close = why => {
       if (peer.closed) return;
       peer.closed = true;
+      peer.pending.length = peer.localCandidates.length = 0;
       peers.delete(sid);
       clearTimeout(peer.authTimer);
       for (const s of peer.streams.values()) { try { s.abort(); } catch {} }
@@ -221,14 +259,19 @@ function createAnywhereHome(opts) {
     peer.authTimer = setTimeout(() => { if (!peer.authed) peer.close(); }, AUTH_MS);
     // node-datachannel writes candidates as SDP lines (a=candidate:…); a
     // browser's addIceCandidate wants them without the a=.
-    pc.onicecandidate = e => { if (e.candidate) send({ t: 'signal', to: sid, data: { candidate: { candidate: String(e.candidate.candidate).replace(/^a=/, ''), sdpMid: e.candidate.sdpMid, sdpMLineIndex: e.candidate.sdpMLineIndex } } }); };
+    pc.onicecandidate = e => {
+      if (!e.candidate || peer.closed) return;
+      const m = { t: 'signal', to: sid, data: { candidate: { candidate: String(e.candidate.candidate).replace(/^a=/, ''), sdpMid: e.candidate.sdpMid, sdpMLineIndex: e.candidate.sdpMLineIndex } } };
+      // Native gathering starts during remote SDP, before createAnswer resolves.
+      if (peer.answerSent) send(m); else peer.localCandidates.push(m);
+    };
     pc.onconnectionstatechange = () => { if (['failed', 'closed'].includes(pc.connectionState)) peer.close(); };
     pc.ondatachannel = e => {
       const dc = e.channel;
-      if (dc.label !== 'tunnel' || peer.mux) return;
+      if (peer.closed || dc.label !== 'tunnel' || peer.mux) return;
       dc.binaryType = 'arraybuffer';
       const start = () => {
-        if (peer.mux) return;
+        if (peer.closed || peer.mux) return;
         peer.mux = new P.Mux(dc, (t, s, b) => onFrame(peer, t, s, b));
         dc.onmessage = ev => peer.mux.receive(ev.data);
         peer.mux.onDrain(() => { for (const s of peer.streams.values()) if (s.resume) s.resume(); });
@@ -241,24 +284,30 @@ function createAnywhereHome(opts) {
   }
 
   async function hello(peer) {
+    if (peer.closed) return;
     const k = await ensureKey();
+    if (peer.closed) return;
     peer.nonce = P.b64u(P.random(16));
     peer.mux.send(T.CTRL, 0, { t: 'hello', v: P.VERSION, key: P.b64u(k.spki), nonce: peer.nonce, name: homeName() });
   }
   function transcriptOf(peer, phoneNonce) {
     return P.transcript({ homeId: key.homeId, homeFp: P.fingerprint(peer.pc.localDescription && peer.pc.localDescription.sdp), phoneFp: P.fingerprint(peer.pc.remoteDescription && peer.pc.remoteDescription.sdp), homeNonce: peer.nonce, phoneNonce });
   }
-  const refuse = (peer, why, message) => { peer.mux.send(T.CTRL, 0, { t: 'refused', why, message }); setTimeout(() => peer.close(), 200); };
+  const refuse = (peer, why, message) => { if (peer.closed) return; peer.mux.send(T.CTRL, 0, { t: 'refused', why, message }); setTimeout(() => peer.close(), 200); };
 
   async function control(peer, m) {
+    if (peer.closed) return;
     if (m.t === 'ping') return peer.mux.send(T.CTRL, 0, { t: 'pong', n: m.n });
     if (m.t === 'pong') return;
     if (m.t === 'path') { if (peer.authed && ['direct', 'relay'].includes(m.path) && peer.path !== m.path) { peer.path = m.path; changed(); } return; }
     if (m.t === 'hello' && !peer.phoneNonce) {
       peer.phoneNonce = String(m.nonce || '');
       await ensureKey();
+      if (peer.closed) return;
       peer.transcript = transcriptOf(peer, peer.phoneNonce);
-      return peer.mux.send(T.CTRL, 0, { t: 'proof', sig: P.b64u(await P.sign(key.privateKey, peer.transcript)) });
+      const sig = await P.sign(key.privateKey, peer.transcript);
+      if (peer.closed) return;
+      return peer.mux.send(T.CTRL, 0, { t: 'proof', sig: P.b64u(sig) });
     }
     if (m.t !== 'auth' || peer.authed || !peer.transcript) return;
     const sig = P.unb64u(m.sig || '');
@@ -268,8 +317,13 @@ function createAnywhereHome(opts) {
       const spki = P.unb64u(m.key || '');
       let pub;
       try { pub = await P.importPublic(spki); } catch { return refuse(peer, 'bad-key', 'This phone sent a key that cannot be read.'); }
+      if (peer.closed) return;
       const mac = await P.hmac(P.unb64u(pairing.secret), peer.transcript);
-      if (!P.sameBytes(mac, P.unb64u(m.mac || '')) || !(await P.verify(pub, sig, peer.transcript))) return refuse(peer, 'bad-code', 'The code did not match. Show a new one on your computer.');
+      if (peer.closed) return;
+      if (!P.sameBytes(mac, P.unb64u(m.mac || ''))) return refuse(peer, 'bad-code', 'The code did not match. Show a new one on your computer.');
+      const valid = await P.verify(pub, sig, peer.transcript);
+      if (peer.closed) return;
+      if (!valid) return refuse(peer, 'bad-code', 'The code did not match. Show a new one on your computer.');
       const name = String(m.name || 'Phone').slice(0, 60);
       let cred;
       try { cred = issueCredential(pairing.userId, name + ' · anywhere'); } catch (e) { return refuse(peer, 'no-person', e.message); }
@@ -287,10 +341,14 @@ function createAnywhereHome(opts) {
       return refuse(peer, 'removed', 'This phone was removed from this computer.');
     }
     const pub = await P.importPublic(P.unb64u(device.publicKey));
-    if (!(await P.verify(pub, sig, peer.transcript))) return refuse(peer, 'bad-signature', 'This phone could not prove who it is.');
+    if (peer.closed) return;
+    const valid = await P.verify(pub, sig, peer.transcript);
+    if (peer.closed) return;
+    if (!valid) return refuse(peer, 'bad-signature', 'This phone could not prove who it is.');
     return welcome(peer, device, pub);
   }
   async function welcome(peer, device) {
+    if (peer.closed) return;
     peer.authed = true;
     peer.device = device;
     clearTimeout(peer.authTimer);
@@ -305,6 +363,7 @@ function createAnywhereHome(opts) {
 
   /* ---- requests and sockets from an authenticated phone ---- */
   function onFrame(peer, type, id, bytes) {
+    if (peer.closed) return;
     if (id === 0) { let m; try { m = P.json(bytes); } catch { return; } control(peer, m).catch(e => log('anywhere: ' + e.message)); return; }
     if (!peer.authed) return;
     if (type === T.REQ) return startRequest(peer, id, P.json(bytes));

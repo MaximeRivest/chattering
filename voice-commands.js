@@ -395,9 +395,23 @@ function voiceOpenLists() {
 
 // Where the text for dictation goes: the ask box, else the composer.
 function voiceTextTarget() {
-  if (voiceAskOpen()) return { ta: askBox.ta, label: 'the ask box', grow: askBubbleGrow, send: () => askBubbleSend() };
+  if (voiceAskOpen()) {
+    const target = { ta: askBox.ta, ask: askBox, label: 'the ask box', grow: askBubbleGrow,
+      send: () => { voiceResolveTextTarget(target); return askBubbleSend(); } };
+    return target;
+  }
   const ta = $('agentText');
-  if (ta && voiceVisible(ta)) return { ta, label: 'the message box', grow: autoGrowCompose, send: () => { const run = $('agentRun'); if (!run) throw new Error('this conversation sends from the terminal'); return headlessSendFromComposer(run); } };
+  if (ta && voiceVisible(ta)) {
+    const target = { ta, conversationKey: ta.closest('[data-conversation-key]')?.dataset.conversationKey, label: 'the message box', grow: autoGrowCompose,
+      send: () => {
+        voiceResolveTextTarget(target);
+        const run = $('agentRun');
+        if (!run) throw new Error('this conversation sends from the terminal');
+        if (run.closest('[data-conversation-key]')?.dataset.conversationKey !== target.conversationKey) throw new Error('the send destination changed');
+        return headlessSendFromComposer(run);
+      } };
+    return target;
+  }
   // A file: written at the cursor (over the selection), as typing would.
   const ed = voiceEditor();
   if (ed && !(typeof fileWs !== 'undefined' && fileWs && fileWs.readOnly)) return { file: true, label: 'the file', ed };
@@ -1364,10 +1378,33 @@ function voiceEndDictation() {
   voice.target = null;
   voicePaint();
 }
+// A connected composer can already be stale: open(B) changes activeRel while
+// A's session/composer is still on screen. Verify the destination on every use.
+function voiceResolveTextTarget(t) {
+  const gone = () => { throw new Error('the box went away; dictation stopped'); };
+  if (!t) return gone();
+  if (t.conversationKey) {
+    const key = t.conversationKey;
+    const composerView = viewKind === 'conversation' || (viewKind === 'draft' && current?.draft && isDraftOpen());
+    if (!composerView || activeRel !== key || current?.key !== key) return gone();
+    const ta = $('agentText');
+    if (!ta?.isConnected || ta.closest('[data-conversation-key]')?.dataset.conversationKey !== key) return gone();
+    // Same conversation may replace its composer. A different connected box
+    // is not a replacement, and an ask box must never rebind to the composer.
+    if (t.ta.isConnected && t.ta !== ta) return gone();
+    t.ta = ta;
+  } else if (!t.ask || !voiceAskOpen() || askBox !== t.ask || askBox.ta !== t.ta) return gone();
+  if (!t.ta?.isConnected) return gone();
+  return t.ta;
+}
+function voiceDictationBox() {
+  try { return voiceResolveTextTarget(voice.target); }
+  catch (e) { voiceEndDictation(); throw e; }
+}
 function voiceWrite(text) {
   const t = voice.target;
   if (t && t.file) return voiceWriteFile(text);
-  if (!t || !t.ta.isConnected) { voiceEndDictation(); throw new Error('the box went away; dictation stopped'); }
+  voiceDictationBox();
   t.ta.value = joinAgentSpeech(t.ta.value, text);
   t.ta.selectionStart = t.ta.selectionEnd = t.ta.value.length;
   t.ta.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1513,9 +1550,9 @@ async function voiceDictation(entry, d) {
   try {
     if (voice.target && voice.target.file && ['new_line', 'new_paragraph', 'scratch', 'fix'].includes(d.action)) entry.summary = await voiceFileDictationStep(d.action);
     if (d.action === 'text' || d.action === 'text_send') { if (d.text) voiceWrite(d.text); entry.summary = 'wrote it'; }
-    if (d.action === 'text_send' || d.action === 'send') { voice.target.send(); entry.summary = 'sent'; voiceEndDictation(); }
+    if (d.action === 'text_send' || d.action === 'send') { if (!voice.target?.file) voiceDictationBox(); await voice.target.send(); entry.summary = 'sent'; voiceEndDictation(); }
     else if (d.action === 'stop') { voiceEndDictation(); entry.summary = 'stopped dictating'; }
-    else if (d.action === 'clear') { voice.target.ta.value = ''; voice.target.ta.dispatchEvent(new Event('input', { bubbles: true })); entry.summary = 'cleared the box'; }
+    else if (d.action === 'clear') { voiceDictationBox().value = ''; voice.target.ta.dispatchEvent(new Event('input', { bubbles: true })); entry.summary = 'cleared the box'; }
     entry.status = 'done';
   } catch (e) { entry.status = 'failed'; entry.note = e.message; }
   voiceOutcome(entry.id, entry.status === 'done' ? 'done' : 'failed', entry.note);

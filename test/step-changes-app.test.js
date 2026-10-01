@@ -91,6 +91,7 @@ test('files changed: the list under the steps, the change read in place', { skip
   assert.deepEqual(api.groups[1].files.map(f => [f.rel, f.kind, f.how, f.add, f.del]), [['late.js', 'modified', 'recorded', 2, 1]]);
   assert.equal((await post({ id: 'nope', groups: [['e1']] })).status, 404);
 
+  await require('./helpers/changed-file').installChangedFiles(ev);
   await ev(`open(${JSON.stringify(KEY)}); 1`);
   await until(`document.querySelectorAll('.sc-strip:not([hidden]) .sc-row:not(.sc-wait)').length >= 5`, 'the lists under the steps');
   const rows = await ev(`[...document.querySelectorAll('.sc-strip .sc-row')].map(r => r.innerText.replace(/\\s+/g, ' ').trim())`);
@@ -100,12 +101,12 @@ test('files changed: the list under the steps, the change read in place', { skip
   assert.equal(await ev(`[...document.querySelectorAll('.sc-row')].filter(el => el.scrollWidth > el.clientWidth + 1).length`), 0, 'nothing is cut off');
 
   // A changed file: its diff, here, with the lines around it and the rest folded.
-  await ev(`document.querySelector('.sc-row[data-file-diff$="/app.js"]').click(); 1`);
-  await until(`document.querySelector('.sc-card[data-sc-card$="/app.js"] .sc-code')`, 'the diff');
-  const diff = await ev(`(() => { const c = document.querySelector('.sc-card[data-sc-card$="/app.js"]');
+  await ev(`scFile('.sc-row', '/app.js').click(); 1`);
+  await until(`scFile('.sc-card', '/app.js')?.querySelector('.sc-code')`, 'the diff');
+  const diff = await ev(`(() => { const c = scFile('.sc-card', '/app.js');
     return { removed: [...c.querySelectorAll('.sc-l[data-t="1"] .sc-c')].map(x => x.textContent), added: [...c.querySelectorAll('.sc-l[data-t="2"] .sc-c')].map(x => x.textContent),
       numbers: [...c.querySelectorAll('.sc-l .sc-ln')].map(x => x.textContent), gaps: [...c.querySelectorAll('.sc-gap')].map(x => x.textContent),
-      words: CSS.highlights.get('sc-add-word')?.size || 0, head: c.querySelector('.sc-what').innerText, expanded: document.querySelector('.sc-row[data-file-diff$="/app.js"]').getAttribute('aria-expanded'), view: location.hash }; })()`);
+      words: CSS.highlights.get('sc-add-word')?.size || 0, head: c.querySelector('.sc-what').innerText, expanded: scFile('.sc-row', '/app.js').getAttribute('aria-expanded'), view: location.hash }; })()`);
   assert.deepEqual(diff.removed, ["const line30 = compute(30, 'value');"]);
   assert.deepEqual(diff.added, ["const line30 = compute(30, 'answer');"]);
   assert.deepEqual(diff.numbers, ['27', '28', '29', '30', '30', '31', '32', '33']);
@@ -114,33 +115,33 @@ test('files changed: the list under the steps, the change read in place', { skip
   assert.match(diff.head, /^Changed · \+1 −1/);
   assert.equal(diff.expanded, 'true');
   assert.equal(await ev(`viewKind`), 'conversation', 'the reader stays in the conversation');
-  await ev(`document.querySelector('.sc-card[data-sc-card$="/app.js"] .sc-gap').click(); 1`);
-  assert.equal(await ev(`document.querySelectorAll('.sc-card[data-sc-card$="/app.js"] .sc-l').length`), 34, 'the lines above open on request');
+  await ev(`scFile('.sc-card', '/app.js').querySelector('.sc-gap').click(); 1`);
+  assert.equal(await ev(`scFile('.sc-card', '/app.js')?.querySelectorAll('.sc-l').length`), 34, 'the lines above open on request');
 
   // A new Markdown file reads as a page; its source is one press away.
-  await ev(`document.querySelector('.sc-row[data-file-diff$="/notes.md"]').click(); 1`);
-  await until(`document.querySelector('.sc-card[data-sc-card$="/notes.md"] .sc-page h1')`, 'the page');
-  assert.equal(await ev(`document.querySelector('.sc-card[data-sc-card$="/notes.md"] .sc-page h1').textContent`), 'Release notes');
-  await ev(`document.querySelector('.sc-card[data-sc-card$="/notes.md"] [data-sc-mode="source"]').click(); 1`);
-  assert.equal(await ev(`document.querySelectorAll('.sc-card[data-sc-card$="/notes.md"] .sc-read .sc-l').length`), 6);
+  await ev(`scFile('.sc-row', '/notes.md').click(); 1`);
+  await until(`scFile('.sc-card', '/notes.md')?.querySelector('.sc-page h1')`, 'the page');
+  assert.equal(await ev(`scFile('.sc-card', '/notes.md')?.querySelector('.sc-page h1').textContent`), 'Release notes');
+  await ev(`scFile('.sc-card', '/notes.md').querySelector('[data-sc-mode="source"]').click(); 1`);
+  assert.equal(await ev(`scFile('.sc-card', '/notes.md')?.querySelectorAll('.sc-read .sc-l').length`), 6);
 
   // A picture the script made, as a picture.
-  await ev(`document.querySelector('.sc-row[data-file-diff$="/chart.png"]').click(); 1`);
-  await until(`document.querySelector('.sc-card[data-sc-card$="/chart.png"] img')?.complete && document.querySelector('.sc-card[data-sc-card$="/chart.png"] img').naturalWidth === 1`, 'the picture');
+  await ev(`scFile('.sc-row', '/chart.png').click(); 1`);
+  await until(`scFile('.sc-card', '/chart.png')?.querySelector('img')?.complete && scFile('.sc-card', '/chart.png')?.querySelector('img').naturalWidth === 1`, 'the picture');
 
   // No saved steps: rebuilt from the recorded edit and today's file, with real line numbers.
-  await ev(`document.querySelector('.sc-row[data-file-diff$="/late.js"]').click(); 1`);
-  await until(`document.querySelector('.sc-card[data-sc-card$="/late.js"] .sc-code')`, 'the recorded change');
-  assert.deepEqual(await ev(`[...document.querySelectorAll('.sc-card[data-sc-card$="/late.js"] .sc-l')].map(l => l.querySelector('.sc-ln').textContent + l.querySelector('.sc-sg').textContent + l.querySelector('.sc-c').textContent)`),
+  await ev(`scFile('.sc-row', '/late.js').click(); 1`);
+  await until(`scFile('.sc-card', '/late.js')?.querySelector('.sc-code')`, 'the recorded change');
+  assert.deepEqual(await ev(`[...scFile('.sc-card', '/late.js')?.querySelectorAll('.sc-l')].map(l => l.querySelector('.sc-ln').textContent + l.querySelector('.sc-sg').textContent + l.querySelector('.sc-c').textContent)`),
     ['1alpha', '2−beta', '2+BETA', '3+beta two', '4gamma']);
-  assert.match(await ev(`document.querySelector('.sc-card[data-sc-card$="/late.js"] .sc-what').innerText`), /rebuilt from the recorded edits/);
+  assert.match(await ev(`scFile('.sc-card', '/late.js')?.querySelector('.sc-what').innerText`), /rebuilt from the recorded edits/);
 
   // Inside the box: the script's step names what it made; its file opens that step's change under it.
   await ev(`document.querySelector('.toolgroup').open = true; 1`);
   await until(`document.querySelector('.sc-chips[data-sc-call="b1"] .sc-chip')`, 'the step\u2019s files');
   assert.deepEqual(await ev(`[...document.querySelectorAll('.sc-chips[data-sc-call="b1"] .sc-chip')].map(c => c.innerText.replace(/\\s+/g, ' ').trim())`), ['A chart.png picture', 'A data.csv +3']);
   assert.equal(await ev(`document.querySelector('.sc-count[data-sc-count="e1"]').innerText.replace(/\\s+/g, '')`), '+1−1', 'an edit step says how much it changed');
-  await ev(`document.querySelector('.sc-chips[data-sc-call="b1"] .sc-chip[data-file-diff$="/data.csv"]').click(); 1`);
+  await ev(`scFile('.sc-chips[data-sc-call="b1"] .sc-chip', '/data.csv').click(); 1`);
   await until(`[...document.querySelectorAll('.sc-step-card')].find(c => c.dataset.scCard.startsWith('b1\\n'))?.querySelector('.sc-code')`, 'the step\u2019s own card');
   assert.equal(await ev(`[...document.querySelectorAll('.sc-step-card')].find(c => c.dataset.scCard.startsWith('b1\\n')).previousElementSibling.matches('.msg.tool')`), true, 'under its step');
   assert.equal(await ev(`document.querySelector('details.msg.tool[data-step="t:b1"]').open`), false, 'pressing the file does not unfold the command');
@@ -148,12 +149,12 @@ test('files changed: the list under the steps, the change read in place', { skip
 
   // A re-render keeps what was open; a second press closes it.
   await ev(`renderConv(); 1`);
-  await until(`document.querySelector('.sc-card[data-sc-card$="/app.js"] .sc-code') && [...document.querySelectorAll('.sc-step-card')].some(c => c.dataset.scCard.startsWith('b1\\n'))`, 'the open cards after a re-render');
-  await ev(`document.querySelector('.sc-row[data-file-diff$="/app.js"]').click(); 1`);
-  assert.equal(await ev(`!!document.querySelector('.sc-card[data-sc-card$="/app.js"]')`), false);
+  await until(`scFile('.sc-card', '/app.js')?.querySelector('.sc-code') && [...document.querySelectorAll('.sc-step-card')].some(c => c.dataset.scCard.startsWith('b1\\n'))`, 'the open cards after a re-render');
+  await ev(`scFile('.sc-row', '/app.js').click(); 1`);
+  assert.equal(await ev(`!!scFile('.sc-card', '/app.js')`), false);
 
   // Review is one press from a card.
-  await ev(`document.querySelector('.sc-card[data-sc-card$="/notes.md"] [data-sc-act="review"]').click(); 1`);
+  await ev(`scFile('.sc-card', '/notes.md').querySelector('[data-sc-act="review"]').click(); 1`);
   await until(`viewKind === 'change-review'`, 'the review');
   assert.deepEqual(b.exceptions || [], []);
 });

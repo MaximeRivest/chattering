@@ -190,7 +190,7 @@ test('browser: making a program, trying and testing it, publishing it, and calli
   await evaluate(`location.href = '/programs/team'`);
   await until(`document.querySelector('#in-message')`, 'the form');
   await evaluate(`(() => { const el = document.querySelector('#in-message'); el.value = 'I was charged twice'; document.querySelector('#f').requestSubmit(); })()`);
-  await until(`/billing/.test((document.querySelector('[data-out="result"]') || {}).textContent || '')`, 'the form answered');
+  await until(`/billing/.test((document.querySelector('[data-out="result"]') || {}).textContent || '') && /answered by v2/.test((document.querySelector('#state') || {}).textContent || '')`, 'the form answered');
   assert.match(await text('#state'), /answered by v2/);
 
   // The same from the command line, for agents: see, make, try, publish, call.

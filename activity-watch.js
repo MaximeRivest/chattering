@@ -135,9 +135,9 @@ function processReport(rootPid, { list, descendantsOf, usage }, limit = 3) {
   for (const pid of descendantsOf(table, rootPid)) {
     if (pid === rootPid) continue;
     const u = usage(pid);
-    if (!u) return null;
+    if (!u || !Number.isFinite(u.ageMs) || u.ageMs <= 0 || !Number.isFinite(u.cpuMs) || u.cpuMs < 0) return null;
     rows.push({ pid, command: oneLine((argvOf.get(pid) || []).join(' '), 200), ageMs: u.ageMs, cpuMs: u.cpuMs,
-      idle: u.ageMs > 0 ? u.cpuMs / u.ageMs < 0.01 : true });
+      idle: u.cpuMs / u.ageMs < 0.01 });
   }
   rows.sort((a, b) => (b.cpuMs / Math.max(b.ageMs, 1)) - (a.cpuMs / Math.max(a.ageMs, 1)) || b.ageMs - a.ageMs);
   return { count: rows.length, top: rows.slice(0, limit) };

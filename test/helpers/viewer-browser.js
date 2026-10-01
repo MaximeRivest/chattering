@@ -22,7 +22,7 @@ async function viewerBrowser(t, opts = {}) {
   // A person who already answered the first-run question (helpers/first-run.js);
   // opts.firstRun keeps the fresh-install state for tests about it.
   if (!opts.firstRun) require('./first-run.js').answerFirstRun(home);
-  let server, browser, ws;
+  let server, browser, ws, tearingDown = false;
   const stop = async child => {
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
     const exited = new Promise(r => child.once('exit', r)); child.kill('SIGTERM');
@@ -32,18 +32,38 @@ async function viewerBrowser(t, opts = {}) {
   // A child of the server (a preview worker, a sandbox) can still be writing
   // when the server exits; a slow temp folder must not fail a passed test.
   t.after(async () => {
+    tearingDown = true;
     ws?.close();
     const { stopAndRemove } = require('./cleanup.js');
     await stopAndRemove(browser, null); await stopAndRemove(server, null);
     await stopAndRemove(null, home);
   });
-  const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r)); const port = socket.address().port; await new Promise(r => socket.close(r));
+  // Hold both reservations until their distinct port numbers are known.
+  // Release before spawn, as for the app port: another process can still
+  // claim a port during that handoff, but preview URLs advertise a usable port.
+  const sockets = []; let port, previewPort;
+  try {
+    for (let i = 0; i < 2; i++) {
+      const socket = net.createServer(); sockets.push(socket);
+      await new Promise((resolve, reject) => {
+        socket.once('error', reject); socket.listen(0, '127.0.0.1', resolve);
+      });
+    }
+    [port, previewPort] = sockets.map(socket => socket.address().port);
+  } finally {
+    await Promise.all(sockets.map(socket => new Promise((resolve, reject) => {
+      socket.close(error => error && error.code !== 'ERR_SERVER_NOT_RUNNING' ? reject(error) : resolve());
+    })));
+  }
   const base = 'http://127.0.0.1:' + port; let log = '';
   // Since the console needs the token (design/53), the harness signs in
   // like a client: Bearer on its own calls, ?token= for the browser's cookie.
   const token = 'viewer-test-token', auth = { Authorization: 'Bearer ' + token };
-  server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...require('./home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: 'viewer-test-token', CHATTERING_NO_WATCH: '1', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, ...(opts.env || {}) }, stdio: ['ignore', 'pipe', 'pipe'] });
+  server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...require('./home-env.js').homeEnv(home), PORT: String(port), CHATTERING_PREVIEW_PORT: String(previewPort), CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: 'viewer-test-token', CHATTERING_NO_WATCH: '1', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, ...(opts.env || {}) }, stdio: ['ignore', 'pipe', 'pipe'] });
   server.stdout.on('data', b => log += b); server.stderr.on('data', b => log += b);
+  server.on('exit', (code, signal) => {
+    if (!tearingDown) process.stderr.write(`[fixture server exited before teardown: code=${code}, signal=${signal}]\n${log.replaceAll(token, '[fixture-token]')}\n`);
+  });
   let ready = false;
   for (let i = 0; i < 150; i++) {
     try { const rows = await (await fetch(base + '/api/sessions', { headers: auth })).json(); if (opts.fixture === false ? Array.isArray(rows) : rows.some(s => s.key === 'pi:fixture/media.jsonl')) { ready = true; break; } } catch {}

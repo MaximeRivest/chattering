@@ -6,6 +6,7 @@
 // and an HTTP + WebSocket server standing in for Chattering.
 const { test, after } = require('node:test');
 const assert = require('node:assert/strict');
+const { assertPrivate } = require('./helpers/private-file-security.js');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -73,7 +74,7 @@ function fetchThrough(tunnel, req) {
   });
 }
 
-async function world(t, { turn = false } = {}) {
+async function world(t, { turn = false, homeWebSocket = WebSocket } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'anywhere-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const app = fakeChattering();
@@ -84,13 +85,13 @@ async function world(t, { turn = false } = {}) {
   t.after(() => relay.close());
   const relayUrl = 'http://127.0.0.1:' + relayPort;
   const creds = new Map(); // credentialId → { userId, secret }
-  let n = 0;
+  let n = 0, targetCalls = 0;
   const changes = [];
   const home = createAnywhereHome({
-    dataDir: dir, appDir: ROOT,
+    dataDir: dir, appDir: ROOT, WebSocketImpl: homeWebSocket,
     relayUrl: () => relayUrl,
     homeName: () => 'lambda',
-    localTarget: () => ({ host: '127.0.0.1', port: appPort }),
+    localTarget: () => { targetCalls++; return { host: '127.0.0.1', port: appPort }; },
     issueCredential: (userId, label) => { const id = 'c' + (++n), secret = 'secret-' + n; creds.set(id, { userId, secret, label }); return { secret, credentialId: id }; },
     credentialAlive: (userId, id) => creds.has(id) && creds.get(id).userId === userId,
     revokeCredential: (userId, id) => creds.delete(id),
@@ -105,7 +106,7 @@ async function world(t, { turn = false } = {}) {
     tunnels.push(tunnel);
     return tunnel;
   };
-  return { dir, app, relay, relayUrl, home, creds, phone, changes };
+  return { dir, app, relay, relayUrl, home, creds, phone, changes, issued: () => n, targetCalls: () => targetCalls };
 }
 
 test('the handshake, the frames, the pairing link', { skip }, async () => {
@@ -162,7 +163,7 @@ test('a phone pairs, then comes back, as its person, over an encrypted channel',
   assert.match(tunnel.device, /^d/);
   assert.equal(w.home.pairingState(pairing.id).paired.name, 'Pixel 8 · Chrome');
   assert.equal([...w.creds.values()][0].label, 'Pixel 8 · Chrome · anywhere');
-  assert.equal(fs.statSync(path.join(w.dir, 'anywhere.json')).mode & 0o777, 0o600, 'the home keeps its keys to itself');
+  assertPrivate(path.join(w.dir, 'anywhere.json')); // The home keeps its keys to itself on POSIX and NTFS.
 
   // Requests arrive as the person, marked forwarded; the phone chooses none of it.
   const who = await fetchThrough(tunnel, { method: 'GET', path: '/who', headers: { Cookie: 'stolen=1', Authorization: 'Bearer forged', 'X-Forwarded-For': '1.2.3.4', Origin: 'https://evil.example', Accept: 'application/json' } });
@@ -420,7 +421,7 @@ test('a computer links to another: its own local address, private, from anywhere
   assert.equal(link.name, 'lambda');
   assert.equal(link.url, `http://localhost:${portBase}/`);
   assert.equal(link.connected, true);
-  assert.equal(fs.statSync(path.join(dir, 'anywhere-links.json')).mode & 0o777, 0o600);
+  assertPrivate(path.join(dir, 'anywhere-links.json'));
   assert.equal(w.home.status().devices[0].name, 'XPSwhite · Chattering', 'listed there as this computer');
 
   const base = `http://localhost:${portBase}`;
@@ -460,4 +461,393 @@ test('a computer links to another: its own local address, private, from anywhere
   await links.remove(link.id);
   await assert.rejects(fetch(base + '/who', { headers: me }));
   assert.deepEqual(links.list(), []);
+});
+
+test('Given native ICE before SDP, When a phone connects, Then descriptions precede candidate application', { skip, timeout: 30000 }, async t => {
+  const w = await world(t);
+  const pairing = await w.home.pair('u1');
+  const link = P.readPairingLink(new URL(pairing.url).hash);
+  await until(() => w.home.status().relayState === 'ready', 'registered');
+  const sent = [], received = [];
+  let prematureCandidates = 0;
+  let localCandidate;
+  const gathered = new Promise(resolve => { localCandidate = resolve; });
+  class EarlyIce extends rtc.RTCPeerConnection {
+    constructor(config) {
+      super(config);
+      this.addEventListener('icecandidate', e => { if (e.candidate) localCandidate(); });
+    }
+    async addIceCandidate(candidate) {
+      if (!this.remoteDescription.sdp) prematureCandidates++;
+      return super.addIceCandidate(candidate);
+    }
+    async createOffer() {
+      const offer = await super.createOffer();
+      // Real native gathering completes before the offer is allowed onto the wire.
+      await gathered;
+      return offer;
+    }
+  }
+  class CandidateFirst extends WebSocket {
+    constructor(url) {
+      super(url);
+      const held = [];
+      let reordered = false;
+      this.addEventListener('message', ev => {
+        const m = JSON.parse(ev.data);
+        if (!reordered && m.t === 'signal') {
+          held.push(m);
+          const answer = held.find(x => x.data.sdp);
+          const candidate = held.find(x => x.data.candidate);
+          if (!answer || !candidate) return;
+          reordered = true;
+          // A real answer and candidate, deterministically delivered candidate first.
+          for (const x of [candidate, answer, ...held.filter(x => x !== answer && x !== candidate)]) {
+            received.push(x.data.candidate ? 'candidate' : 'sdp');
+            this.deliver({ data: JSON.stringify(x) });
+          }
+        } else this.deliver(ev);
+      });
+    }
+    set onmessage(fn) { this.deliver = fn; }
+    send(text) {
+      const m = JSON.parse(text);
+      if (m.t === 'signal') sent.push(m.data.sdp ? 'sdp' : 'candidate');
+      return super.send(text);
+    }
+  }
+  const abort = new AbortController();
+  t.after(() => abort.abort());
+  const tunnel = await w.phone({ homeId: link.homeId, device: await newDevice(),
+    pairing: { id: link.id, secret: link.secret }, RTCPeerConnection: EarlyIce, WebSocket: CandidateFirst, signal: abort.signal });
+  assert.equal(prematureCandidates, 0, 'no native candidate is applied without remote SDP');
+  assert.equal(sent[0], 'sdp', 'the home sees an offer before trickled ICE');
+  assert.deepEqual(received.slice(0, 2), ['candidate', 'sdp'], 'the controlled real ordering was exercised');
+  assert.equal(tunnel.user.name, 'Maxime', 'the real encrypted pairing still authenticates');
+});
+
+
+// Delayed native platform promises reproduce callbacks which overlap on the
+// home's real relay handler. SDP/ICE bytes, relay and authentication are real.
+for (const scenario of ['pairs', 'has a wrong code', 'reaches a different home']) {
+  const refusal = scenario === 'has a wrong code', forged = scenario === 'reaches a different home';
+  test(`Given delayed native home SDP, When the phone ${scenario}, Then home signals remain ordered`, { skip, timeout: 30000 }, async t => {
+    const Native = rtc.RTCPeerConnection;
+    const events = [], errors = [];
+    let homePeer, receivedCandidate;
+    const candidateReceived = new Promise(r => { receivedCandidate = r; });
+    let releaseRemote;
+    const remoteRelease = new Promise(r => { releaseRemote = r; });
+    class DelayedHome extends Native {
+      constructor(c) {
+        super(c); homePeer = this;
+        this.gathered = new Promise(resolve => this.addEventListener('icecandidate', e => { if (e.candidate) resolve(); }));
+      }
+      async setRemoteDescription(d) {
+        events.push('remote-start');
+        await remoteRelease;
+        await super.setRemoteDescription(d);
+        events.push('remote-ready');
+      }
+      async addIceCandidate(c) {
+        events.push(this.remoteDescription.sdp ? 'candidate-ready' : 'candidate-premature');
+        try { await super.addIceCandidate(c); } catch (e) { errors.push(e.message); throw e; }
+      }
+      async createAnswer() {
+        const answer = await super.createAnswer();
+        // Let genuine native ICE events run before the real home sends SDP.
+        await this.gathered;
+        return answer;
+      }
+    }
+    class HomeSocket extends WebSocket {
+      send(text) {
+        const m = JSON.parse(text);
+        if (m.t === 'signal') events.push(m.data.sdp ? 'send-answer' : 'send-candidate');
+        return super.send(text);
+      }
+      set onmessage(fn) {
+        super.onmessage = ev => {
+          const m = JSON.parse(ev.data);
+          const result = fn(ev);
+          if (m.t === 'signal' && m.data.candidate) receivedCandidate();
+          return result;
+        };
+      }
+    }
+    rtc.RTCPeerConnection = DelayedHome;
+    t.after(() => { rtc.RTCPeerConnection = Native; releaseRemote(); });
+    const w = await world(t, { homeWebSocket: HomeSocket });
+    const pairing = await w.home.pair('u1');
+    const link = P.readPairingLink(new URL(pairing.url).hash);
+    await until(() => w.home.status().relayState === 'ready', 'registered');
+    const abort = new AbortController();
+    t.after(() => abort.abort());
+    // A dishonest routing surface points a different home id at this real
+    // home's channel. Encryption alone must not bypass the home identity check.
+    class PhoneSocket extends WebSocket {
+      send(text) {
+        const m = JSON.parse(text);
+        if (m.t === 'call') m.to = link.homeId;
+        return super.send(JSON.stringify(m));
+      }
+    }
+    const connecting = w.phone({ homeId: forged ? P.b64u(P.random(16)) : link.homeId,
+      device: await newDevice(), RTCPeerConnection: Native, WebSocket: PhoneSocket,
+      pairing: { id: link.id, secret: refusal ? P.b64u(P.random(16)) : link.secret }, signal: abort.signal });
+    const outcome = connecting.then(tunnel => ({ tunnel }), error => ({ error }));
+    await candidateReceived;
+    assert.ok(homePeer, 'actual home peer constructed');
+    // Callback arrival, not timing, controls when the native SDP is applied.
+    releaseRemote();
+    const result = await outcome;
+    if (forged) {
+      assert.equal(result.error?.code, 'forged');
+      assert.equal(w.creds.size, 0);
+    } else if (refusal) {
+      assert.equal(result.error?.code, 'refused');
+      assert.equal(result.error?.why, 'bad-code');
+      assert.equal(w.creds.size, 0);
+    } else {
+      assert.ifError(result.error);
+      assert.equal(result.tunnel.user.name, 'Maxime');
+      assert.equal(w.creds.size, 1);
+    }
+    assert.ok(!events.includes('candidate-premature'), 'no candidate while native remoteDescription is an empty truthy object: ' + events + '; native errors: ' + errors);
+    assert.deepEqual(errors, [], 'no swallowed native candidate errors');
+    const sent = events.filter(e => e.startsWith('send-'));
+    assert.equal(sent[0], 'send-answer', 'answer before native outgoing ICE: ' + sent);
+    assert.ok(sent.includes('send-candidate'), 'real gathering exercised');
+  });
+}
+
+
+test('Given queued native home candidates, When the phone leaves during candidate one, Then no later signal is sent', { skip, timeout: 30000 }, async t => {
+  const Native = rtc.RTCPeerConnection;
+  let homePeer, departed = false;
+  const sent = [];
+  const abort = new AbortController();
+  t.after(() => abort.abort());
+  class GatheringHome extends Native {
+    constructor(config) {
+      super({ ...config, enableIceTcp: true });
+      homePeer = this;
+      let count = 0;
+      this.gathered = new Promise(resolve => this.addEventListener('icecandidate', e => {
+        if (e.candidate && ++count === 2) resolve();
+      }));
+    }
+    async createAnswer() { const answer = await super.createAnswer(); await this.gathered; return answer; }
+  }
+  class StoppingSocket extends WebSocket {
+    send(text) {
+      const m = JSON.parse(text);
+      if (m.t === 'signal') {
+        sent.push(m.data.sdp ? 'answer' : 'candidate');
+        if (m.data.candidate && !departed) {
+          departed = true;
+          // Schedule the relay's legitimate departure notification exactly
+          // inside the synchronous flush; retain the home's relay socket so
+          // socket shutdown cannot hide an attempted second send.
+          this.onmessage({ data: JSON.stringify({ t: 'gone', from: m.to }) });
+          abort.abort(); // the departed phone stops its actual native connection too
+        }
+      }
+      return super.send(text);
+    }
+  }
+  rtc.RTCPeerConnection = GatheringHome;
+  t.after(() => { rtc.RTCPeerConnection = Native; });
+  const w = await world(t, { homeWebSocket: StoppingSocket });
+  const pairing = await w.home.pair('u1');
+  const link = P.readPairingLink(new URL(pairing.url).hash);
+  await until(() => w.home.status().relayState === 'ready', 'registered');
+  const connecting = w.phone({ homeId: link.homeId, device: await newDevice(), RTCPeerConnection: Native,
+    pairing: { id: link.id, secret: link.secret }, signal: abort.signal });
+  const outcome = connecting.then(tunnel => ({ tunnel }), error => ({ error }));
+  await until(() => departed, 'phone departure inside real native ICE send');
+  const result = await outcome;
+  assert.equal(result.error?.code, 'aborted', 'departed phone stops its connection');
+  assert.equal(w.home.status().relayState, 'ready', 'relay remains usable, so shutdown cannot mask an extra send');
+  assert.equal(w.creds.size, 0);
+  assert.ok(homePeer.ext_localCandidates.length >= 2, 'two real native candidates were gathered');
+  await new Promise(setImmediate);
+  assert.deepEqual(sent, ['answer', 'candidate'], 'flush ends immediately at peer.close');
+});
+
+
+for (const returning of [false, true]) {
+  test(`Given valid native ${returning ? 'returning-device' : 'pairing'} authentication in flight, When relay gone closes the home peer, Then late proof and frames cannot publish or forward`, { skip, timeout: 30000 }, async t => {
+    const Native = rtc.RTCPeerConnection, verify = P.verify;
+    const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
+    const entered = deferred(), resume = deferred(), verifiedLate = deferred(), cleanup = deferred(), received = deferred();
+    let socket, phonePc, phoneDc, authFrame, peer, armed = false, held = false, verifications = 0;
+    // Retain the real native channel past the home's logical close, independent
+    // of its 50ms cleanup timer. No fake peer, signature, SDP or authentication.
+    class Home extends Native {
+      close() {
+        if (held) cleanup.promise.then(() => super.close());
+        else super.close();
+      }
+    }
+    class Phone extends Native {
+      constructor(config) { super(config); phonePc = this; }
+      createDataChannel(...args) {
+        const dc = super.createDataChannel(...args), send = dc.send.bind(dc);
+        phoneDc = dc;
+        dc.send = bytes => {
+          const f = P.parse(bytes);
+          if (f.type === P.T.CTRL && P.json(f.payload).t === 'auth') authFrame = P.toBytes(bytes).slice();
+          return send(bytes);
+        };
+        return dc;
+      }
+    }
+    class HomeSocket extends WebSocket {
+      send(text) { if (JSON.parse(text).t === 'home') socket = this; return super.send(text); }
+    }
+    const device = await newDevice();
+    P.verify = async (key, sig, transcript) => {
+      const valid = await verify(key, sig, transcript);
+      if (!armed) return valid;
+      const spki = new Uint8Array(await P.subtle().exportKey('spki', key));
+      if (!P.sameBytes(spki, device.spki)) return valid; // not the phone verifying the home
+      verifications++;
+      if (verifications === 1) {
+        entered.resolve(valid);
+        await resume.promise;
+        verifiedLate.resolve({ valid, closed: peer.closed });
+      }
+      return valid;
+    };
+    rtc.RTCPeerConnection = Home;
+    const abort = new AbortController();
+    t.after(() => { abort.abort(); resume.resolve(); cleanup.resolve(); held = false; P.verify = verify; rtc.RTCPeerConnection = Native; });
+    const w = await world(t, { homeWebSocket: HomeSocket });
+    const pairing = await w.home.pair('u1');
+    const link = P.readPairingLink(new URL(pairing.url).hash);
+    await until(() => w.home.status().relayState === 'ready', 'registered');
+    let pairedId;
+    if (returning) {
+      const tunnel = await w.phone({ homeId: link.homeId, device, RTCPeerConnection: Phone,
+        pairing: { id: link.id, secret: link.secret } });
+      pairedId = tunnel.device;
+      tunnel.close();
+    }
+    armed = true;
+    const connecting = w.phone({ homeId: link.homeId, RTCPeerConnection: Phone, signal: abort.signal,
+      device: returning ? { ...device, id: pairedId } : device,
+      ...(returning ? {} : { pairing: { id: link.id, secret: link.secret } }) });
+    const outcome = connecting.then(tunnel => ({ tunnel }), error => ({ error }));
+    assert.equal(await entered.promise, true, 'real native transcript and phone signature verified before the await gate');
+    peer = [...w.home._peers.values()].find(p => !p.authed && !p.closed && p.mux?.ch.readyState === 'open');
+    assert.ok(peer && !peer.closed && !peer.authed, 'actual unauthenticated home peer is awaiting proof');
+    assert.ok(authFrame, 'the valid phone sent its real signed auth frame');
+    const late = [], publications = [];
+    const dispatch = peer.mux.onMessage, send = peer.mux.send.bind(peer.mux);
+    peer.mux.onMessage = (type, id, bytes) => {
+      if (peer.closed) {
+        late.push({ type, id, message: type === P.T.CTRL ? P.json(bytes).t : null });
+        if (late.some(f => f.message === 'auth') && late.some(f => f.type === P.T.REQ)) received.resolve();
+      }
+      return dispatch(type, id, bytes); // the real onFrame, including on a closed mux
+    };
+    peer.mux.send = (type, id, payload) => {
+      if (peer.closed) publications.push({ type, id, payload });
+      return send(type, id, payload); // observe attempts, not just what closed Mux suppresses
+    };
+    const file = path.join(w.dir, 'anywhere.json');
+    const before = { issued: w.issued(), bytes: fs.readFileSync(file, 'utf8'), devices: w.home.devicesOf('u1').length,
+      paired: w.home.pairingState(pairing.id).paired, changes: w.changes.length, targets: w.targetCalls() };
+    held = true;
+    await socket.onmessage({ data: JSON.stringify({ t: 'gone', from: peer.sid }) });
+    assert.equal(peer.closed, true, 'relay gone ran the actual home peer.close');
+    assert.equal(peer.mux.closed, true);
+    assert.equal(w.home._peers.has(peer.sid), false, 'closed peer detached from the home');
+    assert.deepEqual(publications, [{ type: P.T.CTRL, id: 0, payload: { t: 'bye', message: 'the phone left' } }],
+      'peer.close emits only its deliberate terminal bye, not authentication publication');
+    publications.length = 0; // subsequent attempts, after peer.close has completed
+    assert.equal(phoneDc.readyState, 'open', 'phone remains active; no abort/deadline masks the proof');
+    assert.equal(phonePc.connectionState, 'connected');
+    resume.resolve();
+    assert.deepEqual(await verifiedLate.promise, { valid: true, closed: true }, 'successful real proof completes after close');
+    await new Promise(setImmediate); // drain the resumed finite authentication chain
+    // Real native bytes arrive after logical close, including a valid signed
+    // proof replay and a request. Closed-Mux send suppression must not hide an
+    // onFrame/authentication/welcome or HTTP dispatch side effect.
+    phoneDc.send(authFrame);
+    phoneDc.send(P.frame(P.T.REQ, 99, P.toBytes({ m: 'GET', p: '/who' })));
+    await received.promise;
+    await new Promise(setImmediate);
+    assert.equal(phoneDc.readyState, 'open', 'native phone still active through assertions');
+    assert.equal(w.issued(), before.issued, 'no issueCredential after close');
+    assert.equal(peer.authed, false, 'late proof cannot authenticate the closed peer');
+    assert.equal(peer.device, null, 'no device publication');
+    assert.equal(w.home.devicesOf('u1').length, before.devices);
+    assert.deepEqual(w.home.pairingState(pairing.id).paired, before.paired, 'no pairing-code consumption');
+    assert.equal(fs.readFileSync(file, 'utf8'), before.bytes, 'no persisted device or lastSeen publication');
+    assert.equal(w.changes.length, before.changes, 'no late change notification');
+    assert.equal(verifications, 1, 'late native auth frame reaches dispatch but never starts another proof verification');
+    assert.deepEqual(publications, [], 'no post-close proof/refusal/welcome/send attempt');
+    assert.equal(w.targetCalls(), before.targets, 'no post-close HTTP forwarding attempt');
+    assert.equal(w.app.seen.length, 0);
+    assert.ok(late.some(f => f.message === 'auth') && late.some(f => f.type === P.T.REQ), 'late proof and request actually reached the home');
+    abort.abort(); // only after checking the active-phone negative control
+    cleanup.resolve();
+    const result = await outcome;
+    assert.equal(result.error?.code, 'aborted');
+  });
+}
+
+
+test('Given an authenticated native phone kept active, When its home peer closes, Then late request/socket/ping frames have no effects', { skip, timeout: 30000 }, async t => {
+  const Native = rtc.RTCPeerConnection;
+  let release, phoneDc;
+  const cleanup = new Promise(r => { release = r; });
+  class Home extends Native { close() { cleanup.then(() => super.close()); } }
+  class Phone extends Native {
+    createDataChannel(...args) { return (phoneDc = super.createDataChannel(...args)); }
+  }
+  rtc.RTCPeerConnection = Home;
+  t.after(() => { release(); rtc.RTCPeerConnection = Native; });
+  const w = await world(t);
+  const pairing = await w.home.pair('u1');
+  const link = P.readPairingLink(new URL(pairing.url).hash);
+  await until(() => w.home.status().relayState === 'ready', 'registered');
+  const tunnel = await w.phone({ homeId: link.homeId, device: await newDevice(), RTCPeerConnection: Phone,
+    pairing: { id: link.id, secret: link.secret } });
+  const peer = [...w.home._peers.values()].find(p => p.device?.id === tunnel.device);
+  assert.ok(peer?.authed && !peer.closed, 'valid native pairing published the original device');
+  assert.equal(w.issued(), 1);
+  const frames = [], sends = [];
+  let received;
+  const delivered = new Promise(r => { received = r; });
+  const dispatch = peer.mux.onMessage, send = peer.mux.send.bind(peer.mux);
+  peer.mux.onMessage = (type, id, bytes) => {
+    if (peer.closed) { frames.push(type); if (frames.length === 3) received(); }
+    return dispatch(type, id, bytes);
+  };
+  peer.mux.send = (type, id, payload) => { if (peer.closed) sends.push({ type, id, payload }); return send(type, id, payload); };
+  w.home.stop();
+  assert.equal(peer.closed, true, 'actual home.stop closed the authenticated peer');
+  assert.equal(peer.mux.closed, true);
+  assert.equal(w.home._peers.has(peer.sid), false);
+  assert.equal(phoneDc.readyState, 'open', 'real native phone remains active past logical close');
+  const file = path.join(w.dir, 'anywhere.json');
+  const before = { bytes: fs.readFileSync(file, 'utf8'), changes: w.changes.length, targets: w.targetCalls() };
+  phoneDc.send(P.frame(P.T.REQ, 101, P.toBytes({ m: 'GET', p: '/who' })));
+  phoneDc.send(P.frame(P.T.WS_OPEN, 103, P.toBytes({ p: '/ws' })));
+  phoneDc.send(P.frame(P.T.CTRL, 0, P.toBytes({ t: 'ping', n: 42 })));
+  await delivered;
+  await new Promise(setImmediate);
+  assert.deepEqual(frames, [P.T.REQ, P.T.WS_OPEN, P.T.CTRL], 'all late native frames reached actual dispatch');
+  assert.equal(phoneDc.readyState, 'open');
+  assert.equal(w.targetCalls(), before.targets, 'closed authenticated peer cannot forward HTTP or WebSocket');
+  assert.equal(w.issued(), 1, 'no new credential');
+  assert.equal(fs.readFileSync(file, 'utf8'), before.bytes);
+  assert.equal(w.changes.length, before.changes);
+  assert.deepEqual(sends, [], 'no late HTTP/socket response or pong send attempts');
+  assert.equal(peer.streams.size, 0, 'no post-close stream was created');
+  tunnel.close(); // only after assertions
+  release();
 });

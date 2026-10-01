@@ -20,9 +20,12 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
   let passes = 0;
   const speech = http.createServer((req, res) => { req.resume(); req.on('end', () => { res.writeHead(200); res.end(++passes <= 3 ? 'hello there' : ''); }); });
   // Jev's stand-in: the action named in what was said; sure unless "maybe".
+  let textArrived, releaseText;
+  const textRequest = new Promise(r => textArrived = r), textGate = new Promise(r => releaseText = r);
+  t.after(() => releaseText());
   const jev = http.createServer((req, res) => {
     const chunks = []; req.on('data', c => chunks.push(c));
-    req.on('end', () => {
+    req.on('end', async () => {
       const body = JSON.parse(Buffer.concat(chunks)), said = body.state.said, q = body.questions;
       const opts = name => Object.keys(q[name].criteria);
       const answer = (choice, confidence = 0.97) => ({ type: 'choice', choice, confidence, probabilities: { [choice]: confidence } });
@@ -41,6 +44,7 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
           answers['open.name'] = answer(hit || '(not said)', 0.9, hit ? { '(not said)': 0.1 } : {});
         }
       }
+      if (said === 'fix the flaky test in the queue') { textArrived(); await textGate; }
       res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ answers }));
     });
   });
@@ -62,6 +66,10 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
   t.after(() => fs.rmSync(path.dirname(microphone), { recursive: true, force: true }));
   const b = await viewerBrowser(t, {
     setup: home => {
+      fs.writeFileSync(path.join(home, '.pi/agent/sessions/fixture/other.jsonl'), [
+        { type: 'session', version: 3, id: 'other', cwd: path.join(home, 'work') },
+        { type: 'message', id: 'u', timestamp: '2000-01-01T00:00:00Z', message: { role: 'user', content: [{ type: 'text', text: 'Other conversation' }] } },
+      ].map(JSON.stringify).join('\n') + '\n');
       fs.mkdirSync(path.join(home, '.config', 'chattering'), { recursive: true });
       fs.writeFileSync(path.join(home, '.config', 'chattering', 'settings.json'), JSON.stringify({ speechUrl: 'http://127.0.0.1:' + speech.address().port }));
     },
@@ -127,9 +135,7 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
   // is numbered on screen while listening.
   const listed = `voicePicks().items.some(it => it.kind === 'conversation' && it.region === 'left panel')`;
   await until(listed, 'no conversation listed');
-  await new Promise(r => setTimeout(r, 500));
-  await until(listed, 'the conversation list emptied');
-  await until(`document.querySelectorAll('#voiceHints .vh').length > 0`, 'nothing is numbered on screen');
+  await until(`voice.numbers.get('conv:pi:fixture/media.jsonl') >= 1 && [...document.querySelectorAll('#voiceHints .vh')].some(h => Number(h.textContent) === voice.numbers.get('conv:pi:fixture/media.jsonl'))`, 'nothing is numbered on screen');
   const n = await ev(`voice.numbers.get('conv:pi:fixture/media.jsonl')`);
   assert.ok(n >= 1, 'the conversation has a number');
   // What can I say: the actions here, and the lists to pick from.
@@ -145,7 +151,6 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
   assert.deepEqual(await ev(`voice.decisions.at(-1).decision.args`), { number: n });
   await ev(`goHome()`);
   await until(listed, 'the list did not come back');
-  await new Promise(r => setTimeout(r, 500));
   // … and by place: the one at the top of the left list.
   await hear('open the top one');
   await until(`viewKind === 'conversation' && $('agentText')`, 'the voice did not open the conversation').catch(async e => { console.log('VOICEDEC', await ev(`JSON.stringify(voice.decisions.map(d => [d.said, d.status, d.decision && d.decision.action, d.summary, d.note]))`)); throw e; });
@@ -153,11 +158,84 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
   await hear('start the microphone');
   await until(`voice.mode === 'dictation'`, 'dictation did not start');
   assert.match(await ev(`document.querySelector('#voiceListenPill .vl-state').textContent`), /dictating into the message box/);
+  // Given a live-tail render replaces the composer while Jev is deciding.
   await hear('fix the flaky test in the queue');
-  await until(`$('agentText').value === 'fix the flaky test in the queue'`, 'the words were not written');
+  await textRequest;
+  await ev(`window.voiceOldBox = voice.target.ta; renderConv('preserve')`);
+  assert.equal(await ev(`voiceOldBox.isConnected`), false, 'the original dictation box really was replaced');
+  releaseText();
+  await until(`$('agentText').value === 'fix the flaky test in the queue'`, () => ev(`'the words were not written: ' + JSON.stringify({ mode: voice.mode, targetConnected: voice.target?.ta?.isConnected, decisions: voice.decisions.map(d => ({ said: d.said, status: d.status, note: d.note })) })`));
   await hear('stop dictating');
   await until(`voice.mode === 'command'`, 'dictation did not stop');
   await b.screenshot('voice-overlay.png');
+  // Negative controls: neither another conversation nor a vanished ask box
+  // may receive a pending dictation just because it has a text field.
+  const refused = await ev(`(() => {
+    const ta = $('agentText'), host = ta.closest('[data-conversation-key]'), key = host.dataset.conversationKey;
+    voiceBeginDictation(voiceTextTarget());
+    const replacement = ta.cloneNode(true); ta.replaceWith(replacement);
+    host.dataset.conversationKey = 'another-conversation';
+    let otherError; try { voiceWrite('must not leak'); } catch (e) { otherError = e.message; }
+    const untouched = replacement.value;
+    host.dataset.conversationKey = key;
+    voiceBeginDictation({ ta, label: 'the ask box' });
+    let askError; try { voiceWrite('must not leak'); } catch (e) { askError = e.message; }
+    return { otherError, askError, untouched, mode: voice.mode };
+  })()`);
+  assert.deepEqual(refused, { otherError: 'the box went away; dictation stopped', askError: 'the box went away; dictation stopped', untouched: 'fix the flaky test in the queue', mode: 'command' });
+  await ev(`renderConv('preserve')`);
+
+
+  // Given real open(B) is held at its session fetch, A's composer remains
+  // connected although activeRel already routes sends to B.
+  const navigationControl = await ev(`(async () => {
+    const realFetch = window.fetch, a = current.key, b = 'pi:fixture/other.jsonl', ta = $('agentText');
+    const calls = []; let release, arrived;
+    const gate = new Promise(r => release = r), waiting = new Promise(r => arrived = r);
+    window.fetch = async (url, opts) => {
+      if (String(url) === '/api/session?id=' + encodeURIComponent(b)) { arrived(); await gate; }
+      if (String(url) === '/api/node/send') {
+        calls.push(JSON.parse(opts.body));
+        return new Response(JSON.stringify({ error: 'fixture blocked provider execution' }), { headers: { 'content-type': 'application/json' } });
+      }
+      return realFetch(url, opts);
+    };
+    let navigation;
+    try {
+      const target = voiceTextTarget();
+      navigation = open(b); await waiting;
+      const inFlight = { connected: ta.isConnected, active: activeRel, current: current.key };
+      const original = ta.value;
+      const outcomes = [];
+      for (const action of ['send', 'text', 'clear']) {
+        ta.value = original;
+        voiceBeginDictation(target);
+        const entry = { said: action, status: 'deciding' };
+        await voiceDictation(entry, { action, text: 'must not write', args: {} });
+        outcomes.push({ action, status: entry.status, value: ta.value });
+      }
+      ta.value = original;
+      const command = { said: 'send', status: 'deciding' };
+      await voiceRun(command, { action: 'send', args: {} });
+      const badCalls = calls.slice();
+      release(); await navigation;
+      await open(a, 'preserve');
+      $('agentText').value = 'same conversation control';
+      voiceBeginDictation(voiceTextTarget());
+      const good = { said: 'send', status: 'deciding' };
+      await voiceDictation(good, { action: 'send', args: {} });
+      return { a, b, inFlight, original, outcomes, command: command.status, badCalls, goodCalls: calls.slice(badCalls.length).map(c => ({ id: c.id, prompt: c.prompt })) };
+    } finally {
+      release(); if (navigation) await navigation;
+      window.fetch = realFetch;
+      voiceEndDictation();
+    }
+  })()`);
+  assert.deepEqual(navigationControl.inFlight, { connected: true, active: navigationControl.b, current: navigationControl.a });
+  assert.deepEqual(navigationControl.badCalls, [], 'in-flight navigation must not send A text to B, even through command send');
+  assert.deepEqual(navigationControl.outcomes, ['send', 'text', 'clear'].map(action => ({ action, status: 'failed', value: navigationControl.original })), 'writes and clear also refuse a connected but stale composer');
+  assert.equal(navigationControl.command, 'failed');
+  assert.deepEqual(navigationControl.goodCalls, [{ id: navigationControl.a, prompt: 'same conversation control' }], 'same-conversation send remains valid (backend intercepted, no provider)');
 
   // Files in the right panel, by place: the last of the recent files is the
   // one opened first (newest on top). Picking clicks its row, as the mouse does.
@@ -196,5 +274,51 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
   await key('l', 'KeyL', 76, 1);
   await until(`voice.status === 'off' && !document.querySelector('#voiceListenPill') && !document.querySelector('#voiceOverlay') && !document.querySelector('#voiceHints')`, 'Alt+L did not stop');
   assert.equal(await ev(`voice.audio`), null, 'the microphone is released');
+  assert.deepEqual(b.exceptions, []);
+});
+
+
+test('Given an identity-matched new-conversation draft, When voice writes, clears, and sends, Then the real draft composer accepts them without provider execution', { timeout: 90000 }, async t => {
+  const b = await viewerBrowser(t);
+  await b.until(`sessions.length && nav.current()`);
+  await b.evaluate(`document.querySelector('dialog.bg-ask [data-none]')?.click()`);
+  const result = await b.evaluate(`(async () => {
+    await showDraft(null);
+    const target = voiceTextTarget(), key = activeRel;
+    const identity = { view: viewKind, draft: current.draft, active: activeRel, current: current.key,
+      composer: target.ta.closest('[data-conversation-key]').dataset.conversationKey, open: isDraftOpen() };
+    const realFetch = window.fetch, calls = [];
+    window.fetch = async (url, opts) => {
+      if (String(url) === '/api/conversation/start-loose' || String(url) === '/api/node/send') {
+        calls.push({ path: String(url), payload: JSON.parse(opts.body) });
+        return new Response(JSON.stringify({ error: 'fixture blocked provider execution' }), { headers: { 'content-type': 'application/json' } });
+      }
+      return realFetch(url, opts);
+    };
+    try {
+      const outcomes = [];
+      for (const [action, text] of [['text', 'draft dictation'], ['clear', ''], ['text', 'first draft message'], ['send', '']]) {
+        voiceBeginDictation(target);
+        const entry = { said: action, status: 'deciding' };
+        await voiceDictation(entry, { action, text, args: {} });
+        outcomes.push({ action, status: entry.status, value: target.ta.value, saved: draftState.d.text });
+      }
+      const command = { said: 'send', status: 'deciding' };
+      await voiceRun(command, { action: 'send', args: {} });
+      return { identity, key, outcomes, command: command.status,
+        calls: calls.map(c => ({ path: c.path, draftKey: 'draft:' + c.payload.draftId, prompt: c.payload.prompt })),
+        stillDraft: isDraftOpen() };
+    } finally { window.fetch = realFetch; voiceEndDictation(); }
+  })()`);
+  assert.deepEqual(result.identity, { view: 'draft', draft: true, active: result.key, current: result.key, composer: result.key, open: true });
+  assert.deepEqual(result.outcomes, [
+    { action: 'text', status: 'done', value: 'draft dictation', saved: 'draft dictation' },
+    { action: 'clear', status: 'done', value: '', saved: '' },
+    { action: 'text', status: 'done', value: 'first draft message', saved: 'first draft message' },
+    { action: 'send', status: 'done', value: 'first draft message', saved: 'first draft message' },
+  ]);
+  assert.equal(result.command, 'done');
+  assert.deepEqual(result.calls, Array.from({ length: 2 }, () => ({ path: '/api/conversation/start-loose', draftKey: result.key, prompt: 'first draft message' })), 'both sends reach the existing draft implementation; provider requests are intercepted');
+  assert.equal(result.stillDraft, true, 'the intercepted refusal creates no session and runs no provider');
   assert.deepEqual(b.exceptions, []);
 });

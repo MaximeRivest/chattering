@@ -47,6 +47,8 @@ const interaction = {
   signal: cancel.signal,
   notify: event => out({ t: 'event', event: plainEvent(event) }),
   prompt: prompt => new Promise((resolve, reject) => {
+    if (cancel.signal.aborted) return reject(cancel.signal.reason);
+    if (prompt.signal?.aborted) return reject(prompt.signal.reason || new Error('withdrawn'));
     const id = 'p' + (++promptSeq);
     waiting.set(id, { resolve, reject });
     out({ t: 'prompt', id, prompt: plainPrompt(prompt) });
@@ -74,7 +76,11 @@ async function main() {
   const SDK = await import(pathToFileURL(path.join(dir, 'dist', 'index.js')).href);
   // Listing reads what is on disk (Pi's catalog, its accounts, models.json);
   // signing in and saying hello may refresh from the network.
-  const rt = await SDK.ModelRuntime.create({ authPath, modelsPath, signal: AbortSignal.timeout(30000), ...(op === 'list' ? { allowModelNetwork: false } : {}) });
+  const initSignal = AbortSignal.any([cancel.signal, AbortSignal.timeout(30000)]);
+  const rt = await SDK.ModelRuntime.create({ authPath, modelsPath, signal: initSignal, ...(op === 'list' ? { allowModelNetwork: false } : {}) });
+  // A provider may finish after cancellation/deadline instead of rejecting.
+  // Do not begin sign-in (or any other operation) on that late runtime.
+  initSignal.throwIfAborted();
   if (op === 'list') {
     let defaults = {};
     try { defaults = (await import(pathToFileURL(path.join(dir, 'dist', 'core', 'model-resolver.js')).href)).defaultModelPerProvider || {}; } catch {}

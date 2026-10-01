@@ -158,11 +158,11 @@ test('one head: side-by-side answers, instant moves, versions, shared head, phon
   // listening): drawn and wired are two steps, and a loaded machine can land
   // between them. A re-render still under way (the resize, the reading's)
   // replaces the strip and its scroll: then swipe the new one.
-  const swipe = `(() => { const strip = document.querySelector('.rd-cards'); if (!strip || !strip.dataset.wired || strip.dataset.swiped) return;
+  const swipe = `(() => { const strip = document.querySelector('.rd-cards'); if (!strip || !strip.dataset.wired || !strip.dataset.placed || strip.dataset.swiped || strip.clientWidth <= 0 || strip.scrollWidth <= strip.clientWidth) return;
     strip.dataset.swiped = '1'; strip.dispatchEvent(new PointerEvent('pointerdown'));
     const other = [...strip.querySelectorAll('.rd-card')].find(c => c.getAttribute('aria-current') !== 'true');
     strip.scrollLeft = other.offsetLeft - strip.offsetLeft; })()`;
-  await until(`document.querySelector('.rd-card[aria-current="true"]')?.dataset.col !== ${JSON.stringify(before)} || (${swipe}, false)`, async () => 'swipe chooses: ' + await evaluate(`JSON.stringify((() => { const s = document.querySelector('.rd-cards'); return { scrollLeft: s.scrollLeft, clientWidth: s.clientWidth, scrollWidth: s.scrollWidth, snap: getComputedStyle(s).scrollSnapType, behavior: getComputedStyle(s).scrollBehavior, cards: [...s.querySelectorAll('.rd-card')].map(c => [c.dataset.col, c.offsetLeft, c.getAttribute('aria-current')]) }; })())`));
+  await until(`(document.querySelector('.rd-card[aria-current="true"]') && document.querySelector('.rd-card[aria-current="true"]').dataset.col !== ${JSON.stringify(before)}) || (${swipe}, false)`, async () => 'swipe chooses: ' + await evaluate(`JSON.stringify((() => { const s = document.querySelector('.rd-cards'); return { scrollLeft: s.scrollLeft, clientWidth: s.clientWidth, scrollWidth: s.scrollWidth, snap: getComputedStyle(s).scrollSnapType, behavior: getComputedStyle(s).scrollBehavior, cards: [...s.querySelectorAll('.rd-card')].map(c => [c.dataset.col, c.offsetLeft, c.getAttribute('aria-current')]) }; })())`));
 
   // The tree lights the head's path and marks the head as "here".
   await size(1500, 1000);

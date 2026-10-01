@@ -10296,6 +10296,15 @@ const chromeAutoHideOn = () =>
 $('view').addEventListener('scroll', () => {
   if (!chromeAutoHideOn()) return;
   const top = $('view').scrollTop;
+  // A scroll queued before focus (or caused by the keyboard resizing the
+  // view) must not undo the composer's focus handler. Typing owns the
+  // phone screen until blur, including when the transcript is at its top.
+  if (phoneLayout() && document.activeElement === $('agentText')) {
+    setChromeMin(true, false);
+    chromeScrollLast = top;
+    chromeUpAcc = chromeDownAcc = 0;
+    return;
+  }
   if (top < CHROME_TOP) {
     setChromeMin(false, false);
     chromeScrollLast = top;

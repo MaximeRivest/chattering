@@ -20,6 +20,13 @@ async function setup(t) {
   return { dir, ai, changes: () => changes };
 }
 const until = async (fn, ms = 20000) => { const end = Date.now() + ms; for (;;) { const v = await fn(); if (v) return v; if (Date.now() > end) throw new Error('timed out'); await new Promise(r => setTimeout(r, 50)); } };
+// The worker has a 30s startup deadline; the fixture must not stop at 20s
+// while it is still legitimately starting. Terminal failure is not readiness.
+const loginReady = (ai, id, ready) => until(() => {
+  const state = ai.loginState(id);
+  if (state.status !== 'running') throw new Error(state.error || 'sign-in ended before it was ready');
+  return ready(state);
+}, 45000);
 
 test('addresses of model servers: normalized, named by kind or host', () => {
   assert.equal(A.normalizeBaseUrl('http://127.0.0.1:11434'), 'http://127.0.0.1:11434/v1');
@@ -73,7 +80,8 @@ test('a model server: found by its address, becomes the default, and answers', {
 test('an API key: asked as a secret, stored by Pi, never shown back', { skip, timeout: 60000 }, async t => {
   const { ai, dir } = await setup(t);
   const id = ai.startLogin('openai', 'api_key');
-  const asked = await until(() => ai.loginState(id).prompt);
+  t.after(() => ai.cancel(id));
+  const asked = await loginReady(ai, id, s => s.prompt);
   assert.equal(asked.type, 'secret');
   const secret = 'sk-test-' + 'x'.repeat(40);
   ai.answer(id, asked.id, secret);
@@ -90,7 +98,8 @@ test('an API key: asked as a secret, stored by Pi, never shown back', { skip, ti
 test('a plan sign-in: the address to open and a place to paste, and it can be cancelled', { skip, timeout: 60000 }, async t => {
   const { ai } = await setup(t);
   const id = ai.startLogin('anthropic', 'oauth');
-  const state = await until(() => { const s = ai.loginState(id); return s.prompt && s.events.some(e => e.type === 'auth_url') && s; });
+  t.after(() => ai.cancel(id));
+  const state = await loginReady(ai, id, s => s.prompt && s.events.some(e => e.type === 'auth_url') && s);
   assert.match(state.events.find(e => e.type === 'auth_url').url, /^https:\/\/claude\.ai\/oauth\/authorize\?/);
   assert.equal(state.prompt.type, 'manual_code');
   assert.equal(ai.cancel(id), true);
@@ -105,7 +114,8 @@ test('a helper ends when the server that started it is gone', { skip, timeout: 6
   const { spawn } = require('node:child_process');
   const http = require('node:http');
   // A model that takes its time: the hello is still waiting when the server dies.
-  const slow = http.createServer((req, res) => { if (req.url.endsWith('/models')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ data: [{ id: 'slow' }] })); } });
+  let asking = false;
+  const slow = http.createServer((req, res) => { if (req.url.endsWith('/chat/completions')) asking = true; if (req.url.endsWith('/models')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ data: [{ id: 'slow' }] })); } });
   await new Promise(r => slow.listen(0, '127.0.0.1', r));
   t.after(() => { slow.closeAllConnections(); slow.close(); });
   fs.writeFileSync(path.join(dir, 'models.json'), JSON.stringify({ providers: { slow: { baseUrl: `http://127.0.0.1:${slow.address().port}/v1`, api: 'openai-completions', apiKey: 'none', models: [{ id: 'slow' }] } } }));
@@ -116,12 +126,64 @@ test('a helper ends when the server that started it is gone', { skip, timeout: 6
     const ai = A.createAiAccounts({ agentDir: d, authPath: p.join(d, 'auth.json'), modelsPath: p.join(d, 'models.json'), settingsPath: p.join(d, 'settings.json'), env: { ...process.env, PI_OFFLINE: '1' } });
     ai.test('slow', 'slow').catch(() => {});
     setInterval(() => {}, 1000);`], { stdio: 'ignore', env: { ...process.env, ...(pi ? { CHATTERING_PI_PACKAGE_DIR: pi } : {}) } });
+  t.after(() => require('./helpers/cleanup.js').stopAndRemove(parent, null));
   const helpers = () => require('../processes.js').list().filter(p => p.ppid === parent.pid && p.argv.some(a => a.endsWith('ai-accounts-worker.js'))).map(p => p.pid);
   const [helper] = await until(() => { const h = helpers(); return h.length && h; });
-  await new Promise(r => setTimeout(r, 1500)); // it is asking the model now
+  await until(() => asking, 45000); // the actual HTTP request, not a startup guess
   const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
   assert.ok(alive(helper), 'the helper is waiting for the model');
   parent.kill('SIGKILL');
   try { await until(() => !alive(helper), 10000); }
   finally { try { process.kill(helper, 'SIGKILL'); } catch {} }
 });
+
+async function lateInitialization(t, deadline) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'accounts-cancel-'));
+  const sdk = path.join(dir, 'sdk');
+  fs.mkdirSync(path.join(sdk, 'dist'), { recursive: true });
+  fs.writeFileSync(path.join(sdk, 'package.json'), JSON.stringify({ name: '@earendil-works/pi-coding-agent', type: 'module' }));
+  // A synthetic SDK holds initialization on a protocol barrier, not a sleep.
+  // The actual worker still owns all stdin parsing, prompts and cancellation.
+  fs.writeFileSync(path.join(sdk, 'dist', 'index.js'), String.raw`
+    import readline from 'node:readline';
+    export const ModelRuntime = { async create({ signal }) {
+      const input = readline.createInterface({ input: process.stdin });
+      const release = new Promise(resolve => input.on('line', line => { if (line === 'release-fixture') resolve(); }));
+      process.stdout.write(JSON.stringify({ t: 'fixture-started' }) + '\n');
+      if (process.env.ACCOUNTS_DEADLINE_FIXTURE) {
+        await new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+      } else await release;
+      input.close();
+      return { async login(provider, type, interaction) {
+        await interaction.prompt({ type: 'manual_code', message: 'late question' });
+      } };
+    } };`);
+  const { spawn } = require('node:child_process');
+  const child = spawn(process.execPath, [path.join(__dirname, '..', 'ai-accounts-worker.js'), path.join(dir, 'auth.json'), path.join(dir, 'models.json'), 'login', 'synthetic', 'oauth'],
+    { env: { ...process.env, CHATTERING_PI_PACKAGE_DIR: sdk, PI_OFFLINE: '1', ACCOUNTS_DEADLINE_FIXTURE: deadline ? '1' : '' }, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => require('./helpers/cleanup.js').stopAndRemove(child, dir));
+  const messages = [];
+  let buffer = '', stderr = '';
+  child.stdout.on('data', chunk => {
+    buffer += chunk;
+    let at;
+    while ((at = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, at); buffer = buffer.slice(at + 1);
+      messages.push(JSON.parse(line));
+    }
+  });
+  child.stderr.on('data', chunk => stderr += chunk);
+  const exited = new Promise(resolve => child.once('close', resolve));
+  await until(() => {
+    assert.equal(messages.some(m => m.t === 'error'), false, JSON.stringify(messages));
+    return messages.some(m => m.t === 'fixture-started');
+  });
+  if (!deadline) child.stdin.write(JSON.stringify({ t: 'cancel' }) + '\nrelease-fixture\n');
+  await until(() => messages.some(m => m.t === 'prompt' || m.t === 'error') || child.exitCode !== null, 35000);
+  assert.equal(messages.some(m => m.t === 'prompt'), false, 'an ended operation must not ask a new question');
+  assert.equal(await exited, 1, stderr);
+  assert.match(messages.find(m => m.t === 'error')?.message || '', deadline ? /timeout|timed out/i : /cancelled/i);
+}
+
+test('Given cancellation during helper initialization, When a late SDK asks a question, Then no prompt survives', { timeout: 15000 }, t => lateInitialization(t, false));
+test('Given the 30s initialization deadline, When the SDK returns after expiry, Then login cannot begin', { timeout: 40000 }, t => lateInitialization(t, true));

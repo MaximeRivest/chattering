@@ -98,7 +98,6 @@ const ROUTES = {
   '/api/node/regenerate': 'guest',
   '/api/node/merge': 'guest',
   '/api/node/commands': 'guest', // act checked before loading session extensions
-  'POST /api/node/compose': 'guest', // act checked in body; guest completion stays inside its sandbox
   '/api/branch': 'guest',
   '/api/fork': 'guest',
   '/api/run/abort': 'guest', // act on the run's conversation, checked in the handler

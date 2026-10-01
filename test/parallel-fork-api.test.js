@@ -15,19 +15,12 @@ const { piPackageDir } = require('../pisdk-runtime');
 // Real HTTP routing, source queue, native Pi fork, publication, and indexing.
 // Only model execution is replaced: each fake agent keeps appending until
 // explicitly aborted, so no credentials or provider requests are involved.
-test('HTTP fork opens an independent runnable session while its parent keeps writing', { timeout: 30000 }, async t => {
+test('Given a spaced fixture home and a writing parent, When HTTP forks a saved node, Then an independent runnable session opens', { timeout: 30000 }, async t => {
   try { piPackageDir(); } catch { return t.skip('Native Pi package is not installed'); }
   const root = path.join(__dirname, '..');
-  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'parallel-fork-api-')));
+  const home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'parallel fork-api-')));
   let child;
-  t.after(async () => {
-    if (child && child.exitCode === null && child.signalCode === null) {
-      const exit = new Promise(resolve => child.once('exit', resolve));
-      child.kill('SIGTERM'); const timer = setTimeout(() => child.kill('SIGKILL'), 3000);
-      try { await exit; } finally { clearTimeout(timer); }
-    }
-    await fs.rm(home, { recursive: true, force: true, maxRetries: 5 });
-  });
+  t.after(() => require('./helpers/cleanup.js').stopAndRemove(child, home));
   const agent = path.join(home, '.pi', 'agent');
   const dir = path.join(agent, 'sessions', 'fixture');
   await fs.mkdir(dir, { recursive: true });
@@ -67,10 +60,11 @@ if (process.argv[1] === ${JSON.stringify(path.join(root, 'server.js'))}) {
   const port = socket.address().port; await new Promise(resolve => socket.close(resolve));
   registerConsole(port, TEST_TOKEN);
   let log = '';
-  child = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env,
+  child = spawn(process.execPath, ['--require', preload, 'server.js'], { cwd: root, env: { ...process.env,
     ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TOKEN: TEST_TOKEN, CHATTERING_HOST: '127.0.0.1', CHATTERING_NO_WATCH: '1', CHATTERING_NO_LEDGER: '1',
     CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'),
-    PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, NODE_OPTIONS: '--require=' + preload,
+    PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
+    CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_PREVIEW_PORT: '0', CHATTERING_TLS_PORT: '0',
   }, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b);
   const base = 'http://127.0.0.1:' + port;
