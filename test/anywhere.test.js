@@ -74,7 +74,7 @@ function fetchThrough(tunnel, req) {
   });
 }
 
-async function world(t, { turn = false } = {}) {
+async function world(t, { turn = false, homeWebSocket = WebSocket } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'anywhere-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const app = fakeChattering();
@@ -88,7 +88,7 @@ async function world(t, { turn = false } = {}) {
   let n = 0;
   const changes = [];
   const home = createAnywhereHome({
-    dataDir: dir, appDir: ROOT,
+    dataDir: dir, appDir: ROOT, WebSocketImpl: homeWebSocket,
     relayUrl: () => relayUrl,
     homeName: () => 'lambda',
     localTarget: () => ({ host: '127.0.0.1', port: appPort }),
@@ -524,4 +524,153 @@ test('Given native ICE before SDP, When a phone connects, Then descriptions prec
   assert.equal(sent[0], 'sdp', 'the home sees an offer before trickled ICE');
   assert.deepEqual(received.slice(0, 2), ['candidate', 'sdp'], 'the controlled real ordering was exercised');
   assert.equal(tunnel.user.name, 'Maxime', 'the real encrypted pairing still authenticates');
+});
+
+
+// Delayed native platform promises reproduce callbacks which overlap on the
+// home's real relay handler. SDP/ICE bytes, relay and authentication are real.
+for (const scenario of ['pairs', 'has a wrong code', 'reaches a different home']) {
+  const refusal = scenario === 'has a wrong code', forged = scenario === 'reaches a different home';
+  test(`Given delayed native home SDP, When the phone ${scenario}, Then home signals remain ordered`, { skip, timeout: 30000 }, async t => {
+    const Native = rtc.RTCPeerConnection;
+    const events = [], errors = [];
+    let homePeer, receivedCandidate;
+    const candidateReceived = new Promise(r => { receivedCandidate = r; });
+    let releaseRemote;
+    const remoteRelease = new Promise(r => { releaseRemote = r; });
+    class DelayedHome extends Native {
+      constructor(c) {
+        super(c); homePeer = this;
+        this.gathered = new Promise(resolve => this.addEventListener('icecandidate', e => { if (e.candidate) resolve(); }));
+      }
+      async setRemoteDescription(d) {
+        events.push('remote-start');
+        await remoteRelease;
+        await super.setRemoteDescription(d);
+        events.push('remote-ready');
+      }
+      async addIceCandidate(c) {
+        events.push(this.remoteDescription.sdp ? 'candidate-ready' : 'candidate-premature');
+        try { await super.addIceCandidate(c); } catch (e) { errors.push(e.message); throw e; }
+      }
+      async createAnswer() {
+        const answer = await super.createAnswer();
+        // Let genuine native ICE events run before the real home sends SDP.
+        await this.gathered;
+        return answer;
+      }
+    }
+    class HomeSocket extends WebSocket {
+      send(text) {
+        const m = JSON.parse(text);
+        if (m.t === 'signal') events.push(m.data.sdp ? 'send-answer' : 'send-candidate');
+        return super.send(text);
+      }
+      set onmessage(fn) {
+        super.onmessage = ev => {
+          const m = JSON.parse(ev.data);
+          const result = fn(ev);
+          if (m.t === 'signal' && m.data.candidate) receivedCandidate();
+          return result;
+        };
+      }
+    }
+    rtc.RTCPeerConnection = DelayedHome;
+    t.after(() => { rtc.RTCPeerConnection = Native; releaseRemote(); });
+    const w = await world(t, { homeWebSocket: HomeSocket });
+    const pairing = await w.home.pair('u1');
+    const link = P.readPairingLink(new URL(pairing.url).hash);
+    await until(() => w.home.status().relayState === 'ready', 'registered');
+    const abort = new AbortController();
+    t.after(() => abort.abort());
+    // A dishonest routing surface points a different home id at this real
+    // home's channel. Encryption alone must not bypass the home identity check.
+    class PhoneSocket extends WebSocket {
+      send(text) {
+        const m = JSON.parse(text);
+        if (m.t === 'call') m.to = link.homeId;
+        return super.send(JSON.stringify(m));
+      }
+    }
+    const connecting = w.phone({ homeId: forged ? P.b64u(P.random(16)) : link.homeId,
+      device: await newDevice(), RTCPeerConnection: Native, WebSocket: PhoneSocket,
+      pairing: { id: link.id, secret: refusal ? P.b64u(P.random(16)) : link.secret }, signal: abort.signal });
+    const outcome = connecting.then(tunnel => ({ tunnel }), error => ({ error }));
+    await candidateReceived;
+    assert.ok(homePeer, 'actual home peer constructed');
+    // Callback arrival, not timing, controls when the native SDP is applied.
+    releaseRemote();
+    const result = await outcome;
+    if (forged) {
+      assert.equal(result.error?.code, 'forged');
+      assert.equal(w.creds.size, 0);
+    } else if (refusal) {
+      assert.equal(result.error?.code, 'refused');
+      assert.equal(result.error?.why, 'bad-code');
+      assert.equal(w.creds.size, 0);
+    } else {
+      assert.ifError(result.error);
+      assert.equal(result.tunnel.user.name, 'Maxime');
+      assert.equal(w.creds.size, 1);
+    }
+    assert.ok(!events.includes('candidate-premature'), 'no candidate while native remoteDescription is an empty truthy object: ' + events + '; native errors: ' + errors);
+    assert.deepEqual(errors, [], 'no swallowed native candidate errors');
+    const sent = events.filter(e => e.startsWith('send-'));
+    assert.equal(sent[0], 'send-answer', 'answer before native outgoing ICE: ' + sent);
+    assert.ok(sent.includes('send-candidate'), 'real gathering exercised');
+  });
+}
+
+
+test('Given queued native home candidates, When the phone leaves during candidate one, Then no later signal is sent', { skip, timeout: 30000 }, async t => {
+  const Native = rtc.RTCPeerConnection;
+  let homePeer, departed = false;
+  const sent = [];
+  const abort = new AbortController();
+  t.after(() => abort.abort());
+  class GatheringHome extends Native {
+    constructor(config) {
+      super({ ...config, enableIceTcp: true });
+      homePeer = this;
+      let count = 0;
+      this.gathered = new Promise(resolve => this.addEventListener('icecandidate', e => {
+        if (e.candidate && ++count === 2) resolve();
+      }));
+    }
+    async createAnswer() { const answer = await super.createAnswer(); await this.gathered; return answer; }
+  }
+  class StoppingSocket extends WebSocket {
+    send(text) {
+      const m = JSON.parse(text);
+      if (m.t === 'signal') {
+        sent.push(m.data.sdp ? 'answer' : 'candidate');
+        if (m.data.candidate && !departed) {
+          departed = true;
+          // Schedule the relay's legitimate departure notification exactly
+          // inside the synchronous flush; retain the home's relay socket so
+          // socket shutdown cannot hide an attempted second send.
+          this.onmessage({ data: JSON.stringify({ t: 'gone', from: m.to }) });
+          abort.abort(); // the departed phone stops its actual native connection too
+        }
+      }
+      return super.send(text);
+    }
+  }
+  rtc.RTCPeerConnection = GatheringHome;
+  t.after(() => { rtc.RTCPeerConnection = Native; });
+  const w = await world(t, { homeWebSocket: StoppingSocket });
+  const pairing = await w.home.pair('u1');
+  const link = P.readPairingLink(new URL(pairing.url).hash);
+  await until(() => w.home.status().relayState === 'ready', 'registered');
+  const connecting = w.phone({ homeId: link.homeId, device: await newDevice(), RTCPeerConnection: Native,
+    pairing: { id: link.id, secret: link.secret }, signal: abort.signal });
+  const outcome = connecting.then(tunnel => ({ tunnel }), error => ({ error }));
+  await until(() => departed, 'phone departure inside real native ICE send');
+  const result = await outcome;
+  assert.equal(result.error?.code, 'aborted', 'departed phone stops its connection');
+  assert.equal(w.home.status().relayState, 'ready', 'relay remains usable, so shutdown cannot mask an extra send');
+  assert.equal(w.creds.size, 0);
+  assert.ok(homePeer.ext_localCandidates.length >= 2, 'two real native candidates were gathered');
+  await new Promise(setImmediate);
+  assert.deepEqual(sent, ['answer', 'candidate'], 'flush ends immediately at peer.close');
 });

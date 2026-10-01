@@ -196,28 +196,57 @@ function createAnywhereHome(opts) {
       }
       peer = createPeer(from, send);
     }
-    try {
+    // Relay callbacks overlap: a truthy native remoteDescription may still be
+    // empty, or setRemoteDescription may be awaiting platform work. Serialize
+    // each peer's SDP and ICE, independently of every other phone.
+    peer.signals = peer.signals.then(async () => {
+      if (peer.closed) return;
       if (data.sdp) {
+        peer.remoteReady = false;
         await peer.pc.setRemoteDescription(data.sdp);
-        for (const c of peer.pending.splice(0)) await peer.pc.addIceCandidate(c).catch(() => {});
-        await peer.pc.setLocalDescription(await peer.pc.createAnswer());
+        if (peer.closed) return;
+        peer.remoteReady = true;
+        for (const c of peer.pending.splice(0)) {
+          if (peer.closed) return;
+          await peer.pc.addIceCandidate(c).catch(() => {});
+        }
+        if (peer.closed) return;
+        const answer = await peer.pc.createAnswer();
+        if (peer.closed) return;
+        await peer.pc.setLocalDescription(answer);
+        if (peer.closed) return;
         send({ t: 'signal', to: from, data: { sdp: { type: peer.pc.localDescription.type, sdp: peer.pc.localDescription.sdp } } });
+        peer.answerSent = true;
+        for (const m of peer.localCandidates.splice(0)) {
+          if (peer.closed) return;
+          send(m);
+        }
       } else if (data.candidate) {
-        if (peer.pc.remoteDescription) await peer.pc.addIceCandidate(data.candidate).catch(() => {});
+        if (peer.remoteReady) await peer.pc.addIceCandidate(data.candidate).catch(() => {});
         else peer.pending.push(data.candidate);
       }
-    } catch (e) { log('anywhere: signalling failed: ' + e.message); peer.close('signalling failed'); }
+    }).catch(e => {
+      if (peer.closed) return;
+      log('anywhere: signalling failed: ' + e.message);
+      peer.close('signalling failed');
+    });
+    return peer.signals;
   }
 
   /* ---- one phone's connection ---- */
   function createPeer(sid, send) {
     const { RTCPeerConnection } = rtc();
     const pc = new RTCPeerConnection({ iceServers: iceForNode(iceServers), ...(relayOnly ? { iceTransportPolicy: 'relay' } : {}) });
-    const peer = { sid, pc, pending: [], at: Date.now(), authed: false, device: null, mux: null, streams: new Map(), closed: false, path: null };
+    const peer = {
+      sid, pc, pending: [], localCandidates: [], remoteReady: false,
+      answerSent: false, signals: Promise.resolve(), at: Date.now(),
+      authed: false, device: null, mux: null, streams: new Map(), closed: false, path: null,
+    };
     peers.set(sid, peer);
     peer.close = why => {
       if (peer.closed) return;
       peer.closed = true;
+      peer.pending.length = peer.localCandidates.length = 0;
       peers.delete(sid);
       clearTimeout(peer.authTimer);
       for (const s of peer.streams.values()) { try { s.abort(); } catch {} }
@@ -230,7 +259,12 @@ function createAnywhereHome(opts) {
     peer.authTimer = setTimeout(() => { if (!peer.authed) peer.close(); }, AUTH_MS);
     // node-datachannel writes candidates as SDP lines (a=candidate:…); a
     // browser's addIceCandidate wants them without the a=.
-    pc.onicecandidate = e => { if (e.candidate) send({ t: 'signal', to: sid, data: { candidate: { candidate: String(e.candidate.candidate).replace(/^a=/, ''), sdpMid: e.candidate.sdpMid, sdpMLineIndex: e.candidate.sdpMLineIndex } } }); };
+    pc.onicecandidate = e => {
+      if (!e.candidate || peer.closed) return;
+      const m = { t: 'signal', to: sid, data: { candidate: { candidate: String(e.candidate.candidate).replace(/^a=/, ''), sdpMid: e.candidate.sdpMid, sdpMLineIndex: e.candidate.sdpMLineIndex } } };
+      // Native gathering starts during remote SDP, before createAnswer resolves.
+      if (peer.answerSent) send(m); else peer.localCandidates.push(m);
+    };
     pc.onconnectionstatechange = () => { if (['failed', 'closed'].includes(pc.connectionState)) peer.close(); };
     pc.ondatachannel = e => {
       const dc = e.channel;
