@@ -66,6 +66,10 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
   t.after(() => fs.rmSync(path.dirname(microphone), { recursive: true, force: true }));
   const b = await viewerBrowser(t, {
     setup: home => {
+      fs.writeFileSync(path.join(home, '.pi/agent/sessions/fixture/other.jsonl'), [
+        { type: 'session', version: 3, id: 'other', cwd: path.join(home, 'work') },
+        { type: 'message', id: 'u', timestamp: '2000-01-01T00:00:00Z', message: { role: 'user', content: [{ type: 'text', text: 'Other conversation' }] } },
+      ].map(JSON.stringify).join('\n') + '\n');
       fs.mkdirSync(path.join(home, '.config', 'chattering'), { recursive: true });
       fs.writeFileSync(path.join(home, '.config', 'chattering', 'settings.json'), JSON.stringify({ speechUrl: 'http://127.0.0.1:' + speech.address().port }));
     },
@@ -181,6 +185,57 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
   assert.deepEqual(refused, { otherError: 'the box went away; dictation stopped', askError: 'the box went away; dictation stopped', untouched: 'fix the flaky test in the queue', mode: 'command' });
   await ev(`renderConv('preserve')`);
 
+
+  // Given real open(B) is held at its session fetch, A's composer remains
+  // connected although activeRel already routes sends to B.
+  const navigationControl = await ev(`(async () => {
+    const realFetch = window.fetch, a = current.key, b = 'pi:fixture/other.jsonl', ta = $('agentText');
+    const calls = []; let release, arrived;
+    const gate = new Promise(r => release = r), waiting = new Promise(r => arrived = r);
+    window.fetch = async (url, opts) => {
+      if (String(url) === '/api/session?id=' + encodeURIComponent(b)) { arrived(); await gate; }
+      if (String(url) === '/api/node/send') {
+        calls.push(JSON.parse(opts.body));
+        return new Response(JSON.stringify({ error: 'fixture blocked provider execution' }), { headers: { 'content-type': 'application/json' } });
+      }
+      return realFetch(url, opts);
+    };
+    let navigation;
+    try {
+      const target = voiceTextTarget();
+      navigation = open(b); await waiting;
+      const inFlight = { connected: ta.isConnected, active: activeRel, current: current.key };
+      const original = ta.value;
+      const outcomes = [];
+      for (const action of ['send', 'text', 'clear']) {
+        ta.value = original;
+        voiceBeginDictation(target);
+        const entry = { said: action, status: 'deciding' };
+        await voiceDictation(entry, { action, text: 'must not write', args: {} });
+        outcomes.push({ action, status: entry.status, value: ta.value });
+      }
+      ta.value = original;
+      const command = { said: 'send', status: 'deciding' };
+      await voiceRun(command, { action: 'send', args: {} });
+      const badCalls = calls.slice();
+      release(); await navigation;
+      await open(a, 'preserve');
+      $('agentText').value = 'same conversation control';
+      voiceBeginDictation(voiceTextTarget());
+      const good = { said: 'send', status: 'deciding' };
+      await voiceDictation(good, { action: 'send', args: {} });
+      return { a, b, inFlight, original, outcomes, command: command.status, badCalls, goodCalls: calls.slice(badCalls.length).map(c => ({ id: c.id, prompt: c.prompt })) };
+    } finally {
+      release(); if (navigation) await navigation;
+      window.fetch = realFetch;
+      voiceEndDictation();
+    }
+  })()`);
+  assert.deepEqual(navigationControl.inFlight, { connected: true, active: navigationControl.b, current: navigationControl.a });
+  assert.deepEqual(navigationControl.badCalls, [], 'in-flight navigation must not send A text to B, even through command send');
+  assert.deepEqual(navigationControl.outcomes, ['send', 'text', 'clear'].map(action => ({ action, status: 'failed', value: navigationControl.original })), 'writes and clear also refuse a connected but stale composer');
+  assert.equal(navigationControl.command, 'failed');
+  assert.deepEqual(navigationControl.goodCalls, [{ id: navigationControl.a, prompt: 'same conversation control' }], 'same-conversation send remains valid (backend intercepted, no provider)');
 
   // Files in the right panel, by place: the last of the recent files is the
   // one opened first (newest on top). Picking clicks its row, as the mouse does.
