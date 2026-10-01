@@ -83,7 +83,10 @@
               await pc.setRemoteDescription(m.data.sdp);
               if (done) return;
               remoteReady = true;
-              for (const c of pendingCandidates.splice(0)) await pc.addIceCandidate(c).catch(() => {});
+              for (const c of pendingCandidates.splice(0)) {
+                if (done) return; // abort/failure can close the peer during the previous await
+                await pc.addIceCandidate(c).catch(() => {});
+              }
             } else if (m.data.candidate) {
               if (remoteReady) await pc.addIceCandidate(m.data.candidate).catch(() => {});
               else pendingCandidates.push(m.data.candidate);

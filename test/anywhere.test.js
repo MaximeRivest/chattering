@@ -105,8 +105,6 @@ async function world(t, { turn = false } = {}) {
     tunnels.push(tunnel);
     return tunnel;
   };
-  // Given a new home, wait for its initial key load before RTC pairing starts.
-  await until(() => home.status().homeId, 'the home initialized');
   return { dir, app, relay, relayUrl, home, creds, phone, changes };
 }
 
