@@ -19027,7 +19027,11 @@ Promise.all([load(), window.LiveTerminal ? LiveTerminal.init().catch(() => false
   Promise.resolve(dispatchHash(bootHash)).then(() => {
     // A reload comes back to the same scroll, like a browser page.
     if (bootScroll && nav.current()?.id === bootEntry.id && viewKind !== 'conversation' && viewKind !== 'home') navHold = Navigation.holdScroll($('view'), bootScroll.view);
-  }).catch(err => console.error('first route failed:', err)).finally(() => { if (restoringScopeEntry === bootEntry.id) restoringScopeEntry = null; });
+  }).catch(err => console.error('first route failed:', err)).finally(() => {
+    if (restoringScopeEntry === bootEntry.id) restoringScopeEntry = null;
+    // The first screen is drawn: what opens now stays (tests wait for this).
+    window.appBooted = true;
+  });
   prefetchDocumentEditor();
 });
 // SSE `update` events patch the list live; this poll only reconciles what a

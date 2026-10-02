@@ -155,6 +155,11 @@ function startWork(text) {
   spinTimer = setInterval(() => { st.spin++; draw(); }, 100);
   const ms = /slow/.test(text) ? 15000 : delay;
   if (/permission/.test(text)) { workTimer = setTimeout(() => { clearInterval(spinTimer); st.mode = 'choice'; st.sel = 0; st.choiceFor = text; draw(); }, Math.min(ms, 300)); return; }
+  if (/pause/.test(text)) {
+    // Two steps with an idle moment between them (Claude Code's hooks, a retry).
+    workTimer = setTimeout(() => { clearInterval(spinTimer); st.mode = 'compose'; draw(); workTimer = setTimeout(() => { st.mode = 'working'; spinTimer = setInterval(() => { st.spin++; draw(); }, 100); workTimer = setTimeout(() => finish(text, 'Done: ' + text), 400); draw(); }, 300); }, 400);
+    draw(); return;
+  }
   workTimer = setTimeout(() => finish(text, 'Done: ' + text), ms);
   draw();
 }

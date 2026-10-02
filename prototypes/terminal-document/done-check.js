@@ -128,8 +128,11 @@ async function main() {
       const ready = `${S} && ${S}.open && ${S}.state.composer && ${S}.state.mode === 'compose' && !${S}.state.status`;
       const typeInBox = async text => {
         if (touch) {
-          await tap('#ltDraft');
+          // A tap during a redraw can land elsewhere: as a person would, tap
+          // again until the box has the cursor, then type.
+          for (let i = 0; i < 5; i++) { await tap('#ltDraft'); if (await ev(`document.activeElement && document.activeElement.id === 'ltDraft'`)) break; await sleep(200); }
           await ev(`(() => { const d = document.getElementById('ltDraft'); d.value = ''; d.dispatchEvent(new Event('input')); })()`);
+          if (!(await ev(`document.activeElement && document.activeElement.id === 'ltDraft'`))) throw Error('the box does not take the cursor');
           await cmd('Input.insertText', { text });
         } else {
           await ev(`document.getElementById('ltKeys').focus()`);

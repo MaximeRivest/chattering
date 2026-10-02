@@ -1,34 +1,108 @@
 {
   "device": "phone",
-  "when": "2026-10-01T23:55:57.889Z",
+  "when": "2026-10-02T00:13:48.253Z",
   "agents": {
     "claude": {
-      "key": "claude:-home-maxime--cache-chattering-live-test-scratch-phone-muq6zzie-claude/b1bf3ae8-c811-4e85-a7c9-f07f6a8401a5.jsonl",
+      "key": "claude:-home-maxime--cache-chattering-live-test-scratch-phone-muq7mxgq-claude/cb406bbb-e112-4289-b213-17ad756724c2.jsonl",
       "new conversation": {
         "ok": true,
-        "ms": 4162
+        "ms": 4142
       },
       "type with its own editor": {
         "ok": true,
-        "ms": 832
+        "ms": 816
       },
       "pick from its / list": {
         "ok": true,
-        "ms": 1699,
+        "ms": 1698,
         "note": "/add-dir"
       },
       "open and close a panel": {
         "ok": true,
-        "ms": 1824
+        "ms": 1859
       },
       "answer a permission question": {
         "ok": true,
-        "ms": 3453
+        "ms": 3830
       },
       "stop a running reply": {
-        "ok": true,
-        "ms": 7444,
-        "note": "stopped 366 ms after the tap"
+        "ok": false,
+        "ms": 15084,
+        "error": "timed out: the text in its own box",
+        "focus": [
+          [
+            2020,
+            "in",
+            "agentText",
+            0
+          ],
+          [
+            2417,
+            "out",
+            "agentText",
+            0
+          ],
+          [
+            5816,
+            "in",
+            "ltDraft",
+            1
+          ],
+          [
+            8800,
+            "out",
+            "ltDraft",
+            1
+          ],
+          [
+            8800,
+            "in",
+            "ltSend",
+            1
+          ],
+          [
+            9090,
+            "out",
+            "ltSend",
+            1
+          ],
+          [
+            9251,
+            "in",
+            "BUTTON",
+            1
+          ],
+          [
+            9351,
+            "out",
+            "BUTTON",
+            1
+          ],
+          [
+            10182,
+            "in",
+            "ltDraft",
+            1
+          ],
+          [
+            10634,
+            "out",
+            "ltDraft",
+            1
+          ],
+          [
+            10634,
+            "in",
+            "ltSend",
+            1
+          ],
+          [
+            11250,
+            "out",
+            "ltSend",
+            1
+          ]
+        ]
       },
       "switch back to Chattering's box": {
         "ok": false,
@@ -37,37 +111,111 @@
       },
       "continue an existing one": {
         "ok": true,
-        "ms": 3430
+        "ms": 3382
       },
       "every message shown once": {
-        "ok": true,
-        "ms": 2504,
-        "note": "1,1,1,1"
+        "ok": false,
+        "ms": 2503,
+        "error": "not once: [[\"Count from 1 to 600, one number per line, and noth\",0]]",
+        "focus": [
+          [
+            9251,
+            "in",
+            "BUTTON",
+            1
+          ],
+          [
+            9351,
+            "out",
+            "BUTTON",
+            1
+          ],
+          [
+            10182,
+            "in",
+            "ltDraft",
+            1
+          ],
+          [
+            10634,
+            "out",
+            "ltDraft",
+            1
+          ],
+          [
+            10634,
+            "in",
+            "ltSend",
+            1
+          ],
+          [
+            11250,
+            "out",
+            "ltSend",
+            1
+          ],
+          [
+            29384,
+            "in",
+            "ltDraft",
+            1
+          ],
+          [
+            29588,
+            "out",
+            "ltDraft",
+            1
+          ],
+          [
+            29597,
+            "in",
+            "ltDraft",
+            1
+          ],
+          [
+            29700,
+            "out",
+            "ltDraft",
+            1
+          ],
+          [
+            29700,
+            "in",
+            "ltSend",
+            1
+          ],
+          [
+            29950,
+            "out",
+            "ltSend",
+            1
+          ]
+        ]
       },
       "stats": {
-        "frames": 69,
-        "kb": 44,
+        "frames": 56,
+        "kb": 35,
         "errors": []
       }
     },
     "pi": {
-      "key": "pi:--home-maxime-.cache-chattering-live-test-scratch-phone-muq6zzie-pi--/2026-10-01T23-56-29-315Z_01a0f9e5-e82a-7252-ae96-3af643ced962.jsonl",
+      "key": "pi:--home-maxime-.cache-chattering-live-test-scratch-phone-muq7mxgq-pi--/2026-10-02T00-14-28-731Z_01a0f9f6-609a-735f-b91f-cc53a1d794bd.jsonl",
       "new conversation": {
         "ok": true,
-        "ms": 6369
+        "ms": 4424
       },
       "type with its own editor": {
         "ok": true,
-        "ms": 744
+        "ms": 747
       },
       "pick from its / list": {
         "ok": true,
-        "ms": 788,
+        "ms": 791,
         "note": "model"
       },
       "open and close a panel": {
         "ok": true,
-        "ms": 1670
+        "ms": 1633
       },
       "answer a permission question": {
         "ok": false,
@@ -76,16 +224,16 @@
       },
       "stop a running reply": {
         "ok": true,
-        "ms": 7345,
-        "note": "stopped 304 ms after the tap"
+        "ms": 7453,
+        "note": "stopped 427 ms after the tap"
       },
       "switch back to Chattering's box": {
         "ok": true,
-        "ms": 168
+        "ms": 176
       },
       "continue an existing one": {
         "ok": true,
-        "ms": 8944
+        "ms": 3413
       },
       "every message shown once": {
         "ok": true,
@@ -93,747 +241,75 @@
         "note": "1,1,1"
       },
       "stats": {
-        "frames": 33,
-        "kb": 5,
+        "frames": 13,
+        "kb": 3,
         "errors": []
       }
     },
     "codex": {
+      "key": "codex:2026/10/01/rollout-2026-10-01T20-14-50-01a0f9f6-b807-7b40-a7f6-3bc206490569.jsonl",
       "new conversation": {
-        "ok": false,
-        "ms": 181411,
-        "error": "timed out: the first reply in the conversation",
-        "focus": [
-          [
-            43852,
-            "in",
-            "ltUseHere",
-            0
-          ],
-          [
-            43868,
-            "out",
-            "ltUseHere",
-            0
-          ],
-          [
-            45102,
-            "in",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "out",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "in",
-            "ltSend",
-            1
-          ],
-          [
-            46276,
-            "out",
-            "ltSend",
-            1
-          ],
-          [
-            55319,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55330,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55371,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55946,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55986,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            56587,
-            "out",
-            "agentText",
-            0
-          ]
-        ]
+        "ok": true,
+        "ms": 6947
       },
       "type with its own editor": {
-        "ok": false,
-        "ms": 60037,
-        "error": "timed out: its box ready",
-        "focus": [
-          [
-            43852,
-            "in",
-            "ltUseHere",
-            0
-          ],
-          [
-            43868,
-            "out",
-            "ltUseHere",
-            0
-          ],
-          [
-            45102,
-            "in",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "out",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "in",
-            "ltSend",
-            1
-          ],
-          [
-            46276,
-            "out",
-            "ltSend",
-            1
-          ],
-          [
-            55319,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55330,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55371,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55946,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55986,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            56587,
-            "out",
-            "agentText",
-            0
-          ]
-        ]
+        "ok": true,
+        "ms": 824
       },
       "pick from its / list": {
-        "ok": false,
-        "ms": 15201,
-        "error": "timed out: the pick in its box",
-        "focus": [
-          [
-            43868,
-            "out",
-            "ltUseHere",
-            0
-          ],
-          [
-            45102,
-            "in",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "out",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "in",
-            "ltSend",
-            1
-          ],
-          [
-            46276,
-            "out",
-            "ltSend",
-            1
-          ],
-          [
-            55319,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55330,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55371,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55946,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55986,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            56587,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            296875,
-            "in",
-            "ltDraft",
-            1
-          ]
-        ]
+        "ok": true,
+        "ms": 781,
+        "note": "/fast"
       },
       "open and close a panel": {
-        "ok": false,
-        "ms": 15038,
-        "error": "timed out: the text in its own box",
-        "focus": [
-          [
-            43868,
-            "out",
-            "ltUseHere",
-            0
-          ],
-          [
-            45102,
-            "in",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "out",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "in",
-            "ltSend",
-            1
-          ],
-          [
-            46276,
-            "out",
-            "ltSend",
-            1
-          ],
-          [
-            55319,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55330,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55371,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55946,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55986,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            56587,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            296875,
-            "in",
-            "ltDraft",
-            1
-          ]
-        ]
+        "ok": true,
+        "ms": 1534
       },
       "answer a permission question": {
-        "ok": false,
-        "ms": 15057,
-        "error": "timed out: the text in its own box",
-        "focus": [
-          [
-            43868,
-            "out",
-            "ltUseHere",
-            0
-          ],
-          [
-            45102,
-            "in",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "out",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "in",
-            "ltSend",
-            1
-          ],
-          [
-            46276,
-            "out",
-            "ltSend",
-            1
-          ],
-          [
-            55319,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55330,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55371,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55946,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55986,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            56587,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            296875,
-            "in",
-            "ltDraft",
-            1
-          ]
-        ]
+        "ok": true,
+        "ms": 9866
       },
       "stop a running reply": {
-        "ok": false,
-        "ms": 60014,
-        "error": "timed out: its box ready",
-        "focus": [
-          [
-            43868,
-            "out",
-            "ltUseHere",
-            0
-          ],
-          [
-            45102,
-            "in",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "out",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "in",
-            "ltSend",
-            1
-          ],
-          [
-            46276,
-            "out",
-            "ltSend",
-            1
-          ],
-          [
-            55319,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55330,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55371,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55946,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55986,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            56587,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            296875,
-            "in",
-            "ltDraft",
-            1
-          ]
-        ]
+        "ok": true,
+        "ms": 7645,
+        "note": "stopped 436 ms after the tap"
       },
       "switch back to Chattering's box": {
-        "ok": false,
-        "ms": 1,
-        "error": "nothing to tap: #ltLeave",
-        "focus": [
-          [
-            43868,
-            "out",
-            "ltUseHere",
-            0
-          ],
-          [
-            45102,
-            "in",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "out",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "in",
-            "ltSend",
-            1
-          ],
-          [
-            46276,
-            "out",
-            "ltSend",
-            1
-          ],
-          [
-            55319,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55330,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55371,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55946,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55986,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            56587,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            296875,
-            "in",
-            "ltDraft",
-            1
-          ]
-        ]
+        "ok": true,
+        "ms": 186
       },
       "continue an existing one": {
-        "ok": false,
-        "ms": 30035,
-        "error": "timed out: offered",
-        "focus": [
-          [
-            43868,
-            "out",
-            "ltUseHere",
-            0
-          ],
-          [
-            45102,
-            "in",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "out",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "in",
-            "ltSend",
-            1
-          ],
-          [
-            46276,
-            "out",
-            "ltSend",
-            1
-          ],
-          [
-            55319,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55330,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55371,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55946,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55986,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            56587,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            296875,
-            "in",
-            "ltDraft",
-            1
-          ]
-        ]
+        "ok": true,
+        "ms": 6543
       },
       "every message shown once": {
-        "ok": false,
-        "ms": 2503,
-        "error": "not once: [[\"Reply with exactly this text and nothing else: hel\",0],[\"Run exactly this shell command and nothing else: t\",0]]",
-        "focus": [
-          [
-            43868,
-            "out",
-            "ltUseHere",
-            0
-          ],
-          [
-            45102,
-            "in",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "out",
-            "ltDraft",
-            1
-          ],
-          [
-            45502,
-            "in",
-            "ltSend",
-            1
-          ],
-          [
-            46276,
-            "out",
-            "ltSend",
-            1
-          ],
-          [
-            55319,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55330,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55371,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            55946,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            55986,
-            "in",
-            "agentText",
-            0
-          ],
-          [
-            56587,
-            "out",
-            "agentText",
-            0
-          ],
-          [
-            296875,
-            "in",
-            "ltDraft",
-            1
-          ]
-        ]
+        "ok": true,
+        "ms": 2504,
+        "note": "1,1,1,1"
       },
-      "stats": null
+      "stats": {
+        "frames": 16,
+        "kb": 6,
+        "errors": []
+      }
     }
   },
   "notes": [
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined"
+    "soak: timed out: soak reply",
+    "soak: timed out: soak reply"
   ],
-  "pairedMs": 3030,
+  "pairedMs": 3588,
   "soak": {
     "minutes": 10,
-    "messages": 10,
-    "replies": 0
+    "messages": 6,
+    "replies": 4,
+    "from": 44,
+    "flips": 2,
+    "changes": 24
   },
   "flicker": {
-    "changes": 59,
-    "flips": 4,
+    "changes": 68,
+    "flips": 7,
     "examples": [
       [
         "panel",
@@ -841,15 +317,27 @@
       ],
       [
         "choice",
-        371
-      ],
-      [
-        "compose",
-        520
+        381
       ],
       [
         "panel",
-        200
+        241
+      ],
+      [
+        "choice",
+        162
+      ],
+      [
+        "compose",
+        320
+      ],
+      [
+        "working",
+        404
+      ],
+      [
+        "working",
+        476
       ]
     ]
   },

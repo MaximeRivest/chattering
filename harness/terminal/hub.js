@@ -122,16 +122,23 @@ function createHub({ host, profile, journal = null, events = null, liveOnly = fa
     if (!isOpen(c.ws)) return;
     const parts = partsFor(c);
     const nextMode = JSON.parse(parts.mode);
-    // Brief states are not shown: a program clearing its screen to redraw it
-    // passes through a panel or unknown state for milliseconds (shown if it
-    // lasts 150 ms), and between two steps of its work it is idle for a
-    // moment (shown if it lasts 250 ms: Stop does not blink; "done" is shown
-    // a quarter second late).
+    // Brief states are not shown. A program clearing its screen to redraw
+    // it passes through a panel or unknown state for milliseconds: the
+    // update waits 150 ms. Between two steps of its work (a tool, a retry,
+    // its hooks) a program is idle for up to half a second: "working" is
+    // kept for 700 ms, while everything else (the box as it is typed in)
+    // goes at once; "ready" shows that much later.
     const prevMode = c.sent.mode ? JSON.parse(c.sent.mode) : null;
-    const holdMs = prevMode && nextMode !== prevMode ? (nextMode === 'panel' || nextMode === 'unknown' ? 150 : prevMode === 'working' && nextMode === 'compose' ? 250 : 0) : 0;
-    if (holdMs) {
+    const brief = prevMode && nextMode !== prevMode && (nextMode === 'panel' || nextMode === 'unknown');
+    const pause = prevMode === 'working' && nextMode === 'compose';
+    if (brief || pause) {
       if (!c.holdSince || c.holdMode !== nextMode) { c.holdSince = Date.now(); c.holdMode = nextMode; }
-      if (Date.now() - c.holdSince < holdMs) { clearTimeout(c.holdTimer); c.holdTimer = setTimeout(() => { c.holdTimer = null; sendTo(c); }, holdMs + 5 - (Date.now() - c.holdSince)); return; }
+      const holdMs = brief ? 150 : 700, left = holdMs - (Date.now() - c.holdSince);
+      if (left > 0) {
+        clearTimeout(c.holdTimer); c.holdTimer = setTimeout(() => { c.holdTimer = null; sendTo(c); }, left + 5);
+        if (brief) return;
+        for (const k of ['mode', 'status', 'now']) parts[k] = c.sent[k];
+      }
     } else c.holdSince = null;
     const d = diff(c.sent, parts);
     const acks = c.acks.splice(0);

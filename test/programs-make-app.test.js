@@ -67,6 +67,7 @@ test('browser: making a program, trying and testing it, publishing it, and calli
   const api = async (p, opts = {}) => { const r = await fetch(base + p, { ...opts, headers: { ...auth, ...(opts.headers || {}) } }); return { status: r.status, body: await r.json() }; };
 
   // Say what it should do, with two examples.
+  await until(`window.appBooted`, 'the app\'s first screen'); // else it replaces the list
   await evaluate(`Programs.showList()`);
   await until(`document.querySelector('[data-pg-new]')`, 'a New program button');
   await click('[data-pg-new]');

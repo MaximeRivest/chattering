@@ -1,34 +1,34 @@
 {
   "device": "eink",
-  "when": "2026-10-01T23:55:57.855Z",
+  "when": "2026-10-02T00:13:48.131Z",
   "agents": {
     "claude": {
-      "key": "claude:-home-maxime--cache-chattering-live-test-scratch-eink-muq6zzie-claude/649fe82a-0de7-4114-8a5d-1ffac26e41d3.jsonl",
+      "key": "claude:-home-maxime--cache-chattering-live-test-scratch-eink-muq7mxgl-claude/64784ca6-d324-454f-8f2d-7960d8a8e299.jsonl",
       "new conversation": {
         "ok": true,
-        "ms": 4169
+        "ms": 4863
       },
       "type with its own editor": {
         "ok": true,
-        "ms": 810
+        "ms": 892
       },
       "pick from its / list": {
         "ok": true,
-        "ms": 1764,
+        "ms": 1753,
         "note": "/add-dir"
       },
       "open and close a panel": {
         "ok": true,
-        "ms": 1824
+        "ms": 1819
       },
       "answer a permission question": {
         "ok": true,
-        "ms": 3432
+        "ms": 3489
       },
       "stop a running reply": {
         "ok": true,
-        "ms": 7462,
-        "note": "stopped 366 ms after the tap"
+        "ms": 7691,
+        "note": "stopped 549 ms after the tap"
       },
       "switch back to Chattering's box": {
         "ok": false,
@@ -37,32 +37,32 @@
       },
       "continue an existing one": {
         "ok": true,
-        "ms": 3168
+        "ms": 3412
       },
       "every message shown once": {
         "ok": true,
-        "ms": 2504,
+        "ms": 2503,
         "note": "1,1,1,1"
       },
       "stats": {
-        "frames": 36,
-        "kb": 23,
+        "frames": 38,
+        "kb": 24,
         "errors": []
       }
     },
     "pi": {
-      "key": "pi:--home-maxime-.cache-chattering-live-test-scratch-eink-muq6zzie-pi--/2026-10-01T23-56-28-375Z_01a0f9e5-e479-7668-8a0f-bd98c6756542.jsonl",
+      "key": "pi:--home-maxime-.cache-chattering-live-test-scratch-eink-muq7mxgl-pi--/2026-10-02T00-14-20-968Z_01a0f9f6-41ea-7b07-a5c8-f287c5bdbb71.jsonl",
       "new conversation": {
         "ok": true,
-        "ms": 6680
+        "ms": 4739
       },
       "type with its own editor": {
         "ok": true,
-        "ms": 770
+        "ms": 949
       },
       "pick from its / list": {
         "ok": true,
-        "ms": 902,
+        "ms": 1203,
         "note": "model"
       },
       "open and close a panel": {
@@ -76,16 +76,16 @@
       },
       "stop a running reply": {
         "ok": true,
-        "ms": 7430,
-        "note": "stopped 305 ms after the tap"
+        "ms": 7442,
+        "note": "stopped 366 ms after the tap"
       },
       "switch back to Chattering's box": {
         "ok": true,
-        "ms": 150
+        "ms": 174
       },
       "continue an existing one": {
         "ok": true,
-        "ms": 7520
+        "ms": 5881
       },
       "every message shown once": {
         "ok": true,
@@ -93,178 +93,111 @@
         "note": "1,1,1"
       },
       "stats": {
-        "frames": 8,
+        "frames": 7,
         "kb": 2,
         "errors": []
       }
     },
     "codex": {
-      "key": "codex:2026/10/01/rollout-2026-10-01T19-56-57-01a0f9e6-55f0-7e33-bf15-222867d94f8f.jsonl",
+      "key": "codex:2026/10/01/rollout-2026-10-01T20-14-46-01a0f9f6-a7c5-7603-8475-d67af162fc88.jsonl",
       "new conversation": {
         "ok": true,
-        "ms": 8906
+        "ms": 7245
       },
       "type with its own editor": {
         "ok": true,
-        "ms": 811
+        "ms": 821
       },
       "pick from its / list": {
         "ok": true,
-        "ms": 984,
+        "ms": 933,
         "note": "/fast"
       },
       "open and close a panel": {
         "ok": true,
-        "ms": 1577
+        "ms": 1547
       },
       "answer a permission question": {
         "ok": true,
-        "ms": 5593
+        "ms": 6746
       },
       "stop a running reply": {
-        "ok": false,
-        "ms": 3105,
-        "error": "nothing to tap: #ltStop",
-        "focus": [
-          [
-            67458,
-            "in",
-            "ltSend",
-            1
-          ],
-          [
-            67543,
-            "out",
-            "ltSend",
-            1
-          ],
-          [
-            67708,
-            "in",
-            "BUTTON",
-            1
-          ],
-          [
-            67742,
-            "out",
-            "BUTTON",
-            1
-          ],
-          [
-            68591,
-            "in",
-            "ltDraft",
-            1
-          ],
-          [
-            69042,
-            "out",
-            "ltDraft",
-            1
-          ],
-          [
-            69042,
-            "in",
-            "ltSend",
-            1
-          ],
-          [
-            69126,
-            "out",
-            "ltSend",
-            1
-          ],
-          [
-            74191,
-            "in",
-            "ltDraft",
-            1
-          ],
-          [
-            74642,
-            "out",
-            "ltDraft",
-            1
-          ],
-          [
-            74642,
-            "in",
-            "ltSend",
-            1
-          ],
-          [
-            74955,
-            "out",
-            "ltSend",
-            1
-          ]
-        ]
+        "ok": true,
+        "ms": 7522,
+        "note": "stopped 376 ms after the tap"
       },
       "switch back to Chattering's box": {
         "ok": true,
-        "ms": 459
+        "ms": 167
       },
       "continue an existing one": {
         "ok": true,
-        "ms": 4782
+        "ms": 5935
       },
       "every message shown once": {
         "ok": true,
-        "ms": 2502,
+        "ms": 2503,
         "note": "1,1,1,1"
       },
       "stats": {
-        "frames": 11,
-        "kb": 3,
+        "frames": 10,
+        "kb": 2,
         "errors": []
       }
     }
   },
   "notes": [
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined",
-    "soak: replyHas is not defined",
+    "soak: timed out: soak reply",
+    "soak: timed out: soak reply",
     "Codex config restored (it had recorded 3 trusted scratch folder(s))"
   ],
   "soak": {
     "minutes": 10,
-    "messages": 10,
-    "replies": 0
+    "messages": 6,
+    "replies": 4,
+    "from": 47,
+    "flips": 3,
+    "changes": 24
   },
   "flicker": {
-    "changes": 74,
-    "flips": 6,
+    "changes": 71,
+    "flips": 9,
     "examples": [
       [
         "panel",
-        230
+        240
       ],
       [
         "choice",
-        320
+        281
       ],
       [
         "compose",
-        561
+        585
       ],
       [
         "panel",
-        160
-      ],
-      [
-        "choice",
         200
       ],
       [
+        "choice",
+        160
+      ],
+      [
         "compose",
-        440
+        560
+      ],
+      [
+        "working",
+        480
+      ],
+      [
+        "working",
+        480
+      ],
+      [
+        "working",
+        480
       ]
     ]
   },

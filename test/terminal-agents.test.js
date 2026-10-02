@@ -133,9 +133,10 @@ test('a message sent the moment the program starts waits for its box, and goes o
   const a = device(r.hub, 'phone');
   const ans = await a.ask({ t: 'submit', text: 'sent at once' });
   assert.equal(ans.t, 'done', JSON.stringify(ans));
-  await a.until(s => s.mode === 'compose' && !s.status, 'answered');
-  await new Promise(res => setTimeout(res, 300));
-  const written = files(r.home).filter(f => f.endsWith('.jsonl')).map(f => fs.readFileSync(f, 'utf8')).join('');
+  // The reply in its file (the state may still read "ready" from before it began).
+  const read = () => files(r.home).filter(f => f.endsWith('.jsonl')).map(f => fs.readFileSync(f, 'utf8')).join('');
+  const t0 = Date.now(); while (!/Done: sent at once/.test(read()) && Date.now() - t0 < 8000) await sleep(100);
+  const written = read();
   assert.equal(written.split('"sent at once"').length - 1, 1, 'once');
   assert.match(written, /Done: sent at once/);
 });
@@ -162,4 +163,19 @@ test('a question that comes up right after the box (Codex trusting a folder): th
   while (Date.now() - t0 < 8000 && !/Done: first words/.test(written)) { await sleep(150); written = files(r.home).filter(f => f.endsWith('.jsonl')).map(f => fs.readFileSync(f, 'utf8')).join(''); }
   assert.match(written, /Done: first words/);
   assert.equal(written.split('first words').length - 1, 3, 'once (Codex writes a message twice, and the reply)');
+});
+
+test('a pause between two steps of work does not show "ready"; typing still shows at once', { skip, timeout: 30000 }, async t => {
+  // The stand-in pauses 300 ms between two halves of its work ("pause" in
+  // the message), as Claude Code does around its hooks and Pi on a retry.
+  const r = run('claude');
+  t.after(r.close);
+  const modes = [];
+  const a = device(r.hub, 'laptop');
+  await a.until(s => s.composer && s.mode === 'compose', 'the box');
+  const orig = a.ws.send; a.ws.send = raw => { const m = JSON.parse(raw); if (m.t === 'patch' && m.set.mode) modes.push(m.set.mode); orig(raw); };
+  assert.equal((await a.ask({ t: 'submit', text: 'work with a pause' })).t, 'done');
+  await a.until(s => s.mode === 'working', 'working');
+  await a.until(s => s.mode === 'compose' && !s.status, 'done', 8000);
+  assert.deepEqual(modes.filter((m, i) => m !== modes[i - 1]), ['working', 'compose'], 'never ready in between: ' + modes.join(','));
 });

@@ -60,6 +60,7 @@ test('browser: AI programs, live — running now, the text as it is written, lan
   const text = sel => evaluate(`(document.querySelector(${JSON.stringify(sel)}) || {}).innerText || ''`);
 
   // The list, following: nothing has run yet.
+  await until(`window.appBooted`, 'the app\'s first screen'); // else it replaces the list
   await evaluate(`Programs.showList()`);
   await until(`Programs.liveInfo().mode === 'on'`, 'the list follows the programs live');
   assert.equal(await evaluate(`document.querySelectorAll('.pg-live-item').length`), 0);
@@ -138,6 +139,7 @@ test('browser: AI programs, live — running now, the text as it is written, lan
   await until(`/Another title/.test(document.querySelector('.pg-table:not(.pg-live-table)').innerText)`, 'this program\'s own new call shows without a reload');
 
   // The list shows the other writer's program too, unasked.
+  await until(`window.appBooted`, 'the app\'s first screen'); // else it replaces the list
   await evaluate(`Programs.showList()`);
   await until(`document.querySelectorAll('.pg-card').length === 2`);
   append('tone', 'reviews', 'warm');

@@ -56,6 +56,7 @@ test('browser: AI programs, from the call log to judged rows', { timeout: 120000
   const text = sel => evaluate(`(document.querySelector(${JSON.stringify(sel)}) || {}).innerText || ''`);
 
   // Which programs there are, each with its promise.
+  await until(`window.appBooted`, 'the app\'s first screen'); // else it replaces the list
   await evaluate(`Programs.showList()`);
   await until(`document.querySelectorAll('.pg-card').length === 2`, 'two programs listed');
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('.pg-card .pg-card-name')].map(c => c.innerText.replace('ƒ', '').trim())`), ['team', 'mood'], 'the most recently used first');
