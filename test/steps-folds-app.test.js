@@ -97,12 +97,14 @@ test('browser: boxes of steps open only when a person opens them, one at a time'
   await until(`document.querySelector('#liveReplies .toolgroup[data-live-work]')`, 'the live box');
   assert.equal(await evaluate(`document.querySelector('#liveReplies .toolgroup[data-live-work]').open`), false, 'a coming box is closed');
 
-  // The bottom monitor opens groups and nested inputs, independently of
-  // transcript folds. New steps open too, without resetting manual choices.
+  // The bottom monitor opens groups, independently of transcript folds.
+  // New steps open too, without resetting manual choices. Raw arguments
+  // stay folded there as everywhere: only the reader opens them.
   await until(`!document.getElementById('lsLine').closest('[hidden]')`, 'the live line');
   await evaluate(`document.getElementById('lsLine').click()`);
   await until(`!document.getElementById('lsFull').hidden && document.querySelector('#lsBlocks .toolgroup')`, 'the stream opens');
-  await until(`[...document.querySelectorAll('#lsBlocks details')].every(g => g.open)`, 'monitor details open');
+  await until(`[...document.querySelectorAll('#lsBlocks details:not(.st-raw)')].every(g => g.open)`, 'monitor details open');
+  assert.equal(await evaluate(`[...document.querySelectorAll('#lsBlocks details.st-raw')].some(d => d.open)`), false, 'raw arguments start folded in the monitor');
   assert.equal(await evaluate(`document.querySelector('#liveReplies .toolgroup').open`), false, 'monitor opening does not open transcript work');
   assert.deepEqual(await kept(), {}, 'monitor opening is not remembered as a transcript choice');
   await personClick('#lsBlocks .toolgroup > summary');
@@ -117,7 +119,13 @@ test('browser: boxes of steps open only when a person opens them, one at a time'
   await until(`document.querySelectorAll('#lsBlocks .toolgroup').length === 2`, 'new group appears');
   assert.equal(await evaluate(`document.querySelector('#lsBlocks .toolgroup').open`), false, 'updates respect a manual fold');
   assert.equal(await evaluate(`[...document.querySelectorAll('#lsBlocks .toolgroup')][1].open`), true, 'new monitor groups open');
-  assert.equal(await evaluate(`document.querySelector('#lsBlocks [data-blk="4"] details').open`), true, 'new raw input opens');
+  assert.equal(await evaluate(`document.querySelector('#lsBlocks [data-blk="4"] details.st-raw').open`), false, 'new raw arguments start folded');
+  // Opening one set of raw arguments opens only that one, and the next
+  // update keeps it open.
+  await evaluate(`document.querySelector('#lsBlocks [data-blk="4"] details.st-raw').open = true; 1`);
+  await runEvent('run-1', { tail: tail.map(b => b.id === 4 ? { ...b, out: '/work\n/more' } : b) });
+  await until(`document.getElementById('lsBlocks').innerText.includes('/more')`, 'the step updates');
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('#lsBlocks details.st-raw')].map(d => d.open)`), [false, true], 'only the opened raw arguments are open');
   assert.match(await evaluate(`document.getElementById('lsBlocks').innerText`), /Looking at its output\./);
   assert.match(await evaluate(`document.getElementById('lsBlocks').innerText`), /\/work/);
   await evaluate(`document.getElementById('lsLine').click()`);

@@ -171,9 +171,11 @@ test('browser: work steps in plain words above their commands; live steps one at
   await evaluate(`document.getElementById('lsLine').click()`);
   await until(`document.querySelectorAll('#lsBlocks .ls-b').length === 3`, 'monitor rows');
   assert.equal(await evaluate(`[...document.querySelectorAll('#lsBlocks .ls-b')].every(el => !el.hidden)`), true, 'explanations do not gate the monitor');
-  assert.equal(await evaluate(`[...document.querySelectorAll('#lsBlocks details')].every(el => el.open)`), true, 'plain-word technical details also open');
+  // Raw arguments are the exception: folded until the reader opens one.
+  assert.equal(await evaluate(`[...document.querySelectorAll('#lsBlocks details:not(.st-raw)')].every(el => el.open)`), true, 'plain-word technical details also open');
+  assert.equal(await evaluate(`[...document.querySelectorAll('#lsBlocks details.st-raw')].some(el => el.open)`), false, 'raw arguments stay folded');
   await evaluate(`window._lsLast = 0; renderRunCards(); 1`);
-  assert.equal(await evaluate(`[...document.querySelectorAll('#lsBlocks details')].every(el => el.open)`), true, 'repaint keeps monitor details open');
+  assert.equal(await evaluate(`[...document.querySelectorAll('#lsBlocks details:not(.st-raw)')].every(el => el.open)`), true, 'repaint keeps monitor details open');
   await evaluate(`document.getElementById('lsLine').click()`);
   assert.equal(await evaluate(`document.querySelector('#liveReplies .ls-b[data-step="t:call-u"]').hidden`), true, 'transcript keeps its own pacing');
   fs.writeFileSync(path.join(dir, 'go-tests'), '');

@@ -1094,7 +1094,6 @@ function renderLiveReplyLedger(host, jobId, L, saved = new Map(), expanded = fal
       if (detail.dataset.tech !== undefined) detail.dataset.tech = names.join(' · ');
       work._ledger.order = unit.order; work._ledger.blocks = unit.blocks;
       work._ledger.jobId = jobId; work._ledger.key = L.key;
-      work._ledger.expanded = expanded;
       // Plain words for each step as soon as it has finished (plain-steps-ui.js).
       if (typeof PlainSteps !== 'undefined') PlainSteps.live(work, L.key, jobId, blocks);
       if (work.open) renderLsBlocks(work._ledger, work.querySelector(':scope > .ls-flow'));

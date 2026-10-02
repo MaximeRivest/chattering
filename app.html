@@ -14304,7 +14304,7 @@ function renderLsBlocks(L, target = null) {
         : b.phase === 'running' ? '● running' + (b.t0 ? ' · ' + fmtElapsed(Date.now() - b.t0) : '')
         : b.phase === 'ready' ? '◌ queued' : '◌ call streaming in';
       setLiveText(head, '⚙ ' + (b.name || 'tool') + ' · ' + phase);
-      StreamingTool.render(el.querySelector('.st-preview'), b, setLiveText, diffLinesAsync, { expanded: L.expanded });
+      StreamingTool.render(el.querySelector('.st-preview'), b, setLiveText, diffLinesAsync);
       const shell = el.querySelector('.st-preview').classList.contains('st-shell');
       el.classList.toggle('ls-shell', shell);
       el.querySelector('.st-output-label').hidden = !shell || !b.out;
