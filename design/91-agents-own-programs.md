@@ -195,6 +195,32 @@ Every finding is now a rule in the reader or the actions, with a test:
   (this was found by changing it, and put back); options for one run go
   on the command line (settings → agents → start them with options).
 
+## Verified with the real agents (2026-10-02)
+
+`prototypes/terminal-document/done-check.js`, Chromium, the test copy,
+Claude Code 2.1.287, Pi 0.87.1, Codex 0.153.4, each agent's own sign-in:
+
+| | laptop | e-ink tablet | phone, through the encrypted relay |
+|---|---|---|---|
+| new conversation | ✓ ✓ ✓ | ✓ ✓ ✓ | ✓ ✓ ✓ |
+| type with its own editor | ✓ ✓ ✓ | ✓ ✓ ✓ | ✓ ✓ ✓ |
+| pick from its `/` list | ✓ ✓ ✓ | ✓ ✓ ✓ | ✓ ✓ ✓ |
+| open and close a panel | ✓ ✓ ✓ | ✓ ✓ ✓ | ✓ ✓ ✓ |
+| answer a permission question | ✓ – ✓ | ✓ – ✓ | ✓ – ✓ |
+| stop a running reply (shown stopped after) | 122 / 61 / 61 ms | ✓ ✓ ✓ | ✓ ✓ ✓ |
+| back to Chattering's box | – ✓ ✓ | – ✓ ✓ | – ✓ ✓ |
+| continue an existing one | ✓ ✓ ✓ | ✓ ✓ ✓ | ✓ ✓ ✓ |
+| every message shown once | ✓ ✓ ✓ | ✓ ✓ ✓ | ✓ ✓ ✓ |
+
+(Claude Code / Pi / Codex; "–": Pi has no permission questions; Claude
+Code has no box of Chattering's own.) A 10-minute session on the phone
+through the relay, all three agents in turn: 10 messages, 10 replies, no
+state that came and went. Pairing to the app: 4.1 s. In an earlier run,
+three devices at once hit the Claude plan's rate limit (429) through Pi;
+Pi said so in the conversation. `test/live-terminal-real.test.js`
+(CHATTERING_REAL_AGENTS=1) sends each agent one message; Claude Code was
+ready in 1.1 s and answered in 0.8 s, Pi 0.5 s / 1.3 s, Codex 0.1 s / 2.8 s.
+
 ## Trade-offs, stated
 
 - **Replies appear when each message is written to the file.** Word by
@@ -214,8 +240,10 @@ Every finding is now a rule in the reader or the actions, with a test:
 - **Codex's new conversation is found by "the new file in this folder".**
   Two new Codex conversations started in one folder at the same moment,
   neither held open by its program, wait rather than guess.
-- **"Done" is shown a quarter second late.** Between two steps of its work
-  a program is idle for an instant; showing that made Stop blink.
+- **"Ready" is shown 0.7 s late** after the program's own work ends (at
+  once after Stop): between two steps of its work (a tool, a retry, its
+  hooks) a program is idle for up to half a second, and showing that made
+  Stop and "working" blink. What is typed is never held.
 - **An input method's composition is lost** if the agent writes its file
   during it (the conversation view is rebuilt). Updates from the program
   never disturb it.

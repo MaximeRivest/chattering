@@ -1,34 +1,34 @@
 {
   "device": "eink",
-  "when": "2026-10-02T00:13:48.131Z",
+  "when": "2026-10-02T00:48:35.839Z",
   "agents": {
     "claude": {
-      "key": "claude:-home-maxime--cache-chattering-live-test-scratch-eink-muq7mxgl-claude/64784ca6-d324-454f-8f2d-7960d8a8e299.jsonl",
+      "key": "claude:-home-maxime--cache-chattering-live-test-scratch-eink-muq8voi1-claude/6d27ebd5-2a23-4c74-a49b-200d97df52fa.jsonl",
       "new conversation": {
         "ok": true,
-        "ms": 4863
+        "ms": 4858
       },
       "type with its own editor": {
         "ok": true,
-        "ms": 892
+        "ms": 1155
       },
       "pick from its / list": {
         "ok": true,
-        "ms": 1753,
+        "ms": 2131,
         "note": "/add-dir"
       },
       "open and close a panel": {
         "ok": true,
-        "ms": 1819
+        "ms": 2791
       },
       "answer a permission question": {
         "ok": true,
-        "ms": 3489
+        "ms": 5056
       },
       "stop a running reply": {
         "ok": true,
-        "ms": 7691,
-        "note": "stopped 549 ms after the tap"
+        "ms": 7882,
+        "note": "stopped 791 ms after the tap"
       },
       "switch back to Chattering's box": {
         "ok": false,
@@ -37,37 +37,37 @@
       },
       "continue an existing one": {
         "ok": true,
-        "ms": 3412
+        "ms": 3260
       },
       "every message shown once": {
         "ok": true,
-        "ms": 2503,
+        "ms": 2504,
         "note": "1,1,1,1"
       },
       "stats": {
-        "frames": 38,
-        "kb": 24,
+        "frames": 39,
+        "kb": 23,
         "errors": []
       }
     },
     "pi": {
-      "key": "pi:--home-maxime-.cache-chattering-live-test-scratch-eink-muq7mxgl-pi--/2026-10-02T00-14-20-968Z_01a0f9f6-41ea-7b07-a5c8-f287c5bdbb71.jsonl",
+      "key": "pi:--home-maxime-.cache-chattering-live-test-scratch-eink-muq8voi1-pi--/2026-10-02T00-49-09-213Z_01a0fa16-1f87-7656-9e38-04ab25ad4c9c.jsonl",
       "new conversation": {
         "ok": true,
-        "ms": 4739
+        "ms": 6645
       },
       "type with its own editor": {
         "ok": true,
-        "ms": 949
+        "ms": 1114
       },
       "pick from its / list": {
         "ok": true,
-        "ms": 1203,
+        "ms": 903,
         "note": "model"
       },
       "open and close a panel": {
         "ok": true,
-        "ms": 1648
+        "ms": 1637
       },
       "answer a permission question": {
         "ok": false,
@@ -76,16 +76,16 @@
       },
       "stop a running reply": {
         "ok": true,
-        "ms": 7442,
-        "note": "stopped 366 ms after the tap"
+        "ms": 7851,
+        "note": "stopped 793 ms after the tap"
       },
       "switch back to Chattering's box": {
         "ok": true,
-        "ms": 174
+        "ms": 163
       },
       "continue an existing one": {
         "ok": true,
-        "ms": 5881
+        "ms": 4974
       },
       "every message shown once": {
         "ok": true,
@@ -93,46 +93,46 @@
         "note": "1,1,1"
       },
       "stats": {
-        "frames": 7,
-        "kb": 2,
+        "frames": 9,
+        "kb": 3,
         "errors": []
       }
     },
     "codex": {
-      "key": "codex:2026/10/01/rollout-2026-10-01T20-14-46-01a0f9f6-a7c5-7603-8475-d67af162fc88.jsonl",
+      "key": "codex:2026/10/01/rollout-2026-10-01T20-49-36-01a0fa16-89d7-7961-bb84-83e3f36038c8.jsonl",
       "new conversation": {
         "ok": true,
-        "ms": 7245
+        "ms": 8619
       },
       "type with its own editor": {
         "ok": true,
-        "ms": 821
+        "ms": 1122
       },
       "pick from its / list": {
         "ok": true,
-        "ms": 933,
+        "ms": 911,
         "note": "/fast"
       },
       "open and close a panel": {
         "ok": true,
-        "ms": 1547
+        "ms": 1588
       },
       "answer a permission question": {
         "ok": true,
-        "ms": 6746
+        "ms": 5988
       },
       "stop a running reply": {
         "ok": true,
-        "ms": 7522,
-        "note": "stopped 376 ms after the tap"
+        "ms": 7927,
+        "note": "stopped 790 ms after the tap"
       },
       "switch back to Chattering's box": {
         "ok": true,
-        "ms": 167
+        "ms": 150
       },
       "continue an existing one": {
         "ok": true,
-        "ms": 5935
+        "ms": 4771
       },
       "every message shown once": {
         "ok": true,
@@ -147,33 +147,15 @@
     }
   },
   "notes": [
-    "soak: timed out: soak reply",
-    "soak: timed out: soak reply",
-    "Codex config restored (it had recorded 3 trusted scratch folder(s))"
+    "Codex config restored (it had recorded 1 trusted scratch folder(s))"
   ],
-  "soak": {
-    "minutes": 10,
-    "messages": 6,
-    "replies": 4,
-    "from": 47,
-    "flips": 3,
-    "changes": 24
-  },
   "flicker": {
-    "changes": 71,
-    "flips": 9,
+    "changes": 46,
+    "flips": 4,
     "examples": [
       [
         "panel",
-        240
-      ],
-      [
-        "choice",
-        281
-      ],
-      [
-        "compose",
-        585
+        397
       ],
       [
         "panel",
@@ -185,19 +167,7 @@
       ],
       [
         "compose",
-        560
-      ],
-      [
-        "working",
-        480
-      ],
-      [
-        "working",
-        480
-      ],
-      [
-        "working",
-        480
+        600
       ]
     ]
   },

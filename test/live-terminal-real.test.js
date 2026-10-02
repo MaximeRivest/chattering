@@ -58,18 +58,24 @@ for (const [id, a] of Object.entries(AGENTS)) {
       }
       fs.rmSync(dir, { recursive: true, force: true });
     });
-    // Ready: its box, after its trust question if it asks one.
+    // Ready: its box, after its trust question if it asks one (Codex asks
+    // it a moment after showing its box: the message is told to wait, the
+    // question answered, the message sent again, as the page does).
     const t0 = Date.now();
-    let d = await hub.until(x => (x.composer && !x.status) || x.choice, 30000);
-    if (d.choice) {
-      const yes = d.choice.options.findIndex(o => /^Yes|trust/i.test(o.label));
-      assert.ok(yes >= 0, 'a question at start with no yes: ' + JSON.stringify(d.choice));
-      await choose(host, yes, { profile });
-      d = await hub.until(x => x.composer && !x.status && !x.choice, 30000);
-    }
-    const startMs = Date.now() - t0;
     const word = 'ok' + Math.random().toString(36).slice(2, 7);
-    await hub.submit(`Reply with exactly this one word and nothing else: ${word}`);
+    let startMs = null;
+    for (let i = 0; i < 4; i++) {
+      const d = await hub.until(x => (x.composer && !x.status) || x.choice, 30000);
+      if (d.choice) {
+        const yes = d.choice.options.findIndex(o => /^Yes|trust/i.test(o.label));
+        assert.ok(yes >= 0, 'a question at start with no yes: ' + JSON.stringify(d.choice));
+        await choose(host, yes, { profile });
+        continue;
+      }
+      startMs = startMs ?? Date.now() - t0;
+      try { await hub.submit(`Reply with exactly this one word and nothing else: ${word}`); break; }
+      catch (e) { if (!/asks something first/.test(e.message)) throw e; }
+    }
     // Its reply on its screen, and the program ready again.
     const t1 = Date.now();
     let seen = false;

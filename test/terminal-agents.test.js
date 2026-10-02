@@ -95,8 +95,10 @@ for (const style of ['claude', 'pi', 'codex']) {
     ans = await a.ask({ t: 'submit', text: 'a slow one' });
     await a.until(s => s.mode === 'working' && s.status, 'working');
     assert.equal(r.hub.state().working, true);
+    const stopAt = Date.now();
     a.send({ t: 'stop' });
     await a.until(s => s.mode === 'compose' && !s.status, 'stopped');
+    assert.ok(Date.now() - stopAt < 500, 'shown stopped at once, not after the pause rule: ' + (Date.now() - stopAt) + ' ms');
 
     // The conversation is in the agent's own file, each message once.
     const written = files(r.home).filter(f => f.endsWith('.jsonl')).map(f => fs.readFileSync(f, 'utf8')).join('');

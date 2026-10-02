@@ -75,6 +75,7 @@ function createHub({ host, profile, journal = null, events = null, liveOnly = fa
   let typist = null, current = null, actionQueue = Promise.resolve();
   let lastBox = ''; // the box's text before it was sent (for the "now" window)
   let noticeText = null; // something the devices should know, from the server
+  let stoppedAt = 0;     // when someone last pressed Stop
   let lastState = '';
   const serial = fn => (actionQueue = actionQueue.then(fn, fn));
   const logEvent = e => { if (events) events.write({ t: +((performance.now() - host.t0) / 1000).toFixed(3), ...e }); };
@@ -130,7 +131,8 @@ function createHub({ host, profile, journal = null, events = null, liveOnly = fa
     // goes at once; "ready" shows that much later.
     const prevMode = c.sent.mode ? JSON.parse(c.sent.mode) : null;
     const brief = prevMode && nextMode !== prevMode && (nextMode === 'panel' || nextMode === 'unknown');
-    const pause = prevMode === 'working' && nextMode === 'compose';
+    // After Stop, "ready" is the answer the person waits for: at once.
+    const pause = prevMode === 'working' && nextMode === 'compose' && Date.now() - stoppedAt > 5000;
     if (brief || pause) {
       if (!c.holdSince || c.holdMode !== nextMode) { c.holdSince = Date.now(); c.holdMode = nextMode; }
       const holdMs = brief ? 150 : 700, left = holdMs - (Date.now() - c.holdSince);
@@ -241,7 +243,7 @@ function createHub({ host, profile, journal = null, events = null, liveOnly = fa
       const modes = () => host.snapshot({ screenOnly: true }).modes;
       if (m.t === 'text') host.input(String(m.text), id);
       else if (m.t === 'key') { const bytes = encodeKey(m, modes()); if (bytes) host.input(bytes, id); }
-      else if (m.t === 'stop') { const k = (profile && profile.keys && profile.keys.stop) || { key: 'Escape' }; host.input(encodeKey(k, modes()), id); }
+      else if (m.t === 'stop') { stoppedAt = Date.now(); const k = (profile && profile.keys && profile.keys.stop) || { key: 'Escape' }; host.input(encodeKey(k, modes()), id); }
       else if (m.t === 'paste') host.paste(String(m.text), id);
       else if (m.t === 'choose') serial(() => act(() => choose(host, m.index, { profile }).then(() => ({}))));
       else if (m.t === 'menu') serial(() => act(() => pickMenu(host, m.index, { profile }).then(d => ({ text: d.composer ? d.composer.text : null }))));

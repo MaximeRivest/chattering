@@ -198,7 +198,9 @@ function runHolder(dir, { idleMs = IDLE_MS, orphanMs = ORPHAN_MS, log = m => pro
 //   attach(id)   → { pty, program, screen } for a program already running
 //   list()       → the programs it holds, with the meta given at spawn
 //   onLost(fn)   the holder went away (every pty also reports an exit)
-function connectHolder({ dir, start = null, timeoutMs = 5000 } = {}) {
+// The holder is a node process: on a loaded computer it can take seconds
+// to start, hence the generous wait.
+function connectHolder({ dir, start = null, timeoutMs = 20000 } = {}) {
   const sock = socketPath(dir);
   const tryConnect = () => new Promise((resolve, reject) => {
     let token;
@@ -215,7 +217,7 @@ function connectHolder({ dir, start = null, timeoutMs = 5000 } = {}) {
       const until = Date.now() + timeoutMs;
       for (;;) {
         await new Promise(r => setTimeout(r, 50));
-        try { c = await tryConnect(); break; } catch (e) { if (Date.now() > until) throw new Error('the terminal holder did not start (' + e.message + ')'); }
+        try { c = await tryConnect(); break; } catch (e) { if (Date.now() > until) throw new Error('the terminal holder did not start within ' + Math.round(timeoutMs / 1000) + ' s (' + e.message + '; its log: ' + path.join(dir, 'holder.log') + ')'); }
       }
     }
     return client(c.s, c.token);

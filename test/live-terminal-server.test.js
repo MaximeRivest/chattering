@@ -173,7 +173,8 @@ test('a program outlives a restart of the server: same screen, same box, the rep
   const s = setup();
   let srv = await boot(t, s);
   const key = await keyOf(srv.base, 'claude');
-  assert.equal((await api(srv.base, '/api/live-terminal/start', { id: key })).status, 200);
+  const started = await api(srv.base, '/api/live-terminal/start', { id: key });
+  assert.equal(started.status, 200, JSON.stringify(started.body));
   let d = await device(srv.base, key);
   await d.until(st => st.composer && st.mode === 'compose', 'its box');
   d.send({ t: 'text', text: 'half a thought' });
