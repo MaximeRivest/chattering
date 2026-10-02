@@ -89,13 +89,23 @@ test('an API key: asked as a secret, stored by Pi, never shown back', { skip, ti
 
 test('a plan sign-in: the address to open and a place to paste, and it can be cancelled', { skip, timeout: 60000 }, async t => {
   const { ai } = await setup(t);
-  const id = ai.startLogin('anthropic', 'oauth');
-  const state = await until(() => { const s = ai.loginState(id); return s.prompt && s.events.some(e => e.type === 'auth_url') && s; });
-  assert.match(state.events.find(e => e.type === 'auth_url').url, /^https:\/\/claude\.ai\/oauth\/authorize\?/);
-  assert.equal(state.prompt.type, 'manual_code');
-  assert.equal(ai.cancel(id), true);
-  const over = await until(() => { const s = ai.loginState(id); return s.status !== 'running' && s; });
-  assert.equal(over.status, 'cancelled');
+  // Pi 1.0 asks first: this browser, or a code. Each option says which.
+  for (const [way, redirect] of [['browser', /^http:\/\/localhost:\d+\/callback$/], ['code', /^https:\/\/[^/]+\/oauth\/code\/callback$/]]) {
+    const id = ai.startLogin('anthropic', 'oauth');
+    const ask = await until(() => { const s = ai.loginState(id); return s.prompt && s; });
+    assert.equal(ask.prompt.type, 'select');
+    assert.deepEqual(ask.prompt.options.map(o => o.way).sort(), ['browser', 'code']);
+    ai.answer(id, ask.prompt.id, ask.prompt.options.find(o => o.way === way).id);
+    const state = await until(() => { const s = ai.loginState(id); return s.prompt && s.events.some(e => e.type === 'auth_url') && s; });
+    assert.equal(state.way, way);
+    const url = new URL(state.events.find(e => e.type === 'auth_url').url);
+    assert.match(url.href, /^https:\/\/claude\.ai\/oauth\/authorize\?/);
+    assert.match(url.searchParams.get('redirect_uri'), redirect);
+    assert.equal(state.prompt.type, 'manual_code');
+    assert.equal(ai.cancel(id), true);
+    const over = await until(() => { const s = ai.loginState(id); return s.status !== 'running' && s; });
+    assert.equal(over.status, 'cancelled');
+  }
   assert.throws(() => ai.startLogin('anthropic', 'magic'), /how to sign in/);
   assert.throws(() => ai.startLogin('../x', 'oauth'), /provider/);
 });

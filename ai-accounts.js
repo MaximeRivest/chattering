@@ -175,7 +175,7 @@ function createAiAccounts({ agentDir, authPath, modelsPath, settingsPath, onChan
     const w = runWorker(['login', provider, method], {
       onMessage: m => {
         if (m.t === 'event') login.events.push({ ...m.event, at: Date.now() });
-        else if (m.t === 'prompt') login.prompt = { id: m.id, ...m.prompt };
+        else if (m.t === 'prompt') login.prompt = { id: m.id, ...m.prompt, ...(m.prompt.type === 'select' ? { options: (m.prompt.options || []).map(o => ({ ...o, way: wayOf(o) })) } : {}) };
         else if (m.t === 'withdraw' && login.prompt && login.prompt.id === m.id) login.prompt = null;
       },
     });
@@ -193,19 +193,31 @@ function createAiAccounts({ agentDir, authPath, modelsPath, settingsPath, onChan
     logins.set(id, login);
     return id;
   }
+  // Since Pi 1.0 a plan sign-in (Anthropic, OpenAI, Radius) first asks how:
+  // the provider's page sending this browser back to Pi ('browser', which
+  // works only on the computer Chattering runs on), or a code the person
+  // carries over ('code': Anthropic shows one to copy, OpenAI and Radius
+  // take one typed on their page). The page chooses (ai-connect.js), and
+  // the steps after it follow the choice.
+  function wayOf(o) {
+    const s = String(o.id) + ' ' + String(o.label || '');
+    return /device|copy.?code|headless|another device/i.test(s) ? 'code' : /browser/i.test(s) ? 'browser' : null;
+  }
   function prune() {
     for (const [id, l] of logins) if (l.finishedAt && Date.now() - l.finishedAt > KEEP_FINISHED_MS) logins.delete(id);
   }
   function loginState(id) {
     const l = logins.get(id);
     if (!l) throw Object.assign(new Error('That sign-in is over. Start again.'), { status: 404 });
-    return { id: l.id, provider: l.provider, method: l.method, status: l.status, events: l.events, prompt: l.prompt, error: l.error, default: l.default || null };
+    return { id: l.id, provider: l.provider, method: l.method, status: l.status, way: l.way || null, events: l.events, prompt: l.prompt, error: l.error, default: l.default || null };
   }
   function answer(id, promptId, value) {
     const l = logins.get(id);
     if (!l || l.status !== 'running') throw Object.assign(new Error('That sign-in is over. Start again.'), { status: 404 });
     if (!l.prompt || l.prompt.id !== promptId) throw Object.assign(new Error('That question was already answered.'), { status: 409 });
     if (typeof value !== 'string' || value.length > 16384) throw new Error('That answer is too long');
+    const chosen = l.prompt.type === 'select' && (l.prompt.options || []).find(o => o.id === value);
+    if (chosen && chosen.way) l.way = chosen.way;
     l.prompt = null;
     l.child.stdin.write(JSON.stringify({ t: 'answer', id: promptId, value }) + '\n');
     return loginState(id);

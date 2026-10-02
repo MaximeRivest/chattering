@@ -201,7 +201,7 @@
     const p = providerOf(provider);
     const title = method === 'oauth' ? 'Sign in to ' + nameOf(provider) : (p ? p.name : provider) + ' API key';
     const { d, body } = dialog(title, 'aic-signin');
-    let id = null, last = '', running = true, stopped = false, opened = new Set();
+    let id = null, last = '', running = true, stopped = false, opened = new Set(), answered = new Set();
     body.innerHTML = '<p class="aic-wait">Starting…</p>';
     // Closing the dialog mid-way ends the sign-in on the server too.
     d.onGone = () => { stopped = true; if (id && running) api('/api/ai/login/cancel', { id }).catch(() => {}); };
@@ -229,7 +229,13 @@
           form.querySelectorAll('button, input').forEach(c => { c.disabled = true; });
           try { show(await api('/api/ai/login/answer', { id, prompt: state.prompt.id, value })); } catch (err) { errToast(err.message); form.querySelectorAll('button, input').forEach(c => { c.disabled = false; }); }
         };
-        if (input && (state.prompt.type !== 'manual_code' || !sameComputer())) setTimeout(() => input.focus(), 0);
+        if (input && (state.prompt.type !== 'manual_code' || !sameComputer() || state.way === 'code')) setTimeout(() => input.focus(), 0);
+      }
+      // Browser or code: the page knows which works here, so it answers.
+      const way = state.prompt && pickWay(state.prompt);
+      if (way && !answered.has(state.prompt.id)) {
+        answered.add(state.prompt.id);
+        api('/api/ai/login/answer', { id, prompt: state.prompt.id, value: way }).then(show, err => errToast(err.message));
       }
       body.querySelectorAll('[data-aic-choose]').forEach(b => b.onclick = async () => {
         body.querySelectorAll('[data-aic-choose]').forEach(c => { c.disabled = true; });
@@ -258,6 +264,16 @@
     }, e => { body.innerHTML = `<p class="aic-error">${esc(e.message)}</p><footer><button type="button" data-aic-close2>Close</button></footer>`; $$(body, '[data-aic-close2]').onclick = () => d.close(); });
   }
 
+  // A sign-in that asks only "this browser, or a code?" (Anthropic, OpenAI,
+  // Radius since Pi 1.0) is answered without asking: the provider's page can
+  // come back to Chattering only on the computer it runs on; anywhere else a
+  // code is what works. Returns the option to send, or null to ask.
+  function pickWay(q) {
+    if (q.type !== 'select' || (q.options || []).length !== 2) return null;
+    const by = Object.fromEntries(q.options.map(o => [o.way, o.id]));
+    return by.browser && by.code ? (sameComputer() ? by.browser : by.code) : null;
+  }
+
   function stepsHtml(state, provider, method) {
     if (state.status === 'done') {
       const def = state.default || {};
@@ -280,11 +296,16 @@
         <li>Enter this code: <span class="aic-code">${esc(device.userCode)}</span> <button type="button" class="ghost" data-aic-copy="${esc(device.userCode)}">copy</button></li>
         <li>Come back here: this window moves on by itself.</li></ol><p class="aic-wait">Waiting for you to enter the code…</p>`);
     } else if (url) {
-      parts.push(`<p>${sameComputer() ? 'Sign in on the provider’s page and allow access. This window moves on by itself.' : 'Sign in on the provider’s page and allow access.'}</p>
+      parts.push(`<p>${sameComputer() && state.way !== 'code' ? 'Sign in on the provider’s page and allow access. This window moves on by itself.' : 'Sign in on the provider’s page and allow access.'}</p>
         <p><a class="aic-go" data-aic-open href="${esc(url.url)}" target="_blank" rel="noopener">Open the ${esc(nameOf(provider))} sign-in page ↗</a></p>`);
     }
     const q = state.prompt;
-    if (q && q.type === 'manual_code') {
+    if (q && pickWay(q)) {
+      parts.push('<p class="aic-wait">Starting…</p>');
+    } else if (q && q.type === 'manual_code' && state.way === 'code') {
+      parts.push(`<form data-aic-answer class="aic-answer"><label>After you allow access, the page shows a code. Copy it and paste it here:
+        <input type="text" required autocomplete="off" spellcheck="false" placeholder="the code"></label><button type="submit" class="primary">Continue</button></form>`);
+    } else if (q && q.type === 'manual_code') {
       const remote = !sameComputer();
       const form = `<form data-aic-answer class="aic-answer"><label>${remote
         ? 'After you allow access, the page shows an error: that is expected here, because Chattering runs on another computer. Copy the whole address from the browser’s address bar and paste it here:'
@@ -295,8 +316,8 @@
     } else if (q && q.type === 'select') {
       const remote = !sameComputer();
       parts.push(`<p>${esc(q.message)}</p><div class="aic-choices">${(q.options || []).map(o => {
-        const device = /device|code|headless/i.test(o.id + ' ' + o.label);
-        const label = device ? 'With a code on any device' : /browser/i.test(o.id + ' ' + o.label) ? 'In this browser' : o.label;
+        const device = o.way === 'code';
+        const label = device ? 'With a code on any device' : o.way === 'browser' ? 'In this browser' : o.label;
         const best = device === remote;
         return `<button type="button" class="${best ? 'primary' : ''}" data-aic-choose="${esc(o.id)}">${esc(label)}</button>`;
       }).join('')}</div>${remote ? '<p class="aic-note">Chattering runs on another computer, so “with a code” is the simpler way here.</p>' : ''}`);

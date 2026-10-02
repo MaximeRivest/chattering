@@ -559,6 +559,9 @@ function buildPiArgs(settings, options = {}) {
   const args = [
     '-p', '--no-session', '--no-tools', '--no-extensions', '--no-skills',
     '--no-prompt-templates', '--no-context-files',
+    // Since Pi 0.99 --no-extensions also drops Pi's built-in llama.cpp
+    // provider; a person whose model comes from it keeps it here.
+    '-e', 'builtin:llama.cpp',
     '--thinking', s.thinking,
   ];
   if (!s.usePiDefault) {

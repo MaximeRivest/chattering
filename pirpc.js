@@ -67,7 +67,9 @@ function spawnPiRpc(target) {
   const sessionArgs = target.sessionPath ? ['--session', target.sessionPath] : [];
   const args = target.discoverExtensions
     ? ['--mode', 'rpc', ...sessionArgs, ...(target.extraArgs || [])]
-    : ['--mode', 'rpc', '--no-extensions', '-e', PI_BRIDGE_PATH, ...sessionArgs, ...(target.extraArgs || [])];
+    // -e builtin:llama.cpp: since Pi 0.99 --no-extensions drops Pi's
+    // built-in llama.cpp provider too, and a session's model may be one.
+    : ['--mode', 'rpc', '--no-extensions', '-e', 'builtin:llama.cpp', '-e', PI_BRIDGE_PATH, ...sessionArgs, ...(target.extraArgs || [])];
   const pi = require('./runtime.js').piCommand(args, { env: target.env || process.env });
   const child = spawn(pi.file, pi.args, { cwd: target.cwd, env: target.env || process.env, stdio: ['pipe', 'pipe', 'pipe'] });
   let stderr = '', buffer = '', onEvent = target.onEvent || null;

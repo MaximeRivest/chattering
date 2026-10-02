@@ -117,7 +117,9 @@ test('buildPiArgs loads the claude-code extension', () => {
   assert.deepStrictEqual(args.slice(-6), ['--provider', 'claude-code', '--model', 'claude-fable-5', '-e', ext]);
   assert.ok(args.includes('--no-extensions'));
   const other = buildPiArgs({ provider: 'xai', model: 'grok-4.6' }, { claudeCodeExtension: ext });
-  assert.ok(!other.includes('-e'));
+  assert.ok(!other.includes(ext));
+  // Pi's own llama.cpp provider stays, which --no-extensions drops since Pi 0.99.
+  assert.equal(other[other.indexOf('-e') + 1], 'builtin:llama.cpp');
 });
 
 test('hasClaudeCodeCredential only checks the login object', () => {
