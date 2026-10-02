@@ -17164,6 +17164,7 @@ async function handleRequest(req, res) {
       '/conversation-flow.js': { file: 'conversation-flow.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/conversation-tree.js': { file: 'conversation-tree.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/artifacts.js': { file: 'artifacts.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/shares-ui.js': { file: 'shares-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/made-panel.js': { file: 'made-panel.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/step-changes-ui.js': { file: 'step-changes-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/step-changes.css': { file: 'step-changes.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
@@ -18259,6 +18260,19 @@ async function handleRequest(req, res) {
         // The shared box empties for everyone who was writing in it.
         if (p.clearCompose !== false && collab.has('compose:' + p.id)) collab.clear('compose:' + p.id);
       } catch (e) { json(res, e.needsForce ? 409 : e.status || 400, { error: e.message, needsForce: !!e.needsForce }); }
+    } else if (u.pathname === '/api/shares' && req.method === 'GET') {
+      // Shared links (design/92): the owner side.
+      try { json(res, 200, await sharesApi(identity, req, u)); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/shares' && req.method === 'POST') {
+      try { json(res, 200, await sharesApi(identity, req, u)); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/shares/change' && req.method === 'POST') {
+      try { json(res, 200, await sharesApi(identity, req, u)); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/shares/revoke' && req.method === 'POST') {
+      try { json(res, 200, await sharesApi(identity, req, u)); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/artifacts/config' && req.method === 'GET') {
       json(res, 200, { port: PREVIEW_PORT, tlsPort: PREVIEW_TLS_PORT, tailnetPort: PREVIEW_TAILNET_PORT, base: appSettings.previewBase || '',
         network: artifactNetwork(), protocolVersion: previewLib.PROTOCOL_VERSION });
@@ -20435,6 +20449,120 @@ collab.on('change', ev => {
   (DOCUMENT_EXT.test(abs) ? docSaveResponse(body, who) : fileSaveResponse(body, who))
     .catch(e => console.error('[collab] save ' + abs + ': ' + e.message));
 });
+// ---------- shared links (design/92, shares.js) ----------
+// "Anyone with the link can view / edit" one document, served from this
+// computer on the preview address (never the app's), through one gate.
+const sharesLib = require('./shares.js');
+const shareStore = new sharesLib.ShareStore({ file: path.join(DATA_DIR, 'shares.json'), keyFile: path.join(DATA_DIR, 'share-secret') });
+const shareLimiter = authGuard.createLimiter();
+// What a share names, checked again on every request: the file is still
+// there and editable here, and the person who shared it still may (see for
+// a view link, act for an edit link). Errors say why in the visitor's words.
+async function resolveShare(share) {
+  const owner = identityOfUserId(share.createdBy);
+  if (!owner) throw Object.assign(new Error('The person who shared this is no longer on that computer.'), { status: 410 });
+  let abs;
+  try { abs = await editableFilePath(share.path); } catch { throw Object.assign(new Error('This document was moved or deleted.'), { status: 410 }); }
+  if (!DOCUMENT_EXT.test(abs)) throw Object.assign(new Error('This document can no longer be shared.'), { status: 410 });
+  try { assertPathAccess(owner, abs, share.role === 'edit' ? 'act' : 'see'); }
+  catch { throw Object.assign(new Error('The person who shared this can no longer share it.'), { status: 410 }); }
+  return { abs, owner: { name: owner.user.name || 'Someone' } };
+}
+const SHARE_STATIC = {
+  'page.html': { file: 'share-page/page.html', type: 'text/html; charset=utf-8' },
+  'share.js': { file: 'share-page/share.js', type: 'text/javascript; charset=utf-8' },
+  'share.css': { file: 'share-page/share.css', type: 'text/css; charset=utf-8' },
+  'tokens.css': { file: 'design/tokens.css', type: 'text/css; charset=utf-8' },
+  'mrmd.js': { file: 'vendor/mrmd-document/0.25.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+};
+const shareStaticCache = new Map();
+function shareStaticFile(name) {
+  const def = Object.prototype.hasOwnProperty.call(SHARE_STATIC, name) ? SHARE_STATIC[name] : null;
+  if (!def) return null;
+  const file = path.join(__dirname, def.file);
+  try {
+    const stat = fs.statSync(file), hit = shareStaticCache.get(file);
+    if (hit && hit.mtimeMs === stat.mtimeMs) return hit;
+    const out = { body: fs.readFileSync(file), type: def.type, cache: def.cache || 'no-cache', mtimeMs: stat.mtimeMs };
+    shareStaticCache.set(file, out);
+    return out;
+  } catch { return null; }
+}
+const shareGate = sharesLib.createShareGate({
+  store: shareStore, collab, resolve: resolveShare, limiter: shareLimiter,
+  clientAddress: req => authGuard.clientAddress(req),
+  // Secure cookies only where the browser surely sees https: our own TLS, or
+  // Tailscale Serve in front (it proxies from this machine).
+  isSecure: req => !!req.socket.encrypted || (['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress) && String(req.headers['x-forwarded-proto'] || '').toLowerCase() === 'https'),
+  serveFile: fileMedia.serveFile, mimeOf: previewLib.mimeOf, staticFile: shareStaticFile,
+  acceptWebSocket, refuseUpgrade, log: msg => console.error(msg),
+});
+setInterval(() => { shareGate.sweep().catch(() => {}); }, 60e3).unref();
+function shareUpgrade(req, socket, head) {
+  shareGate.upgrade(req, socket, head)
+    .then(done => { if (!done) refuseUpgrade(socket, 404, 'Not Found'); })
+    .catch(() => { try { socket.destroy(); } catch {} });
+}
+// The addresses a share's link can use, best first, each saying who can open
+// it. A public address comes with rockfrog.site (design/92); until then the
+// tailnet's preview port, the home network's, and this computer's.
+function shareLinks(share) {
+  const secret = shareStore.secretOf(share);
+  const tail = '/s/' + share.id + '/#' + secret;
+  const out = [];
+  if (appSettings.shareBase) out.push({ where: 'public', url: String(appSettings.shareBase).replace(/\/+$/, '').replace('{id}', share.id) + tail, who: 'Anyone with the link' });
+  const tailnet = tailnetName();
+  if (tailnet) out.push({ where: 'tailnet', url: `https://${tailnet}:${PREVIEW_TAILNET_PORT}${tail}`, who: 'People on your Tailscale network' });
+  if (!isLoopback(HOST)) for (const ip of lanAddresses().slice(0, 1)) out.push({ where: 'lan', url: `https://${ip}:${PREVIEW_TLS_PORT}${tail}`, who: 'People on your home network (their browser warns once about the certificate)' });
+  out.push({ where: 'local', url: `http://localhost:${PREVIEW_PORT}${tail}`, who: 'Only this computer' });
+  return out;
+}
+function shareView(share) {
+  const maker = usersLib.findUser(roster, usersLib.resolveId(roster, share.createdBy));
+  return { id: share.id, kind: share.kind, path: share.path, title: share.title, role: share.role, createdAt: share.createdAt, expiresAt: share.expiresAt,
+    revokedAt: share.revokedAt, opens: share.opens, lastOpenAt: share.lastOpenAt, by: maker ? { id: maker.id, name: maker.name } : { id: share.createdBy, name: 'someone' },
+    active: !!shareStore.active(share.id), live: shareGate.liveCount(share.id), links: share.revokedAt ? [] : shareLinks(share) };
+}
+// Who may manage a share: the person who made it, and this machine's owners.
+function canManageShare(identity, share) { return policy.isOwnerTier(identity) || share.createdBy === identity.user.id; }
+async function sharesApi(identity, req, u) {
+  const body = req.method === 'POST' ? await readJsonBody(req, 8192) : null;
+  if (req.method === 'GET') {
+    const want = u.searchParams.get('path') ? path.resolve(expandHomePath(u.searchParams.get('path'))) : null;
+    return { shares: shareStore.list(s => !s.revokedAt && canManageShare(identity, s) && (!want || s.path === want)).map(shareView) };
+  }
+  const at = u.pathname;
+  if (at === '/api/shares') {
+    const abs = await editableFilePath(String(body.path || ''));
+    if (!DOCUMENT_EXT.test(abs)) throw Object.assign(new Error('Only Markdown documents can be shared by link for now.'), { status: 400 });
+    assertPathAccess(identity, abs, body.role === 'edit' ? 'act' : 'see');
+    const share = shareStore.create({ path: abs, title: String(body.title || '').trim().slice(0, 200) || path.basename(abs), role: body.role, createdBy: identity.user.id, expiresAt: body.expiresAt ?? null });
+    console.log(`[shares] ${identity.user.name} shared ${abs} (${share.role}) as ${share.id}`);
+    return { share: shareView(share) };
+  }
+  const share = shareStore.get(String(body.id || ''));
+  if (!share || !canManageShare(identity, share)) throw Object.assign(new Error('No such link.'), { status: 404 });
+  if (at === '/api/shares/change') {
+    if (body.role === 'edit' && share.role !== 'edit') assertPathAccess(identity, share.path, 'act');
+    const roleChanged = body.role !== undefined && body.role !== share.role;
+    shareStore.change(share.id, { role: body.role, expiresAt: body.expiresAt, newSecret: !!body.newSecret });
+    if (roleChanged || body.newSecret) shareGate.closeShare(share.id, body.newSecret ? 'this link was replaced' : 'this link changed');
+    return { share: shareView(share) };
+  }
+  if (at === '/api/shares/revoke') {
+    shareStore.revoke(share.id);
+    shareGate.closeShare(share.id, 'this link was turned off');
+    console.log(`[shares] ${identity.user.name} turned off ${share.id}`);
+    return { share: shareView(share) };
+  }
+  throw Object.assign(new Error('Not found'), { status: 404 });
+}
+async function readJsonBody(req, max) {
+  let raw = '';
+  for await (const chunk of req) { raw += chunk; if (raw.length > max) throw Object.assign(new Error('too large'), { status: 413 }); }
+  try { return JSON.parse(raw || '{}'); } catch { throw Object.assign(new Error('bad JSON'), { status: 400 }); }
+}
+
 collab.on('awareness', ev => broadcast({ type: 'collab-people', name: ev.name, people: ev.people }));
 collab.on('join', ev => broadcast({ type: 'collab-people', name: ev.name, people: ev.people }));
 collab.on('leave', ev => broadcast({ type: 'collab-people', name: ev.name, people: ev.people }));
@@ -20502,7 +20630,12 @@ function restoreInterruptedRuns() {
 // self-signed https listener for tablets exists only while reachable.
 let tlsServer = null, previewTlsServer = null;
 // The preview origin listens beside the app, on the same addresses.
-const previewServer = http.createServer((req, res) => { previewHandler(req, res).catch(() => { try { res.end(); } catch {} }); });
+// Shared links (design/92) are answered first; everything else is a preview.
+const previewRequest = (req, res) => {
+  shareGate.handle(req, res).then(done => done || previewHandler(req, res)).catch(() => { try { res.end(); } catch {} });
+};
+const previewServer = http.createServer(previewRequest);
+previewServer.on('upgrade', shareUpgrade);
 previewServer.on('error', e => console.log('chattering preview listener: ' + e.message));
 function applyLanMode(on, onListening) {
   HOST = ENV_HOST || (on ? '0.0.0.0' : '127.0.0.1');
@@ -20538,7 +20671,8 @@ function startLanTls() {
       console.log('Install the tablet icon from the HTTPS URL: browser menu → Add to Home screen.');
     });
     // An https page may only frame https previews.
-    previewTlsServer = https.createServer(tls, (req, res) => { previewHandler(req, res).catch(() => { try { res.end(); } catch {} }); });
+    previewTlsServer = https.createServer(tls, previewRequest);
+    previewTlsServer.on('upgrade', shareUpgrade);
     previewTlsServer.on('error', e => console.log('chattering preview TLS listener: ' + e.message));
     previewTlsServer.listen(PREVIEW_TLS_PORT, HOST);
   } catch (error) {

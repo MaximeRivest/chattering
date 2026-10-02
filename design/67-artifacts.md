@@ -1,6 +1,6 @@
 # 67 — Artifacts (proposal)
 
-Status: **built** 2026-09-23 (all five phases; publishing waits for a public
+Status: **built** 2026-09-23 (all five phases; publishing: design/92, shared links; it waits for a public
 domain). Builds on `65-open-webui-study.md`, `66-one-tree-one-head.md` and the
 Claude / ChatGPT study of the same day (conversation 01a0ce59).
 

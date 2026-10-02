@@ -81,6 +81,10 @@ const DEFAULT_SETTINGS = {
   // site (https://{id}.preview.example.com); empty: this machine's ports.
   artifactNetwork: 'open',
   previewBase: '',
+  // shareBase: the public address shared links open at (design/92), with
+  // {id} for each share's own site (https://{id}.maxime.rockfrog.site);
+  // empty: the tailnet's and the home network's preview ports.
+  shareBase: '',
   // AI programs (design/74): agents' processes log their FunctAI calls to
   // the call log Chattering reads. Off: FunctAI's own rule (logging only
   // where someone turned it on).
@@ -436,6 +440,7 @@ function normalizeSettings(input) {
   const artifactNetwork = src.artifactNetwork === 'libraries' ? 'libraries' : 'open';
   const programsRecordAgents = src.programsRecordAgents === true;
   const previewBase = /^https:\/\/(?:\{id\}\.)?[a-z0-9.-]+(?::\d+)?$/i.test(String(src.previewBase || '').trim()) ? String(src.previewBase).trim() : '';
+  const shareBase = /^https:\/\/(?:\{id\}\.)?[a-z0-9.-]+(?::\d+)?$/i.test(String(src.shareBase || '').trim()) ? String(src.shareBase).trim() : '';
   const simplifyAnswers = src.simplifyAnswers !== false;
   const simplifyPrompt = typeof src.simplifyPrompt === 'string' && src.simplifyPrompt.trim() ? src.simplifyPrompt : DEFAULT_SIMPLIFY_PROMPT;
   const plainSteps = normalizePlainSteps(src.plainSteps);
@@ -478,6 +483,7 @@ function normalizeSettings(input) {
     piEngine,
     artifactNetwork,
     previewBase,
+    shareBase,
     programsRecordAgents,
     simplifyAnswers,
     simplifyPrompt,

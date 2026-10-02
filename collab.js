@@ -135,12 +135,17 @@ function createCollab({ Y, syncProtocol, awarenessProtocol, encoding, decoding, 
   // One browser joins a document. `user` is its public user record;
   // `canWrite` false makes it a spectator: its updates are dropped, its
   // cursor still shows.
-  function join(conn, name, { user, canWrite = true, initialText = '' }) {
+  // `pinUser` (people who came by a shared link, design/92): the name and
+  // colour at their cursor are the server's, whatever their page says, and
+  // they may speak only for the cursors they introduced, never another
+  // person's. `budget.take(bytes)` false closes the connection.
+  function join(conn, name, { user, canWrite = true, initialText = '', pinUser = false, budget = null }) {
     const d = open(name, { initialText });
-    const member = { user, canWrite, controlled: new Set() };
+    const member = { user, canWrite, controlled: new Set(), pinUser };
     d.conns.set(conn, member);
     conn.on('message', (data, binary) => {
       if (!binary) return;
+      if (budget && !budget.take(data.length)) { log('[collab] ' + name + ': a visitor sent too much, too fast'); try { conn.close(1008, 'too much, too fast'); } catch {} return; }
       try { handle(d, conn, member, new Uint8Array(data.buffer, data.byteOffset, data.byteLength)); }
       catch (e) { log('[collab] bad message on ' + name + ': ' + e.message); }
     });
@@ -175,7 +180,9 @@ function createCollab({ Y, syncProtocol, awarenessProtocol, encoding, decoding, 
       syncProtocol.readSyncMessage(dec, enc, d.ydoc, conn);
       if (encoding.length(enc) > 1) send(conn, encoding.toUint8Array(enc));
     } else if (type === MSG_AWARENESS) {
-      awarenessProtocol.applyAwarenessUpdate(d.awareness, decoding.readVarUint8Array(dec), conn);
+      let update = decoding.readVarUint8Array(dec);
+      if (member.pinUser) { update = pinAwareness(d, conn, member, update); if (!update) return; }
+      awarenessProtocol.applyAwarenessUpdate(d.awareness, update, conn);
     } else if (type === MSG_QUERY_AWARENESS) {
       encoding.writeVarUint(enc, MSG_AWARENESS);
       encoding.writeVarUint8Array(enc, awarenessProtocol.encodeAwarenessUpdate(d.awareness, [...d.awareness.getStates().keys()]));
@@ -183,6 +190,36 @@ function createCollab({ Y, syncProtocol, awarenessProtocol, encoding, decoding, 
     } else if (type === MSG_AUTH) {
       // Not used: the HTTP upgrade already identified the person.
     }
+  }
+
+  // An awareness update from a pinned connection, rewritten: entries for a
+  // client another connection speaks for are dropped, and `user` is the
+  // server's record. Wire format (y-protocols): count, then per client its
+  // id, clock and state as JSON.
+  function pinAwareness(d, conn, member, update) {
+    const dec = decoding.createDecoder(update);
+    const n = decoding.readVarUint(dec);
+    const keep = [];
+    for (let i = 0; i < n; i++) {
+      const clientId = decoding.readVarUint(dec), clock = decoding.readVarUint(dec);
+      let state = null;
+      try { state = JSON.parse(decoding.readVarString(dec)); } catch { state = null; }
+      let ownedElsewhere = false;
+      for (const [c, m] of d.conns) if (c !== conn && m.controlled.has(clientId)) { ownedElsewhere = true; break; }
+      if (ownedElsewhere) continue;
+      if (state && typeof state === 'object') {
+        const u = member.user;
+        state.user = { id: u.id, name: u.name, glyph: u.glyph, color: u.color, colorLight: u.color + '55', via: u.via || undefined };
+      }
+      keep.push([clientId, clock, state]);
+    }
+    if (!keep.length) return null;
+    const enc = encoding.createEncoder();
+    encoding.writeVarUint(enc, keep.length);
+    for (const [clientId, clock, state] of keep) {
+      encoding.writeVarUint(enc, clientId); encoding.writeVarUint(enc, clock); encoding.writeVarString(enc, JSON.stringify(state));
+    }
+    return encoding.toUint8Array(enc);
   }
 
   function leave(conn, d) {

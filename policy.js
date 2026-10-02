@@ -120,6 +120,12 @@ const ROUTES = {
   '/api/artifacts/widget': 'guest',
   '/api/artifacts/blob': 'guest',
   '/api/artifacts/declare': 'guest',
+  // Shared links (design/92): sharing outward is the household's, never a
+  // guest's; the handler checks the file and who made each link.
+  'GET /api/shares': 'member',
+  'POST /api/shares': 'member',
+  'POST /api/shares/change': 'member',
+  'POST /api/shares/revoke': 'member',
   '/api/conversation/start-loose': 'member',
   '/api/conversation/folder-info': 'member',
   '/api/conversation/project': 'member',

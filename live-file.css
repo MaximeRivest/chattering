@@ -100,3 +100,17 @@
   .live-history { grid-template-columns:1fr; grid-template-rows:auto minmax(0,1fr); }
   .fw-history-drawer { max-height:40vh; border-right:0; border-bottom:1px solid var(--border); }
 }
+
+/* ---- Share by link (design/92, shares-ui.js) ---- */
+.sh-ui { padding-top: 12vh; }
+.sh-ui .dialog { width: min(600px, 94vw); max-height: 80vh; overflow: auto; }
+.sh-ui-hint, .sh-ui-where { color: var(--text-dim); font-size: var(--fs-label); line-height: 1.5; margin: 0 0 var(--sp-3); }
+.sh-ui-list { display: flex; flex-direction: column; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.sh-ui-row { border: 1px solid var(--border); padding: var(--sp-2); background: var(--bg); }
+.sh-ui-line { display: flex; gap: var(--sp-2); align-items: center; }
+.sh-ui .dialog .sh-ui-url { flex: 1; min-width: 0; margin: 0; font-family: var(--font-mono); font-size: var(--fs-label); color: var(--text-dim); }
+.sh-ui-meta { display: flex; justify-content: space-between; align-items: center; gap: var(--sp-2); margin-top: 6px; font-size: var(--fs-label); color: var(--text-dim); flex-wrap: wrap; }
+.sh-ui-actions { display: flex; gap: var(--sp-2); }
+.sh-ui-actions button { font-size: var(--fs-label); }
+.sh-ui-new { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; margin-bottom: var(--sp-2); }
+.sh-ui-error { color: var(--danger); font-size: var(--fs-label); }

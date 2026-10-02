@@ -197,12 +197,14 @@ function liveFileHead(ws) {
     <button id="liveWithConv" class="lf-wide lf-page-only" title="This file with its conversation beside it: the conversation that opened it or last worked on it">☷ Conversation beside</button>
     <button id="liveAsk" class="lf-wide" title="Ask an agent for a change here: a box opens over the text · ${modKey('K')}">✦ Ask</button>
     ${md ? '<button id="docRun" class="lf-wide" title="Run the cell at the cursor · Ctrl+Enter">▶ Run</button>' : ''}
+    ${md && liveFileCanShare() ? '<button id="liveShare" class="lf-wide" title="A link for people to read or edit this document live, from this computer">Share</button>' : ''}
     <button id="${md ? 'docSave' : 'fwSave'}" ${md ? '' : 'disabled'} title="Save to disk · Ctrl+S">Save</button>
     <details class="live-more"><summary aria-label="Editor options">⋯</summary><div>
       <button id="liveHistoryMenu" class="lf-narrow">History</button>
       <button id="liveAskMenu" class="lf-narrow">✦ Ask for a change (${modKey('K')})</button>
       <button id="liveWithConvMenu" class="lf-narrow lf-page-only">☷ Its conversation beside</button>
       ${md ? '<button id="docRunMenu" class="lf-narrow">▶ Run this cell</button>' : ''}
+      ${md && liveFileCanShare() ? '<button id="liveShareMenu" class="lf-narrow">Share by link…</button>' : ''}
       ${typeof OpenFiles !== 'undefined' ? `<button data-keep-menu="${fgAttr(ws.path)}">${esc(OpenFiles.menuLabel(ws.path))}</button>` : ''}
       ${ws.project ? '<button id="liveBrowse">Browse this folder</button>' : ''}
       <button id="liveAi">✦ AI commands (${modKey('J')})</button>
@@ -213,6 +215,8 @@ function liveFileHead(ws) {
     </div></details>
   </header>`;
 }
+// Sharing by link (design/92, shares-ui.js) is the household's, not a guest's.
+function liveFileCanShare() { return typeof SharesUI !== 'undefined' && !(window.chatteringMe && window.chatteringMe.scope === 'guest'); }
 // The file's name, and the pin that keeps it open in the side list
 // (open-files.js, design/77). By the name, not among the actions: it is
 // about the file, and on a phone it stays when the actions fold under ⋯.
