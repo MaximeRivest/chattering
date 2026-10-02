@@ -157,3 +157,33 @@ test('files changed: the list under the steps, the change read in place', { skip
   await until(`viewKind === 'change-review'`, 'the review');
   assert.deepEqual(b.exceptions || [], []);
 });
+
+test('files changed: the list under steps still running grows as each step finishes', { skip: !chromiumAvailable(), timeout: 180000 }, async t => {
+  const b = await viewerBrowser(t, { setup });
+  const { evaluate: ev, until } = b;
+  await until(`sessions.length && nav.current()`);
+  if (await ev(`!!document.querySelector('dialog.bg-ask [data-none]')`)) await ev(`document.querySelector('dialog.bg-ask [data-none]').click()`);
+  await ev(`open(${JSON.stringify(KEY)}); 1`);
+  await until(`current?.key === ${JSON.stringify(KEY)} && document.getElementById('liveReplies')`, 'the conversation');
+  // A run streaming the same steps (their snapshots are on record): two done, the script still running.
+  const tool = (id, name, phase) => ({ id, kind: 'tool', callId: id, name, args: '', out: '', phase });
+  const runEvent = tail => ev(`live.onmessage({ data: ${JSON.stringify(JSON.stringify({ type: 'run-event', jobId: 'grow', key: KEY, status: 'running', statusText: 'running',
+    startedAt: Date.now(), node: 'm2', model: 'p/big', tail }))} }); 1`);
+  const liveRows = `[...document.querySelectorAll('#liveReplies .sc-strip[data-live-strip] .sc-row:not(.sc-wait)')].map(r => r.dataset.fileDiff.split('/').pop())`;
+  await runEvent([tool('e1', 'edit', 'done'), tool('w1', 'write', 'done'), tool('b1', 'bash', 'running')]);
+  await until(`${liveRows}.length === 2`, 'the finished steps\u2019 files, while the box still runs');
+  assert.deepEqual(await ev(liveRows), ['app.js', 'notes.md']);
+  assert.equal(await ev(`document.querySelector('#liveReplies .sc-strip[data-live-strip]').previousElementSibling.matches('.toolgroup[data-live-work]')`), true, 'under its box');
+  // A row opened now stays open as the box grows.
+  await ev(`document.querySelector('#liveReplies .sc-strip[data-live-strip] .sc-row[data-file-diff$="/app.js"]').click(); 1`);
+  await until(`document.querySelector('#liveReplies .sc-card[data-sc-card$="/app.js"] .sc-code')`, 'the change, read while the box runs');
+  await runEvent([tool('e1', 'edit', 'done'), tool('w1', 'write', 'done'), tool('b1', 'bash', 'done')]);
+  await until(`${liveRows}.length === 4`, 'the script\u2019s files join when it finishes');
+  assert.deepEqual(await ev(liveRows), ['app.js', 'notes.md', 'chart.png', 'data.csv']);
+  await until(`[...document.querySelectorAll('#liveReplies .sc-card')].some(c => c.dataset.scCard.startsWith('e1,w1,b1\\n') && c.dataset.scCard.endsWith('/app.js') && c.querySelector('.sc-code'))`, async () => 'the open row follows the grown box: ' + JSON.stringify(await ev(`[...document.querySelectorAll('#liveReplies .sc-card')].map(c => [c.dataset.scCard, c.innerText.slice(0, 80)])`)));
+  assert.equal(await ev(`document.querySelectorAll('#liveReplies .sc-strip[data-live-strip]').length`), 1, 'one list per box');
+  // Drawn like the saved box's list: same width and place under its box.
+  const box = sel => `(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return [Math.round(r.left), Math.round(r.width)]; })()`;
+  assert.deepEqual(await ev(box('#liveReplies .sc-strip[data-live-strip]')), await ev(box('#conversationTranscript .sc-strip')), 'the same place as a saved list');
+  assert.deepEqual(b.exceptions || [], []);
+});

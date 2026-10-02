@@ -152,26 +152,27 @@
     }
   }
 
+  function paintStrip(s, key) {
+    const g = store(key).groups.get(s.dataset.scCalls);
+    if (!g) return;
+    const calls = s.dataset.scCalls.split(',');
+    const html = listHtml(key, calls, g);
+    const list = s.querySelector(':scope > .sc-list');
+    // Unchanged rows are left alone: an open card keeps its scroll and marks.
+    if (list._html !== html) {
+      const had = new Map([...list.querySelectorAll(':scope .sc-card')].map(c => [c.dataset.scCard, c]));
+      list.innerHTML = html; list._html = html;
+      for (const shell of list.querySelectorAll('.sc-card')) {
+        const old = had.get(shell.dataset.scCard);
+        if (old && old.dataset.ready) shell.replaceWith(old); else fillCard(shell, key);
+      }
+    }
+    s.hidden = !g.files.length && !(g.during || []).length;
+  }
+
   function paint(root, key) {
     const d = store(key);
-    for (const s of root.querySelectorAll('.sc-strip')) {
-      if (s.dataset.scKey !== key) continue;
-      const g = d.groups.get(s.dataset.scCalls);
-      if (!g) continue;
-      const calls = s.dataset.scCalls.split(',');
-      const html = listHtml(key, calls, g);
-      const list = s.querySelector(':scope > .sc-list');
-      // Unchanged rows are left alone: an open card keeps its scroll and marks.
-      if (list._html !== html) {
-        const had = new Map([...list.querySelectorAll(':scope .sc-card')].map(c => [c.dataset.scCard, c]));
-        list.innerHTML = html; list._html = html;
-        for (const shell of list.querySelectorAll('.sc-card')) {
-          const old = had.get(shell.dataset.scCard);
-          if (old && old.dataset.ready) shell.replaceWith(old); else fillCard(shell, key);
-        }
-      }
-      s.hidden = !g.files.length && !(g.during || []).length;
-    }
+    for (const s of root.querySelectorAll('.sc-strip')) if (s.dataset.scKey === key) paintStrip(s, key);
     for (const c of root.querySelectorAll('.sc-chips')) {
       if (c.dataset.scKey !== key) continue;
       const files = d.steps.get(c.dataset.scCall) || [];
@@ -564,6 +565,46 @@
     return { apply, prune };
   })();
 
+  /**
+   * The list under a box of steps that is still being worked: its finished
+   * steps' files, growing as each step finishes. calls: the box's finished
+   * tool calls, in order. Returns the strip to place after the box.
+   *
+   * When the box grows, the rows already shown stay (asked about again in
+   * the background) and an open row stays open, now showing the change of
+   * all the finished steps. Once the box is saved, the transcript's list for
+   * the same calls is this one: no jump, open rows still open.
+   */
+  const asking = new Set();
+  function liveStrip(strip, key, calls) {
+    const sig = sigOf(calls), d = store(key);
+    if (!strip) {
+      const t = document.createElement('template');
+      t.innerHTML = stripHtml(key, calls);
+      strip = t.content.firstElementChild;
+    } else if (strip.dataset.scCalls !== sig) {
+      const was = strip.dataset.scCalls;
+      const open = openOf(key);
+      for (const [id, st] of [...open]) {
+        if (st.step || !id.startsWith(was + '\n')) continue;
+        open.delete(id);
+        open.set(cardId(calls, st.path), { ...st, calls });
+      }
+      const prev = d.groups.get(was);
+      if (prev && !d.groups.has(sig)) d.groups.set(sig, { ...prev, pending: true });
+      strip.dataset.scCalls = sig;
+      paintStrip(strip, key);
+    }
+    const g = d.groups.get(sig);
+    if (strip._asked !== sig && (!g || g.pending) && !asking.has(key)) {
+      strip._asked = sig;
+      // After the caller has placed the strip: hydrate finds it on the page.
+      asking.add(key);
+      queueMicrotask(() => { asking.delete(key); if (strip.isConnected) hydrate(strip.parentElement, key); });
+    }
+    return strip;
+  }
+
   /** Every conversation with lists on the page (a merged answer brings its own). */
   function hydrateAll(root) {
     if (!root) return;
@@ -571,5 +612,5 @@
     for (const key of keys) hydrate(root, key);
   }
 
-  window.StepChanges = { stripHtml, chipsHtml, countSlot, hydrate, hydrateAll, claims, toggle, paint, _data: data };
+  window.StepChanges = { stripHtml, liveStrip, chipsHtml, countSlot, hydrate, hydrateAll, claims, toggle, paint, _data: data };
 })();

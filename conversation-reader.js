@@ -1097,6 +1097,14 @@ function renderLiveReplyLedger(host, jobId, L, saved = new Map(), expanded = fal
       // Plain words for each step as soon as it has finished (plain-steps-ui.js).
       if (typeof PlainSteps !== 'undefined') PlainSteps.live(work, L.key, jobId, blocks);
       if (work.open) renderLsBlocks(work._ledger, work.querySelector(':scope > .ls-flow'));
+      // What the box's finished steps changed, file by file, growing as each
+      // step finishes (design/88): the same list the saved box will have.
+      const finished = [...new Set(blocks.filter(b => b.kind === 'tool' && b.callId && b.phase === 'done').map(b => b.callId))];
+      if (finished.length && window.StepChanges) {
+        work._strip = StepChanges.liveStrip(work._strip, L.key, finished);
+        work._strip.dataset.liveStrip = token;
+        place(work._strip);
+      }
       work.ontoggle = () => {
         if (!expanded) stepsFoldSeen(L.key, liveStepsBoxKey(work._ledger.blocks), work.open);
         if (work.open) renderLsBlocks(work._ledger, work.querySelector(':scope > .ls-flow'));
@@ -1122,6 +1130,7 @@ function renderLiveReplyLedger(host, jobId, L, saved = new Map(), expanded = fal
     }
   }
   for (const work of host.querySelectorAll('[data-live-work]')) if (!workKeys.has(work.dataset.liveWork)) work.remove();
+  for (const strip of host.querySelectorAll('[data-live-strip]')) if (!workKeys.has(strip.dataset.liveStrip)) strip.remove();
 }
 
 function selectedLiveStream() {
