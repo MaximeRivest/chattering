@@ -461,3 +461,30 @@ test('a computer links to another: its own local address, private, from anywhere
   await assert.rejects(fetch(base + '/who', { headers: me }));
   assert.deepEqual(links.list(), []);
 });
+
+test('a home notices a dead connection to the relay and makes a new one', { skip, timeout: 30000 }, async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heartbeat-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const relay = createRelay({ env: {} });
+  const port = await listen(relay.server);
+  t.after(() => relay.close());
+  const states = [];
+  const home = createAnywhereHome({ dataDir: dir, appDir: ROOT, relayUrl: () => 'http://127.0.0.1:' + port, heartbeatMs: 200,
+    localTarget: () => ({ host: '127.0.0.1', port: 1 }), issueCredential: () => ({ secret: 's', credentialId: 'c' }), credentialAlive: () => true,
+    onChange: () => states.push(home.status().relayState) });
+  t.after(() => home.stop());
+  await home.pair('u1');
+  await until(() => home.status().relayState === 'ready', 'registered');
+  const id = await home.homeId();
+  const first = relay.homes.get(id).conn;
+  // Healthy: pings answered, nothing changes for a while.
+  await new Promise(r => setTimeout(r, 900));
+  assert.equal(relay.homes.get(id).conn, first, 'a live connection is kept');
+  // The path dies without a word: the relay neither reads nor answers.
+  first.socket.pause();
+  first.send = () => false;
+  await until(() => relay.homes.get(id) && relay.homes.get(id).conn !== first && relay.homes.get(id).conn.role === 'home', 'registered again on a new connection', 10000);
+  assert.ok(states.includes('error'), 'it noticed: ' + states.join(','));
+  assert.equal(home.status().relayState, 'ready');
+  assert.match(home.status().relayError, /^$/);
+});

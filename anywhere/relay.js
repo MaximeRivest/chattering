@@ -207,6 +207,8 @@ function createRelay(opts = {}) {
       if (!m || typeof m !== 'object') return;
 
       // A home: proves it holds the key its id is the hash of.
+      // A home checks that its connection is alive (anywhere-home.js).
+      if (m.t === 'ping') return send({ t: 'pong' });
       if (m.t === 'home' && !conn.role) {
         const id = String(m.id || '');
         let spki;

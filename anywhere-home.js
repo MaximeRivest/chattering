@@ -85,6 +85,12 @@ function createAnywhereHome(opts) {
     onChange = () => {},
     onRemoved = () => {},                  // (device, why, by): a device left the list
     WebSocketImpl = globalThis.WebSocket,
+    // The connection to the relay is checked: a ping this often, and given
+    // up for a fresh one when nothing came back for 2.5 times as long. A
+    // connection can die without a word (the home router restarts, the
+    // provider changes the address): the computer would otherwise go on
+    // believing it is reachable while phones cannot find it.
+    heartbeatMs = 30000,
     relayOnly = false,                     // tests: through the TURN server only
     log = () => {},
   } = opts;
@@ -94,6 +100,8 @@ function createAnywhereHome(opts) {
   const peers = new Map();                 // relay session id → Peer
   let key = null;                          // { privateKey, spki, homeId }
   let ws = null, relayState = 'off', relayError = '', retry = 0, retryTimer = null, stopped = false, iceServers = [];
+  let beat = null, lastHeard = 0;
+  function stopBeat() { clearInterval(beat); beat = null; }
 
   function load() {
     try {
@@ -131,6 +139,7 @@ function createAnywhereHome(opts) {
   }
   function closeRelay(to) {
     clearTimeout(retryTimer); retryTimer = null;
+    stopBeat();
     if (ws) { const w = ws; ws = null; try { w.close(); } catch {} }
     if (relayState !== to) { relayState = to; changed(); }
   }
@@ -143,16 +152,34 @@ function createAnywhereHome(opts) {
     try { sock = new WebSocketImpl(url); } catch (e) { return relayFailed(e.message); }
     ws = sock;
     const send = m => { try { if (ws === sock) sock.send(JSON.stringify(m)); } catch {} };
+    // Silence means a dead connection, from the first moment (a relay that
+    // never answers the greeting counts too).
+    lastHeard = Date.now();
+    stopBeat();
+    beat = setInterval(() => {
+      if (ws !== sock) return stopBeat();
+      if (Date.now() - lastHeard > heartbeatMs * 2.5) {
+        stopBeat();
+        ws = null;
+        try { sock.close(); } catch {}
+        return relayFailed('the relay stopped answering');
+      }
+      if (sock.readyState === 1) send({ t: 'ping' });
+    }, heartbeatMs);
+    if (beat.unref) beat.unref();
     sock.onopen = () => send({ t: 'home', id: k.homeId, key: P.b64u(k.spki), v: P.VERSION });
     sock.onerror = () => {};
     sock.onclose = () => {
       if (ws !== sock) return;
       ws = null;
+      stopBeat();
       relayFailed(relayState === 'ready' ? 'the relay closed the connection' : relayError || 'could not reach the relay at ' + String(relayUrl() || DEFAULT_RELAY));
     };
     sock.onmessage = async ev => {
       let m;
       try { m = JSON.parse(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString('utf8')); } catch { return; }
+      if (ws === sock) lastHeard = Date.now();
+      if (m.t === 'pong') return;
       if (m.t === 'challenge') return send({ t: 'proof', sig: P.b64u(await P.sign(k.privateKey, P.toBytes('chattering-anywhere-relay/' + P.VERSION + '\n' + m.nonce))) });
       if (m.t === 'welcome') { iceServers = Array.isArray(m.servers) ? m.servers : []; retry = 0; relayError = ''; relayState = 'ready'; changed(); return; }
       if (m.t === 'error') { relayError = String(m.why || 'the relay refused this computer'); return; }
