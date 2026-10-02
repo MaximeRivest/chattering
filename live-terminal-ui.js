@@ -503,6 +503,9 @@
       ${Object.keys(names).map(id => `<label for="ltArgs_${esc(id)}">${esc(names[id])}</label><input id="ltArgs_${esc(id)}" data-args="${esc(id)}" type="text" spellcheck="false" autocomplete="off" value="${esc(((c.args || {})[id] || []).map(a => /[\s"']/.test(a) ? JSON.stringify(a) : a).join(' '))}" placeholder="${id === 'claude' ? '--permission-mode default' : id === 'codex' ? '-c approval_policy="on-request"' : ''}"${dis}>`).join('')}
       <div class="set-help">Words added to the program's command each time it starts here, for that run only: nothing is written into the agent's own settings. Quote a word that holds spaces.</div></details>
     <div class="set-help">"When I choose": Chattering's own box, with "Continue in its own program" in the + menu. "Always": its program, with Chattering's box a click away. Claude Code has no box of Chattering's own: set to "never", its conversations open in a terminal window on this computer instead.</div>
+    <div class="set-field"><label for="ltSetArtifacts">pages Claude Code makes</label>
+      <select id="ltSetArtifacts"${dis}>${[['chattering', 'open in Chattering'], ['both', 'open in Chattering; on claude.ai when I ask for a link'], ['agent', 'on claude.ai only']].map(([v, l]) => `<option value="${v}"${(c.artifacts || 'chattering') === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
+      <div class="set-help">"Open in Chattering": Claude Code gets Chattering's artifact tools (the panel beside the conversation, and small visuals inline), as Pi has, and its own claude.ai publishing is off while Chattering runs it. Pages it does publish to claude.ai show here as well, a copy kept with each version, with the claude.ai link beside it (claude.ai cannot be shown inside Chattering). Applies to programs started after the change.</div></div>
     <div class="set-field"><label for="ltSetIdle">end a program left idle for</label>
       <select id="ltSetIdle"${dis}>${[...new Set([...IDLE, c.idleMinutes || 30])].sort((a, b) => a - b).map(m => `<option value="${m}"${c.idleMinutes === m ? ' selected' : ''}>${m < 60 ? m + ' minutes' : m / 60 + (m === 60 ? ' hour' : ' hours')}</option>`).join('')}</select>
       <div class="set-help">Idle: nothing typed, not working, its box empty and no question open (a question or half-written message waits four times longer). An ended program starts again with your next message, from the conversation's file; text left in its box is put back. A restart of Chattering does not end programs.</div></div>
@@ -526,6 +529,7 @@
     root.querySelectorAll('select[data-agent]').forEach(sel => sel.onchange = () => save({ agents: { [sel.dataset.agent]: sel.value } }));
     const idle = root.querySelector('#ltSetIdle'); if (idle) idle.onchange = () => save({ idleMinutes: Number(idle.value) });
     const rec = root.querySelector('#ltSetRecord'); if (rec) rec.onchange = () => save({ record: rec.checked });
+    const art = root.querySelector('#ltSetArtifacts'); if (art) art.onchange = () => save({ artifacts: art.value });
     // Words, as a shell would split them (quotes keep spaces), never run by one.
     const words = text => [...String(text).matchAll(/"((?:[^"\\]|\\.)*)"|'([^']*)'|(\S+)/g)].map(m => m[1] != null ? m[1].replace(/\\(.)/g, '$1') : m[2] != null ? m[2] : m[3]);
     root.querySelectorAll('input[data-args]').forEach(inp => inp.onchange = () => save({ args: { [inp.dataset.args]: words(inp.value) } }));

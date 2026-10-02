@@ -780,7 +780,7 @@ function cachePathFor(key) {
 }
 
 // Bump when the cached message format changes; forces a re-index.
-const CACHE_VERSION = 19; // v19: Claude Code's parallel tool calls are one step, not branches (claude-chain.js); v18: the last message summary for the side list (design/59)
+const CACHE_VERSION = 20; // v20: artifacts from Claude Code: Chattering's tools through MCP, its claude.ai pages kept (design/91); v19: Claude Code's parallel tool calls are one step, not branches (claude-chain.js); v18: the last message summary for the side list (design/59)
 // New speed entries change file size; historical caches need no rebuild.
 
 // One line of plain text for a list row: markdown syntax, code, links and
@@ -941,12 +941,23 @@ function toolEventsOf(content, ts, entry, cwd = null) {
       const p = input.file_path || input.notebook_path || input.path || null;
       // Artifacts (design/67): a widget keeps its HTML in the conversation
       // file and is fetched when shown; the transcript row carries its title.
-      const isWidget = b.name === 'show' && typeof input.html === 'string';
-      const text = isWidget ? String(input.title || 'widget') : toolInputText(b.name, input);
-      const msg = { role: 'tool', name: b.name || '?', text,
+      // Chattering's own tools reach Claude Code through MCP
+      // (harness/terminal/chattering-mcp.js): mcp__chattering__artifact is
+      // the artifact tool, as for Pi.
+      const tool = String(b.name || '').replace(/^mcp__chattering__/, '');
+      const isWidget = tool === 'show' && typeof input.html === 'string';
+      const text = isWidget ? String(input.title || 'widget') : toolInputText(tool, input);
+      const msg = { role: 'tool', name: tool || '?', text,
                     path: typeof p === 'string' ? p : null, paths: isWidget ? [] : pathCandidates(text), id: b.id || null, ts };
+      if (b.name === 'Write' && typeof input.content === 'string' && input.content.length <= 4 * 1024 * 1024) msg.writeContent = input.content;
       if (isWidget) msg.artifact = { kind: 'widget', title: String(input.title || '').slice(0, 120), bytes: input.html.length };
-      else if (b.name === 'artifact' && typeof input.path === 'string') msg.artifact = { kind: 'files', path: input.path, title: String(input.title || '').slice(0, 120), type: typeof input.type === 'string' ? input.type : 'auto' };
+      else if (tool === 'artifact' && typeof input.path === 'string') msg.artifact = { kind: 'files', path: input.path, title: String(input.title || '').slice(0, 120), type: typeof input.type === 'string' ? input.type : 'auto' };
+      // Claude Code's own Artifact tool publishes one local HTML file to
+      // claude.ai. Chattering shows that page too: a copy kept per publish
+      // (the file is in a scratch folder the system clears), its claude.ai
+      // address beside it (claude.ai refuses to be shown inside another
+      // site). See keepClaudeArtifacts below.
+      else if (b.name === 'Artifact' && typeof input.file_path === 'string' && input.file_path && b.id) msg.artifact = { kind: 'files', path: keptArtifactPath(b.id, input.file_path), source: input.file_path, title: '', type: 'web', publishedBy: 'Claude Code' };
       if (/^(bash|shell)$/i.test(b.name || '') && typeof (input.command || input.cmd) === 'string') {
         const located = require('./task-locations').inspectShell(input.command || input.cmd, { host: 'local', cwd });
         const writes = [...new Set(located.locations.filter(l => l.host === 'local' && l.path && l.role !== 'copy-source').map(l => l.path))].slice(0, 6);
@@ -1172,7 +1183,52 @@ async function parseFile(absPath) {
   // so a client can retrace any path from any leaf without the raw file.
   // Ordered pairs, not an object: JS objects reorder all-digit keys.
   const entryParents = [...parents.entries()];
+  keepClaudeArtifacts(messages);
   return { meta, messages, entryParents };
+}
+
+// ---- Claude Code's published pages, kept (design/91) ----
+// One copy per publish (its tool call), so each version stays as it was.
+const KEPT_ARTIFACTS_DIR = path.join(DATA_DIR, 'kept-artifacts');
+function keptArtifactPath(callId, source) {
+  return path.join(KEPT_ARTIFACTS_DIR, String(callId).replace(/[^\w-]/g, '_').slice(0, 80), path.basename(String(source)) || 'page.html');
+}
+// After a conversation is read: each publish's copy made once (from the
+// Write that produced the file when nothing edited it since, which is
+// exactly what was published; else the file as it is now), its title read
+// from the page, and its claude.ai address from the tool's result.
+function keepClaudeArtifacts(messages) {
+  const published = messages.filter(m => m.role === 'tool' && m.artifact && m.artifact.publishedBy === 'Claude Code');
+  if (!published.length) return;
+  const results = new Map(messages.filter(m => m.role === 'toolresult' && m.tid).map(m => [m.tid, m]));
+  for (const m of published) {
+    const a = m.artifact, r = results.get(m.id);
+    if (r && r.err) continue;
+    const url = r && /https:\/\/claude\.ai\/artifact\/[\w-]+/.exec(r.text || '');
+    if (url) a.url = url[0];
+    try {
+      if (!fs.existsSync(a.path)) {
+        let content = null;
+        for (const w of messages) {
+          if (w === m) break;
+          if (w.role !== 'tool' || w.path !== a.source) continue;
+          content = w.name === 'Write' && typeof w.writeContent === 'string' ? w.writeContent : null; // an edit after the write: use the file
+        }
+        if (content == null && fs.existsSync(a.source) && fs.statSync(a.source).size <= 25 * 1024 * 1024) content = fs.readFileSync(a.source);
+        if (content != null) {
+          fs.mkdirSync(path.dirname(a.path), { recursive: true, mode: 0o700 });
+          fs.writeFileSync(a.path, content, { mode: 0o600 });
+        }
+      }
+      if (fs.existsSync(a.path)) {
+        const head = fs.readFileSync(a.path, 'utf8').slice(0, 65536);
+        const t = /<title[^>]*>([^<]{1,200})<\/title>/i.exec(head);
+        if (t) a.title = t[1].replace(/\s+/g, ' ').trim().slice(0, 120);
+      } else a.missing = true;
+    } catch (e) { a.missing = true; }
+    if (!a.title) a.title = path.basename(a.source);
+  }
+  for (const m of messages) delete m.writeContent;
 }
 
 async function transcriptImage(key, entry, blockPath) {
@@ -9215,12 +9271,14 @@ function liveTerminals() {
   if (liveTerminalsLib) return liveTerminalsLib;
   liveTerminalsLib = require('./harness/live-terminal.js').createLiveTerminals({
     dataDir: DATA_DIR,
-    commandFor: (profile, args) => {
+    commandFor: (profile, args, ctx = {}) => {
       // The owner's options for this program (settings → agents), after the
       // profile's: for this run only, never written into the agent's config.
       const own = (liveTerminalConf().args || {})[profile.id] || [];
-      if (profile.program === 'claude') return [claudeBin(), ...args, ...own];
-      if (profile.program === 'pi') return piArgv([...args, ...own]);
+      if (profile.program === 'claude') return [claudeBin(), ...args, ...liveClaudeTools(ctx), ...own];
+      // Pi has Chattering's artifact tools in its own program too, as in
+      // Chattering's box (its own extensions load as always).
+      if (profile.program === 'pi') return piArgv([...args, '-e', path.join(__dirname, 'extensions', 'artifacts.ts'), ...own]);
       if (profile.program === 'codex') return [codexBin(), ...args, ...own];
       throw new Error(profile.name + ' has no program here');
     },
@@ -9232,6 +9290,25 @@ function liveTerminals() {
     holderStart: argv => startTerminalHolder(argv),
   });
   return liveTerminalsLib;
+}
+// Chattering's artifact tools for Claude Code (settings → agents → where
+// pages show), for this run only: an MCP server named "chattering" with
+// artifact and show, allowed without a question (they only show files and
+// HTML here); with 'chattering', its own claude.ai publishing off for the
+// run. Its file is given to the tools so they name this conversation.
+const LIVE_MCP = path.join(__dirname, 'harness', 'terminal', 'chattering-mcp.js');
+function liveClaudeTools({ sessionId, sessionPath, cwd }) {
+  const mode = liveTerminalConf().artifacts || 'chattering';
+  if (mode === 'agent') return [];
+  const session = sessionPath || (sessionId && cwd ? path.join(SOURCES.claude, path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, '-'), sessionId + '.jsonl') : '');
+  const config = { mcpServers: { chattering: { type: 'stdio', command: process.execPath, args: [LIVE_MCP],
+    env: { CHATTERING_SESSION: session, CHATTERING_PORT: String(PORT), CHATTERING_TOKEN_FILE: LAN_TOKEN_FILE } } } };
+  const note = 'This session is shown in Chattering, where the user reads it on their laptop, phone or e-ink tablet. '
+    + 'To show a page, app, document or slides you made, write the files and call mcp__chattering__artifact: it opens them in the panel beside this conversation. '
+    + 'Small visuals that belong in your answer (a chart, a diagram, a tiny interactive) go inline with mcp__chattering__show. '
+    + (mode === 'both' ? 'Publish to claude.ai with the Artifact tool only when the user asks for a link to share.' : '');
+  return ['--mcp-config=' + JSON.stringify(config), '--allowedTools=mcp__chattering__artifact,mcp__chattering__show',
+    ...(mode === 'chattering' ? ['--disallowedTools=Artifact'] : []), '--append-system-prompt=' + note];
 }
 // The holder starts in a systemd user scope of its own where there is one:
 // a service restart stops everything in the service's group, detached or

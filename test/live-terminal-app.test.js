@@ -125,6 +125,12 @@ test('the live strip: laptop keyboard, its list, a question, a panel, stop, phon
   await type('a slow job');
   await key('Enter', 'Enter', 13);
   await until(`!document.getElementById('ltStatus').hidden`, 'working');
+  // Grown with its status line, the strip covers nothing: solid, and the
+  // conversation's last message ends above it.
+  await new Promise(r => setTimeout(r, 300));
+  const cover = await ev(`(() => { const dock = document.querySelector('[data-live-terminal="1"]'); const bg = getComputedStyle(dock).backgroundColor; const last = [...document.querySelectorAll('#conversationTranscript .msg')].pop(); const v = document.getElementById('view'); v.scrollTop = v.scrollHeight; return { bg, gap: dock.getBoundingClientRect().top - last.getBoundingClientRect().bottom }; })()`);
+  assert.ok(!/rgba\(0, 0, 0, 0\)|transparent/.test(cover.bg), 'the strip is solid: ' + cover.bg);
+  assert.ok(cover.gap >= 0, 'the last message ends above the strip (' + cover.gap + ' px)');
   await ev(`document.getElementById('ltStop').click()`);
   await until(`document.getElementById('ltStatus').hidden && LiveTerminal.sessions.get(${JSON.stringify(claudeKey)}).state.mode === 'compose'`, 'stopped');
 

@@ -161,8 +161,11 @@
     const a = m.artifact || {};
     const kind = a.type && a.type !== 'auto' ? a.type : '';
     return `<div class="art-card" role="group" aria-label="Artifact" data-art-key="${escHtml(key)}" data-art-path="${escHtml(a.path || '')}" data-art-title="${escHtml(a.title || '')}" data-art-type="${escHtml(a.type || 'auto')}" data-art-node="${escHtml(m.eid || '')}">` +
-      `<span class="art-card-icon" aria-hidden="true">◧</span><span class="art-card-text"><b>${escHtml(a.title || (a.path || '').split(/[\\/]/).filter(Boolean).pop() || 'Artifact')}</b><small>${escHtml(a.path || '')}${kind ? ' · ' + escHtml(kind) : ''}</small></span>` +
-      `<button type="button" class="art-open">Open</button></div>`;
+      `<span class="art-card-icon" aria-hidden="true">◧</span><span class="art-card-text"><b>${escHtml(a.title || (a.path || '').split(/[\\/]/).filter(Boolean).pop() || 'Artifact')}</b><small>${a.publishedBy ? escHtml(`published by ${a.publishedBy}${a.url ? ' on claude.ai' : ''} · a copy kept here`) : escHtml(a.path || '') + (kind ? ' · ' + escHtml(kind) : '')}</small></span>` +
+      // claude.ai does not let other sites show its pages: its own address
+      // opens in a new tab; the copy opens here.
+      (a.url ? `<a class="art-ext" href="${escHtml(a.url)}" target="_blank" rel="noopener" title="Open it on claude.ai (signed in to your Claude account)">claude.ai ↗</a>` : '') +
+      (a.missing ? `<small class="art-missing">the page was not found to keep a copy</small>` : `<button type="button" class="art-open">Open</button>`) + `</div>`;
   }
   // What the transcript renderer puts after a group of steps.
   window.artifactCardsHtml = (key, tools) => tools.filter(m => m.artifact).map(m => m.artifact.kind === 'widget' ? widgetHtml(key, m) : cardHtml(key, m)).join('');

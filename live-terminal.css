@@ -2,6 +2,10 @@
    live-terminal-ui.js). Chattering's tokens: the strip reads as the
    composer, with the terminal's parts in its colours. */
 .lt-dock { display: flex; flex-direction: column; gap: 8px; }
+/* The strip floats over the end of the conversation: solid, so nothing
+   reads through its gaps, with a short fade above it. The conversation's
+   space below follows its real height (app.html observeComposeHeight). */
+.lt-dock { background: var(--bg); padding-top: var(--sp-2); box-shadow: 0 -14px 14px -6px var(--bg); }
 .lt-body { display: flex; flex-direction: column; gap: 8px; }
 .lt-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .lt-note { align-self: center; font-size: var(--fs-meta); color: var(--text-dim); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-pill); padding: 2px 12px; max-width: 100%; }

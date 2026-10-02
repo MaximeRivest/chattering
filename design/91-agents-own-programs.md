@@ -122,6 +122,29 @@ token, so it likely fits the proxy (untested); Codex's ChatGPT sign-in
 shapes its requests itself and does not. And a personal plan used by other
 people may not be what its terms allow. They are refused with that reason.
 
+## What the agents make: pages, apps, widgets
+
+Pi in its own program loads Chattering's artifact tools as in Chattering's
+box (`-e extensions/artifacts.ts`). Claude Code started here gets the same
+two tools through MCP (`harness/terminal/chattering-mcp.js`, `--mcp-config`
+for the run, allowed without a question since they only show files and
+HTML): `mcp__chattering__artifact` opens files in the panel beside the
+conversation, `mcp__chattering__show` puts a widget inline. Chattering reads
+them from the conversation's file like Pi's, so they show on every device.
+
+Claude Code's own Artifact tool publishes one local HTML file to claude.ai.
+claude.ai refuses to be shown inside another site (X-Frame-Options), so
+Chattering shows that page from a copy kept per publish (from the Write
+that produced it when nothing edited it since: exactly what was published;
+else the file), titled from the page, with its claude.ai address beside it.
+The original sits in a scratch folder the system clears.
+
+Settings → agents → pages Claude Code makes: "open in Chattering" (the
+default: its claude.ai publishing off for runs started here), "…and on
+claude.ai when I ask for a link", or "on claude.ai only". Nothing is
+written into Claude Code's own settings. Codex has no artifact tool here
+yet (it could take the same MCP server through `-c mcp_servers…`).
+
 ## Recordings
 
 Each session's terminal side (every byte shown, every key received,

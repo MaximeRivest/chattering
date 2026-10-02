@@ -149,7 +149,12 @@ const DEFAULT_SETTINGS = {
   // record: each session's terminal and devices are kept, gzip, private.
   // args: options each program is started with, as words (for this run
   // only: e.g. Claude Code's --permission-mode, Codex's -c key=value).
-  liveTerminal: { agents: { claude: 'always', pi: 'choose', codex: 'choose' }, idleMinutes: 30, record: true, args: { claude: [], pi: [], codex: [] } },
+  // artifacts: where Claude Code shows the pages it makes, started here:
+  // 'chattering' (Chattering's panel and inline widgets; its claude.ai
+  // publishing is off for that run), 'both' (Chattering's, and claude.ai
+  // when asked to share), 'agent' (its own claude.ai pages only). Pages it
+  // publishes to claude.ai are shown here too in every case.
+  liveTerminal: { agents: { claude: 'always', pi: 'choose', codex: 'choose' }, idleMinutes: 30, record: true, args: { claude: [], pi: [], codex: [] }, artifacts: 'chattering' },
 };
 
 // What an install from before version 2 ran on without having saved it:
@@ -511,7 +516,8 @@ function normalizeLiveTerminal(raw) {
     const list = Array.isArray(givenArgs[id]) ? givenArgs[id] : [];
     args[id] = list.filter(a => typeof a === 'string' && a.length && a.length <= 300 && !/[\0\r\n]/.test(a)).slice(0, 24);
   }
-  return { agents, idleMinutes: idle >= 1 && idle <= 24 * 60 ? Math.round(idle) : DEFAULT_SETTINGS.liveTerminal.idleMinutes, record: src.record !== false, args };
+  const artifacts = ['chattering', 'both', 'agent'].includes(src.artifacts) ? src.artifacts : 'chattering';
+  return { agents, idleMinutes: idle >= 1 && idle <= 24 * 60 ? Math.round(idle) : DEFAULT_SETTINGS.liveTerminal.idleMinutes, record: src.record !== false, args, artifacts };
 }
 
 // A relay is an https address (http only on this computer itself, for

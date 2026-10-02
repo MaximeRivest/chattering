@@ -164,6 +164,16 @@ test('a new conversation of each agent, from the draft\'s route', { skip, timeou
   }
   const started = fs.readFileSync(path.join(s.home, 'agent-log.jsonl'), 'utf8').split('\n').filter(l => l.startsWith('{"argv"')).map(l => JSON.parse(l).argv);
   assert.ok(started.some(a => a.includes('--session-id') && a.slice(-2).join(' ') === '--permission-mode default'), JSON.stringify(started));
+  // Claude Code gets Chattering's artifact tools for the run, its own claude.ai publishing off (settings → agents).
+  const claudeRun = started.find(a => a.includes('--session-id') && a.some(x => x.startsWith('--mcp-config=')));
+  assert.ok(claudeRun, 'Chattering\'s tools: ' + JSON.stringify(started).slice(0, 400));
+  const mcp = JSON.parse(claudeRun.find(x => x.startsWith('--mcp-config=')).slice('--mcp-config='.length)).mcpServers.chattering;
+  assert.match(mcp.args[0], /chattering-mcp\.js$/);
+  assert.match(mcp.env.CHATTERING_SESSION, /\.claude\/projects\/.+\.jsonl$/, 'its tools name this conversation');
+  assert.ok(!JSON.stringify(mcp).includes(TOKEN), 'no secret on the command line');
+  assert.ok(claudeRun.includes('--disallowedTools=Artifact'));
+  // Pi in its own program has Chattering's artifact tools too.
+  assert.ok(started.some(a => a.includes('--session-id') && a.some(x => /extensions\/artifacts\.ts$/.test(x))), 'Pi gets the artifact extension');
   // Turned off in settings: refused.
   await api(srv.base, '/api/live-terminal/settings', { agents: { codex: 'off' } });
   assert.equal((await api(srv.base, '/api/live-terminal/new', { harness: 'codex', folder: s.work })).status, 409);

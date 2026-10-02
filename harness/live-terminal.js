@@ -45,7 +45,7 @@ function newId(pattern) {
 
 function createLiveTerminals({
   dataDir,                       // recordings and the holder's state live here
-  commandFor,                    // (profile, args) → [file, ...args] for its installed program
+  commandFor,                    // (profile, args, { sessionId, sessionPath, cwd, isNew }) → [file, ...args]
   envFor = () => process.env,    // (principal) → the program's environment
   settings = () => ({}),         // () → { record, idleMinutes }
   onState = () => {},            // (key, state) when a program's state changes
@@ -117,7 +117,7 @@ function createLiveTerminals({
     const profile = profileFor(profileId);
     const template = isNew ? profile.start : profile.resume;
     if (!profile.program || !template) throw new Error(profile.name + ' cannot be ' + (isNew ? 'started' : 'continued') + ' here');
-    const plain = commandFor(profile, require('./terminal/profiles').fill(template, { sessionId, sessionPath }));
+    const plain = commandFor(profile, require('./terminal/profiles').fill(template, { sessionId, sessionPath }), { sessionId, sessionPath, cwd, isNew });
     const launched = launch ? launch(plain) : { file: plain[0], args: plain.slice(1), env: envFor(principal) };
     const argv = [launched.file, ...launched.args], env = launched.env;
     const record = recordingFiles(profile, sessionId);

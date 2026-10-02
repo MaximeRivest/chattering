@@ -13370,7 +13370,9 @@ function updateComposeMin() {
 // The transcript must never hide behind the fixed composer: #view padding
 // follows the composer's real height, and a pinned bottom stays pinned.
 function observeComposeHeight() {
-  const box = $('agentCompose'), v = $('view');
+  // Chattering's box, or an agent's own program's strip (live-terminal-ui.js),
+  // which grows with its status, questions and panels.
+  const box = $('agentCompose') || $('ltCompose'), v = $('view');
   if (!box || !v) return;
   if (!window._composeRO && window.ResizeObserver) {
     window._composeRO = new ResizeObserver(() => {
@@ -13424,7 +13426,7 @@ function wireComposeMin(ta) {
 }
 
 function wireAgentComposer() {
-  if (window.LiveTerminal && LiveTerminal.mount()) return;
+  if (window.LiveTerminal && LiveTerminal.mount()) { observeComposeHeight(); return; }
   if ($('ltUseHere')) $('ltUseHere').onclick = () => LiveTerminal.useHere(activeRel, $('ltUseHere'));
   const tools = $('composeTools');
   if (tools) {
