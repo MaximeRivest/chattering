@@ -223,7 +223,7 @@ test('who may: the owner and a household member; not a walled member, not a gues
   const added = await (await as(owner, '/api/users/add', { name: 'Lilly' })).json();
   const lilly = cookieOf(await fetch(remote + '/?token=' + encodeURIComponent(new URL(added.inviteLink).searchParams.get('token')), { redirect: 'manual' }));
   const st = await (await as(lilly, '/api/live-terminal/status')).json();
-  assert.equal(st.refusal, null, 'a household member may');
+  assert.deepEqual(st.refusals, { claude: null, pi: null, codex: null }, 'a household member may, every agent');
   assert.equal(await socket(lilly), 'open');
   assert.equal((await (await as(lilly, '/api/session?id=' + encodeURIComponent(key))).json()).liveTerminal.use, true);
   // A guest, invited to the project.
@@ -243,7 +243,10 @@ test('who may: the owner and a household member; not a walled member, not a gues
   const cur = (await (await fetch(srv.base + '/api/settings', { headers: AUTH })).json()).settings;
   trace('put settings');
   assert.equal((await fetch(srv.base + '/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json', ...AUTH }, body: JSON.stringify({ ...cur, isolation: 'per-person' }) })).status, 200);
-  assert.equal((await as(lilly, '/api/live-terminal/start', { id: key })).status, 403, 'a walled member');
+  assert.equal((await as(lilly, '/api/live-terminal/start', { id: key })).status, 403, 'a walled member: not Claude Code');
+  const walledSt = await (await as(lilly, '/api/live-terminal/status')).json();
+  assert.match(walledSt.refusals.claude, /signs in as this computer's owner/);
+  assert.match(walledSt.refusals.codex, /signs in as this computer's owner/);
   assert.equal(await socket(lilly), 'refused', 'a walled member: the socket');
   // Settings are the owner's.
   assert.equal((await as(lilly, '/api/live-terminal/settings', { record: false })).status, 403);

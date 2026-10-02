@@ -122,11 +122,16 @@ function createHub({ host, profile, journal = null, events = null, liveOnly = fa
     if (!isOpen(c.ws)) return;
     const parts = partsFor(c);
     const nextMode = JSON.parse(parts.mode);
-    // A program clearing its screen to redraw it passes through a panel or
-    // unknown state for milliseconds: shown only if it lasts 150 ms.
-    if (c.sent.mode && nextMode !== JSON.parse(c.sent.mode) && (nextMode === 'panel' || nextMode === 'unknown')) {
+    // Brief states are not shown: a program clearing its screen to redraw it
+    // passes through a panel or unknown state for milliseconds (shown if it
+    // lasts 150 ms), and between two steps of its work it is idle for a
+    // moment (shown if it lasts 250 ms: Stop does not blink; "done" is shown
+    // a quarter second late).
+    const prevMode = c.sent.mode ? JSON.parse(c.sent.mode) : null;
+    const holdMs = prevMode && nextMode !== prevMode ? (nextMode === 'panel' || nextMode === 'unknown' ? 150 : prevMode === 'working' && nextMode === 'compose' ? 250 : 0) : 0;
+    if (holdMs) {
       if (!c.holdSince || c.holdMode !== nextMode) { c.holdSince = Date.now(); c.holdMode = nextMode; }
-      if (Date.now() - c.holdSince < 150) { clearTimeout(c.holdTimer); c.holdTimer = setTimeout(() => { c.holdTimer = null; sendTo(c); }, 155 - (Date.now() - c.holdSince)); return; }
+      if (Date.now() - c.holdSince < holdMs) { clearTimeout(c.holdTimer); c.holdTimer = setTimeout(() => { c.holdTimer = null; sendTo(c); }, holdMs + 5 - (Date.now() - c.holdSince)); return; }
     } else c.holdSince = null;
     const d = diff(c.sent, parts);
     const acks = c.acks.splice(0);

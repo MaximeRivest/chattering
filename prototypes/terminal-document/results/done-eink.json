@@ -1,43 +1,43 @@
 {
   "device": "eink",
-  "when": "2026-10-01T23:45:03.862Z",
+  "when": "2026-10-01T23:55:57.855Z",
   "agents": {
     "claude": {
-      "key": "claude:-home-maxime--cache-chattering-live-test-scratch-eink-muq6lyy4-claude/8043a538-e8ac-4790-9e10-150fb6f99296.jsonl",
+      "key": "claude:-home-maxime--cache-chattering-live-test-scratch-eink-muq6zzie-claude/649fe82a-0de7-4114-8a5d-1ffac26e41d3.jsonl",
       "new conversation": {
         "ok": true,
-        "ms": 4867
+        "ms": 4169
       },
       "type with its own editor": {
         "ok": true,
-        "ms": 822
+        "ms": 810
       },
       "pick from its / list": {
         "ok": true,
-        "ms": 1813,
+        "ms": 1764,
         "note": "/add-dir"
       },
       "open and close a panel": {
         "ok": true,
-        "ms": 1777
+        "ms": 1824
       },
       "answer a permission question": {
         "ok": true,
-        "ms": 3236
+        "ms": 3432
       },
       "stop a running reply": {
         "ok": true,
-        "ms": 7250,
-        "note": "stopped 122 ms after the tap"
+        "ms": 7462,
+        "note": "stopped 366 ms after the tap"
       },
       "switch back to Chattering's box": {
         "ok": false,
-        "ms": 1,
+        "ms": 0,
         "note": "n/a"
       },
       "continue an existing one": {
         "ok": true,
-        "ms": 2976
+        "ms": 3168
       },
       "every message shown once": {
         "ok": true,
@@ -45,28 +45,226 @@
         "note": "1,1,1,1"
       },
       "stats": {
-        "frames": 37,
+        "frames": 36,
         "kb": 23,
+        "errors": []
+      }
+    },
+    "pi": {
+      "key": "pi:--home-maxime-.cache-chattering-live-test-scratch-eink-muq6zzie-pi--/2026-10-01T23-56-28-375Z_01a0f9e5-e479-7668-8a0f-bd98c6756542.jsonl",
+      "new conversation": {
+        "ok": true,
+        "ms": 6680
+      },
+      "type with its own editor": {
+        "ok": true,
+        "ms": 770
+      },
+      "pick from its / list": {
+        "ok": true,
+        "ms": 902,
+        "note": "model"
+      },
+      "open and close a panel": {
+        "ok": true,
+        "ms": 1648
+      },
+      "answer a permission question": {
+        "ok": false,
+        "ms": 0,
+        "note": "n/a"
+      },
+      "stop a running reply": {
+        "ok": true,
+        "ms": 7430,
+        "note": "stopped 305 ms after the tap"
+      },
+      "switch back to Chattering's box": {
+        "ok": true,
+        "ms": 150
+      },
+      "continue an existing one": {
+        "ok": true,
+        "ms": 7520
+      },
+      "every message shown once": {
+        "ok": true,
+        "ms": 2504,
+        "note": "1,1,1"
+      },
+      "stats": {
+        "frames": 8,
+        "kb": 2,
+        "errors": []
+      }
+    },
+    "codex": {
+      "key": "codex:2026/10/01/rollout-2026-10-01T19-56-57-01a0f9e6-55f0-7e33-bf15-222867d94f8f.jsonl",
+      "new conversation": {
+        "ok": true,
+        "ms": 8906
+      },
+      "type with its own editor": {
+        "ok": true,
+        "ms": 811
+      },
+      "pick from its / list": {
+        "ok": true,
+        "ms": 984,
+        "note": "/fast"
+      },
+      "open and close a panel": {
+        "ok": true,
+        "ms": 1577
+      },
+      "answer a permission question": {
+        "ok": true,
+        "ms": 5593
+      },
+      "stop a running reply": {
+        "ok": false,
+        "ms": 3105,
+        "error": "nothing to tap: #ltStop",
+        "focus": [
+          [
+            67458,
+            "in",
+            "ltSend",
+            1
+          ],
+          [
+            67543,
+            "out",
+            "ltSend",
+            1
+          ],
+          [
+            67708,
+            "in",
+            "BUTTON",
+            1
+          ],
+          [
+            67742,
+            "out",
+            "BUTTON",
+            1
+          ],
+          [
+            68591,
+            "in",
+            "ltDraft",
+            1
+          ],
+          [
+            69042,
+            "out",
+            "ltDraft",
+            1
+          ],
+          [
+            69042,
+            "in",
+            "ltSend",
+            1
+          ],
+          [
+            69126,
+            "out",
+            "ltSend",
+            1
+          ],
+          [
+            74191,
+            "in",
+            "ltDraft",
+            1
+          ],
+          [
+            74642,
+            "out",
+            "ltDraft",
+            1
+          ],
+          [
+            74642,
+            "in",
+            "ltSend",
+            1
+          ],
+          [
+            74955,
+            "out",
+            "ltSend",
+            1
+          ]
+        ]
+      },
+      "switch back to Chattering's box": {
+        "ok": true,
+        "ms": 459
+      },
+      "continue an existing one": {
+        "ok": true,
+        "ms": 4782
+      },
+      "every message shown once": {
+        "ok": true,
+        "ms": 2502,
+        "note": "1,1,1,1"
+      },
+      "stats": {
+        "frames": 11,
+        "kb": 3,
         "errors": []
       }
     }
   },
-  "notes": [],
+  "notes": [
+    "soak: replyHas is not defined",
+    "soak: replyHas is not defined",
+    "soak: replyHas is not defined",
+    "soak: replyHas is not defined",
+    "soak: replyHas is not defined",
+    "soak: replyHas is not defined",
+    "soak: replyHas is not defined",
+    "soak: replyHas is not defined",
+    "soak: replyHas is not defined",
+    "soak: replyHas is not defined",
+    "Codex config restored (it had recorded 3 trusted scratch folder(s))"
+  ],
+  "soak": {
+    "minutes": 10,
+    "messages": 10,
+    "replies": 0
+  },
   "flicker": {
-    "changes": 17,
-    "flips": 3,
+    "changes": 74,
+    "flips": 6,
     "examples": [
       [
         "panel",
-        224
+        230
       ],
       [
         "choice",
-        281
+        320
       ],
       [
-        "working",
-        599
+        "compose",
+        561
+      ],
+      [
+        "panel",
+        160
+      ],
+      [
+        "choice",
+        200
+      ],
+      [
+        "compose",
+        440
       ]
     ]
   },

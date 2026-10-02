@@ -71,6 +71,7 @@ async function main() {
   const key = async (k, code, vk, text, modifiers = 0) => { await cmd('Input.dispatchKeyEvent', { type: text ? 'keyDown' : 'rawKeyDown', key: k, code, windowsVirtualKeyCode: vk, text, modifiers }); await cmd('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, modifiers }); };
   const typeKeys = async text => { for (const ch of text) { await key(ch, '', ch.toUpperCase().charCodeAt(0), ch); await sleep(35); } };
   const S = `LiveTerminal.sessions.get(current.key)`;
+  const replyHas = m => `[...document.querySelectorAll('#conversationTranscript .msg')].some(x => !x.classList.contains('user') && x.textContent.includes(${JSON.stringify(m)}))`;
 
   try {
     // ---- open the app on this device ----
@@ -124,7 +125,6 @@ async function main() {
         }
         throw Error('timed out: ' + what);
       };
-      const replyHas = m => `[...document.querySelectorAll('#conversationTranscript .msg')].some(x => !x.classList.contains('user') && x.textContent.includes(${JSON.stringify(m)}))`;
       const ready = `${S} && ${S}.open && ${S}.state.composer && ${S}.state.mode === 'compose' && !${S}.state.status`;
       const typeInBox = async text => {
         if (touch) {
@@ -259,6 +259,7 @@ async function main() {
     if (soakMin > 0) {
       // A long session: every agent's conversation in turn, a message a minute.
       report.soak = { minutes: soakMin, messages: 0, replies: 0 };
+      const soakFrom = await ev('window.__modes.length');
       const keys = agents.map(a => report.agents[a].key).filter(Boolean);
       const t0 = Date.now(); let i = 0;
       while (Date.now() - t0 < soakMin * 60000) {
@@ -275,9 +276,15 @@ async function main() {
         } catch (e) { report.notes.push('soak: ' + e.message); }
         const left = 60000 - ((Date.now() - t0) % 60000); await sleep(Math.max(1000, left));
       }
+      report.soak.from = soakFrom;
     }
     // Flicker: a state that went away and came back within 600 ms.
     const modes = await ev(`window.__modes`);
+    if (report.soak) {
+      const sm = modes.slice(report.soak.from || 0); let flips = 0;
+      for (let i = 2; i < sm.length; i++) if (sm[i][1] === sm[i - 2][1] && sm[i][0] - sm[i - 1][0] < 600 && !/closed|none/.test(sm[i - 1][1])) flips++;
+      report.soak.flips = flips; report.soak.changes = sm.length;
+    }
     const flicker = [];
     for (let i = 2; i < modes.length; i++) if (modes[i][1] === modes[i - 2][1] && modes[i][0] - modes[i - 1][0] < 600 && !/closed|none/.test(modes[i - 1][1])) flicker.push([modes[i - 1][1].split('|')[0], Math.round(modes[i][0] - modes[i - 1][0])]);
     report.flicker = { changes: modes.length, flips: flicker.length, examples: flicker.slice(0, 10) };

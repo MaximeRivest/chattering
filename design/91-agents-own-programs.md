@@ -92,26 +92,35 @@ in its strip.
 
 ## Who may (and the audit's F19)
 
-The program runs as this computer's account with its sign-in to the agent.
-So: **the owner and the household's members** — who already run agents
-as the account under household isolation (design/46) — and **not walled
-people**: guests (design/53) and members when isolation is per person. They
-are refused on every route and on the socket, are not offered it, and do not
-receive its events. Tested for each (`live-terminal-server`: owner, member,
-walled member, guest). F19 noted that household members were allowed where
-an assurance said otherwise; here the rule is written down and tested
-rather than implied.
+Per agent, written down and tested (`live-terminal-server`, `live-terminal-guest`):
 
-**Not done: guests inside their walls.** The aim is that someone invited
-can use the owner's agents within what was shared. Pi already runs behind
-walls with the owner's extensions and a key proxy. For these programs it
-needs: the program started inside the guest's bubblewrap (the holder spawns
-whatever command it is given, so the wrapping is the server's), and the
-agent's own sign-in replaced by a placeholder the key proxy swaps. Claude
-Code takes `ANTHROPIC_BASE_URL` and a token, so it likely fits the proxy;
-Codex's ChatGPT sign-in shapes requests its own way and may not. Using a
-personal plan for other people may also not be what an agent's terms allow:
-the invite dialog must say so.
+| | Claude Code | Codex | Pi |
+|---|---|---|---|
+| the owner | yes | yes | yes |
+| a household member (household isolation) | yes | yes | yes |
+| a member walled per person | no | no | yes, inside their walls |
+| a guest (invited to a project) | no | no | yes, inside their walls |
+
+The household rule follows what members already do (design/46: they run
+agents as the account). F19 noted that household members were allowed
+where an assurance said otherwise; here the rule is stated and tested for
+each kind of person, on every route and on the socket; settings and the
+options programs start with are the owner's alone.
+
+**Walled people use Pi in its own program inside their walls** (design/53):
+the program is started inside their bubblewrap and slice, sees the shared
+project and nothing else of the computer, has their own Pi folder with
+the owner's extensions and skills read-only, and reaches the owner's keys
+only through the key proxy. Its conversation lands in the project's own
+session folder. "Stop their work" ends it. This is the owner's setup used
+within what was shared.
+
+**Not Claude Code or Codex for walled people.** Both sign in as the account
+(a Claude plan, a ChatGPT plan); their credentials would have to stay
+outside the walls behind the key proxy. Claude Code takes a base URL and a
+token, so it likely fits the proxy (untested); Codex's ChatGPT sign-in
+shapes its requests itself and does not. And a personal plan used by other
+people may not be what its terms allow. They are refused with that reason.
 
 ## Recordings
 
@@ -153,6 +162,39 @@ toolbar with named keys. Tab leaves an empty box. Input methods
 (composition) finish before their text is sent. Touch targets are 44 px,
 52 on e-ink, where the selected option is drawn (outline, bold), not tinted.
 
+## What the real agents taught (2026-10-01, Claude Code 2.1.287, Codex 0.153.4, Pi 0.87.1)
+
+Run with the real programs in a browser on a laptop, an e-ink tablet and a
+phone through the encrypted relay (`prototypes/terminal-document/done-check.js`).
+Every finding is now a rule in the reader or the actions, with a test:
+
+- **A click on Codex's first permission option chose the second.** Its
+  options wrap their descriptions; the reader now walks over them, splits
+  name and description, and takes the question from above the options (up
+  to a frame line or two blank lines). Recorded and replayed.
+- **The box is the proof a message was sent**, not a "working" line or a
+  question: Codex shows "Starting MCP servers… esc to interrupt" while
+  ignoring the Enter, with the message still in its box. Enter is pressed
+  again only while the box still holds exactly the message.
+- **A program that just started is still drawing**: Codex shows its box,
+  then asks to trust the folder. A message waits for the screen to settle,
+  for the box, and is never typed into a question; if a question took its
+  Enter, it goes once the question is answered.
+- **Claude Code writes its answer with no working line**; its window title
+  turns ("◐") while it works and shows "✳" when idle. That title is in its
+  profile. Codex turns a spinner in its title even when idle: not in its.
+- **The page redraws the conversation whenever the agent writes its file**,
+  replacing the strip: the focus and caret come back in the same moment
+  (typed letters had reached the page's shortcuts; a phone's keyboard
+  would have closed).
+- **Codex wraps a long line inside a path** ("…test/" / "outside/…") and
+  after hyphens; Pi lists its commands without "/" and marks a selection
+  below the first row; one suggestion left is a list of one.
+- **Nothing is changed in an agent's own settings by Chattering.** Codex
+  saves a choice made in its `/permissions` screen to its global config
+  (this was found by changing it, and put back); options for one run go
+  on the command line (settings → agents → start them with options).
+
 ## Trade-offs, stated
 
 - **Replies appear when each message is written to the file.** Word by
@@ -172,6 +214,11 @@ toolbar with named keys. Tab leaves an empty box. Input methods
 - **Codex's new conversation is found by "the new file in this folder".**
   Two new Codex conversations started in one folder at the same moment,
   neither held open by its program, wait rather than guess.
+- **"Done" is shown a quarter second late.** Between two steps of its work
+  a program is idle for an instant; showing that made Stop blink.
+- **An input method's composition is lost** if the agent writes its file
+  during it (the conversation view is rebuilt). Updates from the program
+  never disturb it.
 - **Chattering's own features that write a conversation** (the file Ask
   box, reviews sent to it, compaction) refuse while its program has it,
   with the reason; they do not yet type into the program instead.

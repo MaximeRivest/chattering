@@ -216,10 +216,11 @@ function createSandbox(spec) {
   const binds = [];
   binds.push({ src: spec.projectRoot, dst: spec.projectRoot, rw: true });
   // The node that runs the worker may live in the home (nvm, a tarball
-  // install); its prefix rides in read-only. Under /nix or /usr it is
-  // already there.
+  // install) or anywhere else (/srv, another home): its prefix rides in read-only,
+  // unless it is under the system folders already there (/nix, /usr).
   const nodePrefix = spec.nodePath ? path.dirname(path.dirname(spec.nodePath)) : null;
-  for (const p of [spec.piPackageDir, spec.chatteringDir, nodePrefix && inside(nodePrefix, home) ? nodePrefix : null].filter(Boolean)) if (!inside(p, spec.projectRoot)) binds.push({ src: p, dst: p, rw: false });
+  const visible = p => SYSTEM_RO.some(r => inside(p, r));
+  for (const p of [spec.piPackageDir, spec.chatteringDir, nodePrefix && !visible(nodePrefix) ? nodePrefix : null].filter(Boolean)) if (!inside(p, spec.projectRoot)) binds.push({ src: p, dst: p, rw: false });
   binds.push(...(spec.binds || []));
   const seen = new Set();
   for (const b of binds.sort((a, b) => a.dst.length - b.dst.length)) {

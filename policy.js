@@ -102,10 +102,10 @@ const ROUTES = {
   // Codex (design/87) runs as this machine's account: not for guests.
   // The handlers check the conversation (see or act) as well.
   'GET /api/codex/menus': 'member',
-  // An agent's own program, live (design/91): it runs as this machine's
-  // account, so the household; the handlers refuse walled people and check
-  // the conversation (act), or that a new one is the asker's own.
-  '/api/live-terminal/*': 'member',
+  // An agent's own program, live (design/91). Guests too: the handlers say
+  // per agent who may (walled people: Pi, inside their walls), check the
+  // conversation (act) or the folder, and keep settings to the owner.
+  '/api/live-terminal/*': 'guest',
   'PUT /api/codex/prefs': 'member',
   'POST /api/codex/release': 'member',
   'POST /api/codex/open-terminal': 'owner', // opens a window on this machine
@@ -429,8 +429,8 @@ const EVENTS = {
   // Work steps in plain words as they are written: the conversation's readers.
   'plain-steps': keyed,
   // An agent's own program, live (design/91): its state, for those who see
-  // the conversation (a household member's walled guest does not).
-  'live-terminal': ev => can => can.member && can.key(ev.key),
+  // the conversation.
+  'live-terminal': keyed,
   'voice-nav': ev => can => can.member && can.key(ev.key),
   'project-title': ev => can => can.project(ev.project),
   'file-activity': ev => can => (ev.convKey ? can.key(ev.convKey) : true) && (ev.path ? can.path(ev.path) : can.project(ev.project)),

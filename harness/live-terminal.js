@@ -81,8 +81,8 @@ function createLiveTerminals({
   }
 
   // A program on a terminal, with its hub, for conversation `key`.
-  function track(key, { host, profile, record, cwd, sessionId, startedAt = Date.now(), recovered = false }) {
-    const s = { key, host, profile, cwd, sessionId, startedAt, record, recovered, notice: null };
+  function track(key, { host, profile, record, cwd, sessionId, userId = null, startedAt = Date.now(), recovered = false }) {
+    const s = { key, host, profile, cwd, sessionId, userId, startedAt, record, recovered, notice: null };
     s.hub = createHub({ host, profile, liveOnly: true, events: record && record.events && conf().record ? createEventLog(record.events) : null,
       onState: st => onState(s.key, { ...st, harness: profile.id }) });
     sessions.set(key, s);
@@ -105,8 +105,11 @@ function createLiveTerminals({
   //   sessionId, sessionPath  what the profile's arguments ask for
   //   isNew      begin a new conversation (the profile's `start`)
   //   principal  who drives it (for the environment)
-  //   wrap       (argv) → argv, the caller's walls around the program
-  async function start(key, { profileId, cwd, sessionId = null, sessionPath = null, isNew = false, principal = null, wrap = argv => argv }) {
+  //   launch     (argv) → { file, args, env }: the caller's walls around the
+  //              program (a guest's bubblewrap, their slice); by default the
+  //              program as is, in envFor(principal)
+  //   userId     who started it (their "stop their work" ends it)
+  async function start(key, { profileId, cwd, sessionId = null, sessionPath = null, isNew = false, principal = null, launch = null, userId = null }) {
     if (deps.error) throw new Error(deps.error);
     const old = sessions.get(key);
     if (old && !old.host.exited) return old;
@@ -114,20 +117,21 @@ function createLiveTerminals({
     const profile = profileFor(profileId);
     const template = isNew ? profile.start : profile.resume;
     if (!profile.program || !template) throw new Error(profile.name + ' cannot be ' + (isNew ? 'started' : 'continued') + ' here');
-    const argv = wrap(commandFor(profile, require('./terminal/profiles').fill(template, { sessionId, sessionPath })));
-    const env = envFor(principal);
+    const plain = commandFor(profile, require('./terminal/profiles').fill(template, { sessionId, sessionPath }));
+    const launched = launch ? launch(plain) : { file: plain[0], args: plain.slice(1), env: envFor(principal) };
+    const argv = [launched.file, ...launched.args], env = launched.env;
     const record = recordingFiles(profile, sessionId);
     let host;
     if (useHolder) {
       const h = await getHolder();
       const pty = await h.spawn({ command: argv[0], args: argv.slice(1), cwd, env, cols: COLS, rows: ROWS, record: record && record.cast,
-        meta: { key, profile: profile.id, cwd, sessionId, sessionPath, events: record && record.events } });
+        meta: { key, profile: profile.id, cwd, sessionId, sessionPath, userId, events: record && record.events } });
       host = new TerminalHost({ pty, cols: COLS, rows: ROWS, scrollback: 200, answerQueries: false, command: argv[0], args: argv.slice(1) });
     } else {
       host = new TerminalHost({ command: argv[0], args: argv.slice(1), cwd, env, cols: COLS, rows: ROWS, scrollback: 200, recorder: record ? createRecorder(record.cast) : null });
     }
-    log('live terminal: ' + path.basename(argv[0]) + ' ' + argv.slice(1).join(' ') + ' in ' + cwd);
-    const s = track(key, { host, profile, record, cwd, sessionId });
+    log('live terminal: ' + (launch ? '(walled) ' : '') + path.basename(plain[0]) + ' ' + plain.slice(1).join(' ') + ' in ' + cwd);
+    const s = track(key, { host, profile, record, cwd, sessionId, userId });
     // Text left in its box when it was last ended goes back in.
     const kept = keptDrafts.get(key);
     if (kept) {
@@ -159,7 +163,7 @@ function createLiveTerminals({
         const back = await h.attach(p.id);
         const profile = profileFor(p.meta.profile);
         const host = new TerminalHost({ pty: back.pty, cols: p.cols, rows: p.rows, scrollback: 200, answerQueries: false, replay: back.screen, command: p.meta.profile });
-        track(key, { host, profile, record: p.meta.events ? { events: p.meta.events.replace(/\.events\.jsonl\.gz$/, '') + '.after-restart.events.jsonl.gz' } : null, cwd: p.meta.cwd, sessionId: p.meta.sessionId, startedAt: p.startedAt, recovered: true });
+        track(key, { host, profile, userId: p.meta.userId || null, record: p.meta.events ? { events: p.meta.events.replace(/\.events\.jsonl\.gz$/, '') + '.after-restart.events.jsonl.gz' } : null, cwd: p.meta.cwd, sessionId: p.meta.sessionId, startedAt: p.startedAt, recovered: true });
         found.push(key);
       } catch (e) { log('live terminal: could not attach to ' + key + ': ' + e.message); }
     }
@@ -202,6 +206,8 @@ function createLiveTerminals({
     return true;
   }
   function stopAll() { for (const k of [...sessions.keys()]) stop(k); }
+  // Someone's "stop their work" (settings → people): their programs end.
+  function stopUser(userId) { let n = 0; for (const [k, s] of [...sessions]) if (s.userId && s.userId === userId) { stop(k); n++; } return n; }
   // Chattering is ending: let go of the programs, which go on in the holder.
   function detachAll() {
     for (const s of sessions.values()) { s.hub.close(); if (useHolder) s.host.detach(); else s.host.kill(); }
@@ -260,7 +266,7 @@ function createLiveTerminals({
 
   function close() { clearInterval(reaper); detachAll(); }
 
-  return { status, start, newSessionId, send, stop, stopAll, detachAll, recover, attach, reap, setNotice, ownPids, rekey, close, sessions,
+  return { status, start, newSessionId, send, stop, stopAll, stopUser, detachAll, recover, attach, reap, setNotice, ownPids, rekey, close, sessions,
     available: !deps.error, why: deps.error || '' };
 }
 

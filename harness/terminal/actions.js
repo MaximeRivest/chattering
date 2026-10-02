@@ -145,13 +145,18 @@ async function submitComposer(host, target, { profile } = {}) {
   // Enter, checked: sent, the box empties (or it works, asks, shows a
   // panel). A program settling (just resumed, an interrupted turn) may not
   // read it: Enter again only while the box still holds exactly the message.
-  const sentOff = x => x.status || x.choice || x.panel || (x.composer && x.composer.text === '');
-  const stillThere = () => { const x = readDocument(host.snapshot({ screenOnly: true }), profile); return x.composer && !sentOff(x) && sameText(x.composer.text, d.composer.text); };
+  // Sent: the box no longer holds the message. Only when no box is shown
+  // does working, a question or a panel say so: a program busy with itself
+  // (Codex starting its tool servers) shows "working" while the message
+  // still waits in its box, its Enter unread.
+  const msg = d.composer.text;
+  const sentOff = x => x.composer ? x.composer.text === '' || !sameText(x.composer.text, msg) : !!(x.status || x.choice || x.panel);
+  const stillThere = () => { const x = readDocument(host.snapshot({ screenOnly: true }), profile); return x.composer && sameText(x.composer.text, msg); };
   // The result says how it went: a question that comes up may be the
   // message's own (a permission) or the program's (a folder to trust), which
   // took the Enter: the caller sends it again once that is answered.
   const how = x => ({ ...x, sentBy: x.choice ? 'choice' : x.status ? 'working' : x.panel ? 'panel' : 'emptied' });
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 8; i++) {
     host.input('\r');
     try { return how(await waitFor(host, sentOff, { profile, timeoutMs: 700 * (i + 1) })); }
     catch (e) { if (!stillThere()) return how(await waitFor(host, sentOff, { profile, timeoutMs: 5000 })); }

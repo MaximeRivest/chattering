@@ -5717,6 +5717,8 @@ function stopGuestProcesses(userId) {
   if (token) { keyProxy.revoke(token); guestProxyTokens.delete(userId); }
   for (const child of [...guestChildren]) if (child.guestId === userId) { try { child.kill('SIGKILL'); } catch {} stopped++; }
   killGuestSlice(userId);
+  // Their agents' own programs (design/91), and the hold on their files.
+  if (liveTerminalsLib) stopped += liveTerminalsLib.stopUser(userId);
   return stopped;
 }
 // Attribution for sends that cannot write into the session file (the
@@ -9248,14 +9250,28 @@ function startTerminalHolder([node, script, dir]) {
   child.unref();
   fs.closeSync(out);
 }
-// Who may continue a conversation in its program. It runs as this
-// machine's account, with the account's own sign-in to the agent: the
-// owner and, in a household (settings → people), its members, who already
-// run agents as the account. Not (yet) behind a guest's walls.
-function liveTerminalRefusal(identity) {
+// Who may continue a conversation in its agent's program, per agent.
+// The owner and a household's members (who already run agents as this
+// account) may, with the account's own sign-in to each agent. A guest, or
+// a member walled per person, may use Pi inside their walls (design/53):
+// the project and nothing else, their own Pi folder with the owner's
+// extensions read-only, the owner's keys only through the key proxy.
+// Claude Code and Codex sign in as the account (a Claude plan, a ChatGPT
+// plan): not passed to walled people (design/91).
+function liveTerminalRefusal(identity, harness = null) {
   if (!identity || !identity.user) return 'sign in first';
-  if (usersLib.isWalled(identity.user)) return 'An agent\'s own program runs as this machine\'s account: it is not available inside a shared project yet.';
+  if (!usersLib.isWalled(identity.user)) return null;
+  const name = (liveTerminalProfiles.PROFILES[harness] || {}).name;
+  if (harness && harness !== 'pi') return `${name || 'This agent'} signs in as this computer's owner (their own plan): it is not shared with people working inside a shared project. Pi is.`;
+  if (!BWRAP) return 'Programs run inside a shared project need Linux with bubblewrap on this computer.';
   return null;
+}
+// The program, inside the walls of whoever drives it (as is for the owner
+// and the household).
+async function liveLauncher(identity, cwd, key = null) {
+  const principal = await principalInProject(principalFor(identity), projectNameOf(cwd, key));
+  assertPrincipalCanRun(principal, 'an agent');
+  return { principal, launch: argv => agentLaunch(principal, argv[0], argv.slice(1), { cwd }), userId: identity.user.id };
 }
 // What a conversation's page needs to know: whether its program is used
 // here, offered, running, and why not.
@@ -9267,7 +9283,7 @@ function liveTerminalFor(key, identity) {
   if (entry.importCopyOf || (entry.codex && entry.codex.imported)) return null;
   const setting = liveTerminalConf().agents[entry.source] || 'off';
   const st = liveTerminalsLib ? liveTerminalsLib.status(key) : { running: false };
-  const refusal = liveTerminalRefusal(identity);
+  const refusal = liveTerminalRefusal(identity, entry.source);
   const choice = liveChoices.get(key);
   const use = st.running || (setting === 'always' && choice !== 'box') || (setting === 'choose' && choice === 'program');
   return {
@@ -9319,7 +9335,7 @@ async function liveStartExisting(key, identity) {
   if (headlessRuns.has(sessionPath) || liveHeld.has(sessionPath)) throw Object.assign(new Error('Something else started writing this conversation. Try again.'), { status: 409 });
   liveHeld.set(sessionPath, key);
   try {
-    await lt.start(key, { profileId: entry.source, cwd, sessionId: entry.sessionId, sessionPath, principal: principalFor(identity) });
+    await lt.start(key, { profileId: entry.source, cwd, sessionId: entry.sessionId, sessionPath, ...(await liveLauncher(identity, cwd, key)) });
   } catch (e) { liveHeld.delete(sessionPath); throw e; }
 }
 // Which box a conversation uses on every device, kept here, not in one
@@ -19153,15 +19169,15 @@ async function handleRequest(req, res) {
       try {
         if (u.pathname === '/api/live-terminal/status' && req.method === 'GET') {
           const key = u.searchParams.get('id');
-          if (!key) return json(res, 200, { available: lt.available, why: lt.why, ...liveTerminalConf(), refusal: liveTerminalRefusal(identity),
+          if (!key) return json(res, 200, { available: lt.available, why: lt.why, ...liveTerminalConf(), args: policy.isOwnerTier(identity) ? liveTerminalConf().args : undefined,
+            refusals: Object.fromEntries(Object.values(liveTerminalProfiles.PROFILES).filter(x => x.program).map(x => [x.id, liveTerminalRefusal(identity, x.id)])),
             names: Object.fromEntries(Object.values(liveTerminalProfiles.PROFILES).filter(x => x.program).map(x => [x.id, x.name])) });
           const pend = livePending.get(key), real = pend ? pend.key : key;
           if (real && index[real] && !canDo(identity, 'see', targetOf(real))) return json(res, 403, { error: 'This is not shared with you.' });
           if (pend && pend.userId !== identity.user.id && !policy.isOwnerTier(identity)) return json(res, 403, { error: 'This is not yours.' });
           return json(res, 200, { ...lt.status(key), resolvedKey: pend ? pend.key || null : null, indexed: !!(real && index[real]), live: real && index[real] ? liveTerminalFor(real, identity) : null });
         }
-        const refusal = liveTerminalRefusal(identity);
-        if (refusal) return json(res, 403, { error: refusal });
+        if (!identity || !identity.user) return json(res, 401, { error: 'sign in first' });
         let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 262144) throw Object.assign(new Error('request too large'), { status: 413 }); }
         const p = JSON.parse(raw || '{}');
         if (u.pathname === '/api/live-terminal/settings' && req.method === 'POST') {
@@ -19176,6 +19192,7 @@ async function handleRequest(req, res) {
           const info = index[key] ? liveTerminalFor(key, identity) : null;
           if (!info) return json(res, 404, { error: 'This conversation cannot continue in an agent\'s own program here.' });
           if (info.setting === 'off') return json(res, 409, { error: info.name + '\'s own program is turned off here (settings → agents).' });
+          if (info.refusal) return json(res, 403, { error: info.refusal });
           assertCan(identity, 'act', targetOf(key), 'this conversation');
           await liveStartExisting(key, identity);
           liveChooses(key, 'program');
@@ -19188,6 +19205,7 @@ async function handleRequest(req, res) {
           if (!text.trim()) return json(res, 400, { error: 'empty message' });
           const info = index[key] ? liveTerminalFor(key, identity) : null;
           if (!info || info.setting === 'off') return json(res, 404, { error: 'This conversation cannot continue in an agent\'s own program here.' });
+          if (info.refusal) return json(res, 403, { error: info.refusal });
           assertCan(identity, 'act', targetOf(key), 'this conversation');
           await liveStartExisting(key, identity);
           liveChooses(key, 'program');
@@ -19198,12 +19216,15 @@ async function handleRequest(req, res) {
           const profile = liveTerminalProfiles.PROFILES[harness];
           if (!profile || !profile.program || !profile.start) return json(res, 400, { error: 'no such agent' });
           if ((liveTerminalConf().agents[harness] || 'off') === 'off') return json(res, 409, { error: profile.name + '\'s own program is turned off here (settings → agents).' });
+          const refusal = liveTerminalRefusal(identity, harness);
+          if (refusal) return json(res, 403, { error: refusal });
           const where = describeStartFolder(p.folder || '');
           if (!where.exists) return json(res, 404, { error: 'folder not found: ' + where.display });
+          assertPathAccess(identity, where.path, 'act');
           const temp = 'live:' + crypto.randomUUID();
           const pend = { harness, cwd: where.path, sessionId: lt.newSessionId(harness), startedAt: Date.now(), key: null, userId: identity.user.id };
           livePending.set(temp, pend);
-          try { await lt.start(temp, { profileId: harness, cwd: where.path, sessionId: pend.sessionId, isNew: true, principal: principalFor(identity) }); }
+          try { await lt.start(temp, { profileId: harness, cwd: where.path, sessionId: pend.sessionId, isNew: true, ...(await liveLauncher(identity, where.path)) }); }
           catch (e) { livePending.delete(temp); throw e; }
           watchNewLiveConversation(temp, pend);
           return json(res, 200, { ok: true, key: temp, harness });
@@ -19213,6 +19234,9 @@ async function handleRequest(req, res) {
           // writer), text left in its box is kept for next time.
           const key = String(p.id || '');
           const pend = livePending.get(key), real = pend ? pend.key || key : key;
+          // Stopping a program is using it: the same per-agent rule.
+          const refusal = liveTerminalRefusal(identity, index[real] ? index[real].source : pend ? pend.harness : null);
+          if (refusal) return json(res, 403, { error: refusal });
           if (index[real]) assertCan(identity, 'act', targetOf(real), 'this conversation');
           else if (pend && pend.userId !== identity.user.id && !policy.isOwnerTier(identity)) return json(res, 403, { error: 'This is not yours.' });
           const ok = lt.stop(real, { keepDraft: true }) || lt.stop(key);
@@ -20354,10 +20378,10 @@ function upgradeRequestInner(req, socket, head) {
   if (u.pathname === '/api/voice/listen') return voiceListenUpgrade(req, socket, head);
   if (u.pathname === '/api/live-terminal/ws') {
     const lt = liveTerminals(), key = u.searchParams.get('id') || '';
-    if (liveTerminalRefusal(identity)) return refuseUpgrade(socket, 403, 'Forbidden');
     // A new conversation is in its hub before its file exists: under a
     // temporary key, for the person who started it.
     const pend = livePending.get(key), real = pend && pend.key ? pend.key : key;
+    if (liveTerminalRefusal(identity, index[real] ? index[real].source : pend ? pend.harness : null)) return refuseUpgrade(socket, 403, 'Forbidden');
     if (index[real]) { if (!canDo(identity, 'act', targetOf(real))) return refuseUpgrade(socket, 403, 'Forbidden'); }
     else if (!pend || (pend.userId && pend.userId !== identity.user.id && !policy.isOwnerTier(identity))) return refuseUpgrade(socket, 404, 'Not Found');
     const conn = acceptWebSocket(req, socket, head);

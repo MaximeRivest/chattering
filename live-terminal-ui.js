@@ -480,12 +480,13 @@
     try {
       const st = await (await fetch('/api/live-terminal/status')).json();
       LT.conf = st;
-      LT.enabled = st.available !== false && !st.refusal;
+      LT.enabled = st.available !== false;
     } catch { LT.enabled = false; }
     return LT.enabled;
   };
   // Which agents may start in their own program from the draft screen.
-  LT.newChoice = harness => LT.enabled && LT.conf && LT.conf.agents ? (LT.conf.agents[harness] || 'off') : 'off';
+  // (Who may: per agent, from the server; a guest's walls take Pi only.)
+  LT.newChoice = harness => LT.enabled && LT.conf && LT.conf.agents && !(LT.conf.refusals || {})[harness] ? (LT.conf.agents[harness] || 'off') : 'off';
   // ---- settings → agents ----
   const CHOICES = [['off', 'never'], ['choose', 'when I choose'], ['always', 'always']];
   const IDLE = [5, 15, 30, 60, 120, 240, 480];
