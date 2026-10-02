@@ -22,6 +22,7 @@ async function harness(t) {
   git(['init']); git(['config', 'user.name', 'Fixture']); git(['config', 'user.email', 'fixture@example.test']);
   const events = [];
   const ctx = vm.createContext({ fs, fsp, path, sha256Hex, NOTES_DIR: path.join(root, 'notes'),
+    titlePublication: require('../title-publication').createTitlePublication({ namesAllowed: () => false }),
     editableReviewFile: async p => p, editableFilePath: async p => p,
     writeFileAtomic: async (p, text) => { await fsp.writeFile(p + '.tmp', text); await fsp.rename(p + '.tmp', p); },
     observeFileHistory: (p, data) => { events.push({ path: p, ...data }); return ''; },
