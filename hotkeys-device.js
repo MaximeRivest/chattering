@@ -271,6 +271,14 @@ function createFrog({ desk, helper, host: givenHost = null, api = null, now = ()
   let spotAway = false; // hidden for a full-screen window
   let snoozeUntil = 0;
   let lastApp = '';
+  // The last frog's selection, and when it ended: an app offers its
+  // selection again when it gets the keyboard back (after the book closes,
+  // after a click), which is not a new selection and must not bring the
+  // frog back (it looked like a flicker).
+  let episode = null; // { text, winId, endedAt }
+  const REOFFER_MS = 3000;
+  let handedBackAt = 0;
+  const sameWin = (a, b) => String(a || '').replace(/^0x/, '') === String(b || '').replace(/^0x/, '');
   const SIZE = { small: [40, 66], medium: [60, 100], large: [80, 133] };
   const homeFile = () => path.join(dirs().data, 'hotkeys-frog-home.json');
 
@@ -335,6 +343,10 @@ function createFrog({ desk, helper, host: givenHost = null, api = null, now = ()
     if (!String(text).trim() || T.words(text) < (st.minWords || 2) || text.length > MAX_CHARS) { if (mode === 'idle') hide(); return; }
     if (shown && mode === 'idle' && shown.text === text) return;
     const settled = now();
+    if (episode && episode.endedAt && text === episode.text && settled - episode.endedAt < REOFFER_MS) {
+      const w = await desk.focused().catch(() => null);
+      if (w && sameWin(w.id, episode.winId)) return;
+    }
     if (frogMode() === 'spot') return wakeFor(text);
     // Everything the desktop must say, asked at once.
     const [win, look] = await Promise.all([desk.focused().catch(() => null), lookAround()]);
@@ -345,6 +357,7 @@ function createFrog({ desk, helper, host: givenHost = null, api = null, now = ()
     if (!place) return;
     timing = { settled, sent: now() };
     shown = { text, win, monitor: place.monitor }; lastApp = win.app || '';
+    episode = { text, winId: win.id, endedAt: 0 };
     mode = 'idle';
     if (!startHost()) return;
     host.send({
@@ -371,7 +384,8 @@ function createFrog({ desk, helper, host: givenHost = null, api = null, now = ()
     const mon = mons.find(m => inside(anchor, m)) || mons.find(m => m.focused) || mons[0];
     return { monitor: mon.name, at: { x: anchor.x - mon.x, y: anchor.y - mon.y }, corner: !byPointer, screen: { w: mon.w, h: mon.h } };
   }
-  function hide() { if (host && mode !== 'off') host.send({ type: 'hide' }); mode = 'off'; shown = null; spotOn = null; }
+  function endEpisode() { if (episode && !episode.endedAt) episode.endedAt = now(); }
+  function hide() { endEpisode(); if (host && mode !== 'off') host.send({ type: 'hide' }); mode = 'off'; shown = null; spotOn = null; }
 
   // ---- its spot (mode 'spot') ----
   // Where it lives, per computer and per screen, from the nearest corner:
@@ -418,6 +432,10 @@ function createFrog({ desk, helper, host: givenHost = null, api = null, now = ()
   // spot goes back to sleep, and hides for a full-screen window.
   async function onDesktop(name, data) {
     if (name !== 'activewindowv2' && name !== 'workspacev2' && name !== 'fullscreen') return;
+    // The keyboard going back to the app the frog works for is not the
+    // person moving on: only another window (or workspace) is.
+    const ours = shown && shown.win && name === 'activewindowv2' && (sameWin(data, shown.win.id) || !data || now() - handedBackAt < 600);
+    if (ours) return;
     if (frogMode() === 'spot') {
       if (mode === 'idle' && host) host.send({ type: 'sleep' });
       const win = await desk.focused().catch(() => null);
@@ -440,10 +458,10 @@ function createFrog({ desk, helper, host: givenHost = null, api = null, now = ()
           if (mode === 'panel') mode = 'idle';
           // The desktop does not say when the keyboard went back to the app
           // (its active window never changed): give it back ourselves.
-          if (shown && desk.focus) await desk.focus(shown.win);
+          if (shown && desk.focus) { handedBackAt = now(); await desk.focus(shown.win); }
         }
       }
-      else if (m.type === 'hidden') { mode = 'off'; shown = null; spotOn = null; }
+      else if (m.type === 'hidden') { endEpisode(); mode = 'off'; shown = null; spotOn = null; }
       else if (m.type === 'moved') { if (frogMode() === 'spot' && spotOn) saveHome(spotOn, m); }
       else if (m.type === 'set') {
         const patch = {}; if (m.mode) patch.mode = m.mode; if (m.size) patch.size = m.size;
@@ -527,7 +545,7 @@ function createFrog({ desk, helper, host: givenHost = null, api = null, now = ()
     // keyboard again for the paste (an app reads the clipboard only then);
     // the desktop's active window cannot tell, so focus it, then let the
     // app take the focus in.
-    if (desk.focus) await desk.focus(win);
+    if (desk.focus) { handedBackAt = now(); await desk.focus(win); }
     await new Promise(r => setTimeout(r, 120));
     const f = await desk.focused().catch(() => null);
     if (!f || f.id !== win.id) throw new Error('Could not give the keyboard back to ' + (appName(win) || 'the app') + ': the answer is on the clipboard.');

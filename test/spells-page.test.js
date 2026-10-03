@@ -76,7 +76,9 @@ test('the frog, its book, a correction and a rewrite, in a browser', { timeout: 
   await b.ev(`Spells.receive(${JSON.stringify(show())})`);
   await b.until(`document.querySelector('.frog')`, 'the frog');
   await new Promise(r => setTimeout(r, 700)); // landed from its hop
-  const f = await b.ev(`(() => { const r = document.querySelector('.frog').getBoundingClientRect(); return [r.left, r.bottom]; })()`);
+  // Where it is laid out, not where an animation frame draws it (a headless
+  // browser may not have started the hop yet: this was the test's wobble).
+  const f = await b.ev(`(() => { const e = document.querySelector('.frog'); return [e.offsetLeft, e.offsetTop + e.offsetHeight]; })()`);
   assert.ok(f[0] >= 640 && f[0] < 700 && Math.abs(f[1] - 308) < 4, 'beside the end of the selection, feet on its line: ' + f);
   await b.until(`window.__out.filter(m => m.type === 'rects').pop()?.rects.length === 1`, 'one place to click: the frog');
   // The clickable place is the whole frog, measured as laid out (the bug: it
@@ -87,7 +89,7 @@ test('the frog, its book, a correction and a rewrite, in a browser', { timeout: 
   assert.ok(clickable.x <= frogBox.x && clickable.y <= frogBox.y && clickable.x + clickable.w >= frogBox.x + frogBox.w && clickable.y + clickable.h >= frogBox.y + frogBox.h,
     'the whole frog takes the pointer: ' + JSON.stringify({ clickable, frogBox }));
   assert.ok(clickable.w >= 60 && clickable.h >= 100);
-  assert.ok((await b.out('shown')).length >= 1, 'the page says when the frog is drawn');
+  await b.until(`window.__out.some(m => m.type === 'shown')`, 'the page says when the frog is drawn');
   assert.equal(await b.ev(`(() => { const f = document.querySelector('.frog'); return [...f.querySelectorAll('*')].some(e => e.scrollWidth > e.clientWidth + 1 && getComputedStyle(e).overflowX !== 'visible'); })()`), false, 'no scrollbar anywhere in the frog');
   assert.equal((await b.out('keyboard')).length, 0, 'the frog alone never asks for the keys');
 

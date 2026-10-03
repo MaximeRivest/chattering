@@ -244,3 +244,32 @@ test('in its spot: it goes home asleep, a selection wakes it, its home is kept p
   await tick(20);
   assert.equal(w.sent.length, n, 'asleep for an hour: a selection does not wake it');
 });
+
+test('the keyboard going back to the app is not a move: the frog stays, and the same selection offered again does not bring it back', async () => {
+  const w = world({ selectionNow: 'some words to fix here' });
+  w.frog.onSelection('some words to fix here');
+  await tick(20);
+  assert.equal(w.sent.filter(m => m.type === 'show').length, 1);
+  // The book opens and closes: the helper hands the keyboard back, the desktop says the app is active.
+  w.page({ type: 'keyboard', on: true });
+  await w.page({ type: 'keyboard', on: false });
+  await w.frog.onDesktop('activewindowv2', 'w1');
+  await w.frog.onDesktop('activewindowv2', '');
+  assert.ok(!w.sent.some(m => m.type === 'hide'), 'not sent away by its own handback');
+  // The app offers the same selection again: still one frog.
+  w.frog.onSelection('some words to fix here');
+  await tick(20);
+  assert.equal(w.sent.filter(m => m.type === 'show').length, 1);
+  // Another window becomes active: it leaves.
+  await new Promise(r => setTimeout(r, 650));
+  await w.frog.onDesktop('activewindowv2', 'other');
+  assert.equal(w.sent.pop().type, 'hide');
+  w.page({ type: 'hidden' });
+  // Back in the app, the same selection offered again right away: no frog. A new selection: a frog.
+  w.frog.onSelection('some words to fix here');
+  await tick(20);
+  assert.equal(w.sent.filter(m => m.type === 'show').length, 1, 'a re-offer is not a new selection');
+  w.frog.onSelection('a different selection now');
+  await tick(20);
+  assert.equal(w.sent.filter(m => m.type === 'show').length, 2);
+});
