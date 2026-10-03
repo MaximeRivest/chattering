@@ -267,7 +267,8 @@ function createFrog({ desk, helper, host: givenHost = null, api = null, now = ()
   let last = null;    // the last spell cast: { spell } or { ask }, and its answer
   let settleT = 0, quietUntil = 0, pendingText = null;
 
-  const settings = () => helper.frog || { on: true, skip: ['terminal'], minWords: 2, theme: { id: 'rockfrog' } };
+  // A Chattering that sends no frog settings is older than the frog: off.
+  const settings = () => helper.frog || { on: false, skip: ['terminal'], minWords: 2, theme: { id: 'rockfrog' } };
 
   // ---- the host ----
   function startHost() {
@@ -439,7 +440,7 @@ function createFrog({ desk, helper, host: givenHost = null, api = null, now = ()
 
   // Called by its key: the book opens on whatever is selected, wherever.
   async function summon() {
-    if (disabled) return;
+    if (disabled || !helper.frog) return;
     if (helper.busy || mode === 'busy') return;
     const text = desk.primaryText ? await desk.primaryText().catch(() => '') : '';
     const win = await desk.focused().catch(() => null);

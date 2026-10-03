@@ -184,3 +184,11 @@ test('the app does not take the keyboard back: nothing pasted, the answer on the
   assert.deepEqual(w.did.find(d => d[0] === 'clipboard'), ['clipboard', 'I went to the store.']);
   assert.match(w.sent.pop().html, /did not take the keyboard back[\s\S]*clipboard/);
 });
+
+test('a Chattering older than the frog sends no frog settings: it stays off', async () => {
+  const w = world(); w.helper.frog = null;
+  w.frog.onSelection('a few words here');
+  w.helper.fire('summon');
+  await tick(20);
+  assert.equal(w.sent.length, 0);
+});
