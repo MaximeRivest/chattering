@@ -128,6 +128,7 @@ const ROUTES = {
   'POST /api/shares': 'member',
   'POST /api/shares/change': 'member',
   'POST /api/shares/revoke': 'member',
+  '/api/shares/scan': 'member',
   '/api/conversation/start-loose': 'member',
   '/api/conversation/folder-info': 'member',
   '/api/conversation/project': 'member',

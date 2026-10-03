@@ -11376,6 +11376,8 @@ async function aiEpicRetitle(id) {
 }
 
 function agentComposerHtml(d) {
+  // A shared conversation read by link (design/92, share-page/viewer.js): no composer.
+  if (window.CHATTERING_VIEWER) return '';
   // A mirror is read here and driven where it lives; forking makes it ours.
   if (d.mirror) return `<div class="composer-dock mirror-dock" id="composerDock" data-conversation-key="${esc(d.key)}">
     <div class="mirror-notice"><b>This conversation lives on ${esc(d.mirror.peerName)}.</b> It is mirrored here read-only and stays current as that machine syncs.

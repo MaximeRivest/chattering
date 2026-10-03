@@ -1,5 +1,5 @@
 /* Shared links, the owner's side (design/92): the Share dialog of a
-   document. A link lets anyone who has it read, or edit, the document live,
+   document, or of a conversation (read only, live or a snapshot). A link lets anyone who has it read, or edit, the document live,
    from this computer; it can be copied again, changed, replaced or turned
    off at any time, and that takes effect at once for everyone using it. */
 (function () {
@@ -27,18 +27,27 @@
   };
   const best = s => (s.links || [])[0] || null;
 
+  const isConv = () => current && current.kind === 'conversation';
   function rowHtml(s) {
     const link = best(s);
-    return `<div class="sh-ui-row" data-id="${escHtml(s.id)}">
-      <div class="sh-ui-line">
-        <select data-act="role" aria-label="What people with this link can do">
+    const choice = s.kind === 'conversation'
+      ? `<select data-act="mode" aria-label="What people with this link see">
+          <option value="live"${s.mode === 'live' ? ' selected' : ''}>Live</option>
+          <option value="snapshot"${s.mode === 'snapshot' ? ' selected' : ''}>Snapshot</option>
+        </select>`
+      : `<select data-act="role" aria-label="What people with this link can do">
           <option value="view"${s.role === 'view' ? ' selected' : ''}>Can view</option>
           <option value="edit"${s.role === 'edit' ? ' selected' : ''}>Can edit</option>
-        </select>
+        </select>`;
+    const snap = s.kind === 'conversation' && s.mode === 'snapshot'
+      ? ` · a copy from ${escHtml(new Date(s.snapshotAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }))} <button data-act="resnap" class="linklike" title="Replace the copy with the conversation as it is now">update the copy</button>` : '';
+    return `<div class="sh-ui-row" data-id="${escHtml(s.id)}">
+      <div class="sh-ui-line">
+        ${choice}
         <input class="sh-ui-url" readonly value="${escHtml(link ? link.url : '')}" aria-label="The link" data-act="select">
         <button class="primary" data-act="copy">Copy link</button>
       </div>
-      <div class="sh-ui-meta"><span>${escHtml(link ? link.who : '')}${s.expiresAt ? ' · ' + escHtml(when(s.expiresAt)) : ''} · ${escHtml(usage(s))}</span>
+      <div class="sh-ui-meta"><span>${escHtml(link ? link.who : '')}${s.expiresAt ? ' · ' + escHtml(when(s.expiresAt)) : ''} · ${escHtml(usage(s))}${snap}</span>
         <span class="sh-ui-actions"><button data-act="replace" title="A new link; the old one stops working at once">New link</button><button data-act="revoke" class="danger" title="Nobody can open it any more; people on it now are disconnected">Turn off</button></span></div>
     </div>`;
   }
@@ -48,11 +57,15 @@
     const shares = current.shares || [];
     overlay.querySelector('.dialog').innerHTML = `
       <h3>Share “${escHtml(current.title)}”</h3>
-      <p class="sh-ui-hint">Anyone with a link can open this document in their browser, with no account, while this computer is on. They see changes as they happen, from you, from agents and from each other.</p>
+      ${isConv()
+        ? `<p class="sh-ui-hint">Anyone with a link can read this conversation in their browser, as you see it in Chattering, with no account, while this computer is on. They cannot write in it or change anything. <b>Live</b>: new messages appear as they are written. <b>Snapshot</b>: a copy of it as it is now.</p>${secretsHtml()}`
+        : `<p class="sh-ui-hint">Anyone with a link can open this document in their browser, with no account, while this computer is on. They see changes as they happen, from you, from agents and from each other.</p>`}
       ${shares.length ? `<div class="sh-ui-list">${shares.map(rowHtml).join('')}</div>` : ''}
       <div class="sh-ui-new">
         <span>${shares.length ? 'Another link' : 'Make a link'}:</span>
-        <select id="shNewRole" aria-label="What people with the new link can do"><option value="view">can view</option><option value="edit">can edit</option></select>
+        ${isConv()
+          ? '<select id="shNewMode" aria-label="What people with the new link see"><option value="live">live</option><option value="snapshot">snapshot</option></select>'
+          : '<select id="shNewRole" aria-label="What people with the new link can do"><option value="view">can view</option><option value="edit">can edit</option></select>'}
         <select id="shNewEnd" aria-label="When the new link ends"><option value="">no end date</option><option value="1">ends in a day</option><option value="7">ends in a week</option><option value="30">ends in a month</option></select>
         <button id="shCreate" class="primary">Make link</button>
       </div>
@@ -60,6 +73,17 @@
       <p class="sh-ui-error" id="shError" role="alert" hidden></p>
       <div class="btnrow"><button id="shClose">Done</button></div>`;
   }
+  // What a conversation would carry out, before a link exists: Chattering
+  // hides what looks like a secret; the owner reads the rest.
+  function secretsHtml() {
+    const sc = current && current.scan;
+    if (!sc) return '<p class="sh-ui-small">Checking it for keys and passwords…</p>';
+    if (!sc.count) return '<p class="sh-ui-small">No keys or passwords found in it. Commands, file paths and tool output are shown as they are: read it before you share it.</p>';
+    const kinds = Object.entries(sc.kinds).map(([k, n]) => n + ' ' + k + (n > 1 ? 's' : '')).join(', ');
+    const where = sc.examples.map(e => e.where).filter((w, i, a) => a.indexOf(w) === i).slice(0, 5).join(', ');
+    return `<p class="sh-ui-warn">Found ${escHtml(kinds)}: in ${escHtml(where)}${sc.count > sc.examples.length ? '…' : ''}. They are <b>hidden</b> from people with the link. Other things that are secret to you but do not look like a key are not: read it before you share it.</p>`;
+  }
+
   // Where links open: this computer's public address (design/92), or, until
   // it has one, the networks it is on. The owner turns the address on here.
   const PHASE = { connecting: 'Connecting to the relay…', claiming: 'Reserving the name…', certifying: 'Getting a certificate (about a minute)…' };
@@ -102,7 +126,7 @@
     el.hidden = false;
   }
   async function refresh() {
-    const out = await call('/api/shares?path=' + encodeURIComponent(current.path));
+    const out = await call('/api/shares?' + (isConv() ? 'key=' + encodeURIComponent(current.key) : 'path=' + encodeURIComponent(current.path)));
     current.shares = out.shares;
     render();
   }
@@ -137,7 +161,9 @@
       }
       if (b.id === 'shCreate') {
         const days = Number(overlay.querySelector('#shNewEnd').value || 0);
-        const out = await call('/api/shares', { path: current.path, role: overlay.querySelector('#shNewRole').value, expiresAt: days ? Date.now() + days * DAY : null });
+        const out = await call('/api/shares', isConv()
+          ? { kind: 'conversation', key: current.key, title: current.title, mode: overlay.querySelector('#shNewMode').value, expiresAt: days ? Date.now() + days * DAY : null }
+          : { path: current.path, role: overlay.querySelector('#shNewRole').value, expiresAt: days ? Date.now() + days * DAY : null });
         await refresh();
         const fresh = overlay.querySelector(`.sh-ui-row[data-id="${out.share.id}"] [data-act="copy"]`);
         if (fresh && best(out.share)) copy(best(out.share).url, fresh);
@@ -147,6 +173,10 @@
       if (act === 'select') return b.select();
       if (!share) return;
       if (act === 'copy') return copy(best(share).url, b);
+      if (act === 'resnap') {
+        await call('/api/shares/change', { id, refreshSnapshot: true });
+        return refresh();
+      }
       if (act === 'replace') {
         if (!confirm('Make a new link? The current one stops working at once, for everyone who has it.')) return;
         await call('/api/shares/change', { id, newSecret: true });
@@ -164,10 +194,10 @@
     } catch (err) { fail(err); }
   }
   async function onChange(e) {
-    const sel = e.target.closest('select[data-act="role"]');
+    const sel = e.target.closest('select[data-act="role"], select[data-act="mode"]');
     if (!sel) return;
     const id = sel.closest('.sh-ui-row').dataset.id;
-    try { await call('/api/shares/change', { id, role: sel.value }); await refresh(); }
+    try { await call('/api/shares/change', { id, [sel.dataset.act]: sel.value }); await refresh(); }
     catch (err) { fail(err); }
   }
   function onKey(e) {
@@ -176,8 +206,7 @@
     else if (e.key === 'Enter' && e.target && e.target.id === 'shPubName') { e.preventDefault(); overlay.querySelector('#shPubOn')?.click(); }
   }
 
-  async function open(path, title) {
-    if (!path) return;
+  function ensureOverlay() {
     if (!overlay) {
       overlay = document.createElement('div');
       overlay.className = 'overlay sh-ui';
@@ -187,9 +216,24 @@
       document.addEventListener('keydown', onKey, true);
       document.body.appendChild(overlay);
     }
-    current = { path, title: title || path.split(/[\\/]/).pop(), shares: [] };
+  }
+  async function open(path, title) {
+    if (!path) return;
+    ensureOverlay();
+    current = { kind: 'file', path, title: title || path.split(/[\\/]/).pop(), shares: [] };
     overlay.hidden = false;
     overlay.querySelector('.dialog').innerHTML = '<p class="sh-ui-hint">Loading…</p>';
+    try { await loadPub(); await refresh(); pollPub(); } catch (e) { render(); fail(e); }
+  }
+  // A conversation: read only, live or a snapshot (share-page/viewer.js).
+  async function openConversation(key, title) {
+    if (!key) return;
+    ensureOverlay();
+    const mine = { kind: 'conversation', key, title: title || 'this conversation', shares: [], scan: null };
+    current = mine;
+    overlay.hidden = false;
+    overlay.querySelector('.dialog').innerHTML = '<p class="sh-ui-hint">Loading…</p>';
+    call('/api/shares/scan?key=' + encodeURIComponent(key)).then(sc => { if (current === mine) { mine.scan = sc; render(); } }).catch(() => {});
     try { await loadPub(); await refresh(); pollPub(); } catch (e) { render(); fail(e); }
   }
   function close() { clearTimeout(pubTimer); if (overlay) overlay.hidden = true; current = null; }
@@ -204,5 +248,5 @@
     open(ws.path, ws.path.split(/[\\/]/).pop());
   });
 
-  window.SharesUI = { open, close };
+  window.SharesUI = { open, openConversation, close };
 })();

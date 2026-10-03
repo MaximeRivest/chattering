@@ -734,10 +734,13 @@ function openShareDialog() {
     </div>
     <div class="share-actions">${d.own ? `<button type="button" class="primary" id="shareSave">Save</button>${inherited || !d.object ? '' : ''}` : '<span class="hint">Only its owner can change this.</span>'}<button type="button" id="shareClose">Close</button></div>
     ${!d.key && peopleManages() ? inviteSectionHtml(d.project) : ''}
+    ${d.key && typeof SharesUI !== 'undefined' && !(me && me.scope === 'guest') ? `<div class="share-invite"><h3>Anyone with the link</h3><p class="hint">Someone outside this computer can read it in their browser, as you see it here, with no account: live, or a snapshot. They cannot write in it.</p><button type="button" id="shareByLink">Share by link…</button></div>` : ''}
   </div>`;
   document.body.appendChild(dlg);
   const close = () => dlg.remove();
   dlg.querySelector('#shareClose').onclick = close;
+  const byLink = dlg.querySelector('#shareByLink');
+  if (byLink) byLink.onclick = () => { close(); SharesUI.openConversation(d.key, (typeof current !== 'undefined' && current && current.key === d.key && current.title) || ''); };
   if (!d.key && peopleManages()) bindInviteSection(dlg, d.project);
   dlg.addEventListener('click', e => { if (e.target === dlg) close(); });
   dlg.querySelectorAll('input[name=shareMode]').forEach(r => r.onchange = () => { dlg.querySelector('.share-list').hidden = dlg.querySelector('input[name=shareMode]:checked').value !== 'listed'; });

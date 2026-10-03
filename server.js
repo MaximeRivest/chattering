@@ -1262,6 +1262,8 @@ async function transcriptImage(key, entry, blockPath) {
 const policy = require('./policy.js');
 const sseByConn = new Map(); // conn id → { res, identity, conn, receiver }
 function broadcast(ev) {
+  // Live shared conversations follow their conversation (design/92).
+  if (ev && ev.type === 'update' && ev.key && typeof shareGate !== 'undefined') shareGate.conversationChanged(ev.key).catch(() => {});
   const line = 'data: ' + JSON.stringify(ev) + '\n\n';
   for (const client of sseByConn.values()) {
     let view;
@@ -16903,6 +16905,116 @@ function json(res, code, obj) {
 // away, so each load re-parsed ~800 KB of JavaScript.
 const staticCache = new Map(); // file -> { key, raw, gz, etag }
 const STATIC_CACHE_MAX = 16 * 1024 * 1024;
+// The app's own files (code, styles, vendored bundles): served at their
+// path to the app, and to the read-only conversation viewer of shared links
+// (design/92) under /_c/app/, which may load these and nothing else.
+const APP_FILES = {
+    '/sw.js': { file: 'sw.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/context-panel.js': { file: 'context-panel.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/file-completion-ui.js': { file: 'file-completion-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/harness-composer-ui.js': { file: 'harness-composer-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/codex-ui.js': { file: 'codex-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/live-terminal-ui.js': { file: 'live-terminal-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/hotkeys-keys.js': { file: 'hotkeys-keys.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/hotkeys-ui.js': { file: 'hotkeys-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/live-terminal.css': { file: 'live-terminal.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/harness/compose-commands.js': { file: 'harness/compose-commands.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/linediff.js': { file: 'linediff.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/notebook-env.js': { file: 'notebook-env.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/ai-commands.js': { file: 'ai-commands.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/delegation-ui.js': { file: 'delegation-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/filesmode.js': { file: 'filesmode.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/open-files.js': { file: 'open-files.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/navigation.js': { file: 'navigation.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/timeline-chart.js': { file: 'timeline-chart.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/timeline-controls.js': { file: 'timeline-controls.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/timeline-controls.css': { file: 'timeline-controls.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/files-browser.js': { file: 'files-browser.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/live-file.js': { file: 'live-file.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/live-file.css': { file: 'live-file.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/ai-outcomes.js': { file: 'ai-outcomes.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/ask-bubble.js': { file: 'ask-bubble.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/voice-actions.js': { file: 'voice-actions.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/voice-commands.js': { file: 'voice-commands.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/voice-commands.css': { file: 'voice-commands.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/ask-bubble.css': { file: 'ask-bubble.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/pair.js': { file: 'pair.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/pair.css': { file: 'pair.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/collab-client.js': { file: 'collab-client.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/people.js': { file: 'people.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/people.css': { file: 'people.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/anywhere-ui.js': { file: 'anywhere-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/anywhere-ui.css': { file: 'anywhere-ui.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/file-viewers.js': { file: 'file-viewers.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/file-viewers.css': { file: 'file-viewers.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/html-preview.js': { file: 'html-preview.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/pdf-viewer-config.js': { file: 'pdf-viewer-config.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/pdf-viewer.css': { file: 'pdf-viewer.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/live-file-marks.js': { file: 'live-file-marks.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/live-file-marks-worker.js': { file: 'live-file-marks-worker.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/change-review-ui.js': { file: 'change-review-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/review-locations-ui.js': { file: 'review-locations-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/change-review.css': { file: 'change-review.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/files-browser.css': { file: 'files-browser.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/conversation-flow.js': { file: 'conversation-flow.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/conversation-tree.js': { file: 'conversation-tree.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/artifacts.js': { file: 'artifacts.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/shares-ui.js': { file: 'shares-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/document-look.js': { file: 'document-look.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/document-editor.css': { file: 'document-editor.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/made-panel.js': { file: 'made-panel.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/step-changes-ui.js': { file: 'step-changes-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/step-changes.css': { file: 'step-changes.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/made.css': { file: 'made.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/programs-ui.js': { file: 'programs-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/programs.css': { file: 'programs.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/program-form.js': { file: 'program-form.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/programs-make.js': { file: 'programs-make.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/program-form.css': { file: 'program-form.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/artifacts.css': { file: 'artifacts.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/streaming-tool.js': { file: 'streaming-tool.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/conversation-reader.js': { file: 'conversation-reader.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/plain-steps-ui.js': { file: 'plain-steps-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/conversation-reader.css': { file: 'conversation-reader.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/conversation-draft.js': { file: 'conversation-draft.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/conversation-draft.css': { file: 'conversation-draft.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/ai-connect.js': { file: 'ai-connect.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/ai-connect.css': { file: 'ai-connect.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/welcome.js': { file: 'welcome.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/tokens.css': { file: 'design/tokens.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/surfaces.css': { file: 'design/surfaces.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/recent-files.js': { file: 'recent-files.js', type: 'application/javascript; charset=utf-8', cache: 'no-cache' },
+    '/sidebar-projects.js': { file: 'sidebar-projects.js', type: 'application/javascript; charset=utf-8', cache: 'no-cache' },
+    '/project-scope.js': { file: 'project-scope.js', type: 'application/javascript; charset=utf-8', cache: 'no-cache' },
+    '/icon-192.png': { file: 'icons/icon-192.png', type: 'image/png', cache: 'public, max-age=86400', compress: false },
+    '/icon-512.png': { file: 'icons/icon-512.png', type: 'image/png', cache: 'public, max-age=86400', compress: false },
+    '/apple-touch-icon.png': { file: 'icons/apple-touch-icon.png', type: 'image/png', cache: 'public, max-age=86400', compress: false },
+    '/icon.svg': { file: 'icon.svg', type: 'image/svg+xml', cache: 'public, max-age=86400' },
+    '/icon-maskable-512.png': { file: 'icons/icon-maskable-512.png', type: 'image/png', cache: 'public, max-age=86400', compress: false },
+    '/favicon.svg': { file: 'icons/favicon.svg', type: 'image/svg+xml', cache: 'public, max-age=86400' },
+    '/mark.svg': { file: 'icons/mark.svg', type: 'image/svg+xml', cache: 'public, max-age=86400' },
+    '/favicon-32.png': { file: 'icons/favicon-32.png', type: 'image/png', cache: 'public, max-age=86400', compress: false },
+    '/vendor/mermaid.min.js': { file: 'vendor/mermaid.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.9.4/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.9.4/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.10.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.10.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.11.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.11.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.12.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.12.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.13.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.13.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.14.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.14.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.15.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.15.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.16.1/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.16.1/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.17.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.17.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.18.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.18.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.19.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.19.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.20.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.20.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.21.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.21.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.22.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.22.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.23.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.23.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.24.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.24.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.25.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.25.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/vendor/mrmd-document/0.10.1/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.10.1/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+    '/chattering.apk': { file: 'chattering.apk', type: 'application/vnd.android.package-archive', cache: 'no-store', compress: false },
+};
 async function sendStatic(req, res, file, type, cacheControl, { compress = true } = {}) {
   let st;
   try { st = await fsp.stat(file); } catch { return json(res, 404, { error: 'not found' }); }
@@ -17290,113 +17402,7 @@ async function handleRequest(req, res) {
     // every load (a 304 keeps the compiled-script cache warm). Vendor
     // bundles are immutable per version path, so a day of max-age is safe.
     // Images and the APK are not text: no gzip.
-    const staticFile = {
-      '/sw.js': { file: 'sw.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/context-panel.js': { file: 'context-panel.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/file-completion-ui.js': { file: 'file-completion-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/harness-composer-ui.js': { file: 'harness-composer-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/codex-ui.js': { file: 'codex-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/live-terminal-ui.js': { file: 'live-terminal-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/hotkeys-keys.js': { file: 'hotkeys-keys.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/hotkeys-ui.js': { file: 'hotkeys-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/live-terminal.css': { file: 'live-terminal.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/harness/compose-commands.js': { file: 'harness/compose-commands.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/linediff.js': { file: 'linediff.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/notebook-env.js': { file: 'notebook-env.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/ai-commands.js': { file: 'ai-commands.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/delegation-ui.js': { file: 'delegation-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/filesmode.js': { file: 'filesmode.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/open-files.js': { file: 'open-files.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/navigation.js': { file: 'navigation.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/timeline-chart.js': { file: 'timeline-chart.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/timeline-controls.js': { file: 'timeline-controls.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/timeline-controls.css': { file: 'timeline-controls.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/files-browser.js': { file: 'files-browser.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/live-file.js': { file: 'live-file.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/live-file.css': { file: 'live-file.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/ai-outcomes.js': { file: 'ai-outcomes.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/ask-bubble.js': { file: 'ask-bubble.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/voice-actions.js': { file: 'voice-actions.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/voice-commands.js': { file: 'voice-commands.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/voice-commands.css': { file: 'voice-commands.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/ask-bubble.css': { file: 'ask-bubble.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/pair.js': { file: 'pair.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/pair.css': { file: 'pair.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/collab-client.js': { file: 'collab-client.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/people.js': { file: 'people.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/people.css': { file: 'people.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/anywhere-ui.js': { file: 'anywhere-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/anywhere-ui.css': { file: 'anywhere-ui.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/file-viewers.js': { file: 'file-viewers.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/file-viewers.css': { file: 'file-viewers.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/html-preview.js': { file: 'html-preview.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/pdf-viewer-config.js': { file: 'pdf-viewer-config.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/pdf-viewer.css': { file: 'pdf-viewer.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/live-file-marks.js': { file: 'live-file-marks.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/live-file-marks-worker.js': { file: 'live-file-marks-worker.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/change-review-ui.js': { file: 'change-review-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/review-locations-ui.js': { file: 'review-locations-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/change-review.css': { file: 'change-review.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/files-browser.css': { file: 'files-browser.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/conversation-flow.js': { file: 'conversation-flow.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/conversation-tree.js': { file: 'conversation-tree.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/artifacts.js': { file: 'artifacts.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/shares-ui.js': { file: 'shares-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/document-look.js': { file: 'document-look.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/document-editor.css': { file: 'document-editor.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/made-panel.js': { file: 'made-panel.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/step-changes-ui.js': { file: 'step-changes-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/step-changes.css': { file: 'step-changes.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/made.css': { file: 'made.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/programs-ui.js': { file: 'programs-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/programs.css': { file: 'programs.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/program-form.js': { file: 'program-form.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/programs-make.js': { file: 'programs-make.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/program-form.css': { file: 'program-form.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/artifacts.css': { file: 'artifacts.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/streaming-tool.js': { file: 'streaming-tool.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/conversation-reader.js': { file: 'conversation-reader.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/plain-steps-ui.js': { file: 'plain-steps-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/conversation-reader.css': { file: 'conversation-reader.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/conversation-draft.js': { file: 'conversation-draft.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/conversation-draft.css': { file: 'conversation-draft.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/ai-connect.js': { file: 'ai-connect.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/ai-connect.css': { file: 'ai-connect.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/welcome.js': { file: 'welcome.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-      '/tokens.css': { file: 'design/tokens.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/surfaces.css': { file: 'design/surfaces.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
-      '/recent-files.js': { file: 'recent-files.js', type: 'application/javascript; charset=utf-8', cache: 'no-cache' },
-      '/sidebar-projects.js': { file: 'sidebar-projects.js', type: 'application/javascript; charset=utf-8', cache: 'no-cache' },
-      '/project-scope.js': { file: 'project-scope.js', type: 'application/javascript; charset=utf-8', cache: 'no-cache' },
-      '/icon-192.png': { file: 'icons/icon-192.png', type: 'image/png', cache: 'public, max-age=86400', compress: false },
-      '/icon-512.png': { file: 'icons/icon-512.png', type: 'image/png', cache: 'public, max-age=86400', compress: false },
-      '/apple-touch-icon.png': { file: 'icons/apple-touch-icon.png', type: 'image/png', cache: 'public, max-age=86400', compress: false },
-      '/icon.svg': { file: 'icon.svg', type: 'image/svg+xml', cache: 'public, max-age=86400' },
-      '/icon-maskable-512.png': { file: 'icons/icon-maskable-512.png', type: 'image/png', cache: 'public, max-age=86400', compress: false },
-      '/favicon.svg': { file: 'icons/favicon.svg', type: 'image/svg+xml', cache: 'public, max-age=86400' },
-      '/mark.svg': { file: 'icons/mark.svg', type: 'image/svg+xml', cache: 'public, max-age=86400' },
-      '/favicon-32.png': { file: 'icons/favicon-32.png', type: 'image/png', cache: 'public, max-age=86400', compress: false },
-      '/vendor/mermaid.min.js': { file: 'vendor/mermaid.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.9.4/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.9.4/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.10.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.10.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.11.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.11.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.12.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.12.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.13.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.13.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.14.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.14.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.15.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.15.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.16.1/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.16.1/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.17.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.17.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.18.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.18.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.19.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.19.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.20.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.20.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.21.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.21.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.22.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.22.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.23.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.23.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.24.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.24.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.25.0/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.25.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/vendor/mrmd-document/0.10.1/mrmd-document.iife.min.js': { file: 'vendor/mrmd-document/0.10.1/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
-      '/chattering.apk': { file: 'chattering.apk', type: 'application/vnd.android.package-archive', cache: 'no-store', compress: false },
-    }[u.pathname];
+    const staticFile = Object.prototype.hasOwnProperty.call(APP_FILES, u.pathname) ? APP_FILES[u.pathname] : null;
     if (staticFile) {
       return sendStatic(req, res, path.join(__dirname, staticFile.file), staticFile.type, staticFile.cache, { compress: staticFile.compress !== false });
     }
@@ -18460,6 +18466,9 @@ async function handleRequest(req, res) {
         console.log('[public links] ' + identity.user.name + ' turned the public address ' + (next.on ? 'on as ' + next.name : 'off'));
         json(res, 200, publicLinksView(identity));
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/shares/scan' && req.method === 'GET') {
+      try { json(res, 200, await sharesApi(identity, req, u)); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/shares' && req.method === 'GET') {
       // Shared links (design/92): the owner side.
       try { json(res, 200, await sharesApi(identity, req, u)); }
@@ -20695,6 +20704,13 @@ const shareLimiter = authGuard.createLimiter();
 async function resolveShare(share) {
   const owner = identityOfUserId(share.createdBy);
   if (!owner) throw Object.assign(new Error('The person who shared this is no longer on that computer.'), { status: 410 });
+  if (share.kind === 'conversation') {
+    if (share.mode === 'snapshot') {
+      if (!fs.existsSync(shareSnapshotFile(share.id))) throw Object.assign(new Error('This copy of the conversation is gone.'), { status: 410 });
+    } else if (!index[share.key]) throw Object.assign(new Error('This conversation was removed.'), { status: 410 });
+    if (index[share.key] && !canDo(owner, 'see', targetOf(share.key))) throw Object.assign(new Error('The person who shared this can no longer share it.'), { status: 410 });
+    return { key: share.key, owner: { name: owner.user.name || 'Someone' } };
+  }
   let abs;
   try { abs = await editableFilePath(share.path); } catch { throw Object.assign(new Error('This document was moved or deleted.'), { status: 410 }); }
   if (!DOCUMENT_EXT.test(abs)) throw Object.assign(new Error('This document can no longer be shared.'), { status: 410 });
@@ -20710,6 +20726,8 @@ const SHARE_STATIC = {
   'document-look.js': { file: 'document-look.js', type: 'text/javascript; charset=utf-8' },
   'document-editor.css': { file: 'document-editor.css', type: 'text/css; charset=utf-8' },
   'mermaid.js': { file: 'vendor/mermaid.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
+  'viewer.js': { file: 'share-page/viewer.js', type: 'text/javascript; charset=utf-8' },
+  'viewer.css': { file: 'share-page/viewer.css', type: 'text/css; charset=utf-8' },
   'mrmd.js': { file: 'vendor/mrmd-document/0.25.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
 };
 const shareStaticCache = new Map();
@@ -20725,6 +20743,90 @@ function shareStaticFile(name) {
     return out;
   } catch { return null; }
 }
+// ---- a shared conversation (design/92) ----
+// What a visitor's page gets: the conversation as /api/session gives it to
+// a reader who may not act, under the name "shared" (never its file's), with
+// what only the owner's screens use left out, and anything that looks like
+// a secret hidden. Live: read now. Snapshot: the copy kept when the link was
+// made (or last refreshed), hidden the same way when it is served.
+const SHARE_KEY = 'shared';
+const shareSnapshotFile = id => path.join(DATA_DIR, 'share-snapshots', id + '.json');
+const SHARE_ENTRY_DROP = ['relPath', 'notePath', 'notedAt', 'delegationParentPath', 'artifacts', 'memoryHash', 'timelineTitleHash'];
+async function conversationRaw(key) {
+  if (!index[key]) throw Object.assign(new Error('This conversation was removed.'), { status: 410 });
+  const data = JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8'));
+  const participants = (index[key].participants || []).map(p => userById(usersLib.resolveId(roster, p.id)) || p);
+  const users = participants.map(p => p && p.id ? { id: p.id, name: p.name, glyph: p.glyph, color: p.color } : null).filter(Boolean);
+  const payload = { ...data, mirror: null, canAct: false, participants: users, project: projectNameOf(index[key].cwd, key), importCopyOf: null,
+    codexCopies: null, liveTerminal: null, selectedModels: [], attachedContext: [], reading: null, speedCalibration: {} };
+  const entry = { ...index[key], participants: users };
+  return { payload, entry, users };
+}
+function shareFace(raw) {
+  const entry = { ...raw.entry, key: SHARE_KEY };
+  for (const k of SHARE_ENTRY_DROP) delete entry[k];
+  const payload = { ...raw.payload, key: SHARE_KEY };
+  for (const k of SHARE_ENTRY_DROP) delete payload[k];
+  return { payload: sharesLib.redactDeep(payload), entry: sharesLib.redactDeep(entry), users: raw.users };
+}
+async function writeShareSnapshot(share) {
+  const raw = await conversationRaw(share.key);
+  const file = shareSnapshotFile(share.id);
+  await fsp.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+  await writeFileAtomic(file, JSON.stringify({ v: 1, at: Date.now(), ...raw }));
+  try { await fsp.chmod(file, 0o600); } catch {}
+}
+async function sharedConversation(share, { entryOnly = false } = {}) {
+  await resolveShare(share);
+  let raw;
+  if (share.mode === 'snapshot') raw = JSON.parse(await fsp.readFile(shareSnapshotFile(share.id), 'utf8'));
+  else if (entryOnly) {
+    const users = (index[share.key].participants || []).map(p => userById(usersLib.resolveId(roster, p.id)) || p).map(p => p && p.id ? { id: p.id, name: p.name, glyph: p.glyph, color: p.color } : null).filter(Boolean);
+    raw = { payload: {}, entry: { ...index[share.key], participants: users }, users };
+  } else raw = await conversationRaw(share.key);
+  return shareFace(raw);
+}
+// What a conversation would carry out, for the owner before sharing it.
+async function conversationSecrets(key) {
+  const raw = await conversationRaw(key);
+  const found = [];
+  const said = { user: 'a message of yours', assistant: 'an answer', tool: 'a command', toolresult: 'a tool\u2019s output', thinking: 'its thinking' };
+  (raw.payload.messages || []).forEach((m, i) => sharesLib.redactDeep(m, found, (said[m.role] || 'a message') + ', message ' + (i + 1)));
+  sharesLib.redactDeep({ title: raw.entry.title, timelineTitle: raw.entry.timelineTitle }, found, 'title');
+  const kinds = {};
+  for (const f of found) kinds[f.kind] = (kinds[f.kind] || 0) + 1;
+  return { count: found.length, kinds, examples: found.slice(0, 8).map(f => ({ kind: f.kind, where: f.where })) };
+}
+// The viewer: Chattering's own page, read-only. share-page/viewer.js loads
+// before anything and answers the app's requests from the share's routes.
+// Inline scripts are allowed by fingerprint (the page's own, no others).
+let viewerCache = null;
+function shareViewerPage() {
+  const file = path.join(__dirname, 'app.html');
+  const st = fs.statSync(file);
+  if (viewerCache && viewerCache.mtimeMs === st.mtimeMs) return viewerCache;
+  let html = fs.readFileSync(file, 'utf8');
+  html = html.replace(/<head>/i, '<head>\n<script src="/_c/share/viewer.js"></script>');
+  html = html.replace(/<\/head>/i, '<link rel="stylesheet" href="/_c/share/viewer.css">\n</head>');
+  // The owner's own theme sheet and install manifest are not the visitor's.
+  // (The tags stay, inert: the app finds them by id.)
+  html = html.replace(/(<link id="customThemeSheet" )rel="stylesheet"/i, '$1rel="x-inert"').replace(/(<link id="appManifest" )rel="manifest"/i, '$1rel="x-inert"');
+  const hashes = [];
+  for (const m of html.matchAll(/<script>([\s\S]*?)<\/script>/gi)) hashes.push("'sha256-" + crypto.createHash('sha256').update(m[1], 'utf8').digest('base64') + "'");
+  const csp = ["default-src 'self'", "script-src 'self' " + hashes.join(' '), "style-src 'self' 'unsafe-inline'", "img-src 'self' data: blob: https:",
+    "font-src 'self' data:", "connect-src 'self'", "media-src 'self' data: blob:", "worker-src 'self' blob:", "frame-src 'self'", "object-src 'none'",
+    "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'"].join('; ');
+  viewerCache = { mtimeMs: st.mtimeMs, html: Buffer.from(html), csp };
+  return viewerCache;
+}
+// The app's files the viewer may load: what the app serves, minus its
+// service worker (it would take over the share's address) and downloads.
+function shareAppFile(pathname) {
+  if (pathname === '/sw.js' || !Object.prototype.hasOwnProperty.call(APP_FILES, pathname)) return null;
+  const f = APP_FILES[pathname];
+  if (/\.apk$/.test(f.file)) return null;
+  return { send: (req, res) => sendStatic(req, res, path.join(__dirname, f.file), f.type, f.cache, { compress: f.compress !== false }) };
+}
 const shareGate = sharesLib.createShareGate({
   store: shareStore, collab, resolve: resolveShare, limiter: shareLimiter,
   clientAddress: req => req.socket.visitorIp || authGuard.clientAddress(req),
@@ -20733,6 +20835,15 @@ const shareGate = sharesLib.createShareGate({
   isSecure: req => !!req.socket.encrypted || (['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress) && String(req.headers['x-forwarded-proto'] || '').toLowerCase() === 'https'),
   serveFile: fileMedia.serveFile, mimeOf: previewLib.mimeOf, staticFile: shareStaticFile,
   acceptWebSocket, refuseUpgrade, log: msg => console.error(msg),
+  conversation: sharedConversation, viewerPage: shareViewerPage, appFile: shareAppFile,
+  conversationMedia: async (share, params, req, res) => {
+    await resolveShare(share);
+    try {
+      const media = await transcriptImage(share.key, params.get('entry'), params.get('path'));
+      res.writeHead(200, { 'Content-Type': media.mime, 'Content-Length': media.body.length, 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff' });
+      res.end(media.body);
+    } catch (e) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('not found'); }
+  },
 });
 setInterval(() => { shareGate.sweep().catch(() => {}); }, 60e3).unref();
 // This computer's public address (design/92, site-home.js): visitors come
@@ -20790,7 +20901,7 @@ function shareLinks(share) {
 }
 function shareView(share) {
   const maker = usersLib.findUser(roster, usersLib.resolveId(roster, share.createdBy));
-  return { id: share.id, kind: share.kind, path: share.path, title: share.title, role: share.role, createdAt: share.createdAt, expiresAt: share.expiresAt,
+  return { id: share.id, kind: share.kind, path: share.path, key: share.key, mode: share.mode, snapshotAt: share.snapshotAt, title: share.title, role: share.role, createdAt: share.createdAt, expiresAt: share.expiresAt,
     revokedAt: share.revokedAt, opens: share.opens, lastOpenAt: share.lastOpenAt, by: maker ? { id: maker.id, name: maker.name } : { id: share.createdBy, name: 'someone' },
     active: !!shareStore.active(share.id), live: shareGate.liveCount(share.id), links: share.revokedAt ? [] : shareLinks(share) };
 }
@@ -20799,10 +20910,27 @@ function canManageShare(identity, share) { return policy.isOwnerTier(identity) |
 async function sharesApi(identity, req, u) {
   const body = req.method === 'POST' ? await readJsonBody(req, 8192) : null;
   if (req.method === 'GET') {
+    if (u.pathname === '/api/shares/scan') {
+      const key = u.searchParams.get('key') || '';
+      if (!index[key]) throw Object.assign(new Error('No such conversation.'), { status: 404 });
+      assertCan(identity, 'see', targetOf(key), 'this conversation');
+      return await conversationSecrets(key);
+    }
     const want = u.searchParams.get('path') ? path.resolve(expandHomePath(u.searchParams.get('path'))) : null;
-    return { shares: shareStore.list(s => !s.revokedAt && canManageShare(identity, s) && (!want || s.path === want)).map(shareView) };
+    const wantKey = u.searchParams.get('key') || null;
+    return { shares: shareStore.list(s => !s.revokedAt && canManageShare(identity, s) && (!want || s.path === want) && (!wantKey || s.key === wantKey)).map(shareView) };
   }
   const at = u.pathname;
+  if (at === '/api/shares' && body.kind === 'conversation') {
+    const key = String(body.key || '');
+    if (!index[key]) throw Object.assign(new Error('No such conversation.'), { status: 404 });
+    assertCan(identity, 'see', targetOf(key), 'this conversation');
+    const mode = body.mode === 'snapshot' ? 'snapshot' : 'live';
+    const share = shareStore.create({ kind: 'conversation', key, mode, title: String(body.title || index[key].title || 'Conversation').trim().slice(0, 200), createdBy: identity.user.id, expiresAt: body.expiresAt ?? null });
+    if (mode === 'snapshot') { try { await writeShareSnapshot(share); } catch (e) { shareStore.revoke(share.id); throw e; } }
+    console.log(`[shares] ${identity.user.name} shared a conversation (${mode}) as ${share.id}`);
+    return { share: shareView(share) };
+  }
   if (at === '/api/shares') {
     const abs = await editableFilePath(String(body.path || ''));
     if (!DOCUMENT_EXT.test(abs)) throw Object.assign(new Error('Only Markdown documents can be shared by link for now.'), { status: 400 });
@@ -20814,14 +20942,21 @@ async function sharesApi(identity, req, u) {
   const share = shareStore.get(String(body.id || ''));
   if (!share || !canManageShare(identity, share)) throw Object.assign(new Error('No such link.'), { status: 404 });
   if (at === '/api/shares/change') {
-    if (body.role === 'edit' && share.role !== 'edit') assertPathAccess(identity, share.path, 'act');
+    if (share.kind === 'file' && body.role === 'edit' && share.role !== 'edit') assertPathAccess(identity, share.path, 'act');
     const roleChanged = body.role !== undefined && body.role !== share.role;
-    shareStore.change(share.id, { role: body.role, expiresAt: body.expiresAt, newSecret: !!body.newSecret });
-    if (roleChanged || body.newSecret) shareGate.closeShare(share.id, body.newSecret ? 'this link was replaced' : 'this link changed');
+    const modeChanged = body.mode !== undefined && body.mode !== share.mode;
+    // A snapshot is (re)taken when a link becomes one, or when asked.
+    if (share.kind === 'conversation' && ((modeChanged && body.mode === 'snapshot') || (body.refreshSnapshot && (body.mode || share.mode) === 'snapshot'))) {
+      await writeShareSnapshot(share);
+      body.snapshotAt = Date.now();
+    }
+    shareStore.change(share.id, { role: body.role, mode: body.mode, expiresAt: body.expiresAt, newSecret: !!body.newSecret, ...(body.snapshotAt ? { snapshotAt: body.snapshotAt } : {}) });
+    if (roleChanged || modeChanged || body.newSecret || body.refreshSnapshot) shareGate.closeShare(share.id, body.newSecret ? 'this link was replaced' : 'this link changed');
     return { share: shareView(share) };
   }
   if (at === '/api/shares/revoke') {
     shareStore.revoke(share.id);
+    if (share.kind === 'conversation') fsp.rm(shareSnapshotFile(share.id), { force: true }).catch(() => {});
     shareGate.closeShare(share.id, 'this link was turned off');
     console.log(`[shares] ${identity.user.name} turned off ${share.id}`);
     return { share: shareView(share) };

@@ -1,0 +1,24 @@
+/* A shared conversation, read in Chattering's own page (design/92): only
+   the conversation and the reading tools show. What changes anything, or
+   leads elsewhere on the owner's computer, is not drawn (and the share's
+   server refuses it anyway). viewer.js explains the rest. */
+.chattering-viewer #side, .chattering-viewer #sideUnfold, .chattering-viewer #phoneBar, .chattering-viewer #filesToggle, .chattering-viewer #rightFiles,
+.chattering-viewer #projSort, .chattering-viewer #newLoose, .chattering-viewer #brand, .chattering-viewer #navBack, .chattering-viewer #navFwd,
+.chattering-viewer #chMove, .chattering-viewer #chNew, .chattering-viewer #shareBtn, .chattering-viewer #convPresence, .chattering-viewer #convHeadExtra,
+.chattering-viewer #conversationFilesSwitch, .chattering-viewer #conversationFiles, .chattering-viewer #ticker, .chattering-viewer #count,
+.chattering-viewer #activeBtn, .chattering-viewer #machineBtn, .chattering-viewer #settingsBtn, .chattering-viewer #phoneMore, .chattering-viewer #barFold,
+.chattering-viewer #agentsPop, .chattering-viewer #machinePop, .chattering-viewer #composerDock, .chattering-viewer #runCards,
+.chattering-viewer .msg-actions, .chattering-viewer .msg-edit, .chattering-viewer .answer-actions { display: none !important; }
+/* The project's name is a label here, not a way into the owner's projects. */
+.chattering-viewer #chProject { pointer-events: none; }
+/* The owner's side list is gone: the conversation takes the page. */
+.chattering-viewer body { --side-w: 0px; }
+.chattering-viewer #viewerBar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 40; display: flex; gap: 12px; align-items: center; justify-content: center;
+  padding: 8px 16px; font: 12px var(--font); color: var(--text-dim); background: var(--surface-1); border-top: 1px solid var(--border); }
+.chattering-viewer #viewerBar b { color: var(--text); font-weight: 600; }
+.chattering-viewer #viewerBar .vb-live::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--live, var(--green)); margin-right: 6px; vertical-align: 1px; }
+.chattering-viewer #viewerBar a { color: var(--text-faint); }
+.chattering-viewer #view { padding-bottom: 48px; }
+.viewer-ended { max-width: 440px; margin: 15vh auto; padding: 22px; border: 1px solid var(--border); background: var(--surface-1); color: var(--text); font-family: var(--font); }
+.viewer-ended h1 { font-size: 17px; margin: 0 0 8px; }
+.viewer-ended p { color: var(--text-dim); margin: 0; line-height: 1.5; }

@@ -58,6 +58,8 @@
     }
     if (got.error) return stop(got.status === 429 ? 'Please wait' : 'This link does not open', got.error);
     info = got.info;
+    // A conversation is read in Chattering's own page, read-only (viewer.js).
+    if (info.kind === 'conversation') { location.replace(base + '/view'); return; }
     document.title = info.title + ' · shared by ' + info.owner.name;
     const name = localStorage.getItem(NAME_KEY);
     if (name) return begin(name);

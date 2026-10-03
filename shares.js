@@ -23,6 +23,14 @@
 //   again at any time; "new link" bumps the generation, which kills the
 //   old link and every session opened with it.
 //
+// Two kinds of share:
+//   file          one Markdown document, live, view or edit (collab.js)
+//   conversation  one conversation, view only, read in Chattering's own
+//                 reader (share-page/viewer.js runs the app read-only);
+//                 mode 'live' follows it as it grows, 'snapshot' shows it as
+//                 it was when the link was made (a copy kept here). Anything
+//                 that looks like a secret is hidden before it leaves.
+//
 // Sessions: a signed cookie naming the share, its generation and a random
 // visitor id. Stateless, but checked against the share on every request:
 // revoking, expiring or changing the link takes effect at once, and open
@@ -33,6 +41,8 @@ const path = require('node:path');
 
 const ID_RE = /^[a-z2-7]{16}$/;
 const ROLES = ['view', 'edit'];
+const KINDS = ['file', 'conversation'];
+const MODES = ['live', 'snapshot'];
 const SESSION_MS = 30 * 24 * 3600e3;
 const KEEP_REVOKED_MS = 30 * 24 * 3600e3;
 const MAX_LIVE_PER_SHARE = 50;
@@ -113,14 +123,20 @@ class ShareStore {
   get(id) { return this.shares.get(String(id || '')) || null; }
   list(filter = () => true) { return [...this.shares.values()].filter(filter).sort((a, b) => b.createdAt - a.createdAt); }
 
-  create({ kind = 'file', path: abs, title, role, createdBy, expiresAt = null }) {
-    if (kind !== 'file') throw httpError(400, 'Only files can be shared for now.');
-    if (!ROLES.includes(role)) throw httpError(400, 'A link can view or edit.');
-    if (!abs || !path.isAbsolute(abs)) throw httpError(400, 'Which file?');
+  create({ kind = 'file', path: abs, key, mode, title, role, createdBy, expiresAt = null }) {
+    if (!KINDS.includes(kind)) throw httpError(400, 'Files and conversations can be shared.');
+    if (kind === 'file') {
+      if (!ROLES.includes(role)) throw httpError(400, 'A link can view or edit.');
+      if (!abs || !path.isAbsolute(abs)) throw httpError(400, 'Which file?');
+    } else {
+      if (!key) throw httpError(400, 'Which conversation?');
+      if (!MODES.includes(mode)) throw httpError(400, 'A conversation is shared live or as a snapshot.');
+      role = 'view';
+    }
     if (!createdBy) throw httpError(400, 'Who is sharing?');
     let id;
     do { id = newShareId(); } while (this.shares.has(id));
-    const share = normalizeShare({ id, kind, path: abs, title: title || path.basename(abs), role, createdBy, createdAt: this.now(), expiresAt: cleanExpiry(expiresAt, this.now()), gen: 1 });
+    const share = normalizeShare({ id, kind, path: abs, key, mode, title: title || (abs ? path.basename(abs) : 'Conversation'), role, createdBy, createdAt: this.now(), expiresAt: cleanExpiry(expiresAt, this.now()), gen: 1, snapshotAt: kind === 'conversation' && mode === 'snapshot' ? this.now() : null });
     this.shares.set(id, share);
     this.save();
     return share;
@@ -128,7 +144,15 @@ class ShareStore {
   change(id, patch) {
     const s = this.shares.get(id);
     if (!s || s.revokedAt) throw httpError(404, 'This link no longer exists.');
-    if (patch.role !== undefined) { if (!ROLES.includes(patch.role)) throw httpError(400, 'A link can view or edit.'); s.role = patch.role; }
+    if (patch.role !== undefined) {
+      if (!ROLES.includes(patch.role) || (s.kind === 'conversation' && patch.role !== 'view')) throw httpError(400, s.kind === 'conversation' ? 'A conversation is shared to read.' : 'A link can view or edit.');
+      s.role = patch.role;
+    }
+    if (patch.mode !== undefined) {
+      if (s.kind !== 'conversation' || !MODES.includes(patch.mode)) throw httpError(400, 'A conversation is shared live or as a snapshot.');
+      s.mode = patch.mode;
+    }
+    if (patch.snapshotAt !== undefined) s.snapshotAt = patch.snapshotAt;
     if (patch.expiresAt !== undefined) s.expiresAt = cleanExpiry(patch.expiresAt, this.now());
     if (patch.newSecret) s.gen += 1;
     s.changedAt = this.now();
@@ -179,8 +203,12 @@ function cleanExpiry(at, now) {
   return Math.round(n);
 }
 function normalizeShare(s) {
-  if (!s || !ID_RE.test(String(s.id || '')) || !ROLES.includes(s.role) || !s.path || !s.createdBy) return null;
-  return { id: s.id, kind: 'file', path: String(s.path), title: String(s.title || path.basename(String(s.path))).slice(0, 200), role: s.role,
+  if (!s || !ID_RE.test(String(s.id || '')) || !ROLES.includes(s.role) || !s.createdBy) return null;
+  const kind = KINDS.includes(s.kind) ? s.kind : 'file';
+  if (kind === 'file' && !s.path) return null;
+  if (kind === 'conversation' && (!s.key || !MODES.includes(s.mode))) return null;
+  const where = kind === 'file' ? { path: String(s.path) } : { key: String(s.key), mode: s.mode, snapshotAt: Number(s.snapshotAt) || null };
+  return { id: s.id, kind, ...where, title: String(s.title || (s.path ? path.basename(String(s.path)) : 'Conversation')).slice(0, 200), role: kind === 'conversation' ? 'view' : s.role,
     createdBy: String(s.createdBy), createdAt: Number(s.createdAt) || 0, expiresAt: Number(s.expiresAt) || null,
     revokedAt: Number(s.revokedAt) || null, changedAt: Number(s.changedAt) || null, gen: Math.max(1, Number(s.gen) || 1),
     opens: Number(s.opens) || 0, lastOpenAt: Number(s.lastOpenAt) || null };
@@ -235,12 +263,20 @@ function createShareGate(deps) {
   async function view(share, visitorId) {
     const r = await deps.resolve(share);
     return { id: share.id, title: share.title, role: share.role, kind: share.kind, expiresAt: share.expiresAt,
-      owner: { name: r.owner && r.owner.name || 'Someone' }, visitor: visitorId, fileName: path.basename(r.abs) };
+      owner: { name: r.owner && r.owner.name || 'Someone' }, visitor: visitorId,
+      ...(share.kind === 'file' ? { fileName: path.basename(r.abs) } : { mode: share.mode, snapshotAt: share.snapshotAt }) };
   }
   function session(req, id) { return deps.store.readSession(id, cookieOf(req, id)); }
 
   async function handle(req, res) {
     const u = new URL(req.url, 'http://share.invalid');
+    // The app's own code and styles, for the read-only conversation viewer:
+    // only the files the app itself serves (APP_FILES in server.js), at
+    // their own paths. Public code; nothing of anyone's.
+    if ((req.method === 'GET' || req.method === 'HEAD') && deps.appFile && deps.appFile(u.pathname)) {
+      await deps.appFile(u.pathname).send(req, res);
+      return true;
+    }
     if (u.pathname.startsWith('/_c/share/')) {
       if (req.method !== 'GET' && req.method !== 'HEAD') { send(res, 405, 'Read-only'); return true; }
       const f = deps.staticFile(u.pathname.slice('/_c/share/'.length));
@@ -293,10 +329,11 @@ function createShareGate(deps) {
       }
       const sess = session(req, id);
       if (!sess) { json(res, 401, { error: 'This link was turned off or replaced.' }); return true; }
-      if (rest === '/asset' && (req.method === 'GET' || req.method === 'HEAD')) {
+      if (sess.share.kind === 'file' && rest === '/asset' && (req.method === 'GET' || req.method === 'HEAD')) {
         await asset(req, res, sess.share, u.searchParams.get('src') || '');
         return true;
       }
+      if (sess.share.kind === 'conversation' && await conversationRoute(req, res, sess.share, rest, u)) return true;
       send(res, 404, 'Not found');
       return true;
     } catch (e) {
@@ -304,6 +341,69 @@ function createShareGate(deps) {
       else try { res.end(); } catch {}
       if (!e.status) deps.log('[shares] ' + e.message);
       return true;
+    }
+  }
+
+  // ---- a shared conversation ----
+  // The viewer is Chattering's own page (app.html) read-only: share-page/
+  // viewer.js loads first and answers the app's requests from these routes,
+  // which name nothing but this one conversation. Its scripts are allowed by
+  // their fingerprints only (the page's own), so text in a conversation can
+  // never run as code here.
+  const conversationStreams = new Map(); // share id → Set(res)
+  async function conversationRoute(req, res, share, rest, u) {
+    const get = req.method === 'GET' || req.method === 'HEAD';
+    if (rest === '/view' && get) {
+      await deps.resolve(share);
+      const page = deps.viewerPage();
+      res.writeHead(200, { ...strict(), 'Content-Security-Policy': page.csp, 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(req.method === 'HEAD' ? undefined : page.html);
+      return true;
+    }
+    if (rest === '/api/session' && get) {
+      const c = await deps.conversation(share);
+      json(res, 200, c.payload);
+      return true;
+    }
+    if (rest === '/api/sessions' && get) {
+      const c = await deps.conversation(share, { entryOnly: true });
+      json(res, 200, [c.entry]);
+      return true;
+    }
+    if (rest === '/api/users' && get) {
+      const c = await deps.conversation(share, { entryOnly: true });
+      json(res, 200, c.users || []);
+      return true;
+    }
+    if (rest === '/api/media' && get) {
+      await deps.conversationMedia(share, u.searchParams, req, res);
+      return true;
+    }
+    if (rest === '/api/events' && get) {
+      await deps.resolve(share);
+      res.writeHead(200, { ...strict(), 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+      res.write('retry: 5000\n\n');
+      if (share.mode !== 'live') return true; // a snapshot never changes
+      const set = conversationStreams.get(share.id) || new Set();
+      if (set.size >= MAX_LIVE_PER_SHARE) { res.end(); return true; }
+      set.add(res); conversationStreams.set(share.id, set);
+      const beat = setInterval(() => { try { res.write(': ping\n\n'); } catch {} }, 25000);
+      req.on('close', () => { clearInterval(beat); set.delete(res); if (!set.size) conversationStreams.delete(share.id); });
+      return true;
+    }
+    return false;
+  }
+  // The server says a conversation changed: live shares of it tell their pages,
+  // which fetch it again (the app's own 'update' event, under the name the
+  // page knows it by).
+  async function conversationChanged(key) {
+    for (const [id, set] of conversationStreams) {
+      const share = deps.store.active(id);
+      if (!share || share.kind !== 'conversation' || share.key !== key || share.mode !== 'live') continue;
+      let c;
+      try { c = await deps.conversation(share, { entryOnly: true }); } catch { closeShare(id, 'this link has ended'); continue; }
+      const line = 'data: ' + JSON.stringify({ type: 'update', ...c.entry }) + '\n\n';
+      for (const res of set) { try { res.write(line); } catch {} }
     }
   }
 
@@ -412,27 +512,79 @@ function createShareGate(deps) {
   // Close every live connection of a share: revoked, expired, its link
   // replaced, or its role changed (they reconnect with the new role, or not).
   function closeShare(id, why = 'this link changed') {
-    const set = live.get(id);
-    if (!set) return 0;
     let n = 0;
-    for (const c of [...set]) { try { c.close(4403, why); n++; } catch {} }
+    for (const c of [...(live.get(id) || [])]) { try { c.close(4403, why); n++; } catch {} }
+    for (const res of [...(conversationStreams.get(id) || [])]) { try { res.write('event: ended\ndata: ' + JSON.stringify({ why }) + '\n\n'); res.end(); n++; } catch {} }
+    conversationStreams.delete(id);
     return n;
   }
-  function liveCount(id) { return (live.get(id) || new Set()).size; }
+  function liveCount(id) { return (live.get(id) || new Set()).size + (conversationStreams.get(id) || new Set()).size; }
   // Called every minute: a share that expired, or whose maker lost the
   // right to it, closes its live connections too, not only new requests.
   async function sweep() {
-    for (const id of [...live.keys()]) {
+    for (const id of [...new Set([...live.keys(), ...conversationStreams.keys()])]) {
       const s = deps.store.active(id);
       if (!s) { closeShare(id, 'this link has ended'); continue; }
       try { await deps.resolve(s); } catch { closeShare(id, 'this link has ended'); }
     }
   }
-  return { handle, upgrade, closeShare, liveCount, sweep };
+  return { handle, upgrade, closeShare, liveCount, sweep, conversationChanged };
 }
+// ---- secrets: found, and hidden before a conversation leaves ----
+// What a conversation shared by link must not carry: keys, tokens, private
+// keys, passwords given in a command. The patterns are the common shapes;
+// a finding names its kind and where, never the value itself.
+const SECRET_PATTERNS = [
+  ['private key', /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g],
+  ['API key', /\b(?:sk|pk|rk)-(?:ant-|proj-|live-|test-)?[A-Za-z0-9_-]{20,}/g],
+  ['GitHub token', /\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}/g],
+  ['AWS key', /\bAKIA[0-9A-Z]{16}\b/g],
+  ['Google key', /\bAIza[0-9A-Za-z_-]{35}\b/g],
+  ['Slack token', /\bxox[abposr]-[A-Za-z0-9-]{10,}/g],
+  ['access token', /\b(?:hf|glpat|npm|pypi|tskey|xai|gsk)[-_][A-Za-z0-9_-]{20,}/g],
+  ['JWT', /\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g],
+  ['authorization header', /\b(?:Bearer|sso-key|Basic)\s+[A-Za-z0-9._~+\/:=-]{16,}/g],
+  ['credential in a URL', /\b[a-z][a-z0-9+.-]*:\/\/[^\s:@\/]+:[^\s@\/]{3,}@/gi],
+  ['secret value', /\b[A-Za-z0-9_]*(?:API_?KEY|SECRET|TOKEN|PASSWORD|PASSWD|AUTH_?CODE|authCode|PRIVATE_?KEY)[A-Za-z0-9_]*\s*["']?\s*[:=]\s*["']?(?!\$|<|\*{3}|x{6})[^\s"',;]{8,}/gi],
+];
+const HIDDEN = '[hidden: looks like a secret]';
+function redactText(text, found = null, where = '') {
+  if (typeof text !== 'string' || text.length < 8) return text;
+  let out = text;
+  for (const [kind, re] of SECRET_PATTERNS) {
+    re.lastIndex = 0;
+    out = out.replace(re, m => {
+      if (m.includes(HIDDEN)) return m;
+      // "NAME = value": only a value shaped like a key (long, letters and
+      // digits mixed), not code (process.env.TOKEN, a word, a placeholder).
+      if (kind === 'secret value') {
+        const v = m.replace(/^[^:=]*[:=]\s*["']?/, '');
+        if (!/^[A-Za-z0-9_\-+\/=.]{12,}$/.test(v) || !/\d/.test(v) || !/[A-Za-z]/.test(v) || /^[a-z_]+\.[a-z_.]+$/i.test(v)) return m;
+        const keep = m.slice(0, m.length - v.length);
+        if (found && found.length < 200) found.push({ kind, where, length: v.length });
+        return keep + HIDDEN;
+      }
+      if (found && found.length < 200) found.push({ kind, where, length: m.length });
+      return HIDDEN;
+    });
+  }
+  return out;
+}
+// Every string in a value, redacted; `found` collects what was hidden.
+function redactDeep(value, found = null, where = '') {
+  if (typeof value === 'string') return redactText(value, found, where);
+  if (Array.isArray(value)) return value.map((v, i) => redactDeep(v, found, where));
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = redactDeep(v, found, where);
+    return out;
+  }
+  return value;
+}
+
 function makeBudget({ bytes = BUDGET.bytes, perMs = BUDGET.perMs } = {}) {
   let start = Date.now(), used = 0;
   return { take(n) { const now = Date.now(); if (now - start > perMs) { start = now; used = 0; } used += n; return used <= bytes; } };
 }
 
-module.exports = { ShareStore, createShareGate, newShareId, cleanVisitorName, visitorColor, makeBudget, ID_RE, ROLES, MESSAGE_MAX };
+module.exports = { ShareStore, createShareGate, newShareId, cleanVisitorName, visitorColor, makeBudget, redactText, redactDeep, ID_RE, ROLES, KINDS, MODES, MESSAGE_MAX, HIDDEN };

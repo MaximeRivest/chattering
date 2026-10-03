@@ -145,6 +145,43 @@ share page only. Differences that remain on purpose: no Run, AI, history
 or line gutter for visitors, and the visitor's own light or dark mode
 rather than the owner's theme.
 
+### Conversations (built 2026-10-03)
+
+A conversation is shared **live** (new messages appear as they are
+written) or as a **snapshot** (a copy kept when the link is made, which the
+owner can update), always read only. Owner: the conversation's "who can see
+this" dialog → *Share by link…*, which first says what Chattering found that
+looks like a secret.
+
+- **Read in Chattering's own page, not a copy of it.** The share serves
+  `app.html` itself at `/s/<id>/view`, with `share-page/viewer.js` first:
+  it answers the app's requests from the share's routes (`/s/<id>/api/
+  session`, `sessions`, `users`, `media`, `events`), which name only this
+  conversation; everything else gets "not found", and anything that would
+  change something is refused (by the page, and the server has no route for
+  it). `viewer.css` hides the composer, the side list, message actions and
+  the owner's controls; the app itself only skips its composer when
+  `CHATTERING_VIEWER` is set. The app's files are served at their own paths
+  from `APP_FILES` (the table the app serves from), minus its service worker.
+- **Nothing in a conversation can run as code there**: the page's policy
+  allows its own inline scripts by their SHA-256 and nothing else.
+- **The page knows it as "shared"**: no file name, no internal key; the
+  index fields only the owner's screens use are left out.
+- **Secrets are hidden before they leave** (`redactDeep` in shares.js:
+  private keys, provider API keys, GitHub/AWS/Google/Slack tokens, JWTs,
+  authorization headers, credentials in URLs, `NAME_KEY=…` values shaped
+  like a key). A snapshot is kept raw on this computer
+  (`share-snapshots/<id>.json`, 0600) and hidden when served, so better
+  patterns apply to old copies too.
+- **Live** follows the app's own `update` event for that conversation.
+
+Trade-offs: what a step changed in files (the "changes" under a box of
+steps), artifacts and widgets, and a reply while it is being written are
+not shown to visitors (the first two would reach beyond the transcript; the
+third arrives when the message is saved). Secret detection is by shape:
+a password in plain words, or a code like a transfer code, is not caught,
+which the dialog says. The visitor sees their own light or dark mode.
+
 ## The public address (built 2026-10-02)
 
 `https://<name>.rockfrog.site` reaches one computer. Modules: relay

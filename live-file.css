@@ -120,3 +120,4 @@
 .sh-ui-pub button { margin-left: var(--sp-2); font-family: var(--font); }
 .sh-ui-small { font-size: var(--fs-label); color: var(--text-faint); }
 .sh-ui .linklike { background: none; border: 0; padding: 0; color: var(--cyan); text-decoration: underline; cursor: pointer; font: inherit; }
+.sh-ui-warn { font-size: var(--fs-label); color: var(--warn); line-height: 1.5; margin: 0 0 var(--sp-2); }
