@@ -6,22 +6,24 @@
 <title>Frog spells — a demo</title>
 <style>
 :root {
-  --bg: #f4f7f4; --paper: #ffffff; --ink: #18201b; --dim: #5d6a61; --line: #d9e2db;
-  --accent: #5fae6e; --accent-ink: #0f3d1a; --sel: #b9e3c1; --mark: #fff0a8; --mark-ink: #4a3b00;
-  --card: #ffffff; --card-line: #cfdad2; --hover: #eef6ef; --shadow: 0 10px 30px rgba(20, 40, 25, .18), 0 2px 6px rgba(20, 40, 25, .10);
-  --purple: #8a6cc4;
+  --bg: #f3ede1; --paper: #fffaf0; --ink: #2a2118; --dim: #6e6152; --line: #e2d6c0;
+  --accent: #b8862b; --accent-ink: #fffaf0; --sel: #f1dca3; --mark: #fbe7a6; --mark-ink: #4a3300;
+  --card: #fffaf0; --card-line: #d8c6a4; --hover: #f5e9cf; --shadow: 0 12px 34px rgba(60, 40, 10, .22), 0 2px 6px rgba(60, 40, 10, .12);
+  --gold: #c99a3b; --glow: rgba(233, 189, 92, .35);
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #141916; --paper: #1b211d; --ink: #e9efe9; --dim: #9fada3; --line: #2c352f;
-    --accent: #7dd492; --accent-ink: #072b11; --sel: #2f5a3a; --mark: #5a4b12; --mark-ink: #fff3c4;
-    --card: #222a25; --card-line: #36423a; --hover: #2b352f; --shadow: 0 12px 34px rgba(0, 0, 0, .5), 0 2px 6px rgba(0, 0, 0, .4);
+    --bg: #12100d; --paper: #1c1813; --ink: #f1e8d8; --dim: #b3a58d; --line: #332b21;
+    --accent: #e0b456; --accent-ink: #1c1406; --sel: #5a4520; --mark: #6b4f14; --mark-ink: #fff1c9;
+    --card: #211c15; --card-line: #4a3d2a; --hover: #2e271d; --shadow: 0 14px 40px rgba(0, 0, 0, .6), 0 0 0 1px rgba(224, 180, 86, .08);
+    --gold: #e0b456; --glow: rgba(224, 180, 86, .28);
   }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.65 Inter, system-ui, -apple-system, "Segoe UI", sans-serif; }
 main { max-width: 900px; margin: 0 auto; padding: 28px 22px 140px; position: relative; }
-h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -.01em; }
+h1 { font: 600 28px/1.2 var(--serif); margin: 0 0 6px; }
 .lead { color: var(--dim); margin: 0 0 18px; font-size: 15px; }
 .doc { max-width: 640px; background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 22px 26px; }
 .doc p { margin: 0 0 14px; }
@@ -31,8 +33,9 @@ h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -.01em; }
 .opts label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
 
 /* ---- the frog ---------------------------------------------------------- */
-#frog { position: absolute; width: 62px; height: 80px; z-index: 20; cursor: pointer; display: none;
-  transform-origin: 50% 100%; filter: drop-shadow(0 4px 6px rgba(0, 0, 0, .18)); }
+#frog { position: absolute; width: 124px; height: 155px; z-index: 20; cursor: pointer; display: none;
+  transform-origin: 50% 100%; filter: drop-shadow(0 4px 6px rgba(0, 0, 0, .22)); }
+#frog.busy { filter: drop-shadow(0 0 14px var(--glow)) drop-shadow(0 4px 6px rgba(0, 0, 0, .22)); }
 #frog img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none; -webkit-user-drag: none; }
 #frog .body { position: absolute; inset: 0; transform-origin: 50% 100%; animation: breathe 2.8s ease-in-out infinite; }
 #frog.enter { animation: hopIn .55s cubic-bezier(.25, 1.5, .5, 1) both; }
@@ -47,8 +50,8 @@ h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -.01em; }
 @keyframes bob { from { transform: translateY(0) rotate(-2deg); } to { transform: translateY(-5px) rotate(2deg); } }
 @keyframes jump { 0% { transform: none; } 40% { transform: translateY(-16px) scale(.96, 1.05); } 70% { transform: translateY(0) scale(1.06, .94); } 100% { transform: none; } }
 @keyframes shake { 0%, 100% { transform: none; } 25% { transform: rotate(-6deg); } 75% { transform: rotate(6deg); } }
-#frog.small { width: 40px; height: 52px; }
-.tip { position: absolute; left: 50%; bottom: 100%; transform: translate(-50%, -4px); white-space: nowrap; font-size: 12.5px; font-weight: 600;
+#frog.small { width: 84px; height: 105px; }
+.tip { position: absolute; left: 50%; bottom: 100%; transform: translate(-50%, 6px); white-space: nowrap; font-size: 12.5px; font-weight: 600;
   background: var(--ink); color: var(--paper); padding: 3px 9px; border-radius: 99px; opacity: 0; transition: opacity .15s; pointer-events: none; }
 #frog:hover .tip { opacity: 1; }
 .spark { position: absolute; width: 8px; height: 8px; z-index: 21; pointer-events: none; color: #f1c74c; font-size: 13px; line-height: 8px;
@@ -60,13 +63,15 @@ h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -.01em; }
   animation: pop .16s ease-out both; }
 @keyframes pop { from { opacity: 0; transform: translateY(6px) scale(.97); } }
 #book { width: 330px; padding: 8px; }
-#book h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 4px 10px 6px; font-weight: 700; }
+#book h2 { font: italic 600 19px/1.2 var(--serif); color: var(--gold); margin: 6px 10px 8px; }
+.card { background-image: radial-gradient(120% 80% at 0% 0%, var(--glow), transparent 60%); }
 .spell { display: flex; align-items: center; gap: 12px; width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left;
   padding: 6px 10px; border-radius: 10px; cursor: pointer; opacity: 0; animation: fan .22s ease-out forwards; }
 .spell:hover, .spell.on { background: var(--hover); }
 .spell .ic { flex: 0 0 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; font-size: 18px; background: var(--hover); }
 .spell.on .ic, .spell:hover .ic { background: var(--accent); }
 .spell .nm { flex: 1; font-size: 15.5px; font-weight: 600; line-height: 1.25; }
+.spell.on .ic, .spell:hover .ic { box-shadow: 0 0 12px var(--glow); }
 .spell .out { font-size: 13px; color: var(--dim); margin-right: 2px; }
 kbd { font: 600 12.5px/1 ui-monospace, "SF Mono", Menlo, monospace; min-width: 24px; text-align: center; padding: 5px 7px; border-radius: 7px;
   border: 1px solid var(--card-line); border-bottom-width: 2px; color: var(--dim); background: var(--paper); }
@@ -76,7 +81,7 @@ kbd { font: 600 12.5px/1 ui-monospace, "SF Mono", Menlo, monospace; min-width: 2
 .foot { font-size: 12px; color: var(--dim); padding: 4px 10px 2px; }
 
 #answer { width: min(440px, calc(100vw - 30px)); padding: 14px 16px 12px; }
-#answer .title { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); font-weight: 700; margin-bottom: 6px; }
+#answer .title { font: italic 600 17px/1.2 var(--serif); color: var(--gold); margin-bottom: 8px; }
 #answer .text { font-size: 16.5px; line-height: 1.6; }
 #answer ins { text-decoration: none; background: var(--mark); color: var(--mark-ink); border-radius: 4px; padding: 0 2px; }
 #answer .row { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
@@ -90,7 +95,7 @@ button.b.go { background: var(--accent); border-color: var(--accent); color: var
 </head>
 <body>
 <main id="main">
-  <h1>Frog spells</h1>
+  <h1>The frog’s spellbook</h1>
   <p class="lead">Select a few words with the mouse. The frog hops next to your selection. Click it (or press its key) and pick a spell. Ignore it and it hops away after a few seconds. The answers here are pretend; in Chattering they come from your programs.</p>
   <div class="doc" id="doc">
     <p>hey sam, i has went to the store yesterday and buyed three apple, its was realy good. their going to the meeting tomorow, can you send me the agenda before</p>
@@ -155,8 +160,8 @@ function place() {
   frog.style.display = 'block';
   const m = main.getBoundingClientRect();
   if (document.getElementById('noPos').checked) {
-    frog.style.left = (m.width - 84) + 'px';
-    frog.style.top = (innerHeight - m.top - 120) + 'px';
+    frog.style.left = (m.width - 130) + 'px';
+    frog.style.top = (innerHeight - m.top - 175) + 'px';
     return;
   }
   // The text's box: here the paragraph's container; on a desktop, the text
@@ -164,14 +169,14 @@ function place() {
   const rects = range.getClientRects(); const r = rel(rects[rects.length - 1]);
   const box = rel(doc.getBoundingClientRect());
   const room = m.width - box.right;
-  if (room >= 70) {
+  if (room >= 130) {
     frog.classList.remove('small');
-    frog.style.left = (box.right + 10) + 'px';
-    frog.style.top = (r.bottom - 80 + 8) + 'px';
+    frog.style.left = (box.right - 8) + 'px';
+    frog.style.top = (r.bottom - 155 + 18) + 'px';
   } else {
     frog.classList.add('small');
-    frog.style.left = Math.min(r.right + 2, m.width - 42) + 'px';
-    frog.style.top = (r.bottom - 52 + 6) + 'px';
+    frog.style.left = Math.min(r.right - 10, m.width - 86) + 'px';
+    frog.style.top = (r.bottom - 105 + 12) + 'px';
   }
 }
 function appear() {
@@ -223,7 +228,7 @@ function cardAt(el) {
 function openBook() {
   clearTimeout(fadeT); closeCards();
   const el = document.createElement('div'); el.className = 'card'; el.id = 'book';
-  el.innerHTML = '<h2>Spells</h2>' + SPELLS.map((s, i) => `<button class="spell${i === 0 ? ' on' : ''}" data-i="${i}" style="animation-delay:${i * 35}ms"><span class="ic">${s.ic}</span><span class="nm">${s.name}</span><kbd>${s.key}</kbd></button>`).join('')
+  el.innerHTML = '<h2>Your spells</h2>' + SPELLS.map((s, i) => `<button class="spell${i === 0 ? ' on' : ''}" data-i="${i}" style="animation-delay:${i * 35}ms"><span class="ic">${s.ic}</span><span class="nm">${s.name}</span><kbd>${s.key}</kbd></button>`).join('')
     + '<div class="free"><input id="freeSpell" placeholder="Or say what to do… (Enter)" autocomplete="off"></div><div class="foot">Press a spell’s letter, or ↑ ↓ and Enter · Esc closes · you see the answer before anything changes</div>';
   el.addEventListener('mousedown', e => { if (e.target.id !== 'freeSpell') e.preventDefault(); });
   el.querySelectorAll('.spell').forEach(b => b.onclick = () => cast(SPELLS[+b.dataset.i]));
@@ -250,7 +255,7 @@ document.addEventListener('keydown', e => {
 });
 
 function sparkles(n = 7) {
-  const fx = parseFloat(frog.style.left) + 18, fy = parseFloat(frog.style.top) + 18;
+  const fx = parseFloat(frog.style.left) + frog.offsetWidth / 2, fy = parseFloat(frog.style.top) + frog.offsetHeight * .45;
   for (let i = 0; i < n; i++) {
     const s = document.createElement('span'); s.className = 'spark'; s.textContent = '✦';
     s.style.left = fx + 'px'; s.style.top = fy + 'px';
