@@ -78,8 +78,9 @@ const PROFILES = {
     start: ['--session-id', '{sessionId}'],
     newSession: 'known-id', idPattern: 'uuidv7',
     // An input box with no prompt mark (Pi pads its editor), "→" on the
-    // selected row, "⠦ Working" in its box's frame line.
-    screen: GENERIC_SCREEN,
+    // selected row ("›" or ">" in a few of its lists), "⠦ Working" in its
+    // box's frame line.
+    screen: { ...GENERIC_SCREEN, markers: ['→', ...GENERIC_SCREEN.markers] },
     keys: { stop: { key: 'Escape' } },
   },
   codex: {

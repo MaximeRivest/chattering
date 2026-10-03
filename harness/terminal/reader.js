@@ -56,6 +56,86 @@ function readDocument(snap, profileOrRules = CLAUDE) {
   }
   const doc = { profile: profile.name, revision: snap.revision, mode: 'unknown', transcript: [], composer: null, menu: null, choice: null, status: null, footer: [], live: [], panel: false };
 
+  // ---- a choice dialog: one marked option, its siblings in its column ----
+  const marker = new RegExp('^(\\s*)(' + profile.markers.map(m => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')(\\s+)(\\S.*)$');
+  // A status mark in front of an option (Pi marks the current model:
+  // "→ ✓ claude…" over "    claude…"); its siblings' text starts past it.
+  const STATUS = /^[✓✔●○◉•*] +/;
+  const textCol = t => { const m = /^ *(?:[✓✔●○◉•*] +)?(?=\S)/.exec(t); return m ? m[0].length : -1; };
+  const COUNTER = /^\(\d+\/\d+\)$/; // a long list's position: "(4/32)"
+  const HINT_NEAR = /enter|esc|confirm|cancel/i;
+  const HINT_FAR = /\b(enter|esc(ape)?|confirm|cancel)\b/i;
+  // The first confident dialog whose marked row lies in [from, to), or null.
+  // `inside`: within a region that may be an input box (only a hint line,
+  // inside the region, makes it a dialog there: a typed numbered list is not).
+  function findChoice(from, to, { inside = false } = {}) {
+    for (let y = from; y < to; y++) {
+      if (used.has(y)) continue;
+      const m = marker.exec(lines[y].text);
+      if (!m) continue;
+      const labelCol = m[1].length + m[2].length + m[3].length;
+      const col = labelCol + ((STATUS.exec(m[4]) || [''])[0].length);
+      // A sibling's text starts where the marked option's does (Pi pads a
+      // sibling where the marked row has a status mark); a deeper line
+      // continues the option above it; a list's position ends the list.
+      const sibling = r => {
+        const t = lines[r].text;
+        if (used.has(r) || COUNTER.test(t.trim())) return false;
+        return textCol(t) === col || (t.startsWith(' '.repeat(labelCol)) && /\S/.test(t[labelCol] || ''));
+      };
+      const wrapped = r => !used.has(r) && lines[r].text.startsWith(' '.repeat(col + 2)) && !!lines[r].text.trim();
+      const opts = [];
+      // Up to the first option: over its siblings and their wrapped
+      // descriptions (deeper), never over a blank line; it starts at an
+      // option, not at a description that belongs to something above.
+      let s = y; while (s - 1 >= from && (sibling(s - 1) || wrapped(s - 1))) s--;
+      while (s < y && !sibling(s)) s++;
+      for (let r = s; r < to; r++) {
+        const t = lines[r].text;
+        // An option may be a name and, after a wide gap, a description
+        // (Codex: "1. Ask for approval       Codex can read…"), whose wrapped
+        // lines follow, deeper.
+        const option = (text, selected) => { const g = /^(.*?\S)\s{2,}(\S.*)$/.exec(text); return { label: g ? g[1] : text, detail: g ? g[2] : '', selected, rows: [r] }; };
+        if (r === y) opts.push(option(m[4], true));
+        else if (sibling(r)) opts.push(option(t.trim(), false));
+        else if (opts.length && wrapped(r)) {
+          // A line that filled the screen's width was cut, not ended, and a
+          // program that wraps its own text may break after a hyphen inside a
+          // word ("chattering-" / "live-test"): the next continues that word.
+          const prev = lines[r - 1].text, next = t.trim();
+          const cut = prev.length >= cols - 1 || (/[^\s-]-$/.test(prev) && /^[a-z0-9]/.test(next));
+          const o = opts[opts.length - 1], sep = cut ? '' : ' ';
+          if (o.detail) o.detail += sep + next; else o.label += sep + next;
+          o.rows.push(r);
+        }
+        else break;
+      }
+      if (opts.length < 2) continue;
+      const first = opts[0].rows[0], last = opts[opts.length - 1].rows.slice(-1)[0];
+      // How to answer: just under the options, or a little lower inside the
+      // dialog's frame, past its position and the option's description (Pi:
+      // "(4/32)", "Register skills as…", "Enter/Space to change · Esc to
+      // cancel"). Never a working line ("esc to interrupt"). Lower down only
+      // for a list that is not above the input box: one above it is text in
+      // the conversation.
+      const far = !(doc.composer && doc.composer.rows[0] > last);
+      let hint = null;
+      for (let r = last + 1; r < Math.min(inside ? to : bottom, last + (far ? 8 : 4)); r++) {
+        const t = lines[r].text;
+        if (isRule(lines[r], cols) || used.has(r)) break;
+        if (profile.workingRe.some(re => re.test(t))) continue;
+        if (r < last + 4 ? HINT_NEAR.test(t) : HINT_FAR.test(t)) { hint = { text: t.trim(), rows: [r] }; break; }
+      }
+      // Only a confident dialog is actionable: it says how to answer (a hint
+      // line) or numbers its options. A marked line followed by an indented
+      // one is also what an echoed two-line message looks like.
+      const numbered = opts.filter(o => /^\d+\.\s/.test(o.label)).length >= 2;
+      if (!hint && (inside || !numbered)) continue;
+      return { opts, first, last, hint };
+    }
+    return null;
+  }
+
   // ---- rules framing the cursor: the composer ----
   const rules = [];
   for (let y = top; y < bottom; y++) if (isRule(lines[y], cols)) rules.push(y);
@@ -87,9 +167,18 @@ function readDocument(snap, profileOrRules = CLAUDE) {
       cursorInBox = true; // found from the cursor's own line: its column is the caret
     }
   }
+  // A list dialog inside that region (Pi's /settings: its search line, a
+  // marked list and how to answer, between two frame lines) is not part of
+  // the box: the box ends above the list, read as a choice below; what
+  // follows the frame is still the footer.
+  let boxEnd = below;
+  if (above != null && below != null && below - above > 3) {
+    const list = findChoice(above + 2, below, { inside: true });
+    if (list) { boxEnd = list.first; while (boxEnd - 1 > above + 1 && !lines[boxEnd - 1].text.trim()) boxEnd--; }
+  }
   if (above != null && below != null && below > above + 1) {
     const body = [];
-    for (let y = above + 1; y < below; y++) body.push(y);
+    for (let y = above + 1; y < boxEnd; y++) body.push(y);
     const first = lines[body[0]] && lines[body[0]].text;
     let glyph = first != null && profile.prompts.find(p => first.startsWith(p + ' ') || first === p);
     // No glyph: a small framed region holding the cursor is still an input
@@ -135,26 +224,38 @@ function readDocument(snap, profileOrRules = CLAUDE) {
       if (caret != null && caret > text.length) text += ' '.repeat(caret - text.length);
       if (!text.trim()) text = '';
       if (caret != null) caret = Math.min(caret, text.length);
-      doc.composer = { prompt: glyph, text, placeholder, caret, softWraps, rows: [above, ...body, below] };
+      doc.composer = { prompt: glyph, text, placeholder, caret, softWraps, rows: [above, ...body, ...(boxEnd === below ? [below] : [])] };
       for (const y of doc.composer.rows) used.add(y);
+      used.add(below); // the frame's last line, under a dialog too
       // A label in the frame (Pi: "⠦ Working") is the program's status.
       for (const y of [above, below]) {
         const label = lines[y] ? ruleLabel(lines[y]) : '';
         if (label && profile.frameWorkingRe.test(label)) doc.status = { working: true, text: label, rows: [y] };
       }
 
-      // ---- what hangs under the composer: a menu, or a footer ----
+      // ---- what hangs under the composer: a dialog, a menu, or a footer ----
+      // A dialog right under the box (Pi's /model: a search line, then its
+      // list and how to answer, up to a frame line) is read as a choice
+      // below; the menu and footer are looked for past its frame.
+      let under = below + 1;
+      const list = findChoice(under, bottom);
+      if (list && lines.slice(under, list.first).every(l => !l.text.trim())) {
+        const end = (list.hint ? list.hint.rows[0] : list.last) + 1;
+        let r = end; while (r < bottom && !isRule(lines[r], cols)) r++;
+        if (r < bottom) used.add(r); // the frame line that closes it
+        under = r < bottom ? r + 1 : bottom;
+      }
       const items = [];
       // "  label   description", optionally after a selection marker (Pi: →).
       const ITEM = /^(?: {0,6}([→❯›>▶]) +| {2,6})(\S.*?)\s{2,}(\S.*)$/;
       // A list that marks its selected row: every row whose label starts in
       // that row's column is one of its items, above the mark or below it.
       let markedCol = null;
-      for (let y = below + 1; y < bottom && lines[y].text.trim(); y++) {
+      for (let y = under; y < bottom && lines[y].text.trim(); y++) {
         const m = ITEM.exec(lines[y].text);
         if (m && m[1]) { markedCol = lines[y].text.indexOf(m[2], lines[y].text.indexOf(m[1]) + 1); break; }
       }
-      for (let y = below + 1; y < bottom; y++) {
+      for (let y = under; y < bottom; y++) {
         const l = lines[y];
         const m = ITEM.exec(l.text);
         const inMarkedList = m && markedCol != null && l.text.indexOf(m[2]) === markedCol;
@@ -189,43 +290,10 @@ function readDocument(snap, profileOrRules = CLAUDE) {
     }
   }
 
-  // ---- a choice dialog: one marked option, siblings at its indent ----
-  const marker = new RegExp('^(\\s*)(' + profile.markers.map(m => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\s+(\\S.*)$');
-  for (let y = top; y < bottom && !doc.choice; y++) {
-    if (used.has(y)) continue;
-    const m = marker.exec(lines[y].text);
-    if (!m) continue;
-    const indent = m[1].length, lead = ' '.repeat(indent + m[2].length + 1);
-    const opts = [];
-    // Up to the first option: over its siblings (text at the lead) and their
-    // wrapped descriptions (deeper), never over a blank line; it starts at an
-    // option, not at a description that belongs to something above.
-    const sibling = r => lines[r].text.startsWith(lead) && /\S/.test(lines[r].text[lead.length] || '');
-    const wrapped = r => lines[r].text.startsWith(lead + '  ') && !!lines[r].text.trim();
-    let s = y; while (s - 1 >= top && !used.has(s - 1) && (sibling(s - 1) || wrapped(s - 1))) s--;
-    while (s < y && !sibling(s)) s++;
-    for (let r = s; r < bottom; r++) {
-      const t = lines[r].text;
-      // An option may be a name and, after a wide gap, a description
-      // (Codex: "1. Ask for approval       Codex can read…"), whose wrapped
-      // lines follow, deeper.
-      const option = (text, selected) => { const g = /^(.*?\S)\s{2,}(\S.*)$/.exec(text); return { label: g ? g[1] : text, detail: g ? g[2] : '', selected, rows: [r] }; };
-      if (r === y) opts.push(option(m[3], true));
-      else if (t.startsWith(lead) && /\S/.test(t[lead.length] || '')) opts.push(option(t.slice(lead.length), false));
-      else if (opts.length && t.startsWith(lead + '  ') && t.trim()) {
-        // A line that filled the screen's width was cut, not ended, and a
-        // program that wraps its own text may break after a hyphen inside a
-        // word ("chattering-" / "live-test"): the next continues that word.
-        const prev = lines[r - 1].text, next = t.trim();
-        const cut = prev.length >= cols - 1 || (/[^\s-]-$/.test(prev) && /^[a-z0-9]/.test(next));
-        const o = opts[opts.length - 1], sep = cut ? '' : ' ';
-        if (o.detail) o.detail += sep + t.trim(); else o.label += sep + t.trim();
-        o.rows.push(r);
-      }
-      else break;
-    }
-    if (opts.length < 2) continue;
-    const first = opts[0].rows[0], last = opts[opts.length - 1].rows.slice(-1)[0];
+  // ---- a choice dialog (findChoice) and the question just above it ----
+  const found = findChoice(top, bottom);
+  if (found) {
+    const { opts, first, hint } = found;
     // The question: the text just above the options, up to a rule, two
     // blank lines in a row (what came before the question), or 14 lines.
     const q = [];
@@ -235,13 +303,6 @@ function readDocument(snap, profileOrRules = CLAUDE) {
       q.unshift(r);
     }
     while (q.length && !lines[q[0]].text.trim()) q.shift();
-    let hint = null;
-    for (let r = last + 1; r < Math.min(bottom, last + 4); r++) if (/enter|esc|confirm|cancel/i.test(lines[r].text)) { hint = { text: lines[r].text.trim(), rows: [r] }; break; }
-    // Only a confident dialog is actionable: it says how to answer (a hint
-    // line) or numbers its options. A marked line followed by an indented
-    // one is also what an echoed two-line message looks like.
-    const numbered = opts.filter(o => /^\d+\.\s/.test(o.label)).length >= 2;
-    if (!hint && !numbered) continue;
     for (const o of opts) { o.label = o.label.replace(/\s+/g, ' ').trim(); o.detail = o.detail.replace(/\s+/g, ' ').trim(); }
     doc.choice = {
       question: q.map(r => lines[r].text).join('\n').replace(/\n{3,}/g, '\n\n').trim(),

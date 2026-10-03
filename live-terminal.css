@@ -24,7 +24,11 @@
 .lt-opts button { text-align: left; min-height: 40px; white-space: normal; }
 .lt-opts button b { font-weight: 600; }
 .lt-opts button .lt-detail { display: block; font-size: var(--fs-meta); color: var(--text-dim); margin-top: 2px; }
-.lt-opts button[aria-current="true"] { border-color: var(--accent); background: var(--surface-3); }
+/* What Enter would pick: filled, in the colours of a primary button
+   (--accent-strong under --accent-ink: readable on every theme), so it
+   reads at a glance. The faint grey it had was nearly invisible. */
+.lt-opts button[aria-current="true"] { border-color: var(--accent-strong); background: var(--accent-strong); color: var(--accent-ink); }
+.lt-opts button[aria-current="true"] .lt-detail { color: var(--accent-ink); opacity: .85; }
 .lt-hint { color: var(--text-faint); font-size: var(--fs-micro); margin-top: 8px; }
 .lt-keybar { display: flex; flex-wrap: wrap; gap: 6px; }
 .lt-keybar button { min-width: 52px; min-height: 44px; font-family: var(--font-mono); }
@@ -54,12 +58,15 @@
 .lt-menu div { display: flex; gap: 12px; padding: 6px 10px; border-radius: var(--r); cursor: pointer; font-size: var(--fs-label); min-height: 36px; align-items: center; }
 .lt-menu div b { font-family: var(--font-mono); font-weight: 500; min-width: 140px; }
 .lt-menu div span { color: var(--text-dim); }
-.lt-menu div[aria-selected="true"] { background: var(--surface-3); }
+.lt-menu div:hover { background: var(--surface-2); }
+.lt-menu div[aria-selected="true"] { background: var(--accent-strong); color: var(--accent-ink); }
+.lt-menu div[aria-selected="true"] span { color: var(--accent-ink); opacity: .85; }
 .lt-touch .lt-menu div { min-height: 44px; }
 /* E-ink: nothing moves; what is selected is drawn, not tinted. */
 .lt-eink .lt-spin, .lt-eink .lt-caret { animation: none; }
 .lt-eink .lt-choice, .lt-eink .lt-panel, .lt-eink .lt-note.lt-warn { border-width: 2px; }
-.lt-eink .lt-opts button[aria-current="true"], .lt-eink .lt-menu div[aria-selected="true"] { outline: 3px solid var(--text); font-weight: 700; background: none; }
+.lt-eink .lt-opts button[aria-current="true"], .lt-eink .lt-menu div[aria-selected="true"] { outline: 3px solid var(--text); font-weight: 700; background: none; color: var(--text); }
+.lt-eink .lt-opts button[aria-current="true"] .lt-detail, .lt-eink .lt-menu div[aria-selected="true"] span { color: var(--text); opacity: 1; }
 .lt-eink .lt-opts button, .lt-eink .lt-keybar button, .lt-eink .lt-send { min-height: 52px; }
 @media (prefers-reduced-motion: reduce) { .lt-spin, .lt-caret { animation: none; } }
 /* The draft screen's "in its own program" choice. */

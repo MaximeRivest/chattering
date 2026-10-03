@@ -316,17 +316,60 @@
   }
 
   // ---- terminal cells, in the theme's own terminal colours ----
+  // The 16 named colours are the theme's; other colours are the program's
+  // own, chosen for its own background (Pi's theme may be light under a
+  // dark Chattering, or the reverse). Each is kept, made only as much
+  // darker or lighter as it must to stay readable where it is drawn
+  // (a terminal's "minimum contrast").
   const color = c => {
     if (!c || calm()) return '';
     if (c[0] === 'p') { const n = +c.slice(1); if (n < 16) return `var(--ansi-${n})`; if (n < 232) { const k = n - 16, v = x => [0, 95, 135, 175, 215, 255][x]; return `rgb(${v(Math.floor(k / 36))},${v(Math.floor(k / 6) % 6)},${v(k % 6)})`; } const g = 8 + (n - 232) * 10; return `rgb(${g},${g},${g})`; }
     if (c[0] === 'r') return '#' + (+c.slice(1)).toString(16).padStart(6, '0');
     return '';
   };
+  // Any CSS colour (a theme variable too) as [r, g, b], read from the page
+  // once per theme.
+  const tones = { key: '', map: new Map(), probe: null };
+  function rgbOf(css) {
+    const root = document.documentElement, key = [root.dataset.theme, root.dataset.themeMode, matchMedia('(prefers-color-scheme: dark)').matches].join('|');
+    if (tones.key !== key) { tones.key = key; tones.map.clear(); }
+    let v = tones.map.get(css);
+    if (!v) {
+      if (!tones.probe || !tones.probe.isConnected) { tones.probe = document.createElement('i'); tones.probe.hidden = true; document.body.appendChild(tones.probe); }
+      tones.probe.style.color = ''; tones.probe.style.color = css;
+      v = (getComputedStyle(tones.probe).color.match(/[\d.]+/g) || [0, 0, 0]).slice(0, 3).map(Number);
+      tones.map.set(css, v);
+    }
+    return v;
+  }
+  const luminance = c => { const [r, g, b] = c.map(x => { x /= 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+  const contrast = (a, b) => { const x = luminance(a), y = luminance(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  // `fg` as readable on `bg` (4.5:1, the body text rule), moved toward
+  // black on a light background, toward white on a dark one.
+  function readable(fg, bg) {
+    const f = rgbOf(fg), b = rgbOf(bg);
+    if (contrast(f, b) >= 4.5) return fg;
+    const to = luminance(b) > 0.18 ? 0 : 255;
+    for (let t = 0.1; t <= 1; t += 0.1) {
+      const c = f.map(x => Math.round(x + (to - x) * t));
+      if (contrast(c, b) >= 4.5 || t >= 0.99) return `rgb(${c.join(',')})`;
+    }
+    return fg;
+  }
   const cells = runs => runs.map(r => {
     const [f, fg, bg] = r.s.split('|'); let st = '';
-    if (color(fg)) st += 'color:' + color(fg) + ';'; if (color(bg)) st += 'background:' + color(bg) + ';';
-    if (f.includes('d') && !calm()) st += 'opacity:.6;'; if (f.includes('b')) st += 'font-weight:700;'; if (f.includes('i')) st += 'font-style:italic;';
-    if (f.includes('v')) st += calm() ? 'text-decoration:underline;' : 'filter:invert(1);';
+    if (calm()) {
+      // E-ink: no colours; reversed text is underlined.
+      if (f.includes('b')) st += 'font-weight:700;'; if (f.includes('i')) st += 'font-style:italic;'; if (f.includes('v')) st += 'text-decoration:underline;';
+    } else {
+      // Reversed text swaps its colours (the strip's own when it has none):
+      // how a terminal draws a highlighted row or a cursor.
+      let F = color(fg), B = color(bg);
+      if (f.includes('v')) [F, B] = [B || 'var(--surface-1)', F || 'var(--text)'];
+      if (B) st += 'background:' + B + ';';
+      if (F || B) st += 'color:' + readable(F || 'var(--text)', B || 'var(--surface-1)') + ';';
+      if (f.includes('d')) st += 'opacity:.6;'; if (f.includes('b')) st += 'font-weight:700;'; if (f.includes('i')) st += 'font-style:italic;';
+    }
     return st ? `<span style="${st}">${esc(r.t)}</span>` : esc(r.t);
   }).join('').replace(/\s+$/, '');
   const plainText = lines => lines.map(runs => runs.map(r => r.t).join('').replace(/\s+$/, '')).join('\n');
@@ -370,12 +413,12 @@
     // a question
     const ch = $('ltChoice'); ch.hidden = !st.choice;
     if (st.choice) {
-      const k = JSON.stringify([st.choice.question, st.choice.options.map(o => o.label), st.choice.selected]);
+      const k = JSON.stringify([st.choice.question, st.choice.options.map(o => [o.label, o.detail]), st.choice.selected, st.choice.hint && st.choice.hint.text]);
       if (ch.dataset.k !== k) {
         ch.dataset.k = k;
         const q = st.choice.question.split('\n').map(l => l.trim()).map(l => /^[╌─━═┄┈-]{8,}$/.test(l) ? '────' : l).join('\n').replace(/\n{3,}/g, '\n\n');
-        ch.setAttribute('aria-label', q.split('\n').find(l => l.trim()) || 'A question');
-        ch.innerHTML = `<div class="lt-q">${esc(q)}</div><div class="lt-opts">${st.choice.options.map(o => `<button type="button" data-i="${o.index}" aria-current="${o.index === st.choice.selected}">${o.number ? o.number + '. ' : ''}<b>${esc(o.label)}</b>${o.detail ? `<span class="lt-detail">${esc(o.detail)}</span>` : ''}</button>`).join('')}</div>${st.choice.hint ? `<div class="lt-hint">${esc(st.choice.hint.text)} · or tap</div>` : ''}`;
+        ch.setAttribute('aria-label', q.split('\n').find(l => l.trim()) || (st.choice.hint ? st.choice.hint.text : 'A question'));
+        ch.innerHTML = `${q.trim() ? `<div class="lt-q">${esc(q)}</div>` : ''}<div class="lt-opts">${st.choice.options.map(o => `<button type="button" data-i="${o.index}" aria-current="${o.index === st.choice.selected}">${o.number ? o.number + '. ' : ''}<b>${esc(o.label)}</b>${o.detail ? `<span class="lt-detail">${esc(o.detail)}</span>` : ''}</button>`).join('')}</div>${st.choice.hint ? `<div class="lt-hint">${esc(st.choice.hint.text)} · or tap</div>` : ''}`;
         ch.querySelectorAll('button').forEach(b => b.onclick = async () => { ch.querySelectorAll('button').forEach(x => x.disabled = true); const r = await ask(S, { t: 'choose', index: +b.dataset.i }); if (r.t !== 'done') { ch.querySelectorAll('button').forEach(x => x.disabled = false); ch.dataset.k = ''; note(S, r.error || 'not answered'); } });
       }
     }

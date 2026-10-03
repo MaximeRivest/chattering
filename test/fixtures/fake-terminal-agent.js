@@ -97,6 +97,11 @@ if (sessionId && (opt('--resume') || opt('--session') || argv[0] === 'resume')) 
 
 // ---------------------------------------------------------------- its screen
 const st = { mode: process.env.FAKE_AGENT_TRUST === '1' ? 'trust' : 'compose', text: '', caret: 0, sel: 0, menuClosed: false, spin: 0, choiceFor: null };
+// Pi's /settings (as recorded from Pi 1.0.0): a search line, a list of
+// twelve shown five at a time around the highlight ("→"), a value beside
+// each that Enter turns over in place, the list's position, the
+// highlighted setting's description, how to answer; between frame lines.
+const SETTINGS = Array.from({ length: 12 }, (_, i) => ({ name: 'Setting ' + String.fromCharCode(65 + i), on: i % 2 === 0 }));
 let drawnHeight = 0, caretRow = 0;
 const menuItems = () => st.mode === 'compose' && st.text.startsWith('/') && !st.text.includes(' ') && !st.menuClosed ? COMMANDS.filter(c => c[0].startsWith(st.text)) : [];
 const SPIN = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏';
@@ -106,6 +111,16 @@ function region() {
   const options = (q, opts) => { L.push(RULE()); L.push(' ' + q); opts.forEach((o, i) => L.push((i === st.sel ? ' ❯ ' : '   ') + (i + 1) + '. ' + o)); L.push(''); L.push(DIM(' Enter to confirm · Esc to cancel')); };
   if (st.mode === 'trust') { options('Do you trust the files in this folder?', ['Yes, proceed', 'No, exit']); return { L, caret: null }; }
   if (st.mode === 'choice') { options('Do you want to proceed?', ['Yes', 'No']); return { L, caret: null }; }
+  if (st.mode === 'settings') {
+    const n = SETTINGS.length, shown = 5, from = Math.max(0, Math.min(st.sel - Math.floor(shown / 2), n - shown));
+    L.push(RULE()); L.push('> \x1b[7m \x1b[27m'); L.push('');
+    for (let i = from; i < from + shown; i++) { const it = SETTINGS[i], sel = i === st.sel; L.push((sel ? '\x1b[36m→ ' : '  ') + it.name.padEnd(32) + (sel ? '  ' : '\x1b[90m  ') + String(it.on) + '\x1b[39m'); }
+    const about = '  What ' + SETTINGS[st.sel].name + ' does';
+    L.push(DIM('  (' + (st.sel + 1) + '/' + n + ')')); L.push(''); L.push(DIM(about)); L.push('');
+    L.push(DIM('  Type to search · Enter/Space to change · Esc to cancel')); L.push(RULE());
+    // Pi leaves its cursor where it last wrote: after the description.
+    return { L, caret: { row: L.length - 4, col: about.length } };
+  }
   if (st.mode === 'panel') { L.push(RULE()); L.push(' Usage'); L.push(''); L.push(' Current session   0 tokens'); L.push(' Current week      1% used'); L.push(''); L.push(DIM(' Esc to close')); return { L, caret: null }; }
   const working = st.mode === 'working';
   if (working && style !== 'pi') { L.push(''); L.push((style === 'codex' ? '• Working (' : '✻ Thinking… (') + Math.floor(st.spin / 10) + 's · esc to interrupt)'); }
@@ -174,6 +189,7 @@ function submit() {
   st.text = ''; st.caret = 0; st.sel = 0; st.menuClosed = false;
   if (!text.trim()) return draw();
   if (text.trim() === '/usage') { st.mode = 'panel'; return draw(['❯ /usage']); }
+  if (text.trim() === '/settings' && style === 'pi') { st.mode = 'settings'; st.sel = 0; return draw(); }
   if (text.startsWith('/')) return draw(['❯ ' + text, '  ⎿  ' + (text.startsWith('/model') ? 'Model: fake-1' : 'ok')]);
   append('user', text);
   draw([(style === 'codex' ? '› ' : '❯ ') + text.split('\n').join('\n  ')]);
@@ -196,6 +212,14 @@ function key(k) {
     return draw();
   }
   if (st.mode === 'panel') { if (k === '\x1b') { st.mode = 'compose'; draw(); } return; }
+  if (st.mode === 'settings') {
+    const n = SETTINGS.length;
+    if (k === '\x1b[A' || k === '\x1bOA') st.sel = (st.sel + n - 1) % n;
+    else if (k === '\x1b[B' || k === '\x1bOB') st.sel = (st.sel + 1) % n;
+    else if (k === '\r' || k === ' ') { SETTINGS[st.sel].on = !SETTINGS[st.sel].on; if (keyLog) fs.appendFileSync(keyLog, JSON.stringify({ toggled: SETTINGS[st.sel].name, on: SETTINGS[st.sel].on }) + '\n'); }
+    else if (k === '\x1b') { st.mode = 'compose'; st.sel = 0; }
+    return draw();
+  }
   if (st.mode === 'working') {
     if (k === '\x1b') { clearInterval(spinTimer); clearTimeout(workTimer); st.mode = 'compose'; return draw(['  ⎿  Interrupted by user']); }
     // Typing while it works goes into the box (queued, like the real ones).

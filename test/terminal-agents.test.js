@@ -181,3 +181,29 @@ test('a pause between two steps of work does not show "ready"; typing still show
   await a.until(s => s.mode === 'compose' && !s.status, 'done', 8000);
   assert.deepEqual(modes.filter((m, i) => m !== modes[i - 1]), ['working', 'compose'], 'never ready in between: ' + modes.join(','));
 });
+
+test('pi: its /settings list is a choice; a click on a lower row follows it while the list scrolls and turns it over once, in place', { skip, timeout: 30000 }, async t => {
+  const log = path.join(os.tmpdir(), 'fake-agent-settings-' + process.pid + '.jsonl');
+  process.env.FAKE_AGENT_LOG = log;
+  const r = run('pi');
+  delete process.env.FAKE_AGENT_LOG;
+  t.after(() => { r.close(); fs.rmSync(log, { force: true }); });
+  const a = device(r.hub, 'laptop');
+  await a.until(s => s.composer && s.mode === 'compose', 'the box');
+  let ans = await a.ask({ t: 'submit', text: '/settings' });
+  assert.equal(ans.t, 'done', JSON.stringify(ans));
+  await a.until(s => s.mode === 'choice' && s.choice.options.length === 5, 'the settings list');
+  assert.deepEqual(a.state.choice.options.map(o => [o.label, o.detail]), [['Setting A', 'true'], ['Setting B', 'false'], ['Setting C', 'true'], ['Setting D', 'false'], ['Setting E', 'true']]);
+  assert.equal(a.state.choice.selected, 0);
+  assert.equal(a.state.composer.text, '', 'its search line is the box');
+  // Setting E: the list scrolls under the highlight on the way (B…F).
+  ans = await a.ask({ t: 'choose', index: 4 });
+  assert.equal(ans.t, 'done', JSON.stringify(ans));
+  await a.until(s => s.choice && s.choice.options.some(o => o.label === 'Setting E' && o.detail === 'false'), 'Setting E turned off');
+  assert.equal(a.state.mode, 'choice', 'the list stays');
+  assert.equal(a.state.choice.options[a.state.choice.selected].label, 'Setting E');
+  const toggles = fs.readFileSync(log, 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(x => x.toggled);
+  assert.deepEqual(toggles, [{ toggled: 'Setting E', on: false }], 'turned over once, not back again');
+  a.send({ t: 'key', key: 'Escape' });
+  await a.until(s => s.mode === 'compose' && !s.choice, 'closed');
+});

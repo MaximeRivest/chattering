@@ -89,6 +89,30 @@ test('Pi\'s list with its mark on a later row: the rows above it are items too, 
   assert.equal(d.menu.selected, 2);
   assert.equal(d.footer.length, 0);
 });
+test('Pi\'s own list dialog under its search line (/model): the current model\'s ✓ does not hide its siblings', () => {
+  const pi = require('../harness/terminal/profiles').profileFor('pi');
+  const R = '─'.repeat(100);
+  const d = readDocument(screen([R, '', '> ', '', '→ ✓ m-one [a] · default', '    m-two [a]', '    m-three [b]', '  (1/3)', '', '  Enter to select · Escape/Ctrl+C to cancel', R, '~/work'], { x: 2, y: 2 }), pi);
+  assert.equal(d.mode, 'choice');
+  assert.deepEqual(d.choice.options.map(o => o.label), ['✓ m-one [a] · default', 'm-two [a]', 'm-three [b]']);
+  assert.equal(d.choice.selected, 0);
+  // The highlight elsewhere: the ✓ moves to its sibling's place.
+  const moved = readDocument(screen([R, '', '> ', '', '  ✓ m-one [a] · default', '→   m-two [a]', '    m-three [b]', '', '  Enter to select · Esc to cancel', R], { x: 2, y: 2 }), pi);
+  assert.deepEqual(moved.choice.options.map(o => o.label), ['✓ m-one [a] · default', 'm-two [a]', 'm-three [b]']);
+  assert.equal(moved.choice.selected, 1);
+});
+test('a numbered list typed into the box stays the box\'s text', () => {
+  const R = '─'.repeat(100);
+  const d = readDocument(screen([R, '❯ plan:', '  > 1. first', '    2. second', R], { x: 12, y: 3 }));
+  assert.equal(d.mode, 'compose'); assert.equal(d.choice, null);
+  assert.equal(d.composer.text, 'plan:\n> 1. first\n  2. second');
+});
+test('a list in Pi\'s answer above its box, with "enter" a few lines lower, stays conversation', () => {
+  const pi = require('../harness/terminal/profiles').profileFor('pi');
+  const R = '─'.repeat(100);
+  const d = readDocument(screen([' Two ways:', '', '→ Keep the cache', '  Drop the cache', '', ' Either works;', ' the second is slower', ' to enter but simpler.', R, ' ', R], { x: 1, y: 9 }), pi);
+  assert.equal(d.mode, 'compose'); assert.equal(d.choice, null);
+});
 test('working from the window title: Claude Code writing its answer has no working line, its title turns ("◐"); idle it shows "✳"', () => {
   const claude = require('../harness/terminal/profiles').profileFor('claude');
   const rows = ['❯ Count from 1 to 600', '', '● 1', '  2', '  3', '', RULE, '❯ ', RULE];

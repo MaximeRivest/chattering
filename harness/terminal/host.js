@@ -174,10 +174,11 @@ class TerminalHost extends EventEmitter {
       for (let x = 0; x < this.cols; x++) {
         const c = line.getCell(x, cell);
         if (!c || c.getWidth() === 0) continue;
-        // flags|foreground|background — e.g. "db|p12|" (dim bold, palette 12).
-        const color = (def, mode, value) => def ? '' : (mode === 0x1000000 ? 'p' : mode === 0x2000000 ? 'r' : 'x') + value;
+        // flags|foreground|background — e.g. "db|p12|" (dim bold, palette
+        // 12; 16 and 256 colours alike), "|r36548|" (24-bit, as a number).
+        const color = (def, rgb, value) => def ? '' : (rgb ? 'r' : 'p') + value;
         const style = (c.isDim() ? 'd' : '') + (c.isBold() ? 'b' : '') + (c.isItalic() ? 'i' : '') + (c.isInverse() ? 'v' : '')
-          + '|' + color(c.isFgDefault(), c.getFgColorMode(), c.getFgColor()) + '|' + color(c.isBgDefault(), c.getBgColorMode(), c.getBgColor());
+          + '|' + color(c.isFgDefault(), c.isFgRGB(), c.getFgColor()) + '|' + color(c.isBgDefault(), c.isBgRGB(), c.getBgColor());
         const ch = c.getChars() || ' ';
         if (!run || run.s !== style) { run = { s: style, t: '' }; runs.push(run); }
         run.t += ch;

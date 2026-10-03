@@ -216,3 +216,37 @@ test('Codex asks before a command: the question, its three answers, Yes chosen',
   assert.equal(last.mode, 'working');
   assert.equal(last.composer.text, '');
 });
+
+// Recorded 2026-10-02 in Chattering (Pi 1.0.0, its "terminal-look" theme).
+// The person could not see which row was picked: /settings read as the
+// text of the input box, /model as status lines, so Enter chose a row
+// they never saw highlighted.
+test('Pi /settings: a choice, its values beside each name; the box is its search line; the status lines stay the footer', { skip }, async () => {
+  const pi = profileFor('pi');
+  const d = readDocument((await replay(cast('pi-settings'))).snap, pi);
+  assert.equal(d.mode, 'choice');
+  assert.equal(d.composer.text, '', 'the search line, empty');
+  assert.deepEqual(d.choice.options.slice(0, 4).map(o => [o.label, o.detail]), [['Auto-compact', 'false'], ['Auto-resize images', 'true'], ['Block images', 'false'], ['Skill commands', 'true']]);
+  assert.equal(d.choice.options.length, 10);
+  assert.equal(d.choice.options[d.choice.selected].label, 'Skill commands');
+  assert.match(d.choice.hint.text, /Enter\/Space to change · Esc to cancel/);
+  assert.equal(d.footer.length, 3);
+  // What is left is its own: where the list is, the setting's description.
+  assert.deepEqual(d.live.map(b => b.lines.map(l => l.map(r => r.t).join('').trim()).join('\n')), ['(4/32)', 'Register skills as /skill:name commands']);
+});
+test('Pi /model while searching: the search in the box, the list a choice (the current model keeps its ✓), its colours kept', { skip }, async () => {
+  const pi = profileFor('pi');
+  const { snap } = await replay(cast('pi-model-search'));
+  const d = readDocument(snap, pi);
+  assert.equal(d.mode, 'choice');
+  assert.equal(d.composer.text, 'opus 5-5');
+  assert.equal(d.choice.options.length, 10);
+  assert.equal(d.choice.options[d.choice.selected].label, 'claude-sonnet-5-5 [anthropic]');
+  assert.equal(d.choice.options[1].label, 'claude-opus-5-5 [claude-code]');
+  assert.match(d.choice.hint.text, /^Enter to select/);
+  assert.equal(d.footer.length, 3);
+  // The selected row is drawn in Pi's 24-bit accent colour (#008ec4): a
+  // colour the page can draw ("r"), not one it drops.
+  const row = snap.lines[d.choice.options[d.choice.selected].rows[0]];
+  assert.ok(row.runs.some(r => r.s.split('|')[1] === 'r' + 0x008ec4), JSON.stringify(row.runs.slice(0, 2)));
+});

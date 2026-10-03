@@ -73,9 +73,20 @@ async function choose(host, index, { profile, confirmKey = '\r' } = {}) {
   const doc = readDocument(host.snapshot({ screenOnly: true }), profile);
   if (!doc.choice) throw new Error('no choice on screen');
   const options = doc.choice.options;
-  if (!options[index]) throw new Error('no such option');
-  const read = d => d.choice && sameOptions(d.choice.options, options) ? { selected: d.choice.selected, count: options.length } : null;
-  return selectAndConfirm(host, { profile, read, index, confirmKey, gone: d => !read(d) });
+  const target = options[index];
+  if (!target) throw new Error('no such option');
+  // The option is followed by its label, not its row: a long list (Pi's
+  // /model) scrolls while the highlight moves. The highlight's distance
+  // from it is what `selected` reports, around `index`.
+  const same = d => d.choice && (sameOptions(d.choice.options, options) || d.choice.options.some(o => o.label === target.label));
+  const read = d => {
+    if (!same(d)) return null;
+    const os = d.choice.options, at = os.reduce((b, o, i) => o.label === target.label && (b < 0 || Math.abs(i - index) < Math.abs(b - index)) ? i : b, -1);
+    return at < 0 ? null : { selected: index + d.choice.selected - at, count: Math.max(os.length, options.length), detail: os[at].detail };
+  };
+  // Done when the dialog is gone, or its option changed in place (Pi's
+  // /settings: Enter turns a setting on or off and the list stays).
+  return selectAndConfirm(host, { profile, read, index, confirmKey, gone: d => { const r = read(d); return !r || (r.selected === index && r.detail !== target.detail); } });
 }
 
 // Highlight menu item `index` and accept it with Tab (completion, not run).
