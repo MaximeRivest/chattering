@@ -135,7 +135,7 @@ test('with Pebble: a name, a certificate through the relay, visitors through the
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'names.json'), 'utf8')).names.maxime, b.homeId);
   const saved = JSON.parse(fs.readFileSync(path.join(dir, 'b', 'site.json'), 'utf8'));
   if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(dir, 'b', 'site.json')).mode & 0o777, 0o600);
-  assert.match(saved.cert.key, /PRIVATE KEY/);
+  assert.match(saved.certs['maxime.rockfrog.test'].key, /PRIVATE KEY/);
   // Another invited computer cannot take the name.
   const c = await mkHome('maxime', 'c');
   invitedIds.add(c.homeId);
@@ -270,7 +270,7 @@ test('the whole way: Chattering turns on its public address, a browser opens a s
   assert.match(link.url, new RegExp(`^https://maxime\\.rockfrog\\.test/s/${share.id}/#`));
 
   // Nothing but shared links answers on the public address.
-  const leafPem = JSON.parse(fs.readFileSync(path.join(appDir(home, 'data'), 'site.json'), 'utf8')).cert.cert;
+  const leafPem = JSON.parse(fs.readFileSync(path.join(appDir(home, 'data'), 'site.json'), 'utf8')).certs['maxime.rockfrog.test'].cert;
   const spki = crypto.createHash('sha256').update(new crypto.X509Certificate(leafPem).publicKey.export({ type: 'spki', format: 'der' })).digest('base64');
   const raw = await new Promise((resolve, reject) => {
     const s = tls.connect({ port: sitePort, host: '127.0.0.1', servername: 'maxime.rockfrog.test', rejectUnauthorized: false }, () => {
@@ -308,6 +308,30 @@ test('the whole way: Chattering turns on its public address, a browser opens a s
   await send('Input.insertText', { text: '\nLin typed this from far away.\n' }, sid);
   await until(() => fs.readFileSync(doc, 'utf8').includes('Lin typed this from far away.'), 'the edit reaches the file\n' + problems.join('\n'), 20000);
   assert.deepEqual(problems, []);
+  // A publication: its own address under the computer's, its own
+  // certificate (asked for through the relay), its own files.
+  const pubDir = path.join(work, 'game');
+  fs.mkdirSync(pubDir, { recursive: true });
+  fs.writeFileSync(path.join(pubDir, 'index.html'), '<!doctype html><h1>A GAME, PUBLISHED</h1>');
+  const pub = (await api('/api/shares', { kind: 'publication', type: 'site', path: pubDir, slug: 'game', access: 'public' })).body.share;
+  assert.ok(pub && pub.slug === 'game', JSON.stringify(pub));
+  await until(async () => ((await api('/api/shares?published=' + encodeURIComponent(pubDir))).body.shares[0].links[0] || {}).where === 'public', 'the publication\u2019s certificate\n' + log.slice(-1500), 60000);
+  const pubRoot = await new Promise((res, rej) => https.get({ host: '127.0.0.1', port: mgmtPort, path: '/roots/0', rejectUnauthorized: false }, s => { let d = ''; s.on('data', x => d += x); s.on('end', () => res(d)); }).on('error', rej));
+  const gamePage = await new Promise((resolve, reject) => {
+    const s = tls.connect({ port: sitePort, host: '127.0.0.1', servername: 'game.maxime.rockfrog.test', ca: pubRoot }, () => {
+      if (!s.authorized) return reject(new Error('not authorized: ' + s.authorizationError));
+      const san = s.getPeerCertificate().subjectaltname;
+      let b = ''; s.on('data', d => b += d); s.on('end', () => resolve({ san, body: b }));
+      s.write('GET / HTTP/1.1\r\nHost: game.maxime.rockfrog.test\r\nConnection: close\r\n\r\n');
+    });
+    s.on('error', reject);
+  });
+  assert.equal(gamePage.san, 'DNS:game.maxime.rockfrog.test', 'its own certificate, for its own address only');
+  assert.match(gamePage.body, /A GAME, PUBLISHED/);
+  assert.match(gamePage.body, /x-chattering-fingerprint: [0-9a-f]{64}/i);
+  // The computer's own address does not answer as the publication, and the other way round.
+  assert.doesNotMatch(raw, /A GAME/);
+
   // The owner turns the address off: the relay forgets this computer.
   await api('/api/public-links', { on: false });
   await until(() => relay.site.homes.size === 0, 'the relay connection closes');

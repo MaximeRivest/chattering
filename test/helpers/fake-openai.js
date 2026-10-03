@@ -10,11 +10,20 @@
 //   ai.baseUrl   http://127.0.0.1:<port>/v1
 //   ai.requests  what was asked, in order
 //   await ai.close()
+//   cors: true answers web pages on other addresses (and their preflights)
 const http = require('node:http');
 
-async function fakeOpenAI({ models = ['fixture-chat'], reply = 'Hello! I am ready to help.', apiKey = null } = {}) {
+async function fakeOpenAI({ models = ['fixture-chat'], reply = 'Hello! I am ready to help.', apiKey = null, cors = false } = {}) {
   const requests = [];
   const server = http.createServer(async (req, res) => {
+    // cors: answer a web page on another address, as AI companies that
+    // allow calls from browsers do (a published program's page, design/92).
+    if (cors) {
+      res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+      res.setHeader('Access-Control-Allow-Headers', 'authorization, content-type, x-api-key, anthropic-version, anthropic-dangerous-direct-browser-access');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
+    }
     let body = '';
     for await (const chunk of req) body += chunk;
     const auth = req.headers.authorization || '';

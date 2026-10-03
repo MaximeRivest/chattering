@@ -1,0 +1,17 @@
+{
+ "patches": [
+  "call-log records handed to globalThis.__functaiCallLog where there is no file system (calllog.ts append)"
+ ],
+ "functai": {
+  "version": "0.1.0",
+  "commit": "21bdcaa5faad062190758a70da607475e1dbaf3f",
+  "dirty": false
+ },
+ "lmcc": {
+  "version": "0.8.5"
+ },
+ "lm15": {
+  "version": "1.0.0-rc.3"
+ },
+ "builtAt": "2026-10-03T12:20:42.418Z"
+}

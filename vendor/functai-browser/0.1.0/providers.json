@@ -1,0 +1,98 @@
+[
+ {
+  "id": "openai",
+  "label": "OpenAI",
+  "model": "gpt-4.1-mini",
+  "env": "OPENAI_API_KEY",
+  "keyUrl": "https://platform.openai.com/api-keys",
+  "origin": "https://api.openai.com"
+ },
+ {
+  "id": "anthropic",
+  "label": "Anthropic",
+  "model": "claude-haiku-4-5",
+  "env": "ANTHROPIC_API_KEY",
+  "keyUrl": "https://console.anthropic.com",
+  "origin": "https://api.anthropic.com"
+ },
+ {
+  "id": "gemini",
+  "label": "Google Gemini",
+  "model": "gemini-2.5-flash",
+  "env": "GEMINI_API_KEY",
+  "keyUrl": "https://aistudio.google.com/apikey",
+  "origin": "https://generativelanguage.googleapis.com"
+ },
+ {
+  "id": "xai",
+  "label": "xAI",
+  "model": "grok-4.20",
+  "env": "XAI_API_KEY",
+  "keyUrl": "https://console.x.ai",
+  "origin": "https://api.x.ai"
+ },
+ {
+  "id": "groq",
+  "label": "Groq",
+  "model": "llama-3.3-70b-versatile",
+  "env": "GROQ_API_KEY",
+  "keyUrl": "https://console.groq.com/keys",
+  "origin": "https://api.groq.com"
+ },
+ {
+  "id": "openrouter",
+  "label": "OpenRouter",
+  "model": "openai/gpt-4.1-mini",
+  "env": "OPENROUTER_API_KEY",
+  "keyUrl": "https://openrouter.ai/keys",
+  "origin": "https://openrouter.ai"
+ },
+ {
+  "id": "deepseek",
+  "label": "DeepSeek",
+  "model": "deepseek-chat",
+  "env": "DEEPSEEK_API_KEY",
+  "keyUrl": "https://platform.deepseek.com/api_keys",
+  "origin": "https://api.deepseek.com"
+ },
+ {
+  "id": "zai",
+  "label": "Z.AI",
+  "model": "glm-4.5",
+  "env": "ZAI_API_KEY",
+  "keyUrl": "https://z.ai/manage-apikey/apikey-list",
+  "origin": "https://api.z.ai"
+ },
+ {
+  "id": "moonshotai",
+  "label": "Moonshot / Kimi",
+  "model": "kimi-k2.5",
+  "env": "MOONSHOTAI_API_KEY",
+  "keyUrl": "https://platform.kimi.ai/console/api-keys",
+  "origin": "https://api.moonshot.ai"
+ },
+ {
+  "id": "deepinfra",
+  "label": "DeepInfra",
+  "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+  "env": "DEEPINFRA_API_KEY",
+  "keyUrl": "https://deepinfra.com/dash/api_keys",
+  "origin": "https://api.deepinfra.com"
+ },
+ {
+  "id": "together",
+  "label": "Together AI",
+  "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+  "env": "TOGETHER_API_KEY",
+  "keyUrl": "https://api.together.ai/settings/projects/~current/api-keys",
+  "origin": "https://api.together.ai"
+ },
+ {
+  "id": "fireworks",
+  "label": "Fireworks AI",
+  "model": "accounts/fireworks/models/deepseek-v4p1-flash",
+  "env": "FIREWORKS_API_KEY",
+  "keyUrl": "https://app.fireworks.ai/settings/users/api-keys",
+  "origin": "https://api.fireworks.ai"
+ }
+]

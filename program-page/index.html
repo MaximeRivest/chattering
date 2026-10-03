@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>An AI program</title>
+<link rel="stylesheet" href="program.css">
+</head>
+<body>
+<main id="app" aria-busy="true">
+  <header class="pp-head">
+    <h1 id="title">…</h1>
+    <p id="summary" class="pp-dim"></p>
+    <p class="pp-small">Made by <b id="owner">…</b> in Chattering · version <a id="fingerprint" href="/.well-known/chattering-publication.json" title="The fingerprint of this exact version: anyone can check the page they got is the one that was published">…</a></p>
+  </header>
+
+  <form id="form" class="pp-card" novalidate>
+    <div id="fields"></div>
+
+    <fieldset class="pp-pay" id="pay">
+      <legend>Who pays for the answer</legend>
+      <label class="pp-choice" id="payOwnerRow" hidden><input type="radio" name="pay" value="owner"> <span><b id="payOwnerLabel">The maker</b><small id="payOwnerNote"></small></span></label>
+      <label class="pp-choice"><input type="radio" name="pay" value="visitor" checked> <span><b>You, with your own key</b><small>Your key goes from this page straight to the AI company you pick, and to nothing else: this page's security policy forbids any other address (your browser enforces it). It is not sent to <span class="ownerName">the maker</span>, nor to Rockfrog.</small></span></label>
+      <div id="byo" class="pp-byo">
+        <div class="pp-row">
+          <label>Company <select id="provider"></select></label>
+          <label class="pp-grow">Model <input id="model" spellcheck="false" autocomplete="off"></label>
+        </div>
+        <div class="pp-row">
+          <label class="pp-grow">Your API key <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="paste it here"></label>
+          <a id="getKey" target="_blank" rel="noopener noreferrer">Get a key</a>
+        </div>
+        <div class="pp-row pp-small">
+          <label><input type="checkbox" id="remember"> Remember it on this device (encrypted; only this page's address can use it)</label>
+          <button type="button" id="forget" class="pp-link" hidden>Forget my key</button>
+        </div>
+      </div>
+    </fieldset>
+
+    <label class="pp-share pp-small" id="shareRow" hidden><input type="checkbox" id="share"> Send this question and its answer to <span class="ownerName">the maker</span>, to help them improve the program (never your key)</label>
+
+    <div class="pp-actions"><button id="run" type="submit">Ask</button><span id="status" class="pp-dim" role="status"></span></div>
+  </form>
+
+  <section id="answer" class="pp-card" hidden aria-live="polite">
+    <h2>Answer</h2>
+    <div id="outputs"></div>
+  </section>
+
+  <details class="pp-card pp-code">
+    <summary>Use it from code</summary>
+    <div id="code"></div>
+  </details>
+</main>
+<footer class="pp-foot">Served from its maker's own computer by <a href="https://rockfrog.ai" target="_blank" rel="noopener noreferrer">Chattering</a>. It answers while that computer is on.</footer>
+<script type="module" src="program.js"></script>
+</body>
+</html>

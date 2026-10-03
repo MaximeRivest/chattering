@@ -41,7 +41,13 @@ const path = require('node:path');
 
 const ID_RE = /^[a-z2-7]{16}$/;
 const ROLES = ['view', 'edit'];
-const KINDS = ['file', 'conversation'];
+const KINDS = ['file', 'conversation', 'publication'];
+const PUB_TYPES = ['site', 'program'];
+const ACCESS = ['link', 'public'];
+// A publication's own address: <slug>.<computer's name>.<domain>.
+const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$/;
+const SLUG_RESERVED = new Set(['www', 's', 'api', 'app', 'mail', 'admin', 'pub', 'static', 'cdn', 'assets', 'well-known', 'chattering', 'rockfrog', 'relay', 'login']);
+const validSlug = s => SLUG_RE.test(String(s || '')) && !SLUG_RESERVED.has(s) && !String(s).includes('--');
 const MODES = ['live', 'snapshot'];
 const SESSION_MS = 30 * 24 * 3600e3;
 const KEEP_REVOKED_MS = 30 * 24 * 3600e3;
@@ -123,9 +129,16 @@ class ShareStore {
   get(id) { return this.shares.get(String(id || '')) || null; }
   list(filter = () => true) { return [...this.shares.values()].filter(filter).sort((a, b) => b.createdAt - a.createdAt); }
 
-  create({ kind = 'file', path: abs, key, mode, title, role, createdBy, expiresAt = null }) {
-    if (!KINDS.includes(kind)) throw httpError(400, 'Files and conversations can be shared.');
-    if (kind === 'file') {
+  create({ kind = 'file', path: abs, key, mode, title, role, createdBy, expiresAt = null, publication = null }) {
+    if (!KINDS.includes(kind)) throw httpError(400, 'Files, conversations and publications can be shared.');
+    if (kind === 'publication') {
+      const p = publication || {};
+      if (!PUB_TYPES.includes(p.type)) throw httpError(400, 'A web page or an AI program can be published.');
+      if (!validSlug(p.slug)) throw httpError(400, 'An address name is 1 to 30 lowercase letters, digits or single dashes (not at the start or end), and a few names are kept.');
+      if (this.list(s => s.kind === 'publication' && !s.revokedAt && s.slug === p.slug).length) throw httpError(409, p.slug + ' is already the address of another publication here. Choose another name.');
+      if (!/^[0-9a-f]{64}$/.test(String(p.root || ''))) throw httpError(400, 'Which version?');
+      role = 'view';
+    } else if (kind === 'file') {
       if (!ROLES.includes(role)) throw httpError(400, 'A link can view or edit.');
       if (!abs || !path.isAbsolute(abs)) throw httpError(400, 'Which file?');
     } else {
@@ -136,7 +149,8 @@ class ShareStore {
     if (!createdBy) throw httpError(400, 'Who is sharing?');
     let id;
     do { id = newShareId(); } while (this.shares.has(id));
-    const share = normalizeShare({ id, kind, path: abs, key, mode, title: title || (abs ? path.basename(abs) : 'Conversation'), role, createdBy, createdAt: this.now(), expiresAt: cleanExpiry(expiresAt, this.now()), gen: 1, snapshotAt: kind === 'conversation' && mode === 'snapshot' ? this.now() : null });
+    const pub = kind === 'publication' ? { ...publication, versions: [{ root: publication.root, at: this.now(), sig: publication.sig || null }] } : {};
+    const share = normalizeShare({ id, kind, path: abs, key, mode, ...pub, title: title || (abs ? path.basename(abs) : kind === 'publication' ? publication.slug : 'Conversation'), role, createdBy, createdAt: this.now(), expiresAt: cleanExpiry(expiresAt, this.now()), gen: 1, snapshotAt: kind === 'conversation' && mode === 'snapshot' ? this.now() : null });
     this.shares.set(id, share);
     this.save();
     return share;
@@ -153,6 +167,17 @@ class ShareStore {
       s.mode = patch.mode;
     }
     if (patch.snapshotAt !== undefined) s.snapshotAt = patch.snapshotAt;
+    if (s.kind === 'publication') {
+      if (patch.access !== undefined) { if (!ACCESS.includes(patch.access)) throw httpError(400, 'Anyone with the link, or public.'); s.access = patch.access; }
+      // A new version, or one already published made current again.
+      if (patch.root !== undefined) {
+        if (!/^[0-9a-f]{64}$/.test(String(patch.root))) throw httpError(400, 'Which version?');
+        if (!s.versions.some(v => v.root === patch.root)) s.versions.push({ root: patch.root, at: this.now(), sig: patch.sig || null });
+        s.root = patch.root;
+      }
+      if (patch.pay !== undefined) s.pay = normalizePay(patch.pay);
+      if (patch.title !== undefined) s.title = String(patch.title || s.slug).slice(0, 200);
+    }
     if (patch.expiresAt !== undefined) s.expiresAt = cleanExpiry(patch.expiresAt, this.now());
     if (patch.newSecret) s.gen += 1;
     s.changedAt = this.now();
@@ -207,11 +232,31 @@ function normalizeShare(s) {
   const kind = KINDS.includes(s.kind) ? s.kind : 'file';
   if (kind === 'file' && !s.path) return null;
   if (kind === 'conversation' && (!s.key || !MODES.includes(s.mode))) return null;
-  const where = kind === 'file' ? { path: String(s.path) } : { key: String(s.key), mode: s.mode, snapshotAt: Number(s.snapshotAt) || null };
+  if (kind === 'publication' && (!PUB_TYPES.includes(s.type) || !validSlug(s.slug) || !/^[0-9a-f]{64}$/.test(String(s.root || '')))) return null;
+  const where = kind === 'file' ? { path: String(s.path) }
+    : kind === 'conversation' ? { key: String(s.key), mode: s.mode, snapshotAt: Number(s.snapshotAt) || null }
+    : { type: s.type, slug: s.slug, root: s.root, access: ACCESS.includes(s.access) ? s.access : 'link',
+        versions: (Array.isArray(s.versions) ? s.versions : []).filter(v => v && /^[0-9a-f]{64}$/.test(String(v.root))).map(v => ({ root: v.root, at: Number(v.at) || 0, sig: v.sig ? String(v.sig) : null })),
+        source: s.source && typeof s.source === 'object' ? { path: s.source.path ? String(s.source.path) : null, key: s.source.key ? String(s.source.key) : null, program: s.source.program ? String(s.source.program) : null } : {},
+        pay: normalizePay(s.pay) };
   return { id: s.id, kind, ...where, title: String(s.title || (s.path ? path.basename(String(s.path)) : 'Conversation')).slice(0, 200), role: kind === 'conversation' ? 'view' : s.role,
     createdBy: String(s.createdBy), createdAt: Number(s.createdAt) || 0, expiresAt: Number(s.expiresAt) || null,
     revokedAt: Number(s.revokedAt) || null, changedAt: Number(s.changedAt) || null, gen: Math.max(1, Number(s.gen) || 1),
     opens: Number(s.opens) || 0, lastOpenAt: Number(s.lastOpenAt) || null };
+}
+// Who pays for a published program's answers (design/92). The visitor, with
+// their own key in their own browser: always offered. The owner, with a key
+// kept for public programs, under a monthly budget in money and a limit per
+// visitor: only when chosen, and only for a model with a known price.
+function normalizePay(p) {
+  const o = p && typeof p === 'object' && p.owner && typeof p.owner === 'object' ? p.owner : null;
+  const owner = o && o.provider && o.model ? {
+    provider: String(o.provider).slice(0, 40), model: String(o.model).slice(0, 120),
+    monthlyUsd: Math.max(0, Math.min(10000, Number(o.monthlyUsd) || 0)),
+    perVisitorPerHour: Math.max(1, Math.min(1000, Math.round(Number(o.perVisitorPerHour) || 10))),
+    maxInputChars: Math.max(100, Math.min(200000, Math.round(Number(o.maxInputChars) || 8000))),
+  } : null;
+  return { owner: owner && owner.monthlyUsd > 0 ? owner : null, shareCalls: !(p && p.shareCalls === false) };
 }
 function httpError(status, message) { const e = new Error(message); e.status = status; return e; }
 
@@ -228,15 +273,23 @@ function httpError(status, message) { const e = new Error(message); e.status = s
 function createShareGate(deps) {
   const live = new Map(); // share id → Set(conn)
   let liveTotal = 0;
-  const cookieName = id => 'chattering_share_' + id;
-  const cookieOf = (req, id) => {
-    const want = cookieName(id) + '=';
+  // The session cookie. Over https it is a __Host- cookie (this host only,
+  // Path=/, Secure): a page on a sister address (a published artifact, before
+  // the domain is on the Public Suffix List) cannot set one in its place. And
+  // whatever cookies a request carries under the name, only one that proves
+  // itself (signed, for this share, current) is taken.
+  const cookieName = (id, secure) => (secure ? '__Host-' : '') + 'chattering_share_' + id;
+  const cookiesOf = (req, id) => {
+    const out = [];
     for (const part of String(req.headers.cookie || '').split(';')) {
-      const p = part.trim();
-      if (p.startsWith(want)) return p.slice(want.length);
+      const p = part.trim(), eq = p.indexOf('=');
+      if (eq < 0) continue;
+      const name = p.slice(0, eq);
+      if (name === cookieName(id, true) || name === cookieName(id, false)) out.push(p.slice(eq + 1));
     }
-    return '';
+    return out;
   };
+
   const strict = () => ({
     'Content-Security-Policy': ["default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'", "img-src 'self' data: blob: https:",
       "font-src 'self' data:", "connect-src 'self'", "media-src 'self' data: blob:", "worker-src 'self' blob:", "frame-src 'self'", "object-src 'none'",
@@ -266,9 +319,20 @@ function createShareGate(deps) {
       owner: { name: r.owner && r.owner.name || 'Someone' }, visitor: visitorId,
       ...(share.kind === 'file' ? { fileName: path.basename(r.abs) } : { mode: share.mode, snapshotAt: share.snapshotAt }) };
   }
-  function session(req, id) { return deps.store.readSession(id, cookieOf(req, id)); }
+  function session(req, id) {
+    for (const v of cookiesOf(req, id)) { const sess = deps.store.readSession(id, v); if (sess) return sess; }
+    return null;
+  }
 
   async function handle(req, res) {
+    // A publication's own address answers with that publication and
+    // nothing else (publication-gate.js).
+    const pub = deps.publicationOfHost ? deps.publicationOfHost(req.headers.host) : null;
+    if (pub) {
+      if (pub.share) await deps.publicationGate.handle(req, res, pub.share);
+      else { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); res.end('Nothing is published at this address.'); }
+      return true;
+    }
     const u = new URL(req.url, 'http://share.invalid');
     // The app's own code and styles, for the read-only conversation viewer:
     // only the files the app itself serves (APP_FILES in server.js), at
@@ -322,8 +386,9 @@ function createShareGate(deps) {
         const issued = deps.store.issueSession(share, visitorId || undefined);
         v.visitor = issued.visitorId;
         if (!had) deps.store.noteOpen(share);
-        const cookie = [cookieName(id) + '=' + issued.value, 'Path=/s/' + id + '/', 'HttpOnly', 'SameSite=Strict', 'Max-Age=' + Math.floor(SESSION_MS / 1000)];
-        if (deps.isSecure(req)) cookie.push('Secure');
+        const secure = deps.isSecure(req);
+        const cookie = [cookieName(id, secure) + '=' + issued.value, 'Path=' + (secure ? '/' : '/s/' + id + '/'), 'HttpOnly', 'SameSite=Strict', 'Max-Age=' + Math.floor(SESSION_MS / 1000)];
+        if (secure) cookie.push('Secure');
         json(res, 200, v, { 'Set-Cookie': cookie.join('; ') });
         return true;
       }
@@ -445,6 +510,7 @@ function createShareGate(deps) {
 
   // ws(s)://<preview>/s/<id>/collab?name=… : the shared text of the file.
   async function upgrade(req, socket, head) {
+    if (deps.publicationOfHost && deps.publicationOfHost(req.headers.host)) { deps.refuseUpgrade(socket, 404, 'Not Found'); return true; }
     const u = new URL(req.url, 'http://share.invalid');
     const m = /^\/s\/([a-z2-7]{16})\/collab$/.exec(u.pathname);
     if (!m) return false;
@@ -587,4 +653,4 @@ function makeBudget({ bytes = BUDGET.bytes, perMs = BUDGET.perMs } = {}) {
   return { take(n) { const now = Date.now(); if (now - start > perMs) { start = now; used = 0; } used += n; return used <= bytes; } };
 }
 
-module.exports = { ShareStore, createShareGate, newShareId, cleanVisitorName, visitorColor, makeBudget, redactText, redactDeep, ID_RE, ROLES, KINDS, MODES, MESSAGE_MAX, HIDDEN };
+module.exports = { validSlug, normalizePay, PUB_TYPES, ACCESS, ShareStore, createShareGate, newShareId, cleanVisitorName, visitorColor, makeBudget, redactText, redactDeep, ID_RE, ROLES, KINDS, MODES, MESSAGE_MAX, HIDDEN };

@@ -396,6 +396,8 @@
         <details class="pg-fold"><summary>Python</summary><pre class="mk-code">${h(py)}</pre></details>
         <details class="pg-fold"><summary>JavaScript</summary><pre class="mk-code">${h(js)}</pre></details>
         <p class="pg-dim mk-small">Put the key in <code>CHATTERING_KEY</code> rather than in the code. Calls show up in Examples as they happen, marked as from its endpoint.</p></section>
+      ${window.SharesUI ? `<section><h3>On the web</h3><p class="pg-dim mk-small">Its own page at its own address, for anyone: a form, and an API. Visitors pay with their own key, in their own browser (it goes to their AI company and nowhere else); or you pay, with a key kept for public programs, within a monthly budget and a limit per visitor. The live version is what goes out, frozen and signed; its instruction becomes public with it.</p>
+        ${v.live ? '<button type="button" class="ghost" data-mk-web>Put it on the web…</button>' : '<p class="pg-dim mk-small">Publish it first: the live version is what goes on the web.</p>'}</section>` : ''}
       ${published ? `<section><h3>Published versions</h3><ul class="mk-versions">${published}</ul></section>` : ''}
     </div>`;
   }
@@ -419,6 +421,7 @@
     root.querySelectorAll('[data-mk-publish]').forEach(b => b.onclick = () => act('/api/programs/publish', {}, v => `Published: ${vn(v.live && v.live.n)} answers at its address now.`));
     root.querySelectorAll('[data-mk-unpublish]').forEach(b => b.onclick = () => { if (confirm('Take it offline? Its address answers "not published" until you publish again. Its keys stay.')) act('/api/programs/unpublish', {}, () => 'It is offline.'); });
     root.querySelectorAll('[data-mk-rollback]').forEach(b => b.onclick = () => act('/api/programs/rollback', { version: b.dataset.mkRollback }, v => `${vn(v.live.n)} is live again.`));
+    root.querySelectorAll('[data-mk-web]').forEach(b => b.onclick = () => window.SharesUI && SharesUI.openPublication({ type: 'program', program: st.view.name, title: st.view.name.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()) }));
     root.querySelectorAll('[data-mk-copy]').forEach(b => b.onclick = () => { navigator.clipboard.writeText(b.dataset.mkCopy).then(() => X().toast('Copied.'), () => X().errToast('Could not copy; select it instead.')); });
     root.querySelectorAll('[data-mk-revoke]').forEach(b => b.onclick = async () => {
       if (!confirm('Revoke this key? Whatever uses it stops working at once.')) return;

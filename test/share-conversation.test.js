@@ -194,6 +194,6 @@ test('a conversation shared by link: the owner makes it, a visitor reads it in C
 
   async function cookieOf(tb) {
     const out = await send('Storage.getCookies', {});
-    return (out.result.cookies || []).filter(c => c.name.startsWith('chattering_share_')).map(c => c.name + '=' + c.value).join('; ');
+    return (out.result.cookies || []).filter(c => /chattering_share_/.test(c.name)).map(c => c.name + '=' + c.value).join('; ');
   }
 });

@@ -121,3 +121,13 @@
 .sh-ui-small { font-size: var(--fs-label); color: var(--text-faint); }
 .sh-ui .linklike { background: none; border: 0; padding: 0; color: var(--cyan); text-decoration: underline; cursor: pointer; font: inherit; }
 .sh-ui-warn { font-size: var(--fs-label); color: var(--warn); line-height: 1.5; margin: 0 0 var(--sp-2); }
+.sh-ui-pubform { border: 1px solid var(--border); padding: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-2); }
+.sh-ui-access { margin: 6px 0; gap: var(--sp-3); font-size: var(--fs-label); }
+.sh-ui-files { font-size: var(--fs-label); margin: 6px 0; }
+.sh-ui-files ul { max-height: 160px; overflow: auto; margin: 4px 0; padding-left: 18px; }
+.sh-ui-pay { border: 1px solid var(--border); padding: 6px 10px 10px; margin: 8px 0; font-size: var(--fs-label); }
+.sh-ui-pay legend { padding: 0 4px; }
+.sh-ui-pay label { display: inline-flex; gap: 4px; align-items: center; margin: 4px 8px 4px 0; }
+.sh-ui .dialog .sh-ui-pay input[type=number] { width: 7ch; margin: 0; }
+.sh-ui .dialog .sh-ui-pay input#payModel, .sh-ui .dialog .sh-ui-pay input#payKey { flex: 1; margin: 0; }
+.sh-ui-meta select { font-size: var(--fs-label); }

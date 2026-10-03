@@ -129,6 +129,11 @@ const ROUTES = {
   'POST /api/shares/change': 'member',
   'POST /api/shares/revoke': 'member',
   '/api/shares/scan': 'member',
+  // Publications (design/92): the household publishes; keys for programs paid
+  // by their owner are the owner's (checked again in the handler).
+  'POST /api/publications/preview': 'member',
+  '/api/publications/price': 'member',
+  '/api/publications/keys': 'owner',
   '/api/conversation/start-loose': 'member',
   '/api/conversation/folder-info': 'member',
   '/api/conversation/project': 'member',

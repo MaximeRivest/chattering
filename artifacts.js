@@ -294,6 +294,7 @@
     pane.querySelector('[data-art-act="reload"]').hidden = live;
     // A file has its own ✦ Ask (the change box); the panel's "mention it" is for the rest.
     pane.querySelector('[data-art-act="ask"]').hidden = editing;
+    pane.querySelector('[data-art-act="publish"]').hidden = live || editing || !(state && state.publishable);
     const list = pane.querySelector('[data-art-act="list"]');
     list.hidden = !(state && state.fromList && LIST_NAMES[state.fromList]);
     if (!list.hidden) { list.textContent = '← ' + LIST_NAMES[state.fromList]; list.title = 'Back to ' + LIST_NAMES[state.fromList]; }
@@ -340,6 +341,7 @@
           <button type="button" data-art-act="newer" aria-label="Newer version">›</button>
         </span>
         <span class="art-tools">
+          <button type="button" data-art-act="publish" hidden title="Put this version on the web at its own address: a frozen copy, signed by this computer (design/92)">Publish</button>
           <button type="button" data-art-act="ask" title="Ask about this artifact in the message box">Ask</button>
           <button type="button" data-art-act="reload" title="Reload" aria-label="Reload">↻</button>
           <a class="art-newtab" target="_blank" rel="noopener noreferrer" title="Open in its own browser tab" aria-label="Open in a new tab">↗</a>
@@ -363,6 +365,7 @@
       else if (act === 'full') { const b = pane.querySelector('.art-body'); (b.requestFullscreen ? b.requestFullscreen() : Promise.reject()).catch(() => pane.classList.toggle('art-max')); }
       else if (act === 'older' || act === 'newer') stepVersion(act === 'older' ? -1 : 1);
       else if (act === 'ask') askAbout();
+      else if (act === 'publish' && state && state.publishable && window.SharesUI) SharesUI.openPublication(state.publishable);
     });
     pane.querySelector('.art-version').onchange = e => { if (state) { state.version = e.target.value || null; render(false); } };
     // Resize: drag the left edge; the width is this device's choice.
@@ -557,6 +560,12 @@
     vs.querySelector('[data-art-act="older"]').disabled = at <= 0;
     vs.querySelector('[data-art-act="newer"]').disabled = at < 0 || at >= list.length - 1;
     pane.querySelector('.art-sub').textContent = r.relPath + (r.kind ? ' · ' + r.kind : '');
+    // What can stand alone on the web: a page (a folder with its index.html)
+    // or one picture, document, video or sound. Slides need Chattering's viewer.
+    const canPublish = r.exists && window.SharesUI && !(typeof chatteringMe !== 'undefined' && chatteringMe && chatteringMe.scope === 'guest')
+      && (r.kind === 'web' || (!r.isDir && ['svg', 'image', 'pdf', 'video', 'audio'].includes(r.kind)));
+    state.publishable = canPublish ? { type: 'site', key: state.key, path: r.path, version: shown === 'live' ? null : shown, title: state.title || r.relPath } : null;
+    pane.querySelector('[data-art-act="publish"]').hidden = !canPublish;
     const version = list.find(v => v.id === shown);
     if (!r.exists && shown === 'live') { banner.hidden = false; banner.textContent = 'These files are no longer on disk.'; }
     else if (version && version.missing) { banner.hidden = false; banner.textContent = `${version.missing} file${version.missing === 1 ? ' was' : 's were'} not captured in this version (before the folder was an artifact); the disk's copy is shown for ${version.missing === 1 ? 'it' : 'them'}.`; }

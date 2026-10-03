@@ -18466,6 +18466,9 @@ async function handleRequest(req, res) {
         console.log('[public links] ' + identity.user.name + ' turned the public address ' + (next.on ? 'on as ' + next.name : 'off'));
         json(res, 200, publicLinksView(identity));
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/publications/keys' || u.pathname === '/api/publications/price' || (u.pathname === '/api/publications/preview' && req.method === 'POST')) {
+      try { json(res, 200, await publicationsApi(identity, req, u)); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/shares/scan' && req.method === 'GET') {
       try { json(res, 200, await sharesApi(identity, req, u)); }
       catch (e) { json(res, e.status || 400, { error: e.message }); }
@@ -20704,6 +20707,10 @@ const shareLimiter = authGuard.createLimiter();
 async function resolveShare(share) {
   const owner = identityOfUserId(share.createdBy);
   if (!owner) throw Object.assign(new Error('The person who shared this is no longer on that computer.'), { status: 410 });
+  if (share.kind === 'publication') {
+    if (owner.user.scope === 'guest') throw Object.assign(new Error('This publication is no longer offered.'), { status: 410 });
+    return { owner: { name: owner.user.name || 'Someone' } };
+  }
   if (share.kind === 'conversation') {
     if (share.mode === 'snapshot') {
       if (!fs.existsSync(shareSnapshotFile(share.id))) throw Object.assign(new Error('This copy of the conversation is gone.'), { status: 410 });
@@ -20836,6 +20843,7 @@ const shareGate = sharesLib.createShareGate({
   serveFile: fileMedia.serveFile, mimeOf: previewLib.mimeOf, staticFile: shareStaticFile,
   acceptWebSocket, refuseUpgrade, log: msg => console.error(msg),
   conversation: sharedConversation, viewerPage: shareViewerPage, appFile: shareAppFile,
+  publicationOfHost: h => publicationOfHost(h), publicationGate: { handle: (req, res, share) => publicationGate.handle(req, res, share) },
   conversationMedia: async (share, params, req, res) => {
     await resolveShare(share);
     try {
@@ -20855,6 +20863,8 @@ const siteHome = require('./site-home.js').createSiteHome({
   wanted: () => !!(appSettings.publicLinks && appSettings.publicLinks.on && appSettings.publicLinks.name) && process.env.CHATTERING_NO_PUBLIC_LINKS !== '1',
   desiredName: () => (appSettings.publicLinks && appSettings.publicLinks.name) || '',
   homeKey: () => anywhere.homeKey(),
+  // Every publication has its own address and certificate (design/92).
+  subHosts: () => shareStore.list(s => s.kind === 'publication' && !!shareStore.active(s.id)).map(s => s.slug),
   acmeDirectory: process.env.CHATTERING_ACME_DIRECTORY || undefined,
   // Tests: the test authority's own TLS certificate (Pebble).
   acmeCa: process.env.CHATTERING_ACME_CA_FILE ? fs.readFileSync(process.env.CHATTERING_ACME_CA_FILE) : undefined,
@@ -20872,6 +20882,317 @@ const siteHome = require('./site-home.js').createSiteHome({
   log: msg => console.error(msg),
 });
 setTimeout(() => siteHome.sync(), 3000).unref();
+// ---- publications (design/92): frozen copies at their own addresses ----
+// A web page or game an agent made (an artifact), or an AI program made
+// here, published as a version kept by its content (publications.js), signed
+// by this computer, at <slug>.<name>.rockfrog.site (and <slug>.pub.localhost
+// here). Served by publication-gate.js; the owner's side is /api/shares
+// (kind 'publication') and /api/publications/*.
+const publicationsLib = require('./publications.js');
+const anywhereProto = require('./anywhere/protocol.js');
+const pubStore = new publicationsLib.PublicationStore({ dir: path.join(DATA_DIR, 'publications') });
+const PROGRAM_PAGE_DIR = path.join(__dirname, 'program-page');
+const PROGRAM_BUNDLE_DIR = path.join(__dirname, 'vendor', 'functai-browser', '0.1.0');
+const PROGRAM_OUT_TOKENS = 2048;
+const TEXT_TYPES = /^(text\/|application\/(json|javascript|xml|manifest\+json)|image\/svg)/;
+
+async function publicationSigner() {
+  const k = await anywhere.homeKey();
+  return { id: k.homeId, key: anywhereProto.b64u(k.spki) };
+}
+async function signPublication(root) {
+  const k = await anywhere.homeKey();
+  return anywhereProto.b64u(await k.sign(anywhereProto.toBytes(publicationsLib.CONTEXT + root)));
+}
+// The files of an artifact as they would be published: a folder (its
+// index.html the entry) or one file; from the version on screen (a
+// checkpoint) or the disk. Left out, and said so: names starting with a dot
+// (.env, .git), dependency and build folders, links leading outside, and
+// files over the limits. Text that looks like a secret is pointed out.
+async function artifactFilesForPublishing(identity, { path: p, key, version }) {
+  if (key && (!index[key] || !canDo(identity, 'see', targetOf(key)))) throw Object.assign(new Error('No such conversation.'), { status: 404 });
+  const abs = key ? artifactPathFor(key, p) : path.resolve(expandHomePath(String(p || '')));
+  assertPathAccess(identity, abs, 'see');
+  const files = [], excluded = [], warnings = [];
+  const leave = (rel, why) => { if (excluded.length < 200) excluded.push({ path: rel, why }); };
+  const add = (rel, bytes) => {
+    const type = previewLib.mimeOf(rel);
+    files.push({ path: rel, bytes, type });
+    if (TEXT_TYPES.test(type) && bytes.length < 2 * 1024 * 1024) {
+      const found = [];
+      sharesLib.redactText(bytes.toString('utf8'), found, rel);
+      if (found.length) warnings.push({ path: rel, kinds: [...new Set(found.map(f => f.kind))] });
+    }
+  };
+  const skipName = name => name.startsWith('.') || ARTIFACT_SKIP.has(name);
+  let fromVersion = false;
+  if (/^[0-9a-f]{64}$/.test(String(version || ''))) {
+    const snap = await checkpoints().snapshot(version);
+    const rel = path.relative(snap.root, abs).split(path.sep).join('/');
+    if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+      const single = snap.manifest.find(f => f.path === rel);
+      const items = single ? [single] : snap.manifest.filter(f => f.path.startsWith(rel ? rel + '/' : ''));
+      if (items.length && items.every(f => f.oid)) {
+        fromVersion = true;
+        for (const f of items) {
+          const name = single ? path.posix.basename(f.path) : f.path.slice(rel ? rel.length + 1 : 0);
+          if (name.split('/').some(skipName)) { leave(name, 'hidden or a dependency folder'); continue; }
+          add(name, await checkpoints().blob(snap.root, f.oid));
+        }
+      }
+    }
+  }
+  if (!fromVersion) {
+    let st;
+    try { st = await fsp.stat(abs); } catch { throw Object.assign(new Error('Nothing at ' + abs + ' to publish.'), { status: 404 }); }
+    if (st.isFile()) add(path.basename(abs), await fsp.readFile(abs));
+    else {
+      const real = await fsp.realpath(abs);
+      const walk = async (dir, rel) => {
+        for (const e of await fsp.readdir(dir, { withFileTypes: true })) {
+          const r = rel ? rel + '/' + e.name : e.name, full = path.join(dir, e.name);
+          if (skipName(e.name)) { leave(r, e.name.startsWith('.') ? 'hidden (starts with a dot)' : 'a dependency or build folder'); continue; }
+          if (files.length >= publicationsLib.LIMITS.files) { leave(r, 'over ' + publicationsLib.LIMITS.files + ' files'); continue; }
+          let target;
+          try { target = await fsp.realpath(full); } catch { leave(r, 'unreadable'); continue; }
+          if (!(target === real || target.startsWith(real + path.sep))) { leave(r, 'a link leading outside the folder'); continue; }
+          const ts = await fsp.stat(target);
+          if (ts.isDirectory()) await walk(target, r);
+          else if (ts.isFile()) {
+            if (ts.size > publicationsLib.LIMITS.fileBytes) { leave(r, 'over 64 MB'); continue; }
+            add(r, await fsp.readFile(target));
+          }
+        }
+      };
+      await walk(real, '');
+    }
+  }
+  const single = files.length === 1 && !files[0].path.includes('/') && files[0].path !== 'index.html' ? files[0].path : null;
+  const entry = single || 'index.html';
+  if (!files.some(f => f.path === entry)) throw Object.assign(new Error('A folder is published as a web page: it needs an index.html.'), { status: 400 });
+  return { abs, files, entry, excluded, warnings, fromVersion };
+}
+// An AI program as it is published: its live version (definition and
+// FunctAI's saved form), the page that runs it, FunctAI for browsers and
+// the providers that page may call. Publishing makes the instruction public:
+// a visitor's browser runs it.
+async function programFilesForPublishing(identity, name, { title, summary } = {}) {
+  assertMadeAccess(identity, name);
+  const live = madePrograms.liveDefinition(name);
+  if (!live) throw Object.assign(new Error(name + ' is not published here yet: publish it on its page first, then put it on the web.'), { status: 409 });
+  const folder = madePrograms.versionFolder(name, live.version);
+  const read = f => fsp.readFile(f);
+  const def = live.definition;
+  const firstSentence = String(def.description || '').split(/(?<=[.!?])\s|\n/)[0].slice(0, 300);
+  const page = { title: String(title || def.name.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())).slice(0, 120),
+    summary: String(summary ?? firstSentence).slice(0, 600), owner: (identity.user && identity.user.name) || 'Someone', program: def.name };
+  const files = [
+    { path: 'index.html', bytes: await read(path.join(PROGRAM_PAGE_DIR, 'index.html')), type: 'text/html; charset=utf-8' },
+    { path: 'program.js', bytes: await read(path.join(PROGRAM_PAGE_DIR, 'program.js')), type: 'text/javascript; charset=utf-8' },
+    { path: 'program.css', bytes: await read(path.join(PROGRAM_PAGE_DIR, 'program.css')), type: 'text/css; charset=utf-8' },
+    { path: 'functai.mjs', bytes: await read(path.join(PROGRAM_BUNDLE_DIR, 'functai.mjs')), type: 'text/javascript; charset=utf-8' },
+    { path: 'providers.json', bytes: await read(path.join(PROGRAM_BUNDLE_DIR, 'providers.json')), type: 'application/json; charset=utf-8' },
+    { path: 'LICENSE-functai.txt', bytes: await read(path.join(PROGRAM_BUNDLE_DIR, 'LICENSE')), type: 'text/plain; charset=utf-8' },
+    { path: 'program.json', bytes: await read(path.join(folder, 'program.json')), type: 'application/json; charset=utf-8' },
+    { path: 'functai.json', bytes: await read(path.join(folder, 'functai.json')), type: 'application/json; charset=utf-8' },
+    { path: 'page.json', bytes: Buffer.from(JSON.stringify(page, null, 1)), type: 'application/json; charset=utf-8' },
+  ];
+  return { files, entry: 'index.html', excluded: [], warnings: [], page };
+}
+async function buildPublication(identity, type, source, opts = {}) {
+  const got = type === 'program' ? await programFilesForPublishing(identity, source.program, opts) : await artifactFilesForPublishing(identity, source);
+  const { root } = await pubStore.put({ kind: type, entry: got.entry, files: got.files });
+  return { root, sig: await signPublication(root), got };
+}
+// Where a publication answers: its own address on the public name, and on
+// this computer (<slug>.pub.localhost, for its owner).
+function publicationHost(slug) {
+  const st = siteHome.status();
+  return st.name && st.domain ? slug + '.' + st.name + '.' + st.domain : null;
+}
+function publicationOfHost(hostHeader) {
+  const h = String(hostHeader || '').toLowerCase().replace(/:\d+$/, '').replace(/\.$/, '');
+  let slug = null;
+  const local = /^([a-z0-9-]{1,30})\.pub\.localhost$/.exec(h);
+  if (local) slug = local[1];
+  else {
+    const st = siteHome.status();
+    if (st.name && st.domain) {
+      const tail = '.' + st.name + '.' + st.domain;
+      if (h.endsWith(tail)) { const label = h.slice(0, -tail.length); if (/^[a-z0-9-]{1,30}$/.test(label)) slug = label; }
+    }
+  }
+  if (!slug) return null;
+  const share = shareStore.list(s => s.kind === 'publication' && s.slug === slug && !!shareStore.active(s.id))[0];
+  return share ? { share } : { missing: true };
+}
+function publicationLinks(share) {
+  const secret = share.access === 'link' ? '#k=' + shareStore.secretOf(share) : '';
+  const out = [];
+  const pub = siteHome.hostUrl(share.slug);
+  if (pub) out.push({ where: 'public', url: pub + '/' + secret, who: share.access === 'public' ? 'Anyone at this address' : 'Anyone with the link, from anywhere' });
+  else if (publicationHost(share.slug)) out.push({ where: 'public-pending', url: 'https://' + publicationHost(share.slug) + '/' + secret, who: 'Its certificate is on its way (a minute)' });
+  out.push({ where: 'local', url: `http://${share.slug}.pub.localhost:${PREVIEW_PORT}/` + secret, who: 'Only this computer' });
+  return out;
+}
+
+// ---- programs paid by their owner: keys, money, limits ----
+// A key kept for public programs only (never Pi's sign-ins: a subscription
+// is never billed for strangers, design/76 D4), a monthly budget in money
+// from Chattering's price tables (a model without a known price cannot be
+// chosen: an unpriced bill cannot be capped), a limit per visitor, and the
+// cost of each call reserved before it starts at its most (its input, and
+// the longest answer it may write), then counted as it was.
+const publicKeysFile = path.join(DATA_DIR, 'public-program-keys.json');
+const publicKeys = () => { try { return JSON.parse(fs.readFileSync(publicKeysFile, 'utf8')).keys || {}; } catch { return {}; } };
+async function savePublicKeys(keys) {
+  await writeFileAtomic(publicKeysFile, JSON.stringify({ v: 1, keys }, null, 1) + '\n');
+  try { await fsp.chmod(publicKeysFile, 0o600); } catch {}
+}
+const spendFile = path.join(DATA_DIR, 'publication-spend.json');
+let spendState = (() => { try { return JSON.parse(fs.readFileSync(spendFile, 'utf8')); } catch { return { months: {} }; } })();
+const monthKey = () => new Date().toISOString().slice(0, 7);
+const spentOf = id => ((spendState.months[monthKey()] || {})[id] || { usd: 0, calls: 0 });
+const reserved = new Map(); // publication id → money held by calls running now
+function addSpend(id, usd) {
+  const m = spendState.months[monthKey()] = spendState.months[monthKey()] || {};
+  const cur = m[id] || { usd: 0, calls: 0 };
+  m[id] = { usd: cur.usd + usd, calls: cur.calls + 1 };
+  for (const k of Object.keys(spendState.months)) if (k < new Date(Date.now() - 400 * 864e5).toISOString().slice(0, 7)) delete spendState.months[k];
+  writeFileAtomic(spendFile, JSON.stringify(spendState) + '\n').catch(() => {});
+}
+const priceOfModel = (provider, model) => { const p = pricingCatalog().resolve(provider, model); return p && p.rates ? p : null; };
+const programProviders = () => { try { return JSON.parse(fs.readFileSync(path.join(PROGRAM_BUNDLE_DIR, 'providers.json'), 'utf8')); } catch { return []; } };
+const visitorTurns = new Map(); // publication|address → times of calls this hour
+function visitorTurn(key, perHour) {
+  const now = Date.now(), list = (visitorTurns.get(key) || []).filter(t => now - t < 3600e3);
+  if (list.length >= perHour) { visitorTurns.set(key, list); return Math.ceil((list[0] + 3600e3 - now) / 1000); }
+  list.push(now); visitorTurns.set(key, list);
+  if (visitorTurns.size > 20000) visitorTurns.delete(visitorTurns.keys().next().value);
+  return 0;
+}
+const hashVisitor = ip => crypto.createHmac('sha256', shareStore.key).update('visitor\0' + ip).digest('hex').slice(0, 16);
+const aiProgramsLogFolder = () => (/^(0|off|false|no)$/i.test(String(process.env.FUNCTAI_LOG_CALLS || '').trim()) ? false : platform.functaiCallsDir());
+let programLibLoad = null;
+const programLibrary = () => programLibLoad || (programLibLoad = import(path.join(PROGRAM_BUNDLE_DIR, 'functai.mjs')));
+// Tests only: an AI company of the test's own (the page may call it, and so may the owner's runs).
+const TEST_PROVIDER_BASE = process.env.CHATTERING_TEST_PROVIDER_BASE || '';
+function readPublicationJson(share, name) {
+  const m = pubStore.manifest(share.root);
+  if (!m || !m.files[name]) throw Object.assign(new Error('This publication has no ' + name), { status: 404 });
+  return JSON.parse(fs.readFileSync(pubStore.blobPath(m.files[name].sha256), 'utf8'));
+}
+function ownerPaysState(share) {
+  const o = share.pay && share.pay.owner;
+  if (!o) return null;
+  const label = ((programProviders().find(p => p.id === o.provider) || {}).label || o.provider) + ' ' + o.model;
+  let why = '';
+  if (!publicKeys()[o.provider]) why = 'its key is not set';
+  else if (!priceOfModel(o.provider, o.model)) why = 'the price of this model is not known';
+  else if (spentOf(share.id).usd >= o.monthlyUsd) why = 'this month\u2019s budget is spent';
+  return { label, perVisitorPerHour: o.perVisitorPerHour, available: !why, why };
+}
+const programRuntime = {
+  async info(share) {
+    return { ownerPays: ownerPaysState(share), shareCalls: !!(share.pay && share.pay.shareCalls), ...(TEST_PROVIDER_BASE ? { test: { baseUrls: Object.fromEntries(programProviders().map(p => [p.id, TEST_PROVIDER_BASE])) } } : {}) };
+  },
+  async describe(share) {
+    const def = readPublicationJson(share, 'program.json');
+    return { name: def.name, description: def.description, version: share.root, inputs: def.inputs, outputs: def.outputs, functai: '/functai.json',
+      run: share.pay && share.pay.owner ? { method: 'POST', path: '/', body: 'the inputs, as JSON', paidBy: 'its maker, within limits' } : null };
+  },
+  async run(share, values, { req, res, ip }) {
+    const send = (status, body) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
+    const o = share.pay && share.pay.owner;
+    if (!o) return send(403, { error: 'This program is paid by its visitors: use your own key, on its page or from code.', code: 'visitor-pays' });
+    const st = ownerPaysState(share);
+    if (!st.available) return send(st.why.includes('budget') ? 402 : 503, { error: 'Not available right now: ' + st.why + '.', code: st.why.includes('budget') ? 'budget' : 'unavailable' });
+    const wait = visitorTurn(share.id + '|' + ip, o.perVisitorPerHour);
+    if (wait) { res.setHeader('Retry-After', String(wait)); return send(429, { error: `At most ${o.perVisitorPerHour} answers an hour for each visitor. Try again later, or use your own key.`, code: 'rate-limit' }); }
+    const def = readPublicationJson(share, 'program.json'), saved = readPublicationJson(share, 'functai.json');
+    let inputs;
+    try { inputs = programsDeploy.checkInputs(def, values); } catch (e) { return send(e.status || 400, { error: e.message, code: 'bad-inputs', ...(e.problems ? { problems: e.problems } : {}) }); }
+    const chars = JSON.stringify(inputs).length;
+    if (chars > o.maxInputChars) return send(413, { error: `The inputs are at most ${o.maxInputChars} characters here.`, code: 'too-large' });
+    // The most this call can cost: its input (instruction and examples
+    // included) and the longest answer it may write.
+    const price = priceOfModel(o.provider, o.model);
+    const most = usageLib.calculateCost(price.rates, { input: Math.ceil((chars + JSON.stringify(saved).length) / 3) + 200, output: PROGRAM_OUT_TOKENS, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0 }).total;
+    if (spentOf(share.id).usd + (reserved.get(share.id) || 0) + most > o.monthlyUsd) return send(402, { error: 'This month\u2019s budget for this program is spent. Use your own key.', code: 'budget' });
+    reserved.set(share.id, (reserved.get(share.id) || 0) + most);
+    const stream = /text\/event-stream/.test(String(req.headers.accept || ''));
+    const sse = (event, data) => { if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
+    const stop = new AbortController();
+    res.on('close', () => { if (!res.writableEnded) stop.abort(); });
+    const lib = await programLibrary();
+    const router = new lib.LMRouter({ apiKeys: { [o.provider]: publicKeys()[o.provider].key }, env: {}, ...(TEST_PROVIDER_BASE ? { baseUrls: { [o.provider]: TEST_PROVIDER_BASE } } : {}) });
+    let spent = most;
+    try {
+      if (stream) res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' });
+      const fn = lib.fromManifest(saved);
+      const folder = aiProgramsLogFolder();
+      const out = await lib.withSettings({ lm: o.provider + ':' + o.model, router, logCalls: folder || false, maxTokens: PROGRAM_OUT_TOKENS,
+        caller: { kind: 'publication', publication: share.slug, visitor: hashVisitor(ip) } }, async () => {
+        const st = fn.stream(inputs);
+        const close = () => st.close();
+        stop.signal.addEventListener('abort', close, { once: true });
+        let outer = null;
+        const reading = (async () => { for await (const e of st.events()) { if (e.kind === 'started') outer ??= e.call; if (stream && e.kind === 'text' && e.answer && e.call === outer) sse('text', { answer: true, text: e.text }); } })().catch(() => {});
+        const p = await st.prediction;
+        await reading;
+        return p;
+      });
+      const u = out.response && out.response.usage || {};
+      const cacheRead = Number(u.cacheReadTokens) || 0;
+      spent = usageLib.calculateCost(price.rates, { input: Math.max(0, (Number(u.inputTokens) || 0) - cacheRead) + cacheRead, output: Number(u.outputTokens) || 0, cacheRead: 0, cacheWrite: Number(u.cacheWriteTokens) || 0, cacheWrite1h: 0 }).total;
+      const body = { result: out.outputs[def.outputs[def.outputs.length - 1].name], outputs: out.outputs, version: share.root.slice(0, 12) };
+      if (stream) { sse('done', body); res.end(); } else send(200, body);
+    } catch (e) {
+      const f = madeFailure(e);
+      if (stream && res.headersSent) { sse('error', { ...f.body, status: f.status }); res.end(); }
+      else if (!res.headersSent) send(f.status === 499 ? 400 : f.status, f.body);
+    } finally {
+      reserved.set(share.id, Math.max(0, (reserved.get(share.id) || 0) - most));
+      addSpend(share.id, spent);
+      router.close().catch(() => {});
+    }
+  },
+  // A call a visitor chose to send: FunctAI's own record of it, kept in the
+  // call log beside this computer's calls, so it is judged like any other.
+  // Who sent it is a number (a keyed hash of their address), not the address.
+  async acceptCall(share, rec, ip) {
+    if (!share.pay || !share.pay.shareCalls) throw Object.assign(new Error('This program does not take shared calls.'), { status: 403 });
+    if (visitorTurn('calls|' + share.id + '|' + ip, 30)) throw Object.assign(new Error('Too many at once.'), { status: 429 });
+    const def = readPublicationJson(share, 'program.json'), saved = readPublicationJson(share, 'functai.json');
+    const lib = await programLibrary();
+    const version = lib.fromManifest(saved).version;
+    if (!rec || rec.functai_call !== 2 || !rec.program || rec.program.name !== def.name || rec.program.version !== version || typeof rec.id !== 'string' || !/^[0-9A-Za-z_-]{6,64}$/.test(rec.id))
+      throw Object.assign(new Error('This is not a call of this program.'), { status: 400 });
+    const folder = aiProgramsLogFolder();
+    if (!folder) return { ok: true, kept: false };
+    const clean = { ...rec, caller: { kind: 'visitor', publication: share.slug, visitor: hashVisitor(ip) },
+      process: { host: 'visitor', pid: null, user: null, language: 'typescript', runtime: 'browser', functai: rec.process && rec.process.functai || null } };
+    const day = path.join(folder, new Date().toISOString().slice(0, 10));
+    await fsp.mkdir(day, { recursive: true, mode: 0o700 });
+    await fsp.appendFile(path.join(day, 'visitors-' + share.id + '.jsonl'), JSON.stringify(clean) + '\n', { mode: 0o600 });
+    return { ok: true, kept: true };
+  },
+};
+const publicationGate = require('./publication-gate.js').createPublicationGate({
+  store: shareStore, pubStore, resolve: share => resolveShare(share), signer: publicationSigner,
+  isSecure: req => !!req.socket.encrypted, clientAddress: req => req.socket.visitorIp || authGuard.clientAddress(req),
+  limiter: shareLimiter, serveFile: fileMedia.serveFile, program: {
+    info: s => programRuntime.info(s), describe: s => programRuntime.describe(s), run: (s, v, o) => programRuntime.run(s, v, o),
+    acceptCall: (s, r, ip) => programRuntime.acceptCall(s, r, ip),
+  },
+  extraConnect: () => (TEST_PROVIDER_BASE ? [new URL(TEST_PROVIDER_BASE).origin] : []),
+});
+async function publicationsGc() {
+  const keep = new Set();
+  for (const s of shareStore.list(x => x.kind === 'publication' && !x.revokedAt)) for (const v of s.versions) keep.add(v.root);
+  await pubStore.gc(keep);
+}
+
 function publicLinksView(identity) {
   const st = siteHome.status();
   const base = { on: !!(appSettings.publicLinks && appSettings.publicLinks.on), name: (appSettings.publicLinks && appSettings.publicLinks.name) || '', phase: st.phase, url: st.url, domain: st.domain || 'rockfrog.site', owner: policy.isOwnerTier(identity) };
@@ -20903,7 +21224,14 @@ function shareView(share) {
   const maker = usersLib.findUser(roster, usersLib.resolveId(roster, share.createdBy));
   return { id: share.id, kind: share.kind, path: share.path, key: share.key, mode: share.mode, snapshotAt: share.snapshotAt, title: share.title, role: share.role, createdAt: share.createdAt, expiresAt: share.expiresAt,
     revokedAt: share.revokedAt, opens: share.opens, lastOpenAt: share.lastOpenAt, by: maker ? { id: maker.id, name: maker.name } : { id: share.createdBy, name: 'someone' },
-    active: !!shareStore.active(share.id), live: shareGate.liveCount(share.id), links: share.revokedAt ? [] : shareLinks(share) };
+    active: !!shareStore.active(share.id), live: shareGate.liveCount(share.id),
+    ...(share.kind === 'publication' ? {
+      type: share.type, slug: share.slug, access: share.access, root: share.root, source: share.source,
+      versions: share.versions.map(v => ({ root: v.root, at: v.at })).reverse(), pay: share.pay,
+      ownerPays: share.type === 'program' ? ownerPaysState(share) : null, spent: share.type === 'program' ? spentOf(share.id) : null,
+      host: publicationHost(share.slug), certificate: (siteHome.status().hosts || {})[publicationHost(share.slug)] || null,
+    } : {}),
+    links: share.revokedAt ? [] : share.kind === 'publication' ? publicationLinks(share) : shareLinks(share) };
 }
 // Who may manage a share: the person who made it, and this machine's owners.
 function canManageShare(identity, share) { return policy.isOwnerTier(identity) || share.createdBy === identity.user.id; }
@@ -20918,9 +21246,28 @@ async function sharesApi(identity, req, u) {
     }
     const want = u.searchParams.get('path') ? path.resolve(expandHomePath(u.searchParams.get('path'))) : null;
     const wantKey = u.searchParams.get('key') || null;
-    return { shares: shareStore.list(s => !s.revokedAt && canManageShare(identity, s) && (!want || s.path === want) && (!wantKey || s.key === wantKey)).map(shareView) };
+    // Publications of one artifact (its path) or one program (its name).
+    const pubPath = u.searchParams.get('published') ? path.resolve(expandHomePath(u.searchParams.get('published'))) : null;
+    const pubProgram = u.searchParams.get('program') || null;
+    if (pubPath || pubProgram) return { shares: shareStore.list(s => s.kind === 'publication' && !s.revokedAt && canManageShare(identity, s) && (pubProgram ? s.source.program === pubProgram : s.source.abs === pubPath || s.source.path === pubPath)).map(shareView) };
+    return { shares: shareStore.list(s => s.kind !== 'publication' && !s.revokedAt && canManageShare(identity, s) && (!want || s.path === want) && (!wantKey || s.key === wantKey)).map(shareView) };
   }
   const at = u.pathname;
+  if (at === '/api/shares' && body.kind === 'publication') {
+    // Publish: a frozen copy, signed, at its own address.
+    if (identity.user.scope === 'guest') throw Object.assign(new Error('Guests cannot publish from this computer.'), { status: 403 });
+    const type = body.type === 'program' ? 'program' : 'site';
+    const source = type === 'program' ? { program: String(body.program || '') } : { path: String(body.path || ''), key: body.key ? String(body.key) : null, version: body.version ? String(body.version) : null };
+    const built = await buildPublication(identity, type, source, { title: body.title, summary: body.summary });
+    const pay = type === 'program' ? await checkedPay(identity, body.pay) : null;
+    const slug = String(body.slug || '').trim().toLowerCase();
+    const share = shareStore.create({ kind: 'publication', title: String(body.title || (built.got.page && built.got.page.title) || slug).trim().slice(0, 200), createdBy: identity.user.id,
+      publication: { type, slug, root: built.root, sig: built.sig, access: body.access === 'public' ? 'public' : 'link',
+        source: type === 'program' ? { program: source.program } : { path: built.got.abs, key: source.key }, pay } });
+    siteHome.hostsChanged();
+    console.log(`[publications] ${identity.user.name} published ${type} ${slug} (${share.access}) as ${built.root.slice(0, 12)}`);
+    return { share: shareView(share), excluded: built.got.excluded, warnings: built.got.warnings };
+  }
   if (at === '/api/shares' && body.kind === 'conversation') {
     const key = String(body.key || '');
     if (!index[key]) throw Object.assign(new Error('No such conversation.'), { status: 404 });
@@ -20941,6 +21288,25 @@ async function sharesApi(identity, req, u) {
   }
   const share = shareStore.get(String(body.id || ''));
   if (!share || !canManageShare(identity, share)) throw Object.assign(new Error('No such link.'), { status: 404 });
+  if (at === '/api/shares/change' && share.kind === 'publication') {
+    const patch = {};
+    // A new version from where it came from (the artifact now, or the
+    // program's live version), or an earlier one made current again.
+    if (body.republish) {
+      const source = share.type === 'program' ? { program: share.source.program } : { path: share.source.path, key: null, version: body.version ? String(body.version) : null };
+      const page = share.type === 'program' ? readPublicationJson(share, 'page.json') : {};
+      const built = await buildPublication(identity, share.type, source, { title: body.title ?? page.title, summary: body.summary ?? page.summary });
+      patch.root = built.root; patch.sig = built.sig;
+    } else if (body.root) {
+      if (!share.versions.some(v => v.root === body.root)) throw Object.assign(new Error('That version was never published here.'), { status: 404 });
+      patch.root = body.root;
+    }
+    if (body.access !== undefined) patch.access = body.access === 'public' ? 'public' : 'link';
+    if (body.pay !== undefined && share.type === 'program') patch.pay = await checkedPay(identity, body.pay);
+    shareStore.change(share.id, { ...patch, newSecret: !!body.newSecret });
+    console.log(`[publications] ${identity.user.name} changed ${share.slug}${patch.root ? ' to ' + patch.root.slice(0, 12) : ''}`);
+    return { share: shareView(share) };
+  }
   if (at === '/api/shares/change') {
     if (share.kind === 'file' && body.role === 'edit' && share.role !== 'edit') assertPathAccess(identity, share.path, 'act');
     const roleChanged = body.role !== undefined && body.role !== share.role;
@@ -20957,9 +21323,55 @@ async function sharesApi(identity, req, u) {
   if (at === '/api/shares/revoke') {
     shareStore.revoke(share.id);
     if (share.kind === 'conversation') fsp.rm(shareSnapshotFile(share.id), { force: true }).catch(() => {});
+    if (share.kind === 'publication') { siteHome.hostsChanged(); publicationsGc().catch(e => console.error('[publications] gc: ' + e.message)); }
     shareGate.closeShare(share.id, 'this link was turned off');
     console.log(`[shares] ${identity.user.name} turned off ${share.id}`);
     return { share: shareView(share) };
+  }
+  throw Object.assign(new Error('Not found'), { status: 404 });
+}
+// Who pays for a published program: the visitor always may; the owner only
+// as the owner tier, with a key set for that company and a priced model.
+async function checkedPay(identity, raw) {
+  const pay = sharesLib.normalizePay(raw || {});
+  if (pay.owner) {
+    if (!policy.isOwnerTier(identity)) throw Object.assign(new Error('Only this computer\u2019s owner can pay for strangers\u2019 answers.'), { status: 403 });
+    if (!programProviders().some(p => p.id === pay.owner.provider)) throw Object.assign(new Error('Unknown AI company: ' + pay.owner.provider), { status: 400 });
+    if (!priceOfModel(pay.owner.provider, pay.owner.model)) throw Object.assign(new Error(`The price of ${pay.owner.model} is not known here, so a budget could not be kept: choose a model with a known price.`), { status: 400 });
+  }
+  return pay;
+}
+// The owner's side of programs paid by their owner: which companies have a
+// key (never the key itself), what a model costs.
+async function publicationsApi(identity, req, u) {
+  if (u.pathname === '/api/publications/keys') {
+    if (!policy.isOwnerTier(identity)) throw Object.assign(new Error('Only this computer\u2019s owner sets keys for public programs.'), { status: 403 });
+    if (req.method === 'POST') {
+      const body = await readJsonBody(req, 4096);
+      const provider = String(body.provider || '');
+      if (!programProviders().some(p => p.id === provider)) throw Object.assign(new Error('Unknown AI company.'), { status: 400 });
+      const keys = publicKeys();
+      if (body.key) keys[provider] = { key: String(body.key).trim().slice(0, 500), at: Date.now() }; else delete keys[provider];
+      await savePublicKeys(Object.fromEntries(Object.entries(keys).map(([k, v]) => [k, v])));
+      console.log(`[publications] ${identity.user.name} ${body.key ? 'set' : 'removed'} the key for public programs on ${provider}`);
+    }
+    const keys = publicKeys();
+    return { providers: programProviders().map(p => ({ id: p.id, label: p.label, model: p.model, keyUrl: p.keyUrl, hasKey: !!keys[p.id], keySetAt: keys[p.id] ? keys[p.id].at : null })) };
+  }
+  if (u.pathname === '/api/publications/price') {
+    const price = priceOfModel(String(u.searchParams.get('provider') || ''), String(u.searchParams.get('model') || ''));
+    return { known: !!price, perMillion: price ? { input: price.rates.input, output: price.rates.output } : null };
+  }
+  if (u.pathname === '/api/publications/preview' && req.method === 'POST') {
+    const body = await readJsonBody(req, 8192);
+    const type = body.type === 'program' ? 'program' : 'site';
+    const got = type === 'program' ? await programFilesForPublishing(identity, String(body.program || '')) : await artifactFilesForPublishing(identity, { path: String(body.path || ''), key: body.key || null, version: body.version || null });
+    const base = type === 'program' ? String(body.program || '') : path.basename(got.abs).replace(/\.[a-z0-9]+$/i, '');
+    let slug = base.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30) || 'page';
+    for (let i = 2; shareStore.list(s => s.kind === 'publication' && !s.revokedAt && s.slug === slug).length || !sharesLib.validSlug(slug); i++) slug = (base.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 26) || 'page') + '-' + i;
+    return { type, slug, entry: got.entry, files: got.files.map(f => ({ path: f.path, size: f.bytes.length })).slice(0, 500), count: got.files.length,
+      total: got.files.reduce((n, f) => n + f.bytes.length, 0), excluded: got.excluded, warnings: got.warnings, fromVersion: !!got.fromVersion,
+      page: got.page || null, domainHost: publicationHost(slug) };
   }
   throw Object.assign(new Error('Not found'), { status: 404 });
 }

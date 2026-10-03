@@ -63,6 +63,7 @@ function createSiteHome(opts) {
     wanted = () => false,           // () => the owner turned it on
     desiredName = () => '',         // () => the name they chose
     homeKey,                        // async () => { homeId, spki, sign(bytes) }
+    subHosts = () => [],            // () => ['game', …]: publications, each at <label>.<name>.<domain>
     handler,                        // (req, res) for visitors
     upgrade = (req, socket) => socket.destroy(),
     acmeDirectory = acmeLib.LETS_ENCRYPT,
@@ -78,6 +79,14 @@ function createSiteHome(opts) {
   let state = load();
   let ws = null, phase = 'off', error = '', domain = '', invited = null, retry = 0, retryTimer = null, beat = null, lastHeard = 0;
   let certifying = null, secureContext = null, ctWarning = state.ctWarning || null, homeId = null;
+  // Every address this computer answers: its own, and one per publication,
+  // each with its own certificate (state.certs), chosen per visitor by the
+  // name their TLS hello asks for.
+  if (state.cert && !state.certs) { state.certs = { [state.cert.host]: state.cert }; delete state.cert; }
+  state.certs = state.certs || {};
+  state.certErrors = state.certErrors || {};
+  const contexts = new Map();
+  const RETRY_FAILED_MS = 3600e3;
   const tunnels = new Set();
   const server = http.createServer(handler);
   server.on('upgrade', upgrade);
@@ -95,11 +104,15 @@ function createSiteHome(opts) {
   }
   const set = (p, why = '') => { if (phase !== p || error !== why) { phase = p; error = why; try { onChange(); } catch {} } };
   const host = () => state.name && domain ? state.name + '.' + domain : '';
-  const certFor = h => state.cert && state.cert.host === h ? state.cert : null;
+  const certFor = h => (h && state.certs[h] && state.certs[h].host === h ? state.certs[h] : null);
+  const subHost = label => label + '.' + host();
   function loadContext() {
-    const c = certFor(host());
-    secureContext = c ? tls.createSecureContext({ key: c.key, cert: c.cert }) : null;
+    contexts.clear();
+    for (const [h, c] of Object.entries(state.certs)) { try { contexts.set(h, tls.createSecureContext({ key: c.key, cert: c.cert })); } catch {} }
+    secureContext = contexts.get(host()) || null;
   }
+  // The addresses it should have certificates for now.
+  const wantedHosts = () => (host() ? [host(), ...[...new Set(subHosts())].map(subHost)] : []);
 
   /* ---- the relay ---- */
   function sync() {
@@ -166,34 +179,61 @@ function createSiteHome(opts) {
   async function ready() {
     loadContext();
     const c = certFor(host());
-    if (c && c.notAfter - Date.now() > RENEW_MS) { set('ready'); return; }
-    if (c) set('ready'); // still valid: serve with it while a new one comes
+    if (c && c.notAfter - Date.now() > RENEW_MS) set('ready');
+    else if (c) set('ready'); // still valid: serve with it while a new one comes
     await renew();
   }
+  // Certificates, one address at a time (Let's Encrypt is asked one order at
+  // a time, and an address that failed is tried again after an hour, never
+  // in a loop): the computer's own first, then each publication's.
   async function renew() {
     if (certifying) return certifying;
-    const h = host();
     certifying = (async () => {
-      if (!certFor(h) || certFor(h).notAfter < Date.now()) set('certifying');
       try {
-        if (!state.accountKey) { state.accountKey = acmeLib.newAccountKey(); save(); }
-        const client = acmeLib.createClient({ directory: acmeDirectory, accountKey: state.accountKey, ca: acmeCa, log });
-        const got = await client.certify([h], { publish: async (token, keyAuth) => { send({ t: 'acme', token, keyAuth }); await new Promise(r => setTimeout(r, 300)); } });
-        const serial = new crypto.X509Certificate(got.cert).serialNumber;
-        state.cert = { host: h, key: got.key, cert: got.cert, notAfter: got.notAfter, notBefore: got.notBefore, serial };
-        state.serials = [...new Set([...(state.serials || []), serial])].slice(-50);
-        state.issuedSince = state.issuedSince || Date.now();
-        save();
-        loadContext();
-        if (host() === h && ws) set('ready');
-      } catch (e) {
-        log('[site] certificate for ' + h + ': ' + e.message);
-        if (!certFor(h)) set('error', 'Could not get a certificate for ' + h + ': ' + e.message);
-      } finally { certifying = null; }
+        for (;;) {
+          if (!ws || phase === 'off' || phase === 'refused' || !host()) return;
+          const due = wantedHosts().find(h => {
+            const c = certFor(h), err = state.certErrors[h];
+            if (err && Date.now() - err.at < RETRY_FAILED_MS && !(c && c.notAfter < Date.now() + RENEW_MS / 3)) return false;
+            return !c || c.notAfter - Date.now() < RENEW_MS;
+          });
+          if (!due) break;
+          await certify(due);
+        }
+        // Addresses no longer published lose their certificate (and stop renewing).
+        const keep = new Set(wantedHosts());
+        let dropped = false;
+        for (const h of Object.keys(state.certs)) if (h.endsWith('.' + host()) && !keep.has(h)) { delete state.certs[h]; delete state.certErrors[h]; dropped = true; }
+        if (dropped) { save(); loadContext(); }
+      } finally { certifying = null; try { onChange(); } catch {} }
     })();
     return certifying;
   }
-  const renewTimer = setInterval(() => { if (phase === 'ready' && certFor(host()) && certFor(host()).notAfter - Date.now() < RENEW_MS) renew(); }, 12 * 3600e3);
+  async function certify(h) {
+    const main = h === host();
+    if (main && !certFor(h)) set('certifying');
+    try {
+      if (!state.accountKey) { state.accountKey = acmeLib.newAccountKey(); save(); }
+      const client = acmeLib.createClient({ directory: acmeDirectory, accountKey: state.accountKey, ca: acmeCa, log });
+      const got = await client.certify([h], { publish: async (token, keyAuth) => { send({ t: 'acme', token, keyAuth }); await new Promise(r => setTimeout(r, 300)); } });
+      const serial = new crypto.X509Certificate(got.cert).serialNumber;
+      state.certs[h] = { host: h, key: got.key, cert: got.cert, notAfter: got.notAfter, notBefore: got.notBefore, serial };
+      delete state.certErrors[h];
+      state.serials = [...new Set([...(state.serials || []), serial])].slice(-200);
+      state.issuedSince = state.issuedSince || Date.now();
+      save();
+      loadContext();
+      if (main && ws) set('ready');
+    } catch (e) {
+      log('[site] certificate for ' + h + ': ' + e.message);
+      state.certErrors[h] = { at: Date.now(), message: String(e.message || e).slice(0, 300) };
+      save();
+      if (main && !certFor(h)) set('error', 'Could not get a certificate for ' + h + ': ' + e.message);
+    }
+  }
+  // Publications changed: get the new addresses' certificates, drop the old.
+  function hostsChanged() { if (phase === 'ready' || phase === 'certifying') renew(); }
+  const renewTimer = setInterval(() => { if (phase === 'ready') renew(); }, 12 * 3600e3);
   renewTimer.unref();
 
   // Certificate Transparency: every certificate for the name, from crt.sh;
@@ -202,9 +242,13 @@ function createSiteHome(opts) {
     const h = host();
     if (!ctCheck || !h || phase !== 'ready' || !fetchImpl) return;
     try {
-      const r = await fetchImpl('https://crt.sh/?q=' + encodeURIComponent(h) + '&output=json&exclude=expired', { signal: AbortSignal.timeout(30000) });
-      if (!r.ok) return;
-      const rows = await r.json();
+      // The computer's own name, and every name under it (its publications).
+      const rows = [];
+      for (const q of [h, '%.' + h]) {
+        const r = await fetchImpl('https://crt.sh/?q=' + encodeURIComponent(q) + '&output=json&exclude=expired', { signal: AbortSignal.timeout(30000) });
+        if (!r.ok) return;
+        rows.push(...await r.json());
+      }
       const ours = new Set((state.serials || []).map(s => s.toLowerCase().replace(/^0+/, '')));
       const since = state.issuedSince || Date.now();
       const strange = rows.filter(x => Date.parse(x.not_before + 'Z') >= since - 3600e3 && !ours.has(String(x.serial_number || '').toLowerCase().replace(/^0+/, '')));
@@ -227,7 +271,8 @@ function createSiteHome(opts) {
     duplex.on('close', () => tunnels.delete(duplex));
     duplex.on('error', () => {});
     sock.onopen = () => {
-      const t = new tls.TLSSocket(duplex, { isServer: true, secureContext, ALPNProtocols: ['http/1.1'] });
+      const t = new tls.TLSSocket(duplex, { isServer: true, secureContext, ALPNProtocols: ['http/1.1'],
+        SNICallback: (name, cb) => cb(null, contexts.get(String(name).toLowerCase()) || secureContext) });
       t.visitorIp = ip.slice(0, 64);
       t.on('error', () => { try { duplex.destroy(); } catch {} });
       t.on('close', () => { try { duplex.destroy(); } catch {} });
@@ -238,11 +283,14 @@ function createSiteHome(opts) {
   function status() {
     const c = certFor(host());
     return { phase, error, name: state.name || '', wantedName: desiredName(), domain, url: host() && phase === 'ready' && c ? 'https://' + host() : '',
-      invited, homeId, certificate: c ? { notAfter: c.notAfter, notBefore: c.notBefore } : null, visitors: tunnels.size, ctWarning };
+      invited, homeId, certificate: c ? { notAfter: c.notAfter, notBefore: c.notBefore } : null, visitors: tunnels.size, ctWarning,
+      hosts: Object.fromEntries(wantedHosts().filter(x => x !== host()).map(x => [x, certFor(x) ? { ready: true, notAfter: certFor(x).notAfter } : { ready: false, error: state.certErrors[x] ? state.certErrors[x].message : null }])) };
   }
   function stop() { clearInterval(renewTimer); clearInterval(ctTimer); disconnect(); }
   loadContext();
-  return { sync, status, stop, renew, checkCt, _server: server };
+  // The address of a publication, when its certificate is here.
+  function hostUrl(label) { const h = host() && subHost(label); return h && phase === 'ready' && certFor(h) ? 'https://' + h : ''; }
+  return { sync, status, stop, renew, checkCt, hostsChanged, hostUrl, _server: server };
 }
 
 module.exports = { createSiteHome, wsDuplex };

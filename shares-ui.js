@@ -94,11 +94,11 @@
       return `<p>Links open from anywhere, at <b>${escHtml(pub.url.replace(/^https:\/\//, ''))}</b>, while this computer is on. The address is yours; the relay passes the connection along without being able to read it.${pub.owner ? ' <button class="linklike" data-act="pub-off">Turn the public address off</button>' : ''}</p>`
         + (pub.ctWarning ? `<p class="sh-ui-error">A certificate this computer did not ask for exists for this address (issued ${escHtml(pub.ctWarning.notBefore || '')} by ${escHtml(pub.ctWarning.issuer || 'someone')}). Someone may be able to pose as it: tell Rockfrog.</p>` : '');
     }
-    const net = link && link.where === 'tailnet' ? 'For now, links open for people on your Tailscale network.' : 'For now, links open on your home network only.';
-    if (!pub || !pub.owner) return `<p>${net} This computer’s owner can give it a public address, so links open from anywhere.</p>`;
+    const net = isPub() ? 'For now, it opens only on this computer (at .pub.localhost).' : link && link.where === 'tailnet' ? 'For now, links open for people on your Tailscale network.' : 'For now, links open on your home network only.';
+    if (!pub || !pub.owner) return `<p>${net} This computer’s owner can give it a public address, so ${isPub() ? 'publications' : 'links'} open from anywhere.</p>`;
     const busy = pub.on && PHASE[pub.phase];
     const why = pub.on && ['error', 'refused'].includes(pub.phase) && pub.error ? `<p class="sh-ui-error">${escHtml(pub.error)}</p>` : '';
-    return `<p>${net} To open them from anywhere, give this computer a public address:</p>
+    return `<p>${net} To open ${isPub() ? 'it' : 'them'} from anywhere, give this computer a public address:</p>
       <div class="sh-ui-pub"><span>https://</span><input id="shPubName" value="${escHtml(pub.name || '')}" placeholder="yourname" maxlength="30" autocomplete="off" spellcheck="false" aria-label="The name of this computer's public address"><span>.${escHtml(pub.domain || 'rockfrog.site')}</span>
       <button id="shPubOn" class="primary"${busy ? ' disabled' : ''}>${busy ? escHtml(busy) : 'Turn on'}</button></div>${why}
       <p class="sh-ui-small">Visitors connect to this computer through Rockfrog’s relay, encrypted all the way: the certificate lives here, so the relay cannot read or change what they see. Links work while this computer is on.</p>`;
@@ -118,7 +118,7 @@
       pollPub();
     }, 1500);
   }
-  function renderWhere() { const el = overlay && overlay.querySelector('#shWhere'); if (el && current) el.innerHTML = whereHtml(current.shares || []); }
+  function renderWhere() { const el = overlay && overlay.querySelector('#shWhere'); if (el && current) el.innerHTML = isPub() ? pubWhereHtml() : whereHtml(current.shares || []); }
   function fail(e) {
     const el = overlay && overlay.querySelector('#shError');
     if (!el) return;
@@ -126,6 +126,7 @@
     el.hidden = false;
   }
   async function refresh() {
+    if (isPub()) return refreshPub();
     const out = await call('/api/shares?' + (isConv() ? 'key=' + encodeURIComponent(current.key) : 'path=' + encodeURIComponent(current.path)));
     current.shares = out.shares;
     render();
@@ -141,11 +142,197 @@
     setTimeout(() => { if (button.isConnected) button.textContent = was; }, 1400);
   }
 
+
+  // ---- publishing (design/92): a frozen copy at its own address ----------
+  // An artifact (a web page, a picture…) or an AI program. What goes out is
+  // shown before anything is published: the files, what is left out and why,
+  // what looks like a secret. A program says who pays.
+  const isPub = () => current && current.kind === 'publication';
+  const kb = n => n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+  const usd = n => '$' + (n >= 1 ? n.toFixed(2) : n >= 0.01 ? n.toFixed(3) : n.toFixed(4));
+  function pubRowHtml(s) {
+    const link = best(s);
+    const vers = s.versions || [];
+    const cert = s.certificate ? (s.certificate.ready ? '' : s.certificate.error ? ' · its certificate failed: ' + escHtml(s.certificate.error) : ' · its certificate is on its way') : '';
+    const pay = s.type === 'program' ? `<div class="sh-ui-meta"><span>${s.pay && s.pay.owner ? `Visitors pay with their own key, or you do: up to ${usd(s.pay.owner.monthlyUsd)} a month, ${s.pay.owner.perVisitorPerHour} answers an hour each · this month ${usd((s.spent || {}).usd || 0)}, ${(s.spent || {}).calls || 0} answers${s.ownerPays && !s.ownerPays.available ? ' · <b>not available: ' + escHtml(s.ownerPays.why) + '</b>' : ''}` : 'Visitors pay with their own key'}</span></div>` : '';
+    return `<div class="sh-ui-row" data-id="${escHtml(s.id)}">
+      <div class="sh-ui-line">
+        <select data-act="access" aria-label="Who can open it">
+          <option value="link"${s.access === 'link' ? ' selected' : ''}>Anyone with the link</option>
+          <option value="public"${s.access === 'public' ? ' selected' : ''}>Anyone (public)</option>
+        </select>
+        <input class="sh-ui-url" readonly value="${escHtml(link ? link.url : '')}" aria-label="Its address" data-act="select">
+        <button class="primary" data-act="copy">Copy link</button>
+      </div>
+      <div class="sh-ui-meta"><span>${escHtml(link ? link.who : '')}${cert} · version <code title="${escHtml(s.root)}: the fingerprint of exactly what is published">${escHtml(s.root.slice(0, 12))}</code>${vers.length > 1 ? ` <select data-act="version" aria-label="Make an earlier version current">${vers.map(v => `<option value="${escHtml(v.root)}"${v.root === s.root ? ' selected' : ''}>${escHtml(v.root.slice(0, 8))} · ${escHtml(new Date(v.at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }))}</option>`).join('')}</select>` : ''} · ${escHtml(usage(s))}</span>
+        <span class="sh-ui-actions"><button data-act="republish" title="${s.type === 'program' ? 'Its live version now, frozen and signed' : 'The version on screen now, frozen and signed'}">Publish ${s.type === 'program' ? 'the live version' : 'the version shown'}</button>${s.access === 'link' ? '<button data-act="replace" title="A new link; the old one stops working at once">New link</button>' : ''}<button data-act="revoke" class="danger" title="Its address stops answering at once">Turn off</button></span></div>
+      ${pay}
+    </div>`;
+  }
+  function pubFormHtml() {
+    const pv = current.preview;
+    if (!pv) return '<p class="sh-ui-small">Reading what would go out…</p>';
+    const pub = current.pub;
+    const domain = pub && pub.url ? '.' + pub.name + '.' + (pub.domain || 'rockfrog.site') : '.pub.localhost';
+    const scheme = pub && pub.url ? 'https://' : 'http://';
+    const files = `<details class="sh-ui-files"><summary>${pv.count} file${pv.count === 1 ? '' : 's'}, ${kb(pv.total)}${current.type === 'site' ? (pv.fromVersion ? ' · the version on screen' : ' · as on disk now') : ' · its live version'}</summary><ul>${pv.files.map(f => `<li><code>${escHtml(f.path)}</code> ${kb(f.size)}</li>`).join('')}${pv.count > pv.files.length ? '<li>…</li>' : ''}</ul></details>`;
+    const left = pv.excluded.length ? `<p class="sh-ui-small">Left out: ${pv.excluded.slice(0, 8).map(e => `<code>${escHtml(e.path)}</code> (${escHtml(e.why)})`).join(', ')}${pv.excluded.length > 8 ? '…' : ''}.</p>` : '';
+    const warn = pv.warnings.length ? `<p class="sh-ui-warn">${pv.warnings.map(w => `<code>${escHtml(w.path)}</code> seems to hold ${escHtml(w.kinds.map(k => (/^[aeiou]/i.test(k) ? 'an ' : 'a ') + k).join(' and '))}`).join('; ')}. It would be public: remove it from the files first, unless it is meant to be seen.</p>` : '';
+    const prog = current.type === 'program' ? payFormHtml() : '';
+    return `<div class="sh-ui-pubform">
+      <div class="sh-ui-pub"><span>${scheme}</span><input id="pubSlug" value="${escHtml(current.slug || pv.slug)}" maxlength="30" autocomplete="off" spellcheck="false" aria-label="The name in its address"><span>${escHtml(domain)}</span></div>
+      <div class="sh-ui-line sh-ui-access"><label><input type="radio" name="pubAccess" value="link"${current.access !== 'public' ? ' checked' : ''}> Anyone with the link</label><label><input type="radio" name="pubAccess" value="public"${current.access === 'public' ? ' checked' : ''}> Anyone (public)</label></div>
+      ${files}${left}${warn}${prog}
+      <div class="sh-ui-line"><button id="pubGo" class="primary">Publish</button><span class="sh-ui-small">${current.type === 'program' ? 'Its instruction becomes public with it: a visitor\u2019s browser runs it.' : 'Its pages run on their own address, apart from Chattering and from everything else shared from here.'}</span></div>
+    </div>`;
+  }
+  function payFormHtml() {
+    const ks = current.keys;
+    if (!ks) return '<p class="sh-ui-small">Visitors pay with their own key.</p>';
+    if (!ks.owner) return '<p class="sh-ui-small">Visitors pay with their own key. (Paying for them yourself is for this computer\u2019s owner.)</p>';
+    const o = current.ownerPay || { on: false, provider: 'openai', model: '', monthlyUsd: 5, perVisitorPerHour: 10 };
+    const prov = ks.providers.find(p => p.id === o.provider) || ks.providers[0];
+    const model = o.model || prov.model;
+    const price = current.price;
+    return `<fieldset class="sh-ui-pay"><legend>Who pays for the answers</legend>
+      <p class="sh-ui-small">Visitors can always use their own key, in their own browser.</p>
+      <label><input type="checkbox" id="payOn"${o.on ? ' checked' : ''}> You can also pay for them, with a key kept for public programs only</label>
+      <div id="payOwner"${o.on ? '' : ' hidden'}>
+        <div class="sh-ui-line"><select id="payProvider" aria-label="AI company">${ks.providers.map(p => `<option value="${escHtml(p.id)}"${p.id === prov.id ? ' selected' : ''}>${escHtml(p.label)}${p.hasKey ? ' ✓' : ''}</option>`).join('')}</select>
+          <input id="payModel" value="${escHtml(model)}" aria-label="Model" spellcheck="false"></div>
+        <p class="sh-ui-small">${price ? price.known ? `It costs $${price.perMillion.input} in, $${price.perMillion.output} out per million tokens.` : '<b>Its price is not known here: choose a model with a known price</b> (a budget needs one).' : ''}</p>
+        ${prov.hasKey ? `<p class="sh-ui-small">Your key for public programs at ${escHtml(prov.label)} is set. <button type="button" class="linklike" data-act="keyclear">remove it</button></p>`
+          : `<div class="sh-ui-line"><input id="payKey" type="password" placeholder="an API key for ${escHtml(prov.label)}, for public programs only" autocomplete="off"><button type="button" data-act="keysave">Save key</button></div>
+             <p class="sh-ui-small">Make a key just for this, with a spending limit set at ${prov.keyUrl ? `<a href="${escHtml(prov.keyUrl)}" target="_blank" rel="noopener noreferrer">${escHtml(prov.label)}</a>` : escHtml(prov.label)}: the strongest limit there is. It stays on this computer, apart from your own sign-ins.</p>`}
+        <div class="sh-ui-line"><label>Up to $<input id="payBudget" type="number" min="0.01" step="0.01" value="${escHtml(o.monthlyUsd)}"> a month</label><label><input id="payRate" type="number" min="1" step="1" value="${escHtml(o.perVisitorPerHour)}"> answers an hour for each visitor</label></div>
+      </div>
+      <label><input type="checkbox" id="payShare"${current.shareCalls === false ? '' : ' checked'}> Visitors may send me their calls, when they choose to (to judge and improve it)</label>
+    </fieldset>`;
+  }
+  function renderPub() {
+    const shares = current.shares || [];
+    overlay.querySelector('.dialog').innerHTML = `
+      <h3>Publish “${escHtml(current.title)}”</h3>
+      <p class="sh-ui-hint">${current.type === 'program'
+        ? 'Its own page and API, at its own address, for anyone you give it to. What goes out is a copy of its live version, frozen and signed by this computer: anyone can check that what they got is what you published.'
+        : 'A copy of it, frozen, at its own address: changing the files later changes nothing until you publish again. Signed by this computer, so anyone can check that what they got is what you published.'}</p>
+      ${shares.length ? `<div class="sh-ui-list">${shares.map(pubRowHtml).join('')}</div>${current.adding ? '' : '<p><button type="button" data-act="another" class="linklike">Publish it at another address</button></p>'}` : ''}
+      ${!shares.length || current.adding ? pubFormHtml() : ''}
+      <div class="sh-ui-where" id="shWhere">${pubWhereHtml()}</div>
+      <p class="sh-ui-error" id="shError" role="alert" hidden></p>
+      <div class="btnrow"><button id="shClose">Done</button></div>`;
+  }
+  function pubWhereHtml() {
+    const pub = current && current.pub;
+    if (pub && pub.url) return `<p class="sh-ui-small">Its address is under ${escHtml(pub.url.replace(/^https:\/\//, ''))}, this computer's public address. It answers while this computer is on.</p>`;
+    return whereHtml([]);
+  }
+  async function refreshPub() {
+    const q = current.type === 'program' ? 'program=' + encodeURIComponent(current.source.program) : 'published=' + encodeURIComponent(current.source.path);
+    current.shares = (await call('/api/shares?' + q)).shares;
+    renderPub();
+  }
+  async function loadPreview() {
+    current.preview = await call('/api/publications/preview', { type: current.type, ...current.source });
+    if (!current.slug) current.slug = current.preview.slug;
+  }
+  async function loadPrice() {
+    const o = current.ownerPay;
+    if (!o || !o.on) { current.price = null; return; }
+    const prov = current.keys.providers.find(p => p.id === o.provider) || current.keys.providers[0];
+    current.price = await call('/api/publications/price?' + new URLSearchParams({ provider: prov.id, model: o.model || prov.model })).catch(() => null);
+  }
+  function readPayForm() {
+    if (!overlay.querySelector('#payOn')) return;
+    const prov = overlay.querySelector('#payProvider').value;
+    current.ownerPay = { on: overlay.querySelector('#payOn').checked, provider: prov, model: overlay.querySelector('#payModel').value.trim(), monthlyUsd: Number(overlay.querySelector('#payBudget').value) || 0, perVisitorPerHour: Number(overlay.querySelector('#payRate').value) || 10 };
+    current.shareCalls = overlay.querySelector('#payShare').checked;
+  }
+  async function openPublication(spec) {
+    ensureOverlay();
+    current = { kind: 'publication', type: spec.type, title: spec.title || 'this', shares: [], access: 'link',
+      source: spec.type === 'program' ? { program: spec.program } : { path: spec.path, key: spec.key || null, version: spec.version || null } };
+    const mine = current;
+    overlay.hidden = false;
+    overlay.querySelector('.dialog').innerHTML = '<p class="sh-ui-hint">Reading what would go out…</p>';
+    try {
+      await loadPub();
+      if (mine.type === 'program') {
+        try { mine.keys = { owner: true, ...(await call('/api/publications/keys')) }; } catch { mine.keys = { owner: false, providers: [] }; }
+      }
+      await Promise.all([refreshPub(), loadPreview()]);
+      if (current === mine) renderPub();
+    } catch (e) { if (current === mine) { renderPub(); fail(e); } }
+  }
+  async function onPubClick(b, row, id, share) {
+    const act = b.dataset.act;
+    if (b.id === 'pubGo') {
+      readPayForm();
+      const pay = current.type === 'program' ? { owner: current.ownerPay && current.ownerPay.on ? current.ownerPay : null, shareCalls: current.shareCalls !== false } : undefined;
+      b.disabled = true;
+      try {
+        const out = await call('/api/shares', { kind: 'publication', type: current.type, ...current.source, slug: overlay.querySelector('#pubSlug').value.trim().toLowerCase(),
+          access: (overlay.querySelector('input[name=pubAccess]:checked') || {}).value || 'link', title: current.title, pay });
+        current.adding = false; current.slug = null;
+        await refreshPub();
+        const fresh = overlay.querySelector(`.sh-ui-row[data-id="${out.share.id}"] [data-act="copy"]`);
+        if (fresh && best(out.share)) copy(best(out.share).url, fresh);
+      } finally { if (b.isConnected) b.disabled = false; }
+      return true;
+    }
+    if (act === 'another') { current.adding = true; current.slug = null; await loadPreview(); renderPub(); return true; }
+    if (act === 'keysave' || act === 'keyclear') {
+      readPayForm();
+      const key = act === 'keysave' ? overlay.querySelector('#payKey').value.trim() : '';
+      if (act === 'keysave' && !key) throw new Error('Paste the key first.');
+      if (act === 'keyclear' && !confirm('Remove the key for public programs? Programs paid with it stop answering for visitors until a key is set again.')) return true;
+      current.keys = { owner: true, ...(await call('/api/publications/keys', { provider: current.ownerPay.provider, key })) };
+      await loadPrice(); renderPub();
+      return true;
+    }
+    if (!share) return false;
+    if (act === 'republish') {
+      await call('/api/shares/change', { id, republish: true, ...(current.type === 'site' && current.source.version ? { version: current.source.version } : {}) });
+      await refreshPub();
+      return true;
+    }
+    if (act === 'revoke') {
+      if (!confirm('Turn it off? Its address stops answering at once, for everyone.')) return true;
+      await call('/api/shares/revoke', { id });
+      await refreshPub();
+      return true;
+    }
+    if (act === 'replace') {
+      if (!confirm('Make a new link? The current one stops working at once, for everyone who has it.')) return true;
+      await call('/api/shares/change', { id, newSecret: true });
+      await refreshPub();
+      return true;
+    }
+    return false;
+  }
+  async function onPubChange(e) {
+    const sel = e.target;
+    const row = sel.closest('.sh-ui-row');
+    if (row && sel.dataset.act === 'access') { await call('/api/shares/change', { id: row.dataset.id, access: sel.value }); return refreshPub(); }
+    if (row && sel.dataset.act === 'version') { await call('/api/shares/change', { id: row.dataset.id, root: sel.value }); return refreshPub(); }
+    if (['payOn', 'payProvider', 'payModel'].includes(sel.id)) {
+      readPayForm();
+      if (sel.id === 'payProvider') current.ownerPay.model = '';
+      const slug = overlay.querySelector('#pubSlug') && overlay.querySelector('#pubSlug').value;
+      if (slug) current.slug = slug;
+      current.access = (overlay.querySelector('input[name=pubAccess]:checked') || {}).value || current.access;
+      await loadPrice(); renderPub();
+    }
+  }
+
   async function onClick(e) {
     const b = e.target.closest('button, input');
     if (!b || !overlay.contains(b)) { if (e.target === overlay) close(); return; }
     const row = b.closest('.sh-ui-row'), id = row && row.dataset.id;
     const share = id && current.shares.find(s => s.id === id);
+    if (isPub() && b.id !== 'shClose' && b.dataset.act !== 'copy' && b.dataset.act !== 'select' && b.id !== 'shPubOn' && b.dataset.act !== 'pub-off') {
+      try { if (await onPubClick(b, row, id, share)) return; } catch (err) { return fail(err); }
+    }
     try {
       if (b.id === 'shClose') return close();
       if (b.id === 'shPubOn') {
@@ -194,6 +381,7 @@
     } catch (err) { fail(err); }
   }
   async function onChange(e) {
+    if (isPub()) { try { await onPubChange(e); } catch (err) { fail(err); } return; }
     const sel = e.target.closest('select[data-act="role"], select[data-act="mode"]');
     if (!sel) return;
     const id = sel.closest('.sh-ui-row').dataset.id;
@@ -248,5 +436,5 @@
     open(ws.path, ws.path.split(/[\\/]/).pop());
   });
 
-  window.SharesUI = { open, openConversation, close };
+  window.SharesUI = { open, openConversation, openPublication, close };
 })();

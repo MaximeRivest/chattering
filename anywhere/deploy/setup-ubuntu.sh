@@ -229,9 +229,10 @@ http://$DOMAIN {
 	redir https://{host}{uri} 308
 }
 
-# Certificate checks for <name>.$SITE_DOMAIN: the relay answers them for the
-# computer that holds the name (which keeps its key); anything else goes to https.
-http://*.$SITE_DOMAIN {
+# Certificate checks for <name>.$SITE_DOMAIN and its publications'
+# <slug>.<name>.$SITE_DOMAIN: the relay answers them for the computer that holds
+# the name (which keeps its keys); anything else goes to https.
+http://*.$SITE_DOMAIN, http://*.*.$SITE_DOMAIN {
 	header -Server
 	reverse_proxy 127.0.0.1:$RELAY_PORT
 }
