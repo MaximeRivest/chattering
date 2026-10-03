@@ -174,7 +174,6 @@ const ROUTES = {
   '/api/project/purpose': 'member',
   '/api/project/create': 'member',
   '/api/project/unregister': 'member',
-  '/api/project/undo-setup': 'member',
   '/api/project/context': 'member',
   '/api/project/fold': 'member',
   '/api/project/unfold': 'member',

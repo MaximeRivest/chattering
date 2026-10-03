@@ -14205,11 +14205,7 @@ async function createProject(body) {
   if (Object.prototype.hasOwnProperty.call(body, 'operation')) {
     if (body.operation !== 'create' && body.operation !== 'add') throw new Error('unknown project operation');
     const adopted = body.operation === 'add';
-    // An optional human-written purpose. Saved, never sent anywhere: setup
-    // starts no agent. Checked before anything touches the disk.
-    const purpose = typeof body.purpose === 'string' ? body.purpose.replace(/\r\n?/g, '\n').trim() : '';
-    if (purpose.length > 20000) throw new Error('The purpose is too long. Keep it under 20,000 characters.');
-    let cwd, rawName = '';
+    let cwd;
     if (adopted) {
       if (typeof body.path !== 'string' || !body.path.length || body.path.includes('\0')) throw new Error('project path is required');
       // Do not trim or normalize directory names: spaces and Unicode are valid.
@@ -14218,10 +14214,8 @@ async function createProject(body) {
       cwd = path.resolve(expanded);
       if (!fs.statSync(cwd).isDirectory()) throw new Error('project path must be an existing directory');
     } else {
-      // Letters of any language, digits, and ". _ -" and spaces. NFC, so an
-      // "é" typed on a Mac and on Linux names the same folder.
-      rawName = String(body.name || '').normalize('NFC').trim();
-      if (!/^[\p{L}\p{N}][\p{L}\p{M}\p{N}._ -]{0,80}$/u.test(rawName)) throw new Error('Start the name with a letter or number. Use letters, numbers, spaces, dots, hyphens, or underscores.');
+      const rawName = String(body.name || '').trim();
+      if (!/^[A-Za-z0-9][A-Za-z0-9._ -]{0,80}$/.test(rawName)) throw new Error('project name: letters, digits, ". _ -" and spaces only');
       if (typeof body.parent !== 'string' || !body.parent.length || body.parent.includes('\0')) throw new Error('existing parent directory is required');
       const expanded = expandHomePath(body.parent);
       if (!path.isAbsolute(expanded)) throw new Error('Use a full parent folder path, starting with / or ~/');
@@ -14242,36 +14236,12 @@ async function createProject(body) {
       delete createdProjects[raw];
       throw new Error((adopted ? 'Folder was not added. ' : 'Folder created at ' + cwd + ', but not added. Use Add existing folder to retry. ') + e.message);
     }
-    const warnings = [];
+    let warning = null;
     if (!adopted && body.git !== false) {
       try { await gitText(cwd, ['init']); }
-      catch { warnings.push('Project created, but Git version history could not be initialized.'); }
+      catch { warning = 'Project created, but Git version history could not be initialized.'; }
     }
-    // The name as typed is the display title when the folder had to differ
-    // ("My Thesis" lives in My-Thesis). Typed by the person: a manual title.
-    let title = null;
-    if (!adopted && rawName !== project) {
-      try { title = setProjectTitle(project, rawName, true).title; }
-      catch { warnings.push('The project name could not be saved as its title. Double-click the title on the project page to set it.'); }
-    }
-    let purposeSaved = false;
-    if (purpose) {
-      try {
-        const paths = projectMemoryPaths(project);
-        await fsp.mkdir(paths.dir, { recursive: true });
-        let existing = '';
-        try { existing = fs.readFileSync(paths.intent, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
-        if (existing.trim()) warnings.push('This project already had a purpose, so it was kept. Use Edit project purpose to change it.');
-        else {
-          const text = purpose + '\n';
-          fs.writeFileSync(paths.intent, text);
-          purposeSaved = true;
-          try { await vouchApply({ path: paths.intent, text, source: 'project-purpose', note: 'human-written project purpose at setup' }); }
-          catch { warnings.push('Purpose saved, but its review mark could not be recorded. Open Edit project purpose and save to retry.'); }
-        }
-      } catch { warnings.push('Project saved, but its purpose was not. Use Edit project purpose to add it.'); }
-    }
-    return { ok: true, project, cwd, adopted, title, purpose: purposeSaved, intentPath: null, started: null, warning: warnings.join(' ') || null };
+    return { ok: true, project, cwd, adopted, intentPath: null, started: null, warning };
   }
   const rawName = String(body.name || '').trim();
   if (!rawName) throw new Error('project name is required');
@@ -14326,39 +14296,6 @@ function unregisterProject(name) {
   }
   if (removed) saveCreatedProjects();
   return { ok: true, removed }; // the folder stays; disk is truth
-}
-
-// Undo a setup that has not been used yet. The registration and anything
-// setup wrote go; the folder goes only when it still holds exactly what
-// setup made (nothing, or a Git repository without a commit). Anything
-// else in it is the person's, so it stays and the answer says where.
-function undoProjectSetup(name) {
-  const target = String(name || '');
-  const key = Object.keys(createdProjects).find(k => k === target || canonicalProjectName(k) === target);
-  if (!key) throw new Error('This project is no longer in the project list.');
-  const project = canonicalProjectName(key);
-  const meta = projectMetaFor(project);
-  if (meta && meta.entries && meta.entries.length) throw new Error('This project has conversations now, so setup cannot be undone. Use Remove from project list on its page.');
-  const rec = createdProjects[key];
-  let folderRemoved = false, folderKept = '';
-  if (!rec.adopted && rec.cwd) {
-    try {
-      const names = fs.readdirSync(rec.cwd);
-      const git = path.join(rec.cwd, '.git');
-      const gitIsSetups = names.length === 1 && names[0] === '.git' && fs.lstatSync(git).isDirectory()
-        && !fs.existsSync(path.join(git, 'packed-refs'))
-        && fs.readdirSync(path.join(git, 'refs', 'heads')).length === 0;
-      if (!names.length || gitIsSetups) { fs.rmSync(rec.cwd, { recursive: true }); folderRemoved = true; }
-      else folderKept = 'it has files in it now';
-    } catch (e) { if (e.code !== 'ENOENT') folderKept = 'it could not be checked (' + e.message + ')'; }
-  }
-  delete createdProjects[key];
-  saveCreatedProjects();
-  // A newborn's memory holds only what a person wrote. Left behind, it
-  // would return the day a project of the same name is created again.
-  try { fs.unlinkSync(projectMemoryPaths(project).intent); } catch {}
-  if (projectTitles[project] && projectTitles[project].manual) { delete projectTitles[project]; try { saveProjectTitles(); } catch {} }
-  return { ok: true, project, cwd: rec.cwd || null, adopted: !!rec.adopted, folderRemoved, folderKept };
 }
 
 // "Create area" mirrors the project birth ritual, one level down: a folder
@@ -15097,15 +15034,9 @@ function describeStartFolder(raw) {
   if (fs.existsSync(globalAgents) && !contextFiles.includes(globalAgents)) contextFiles.push(globalAgents);
   const meta = loose ? null : projectMetaFor(project);
   const area = !loose && meta && meta.cwd ? areaOfCwdIn(project, abs) : null;
-  // A purpose a person wrote for this project: the draft attaches it.
-  let purpose = false;
-  if (meta) { try { purpose = fs.readFileSync(projectMemoryPaths(project).intent, 'utf8').trim().length > 0; } catch {} }
-  // A missing folder whose parent exists can become a new project.
-  let parentExists = false;
-  if (!exists) { try { parentExists = fs.statSync(path.dirname(abs)).isDirectory(); } catch {} }
   return {
-    path: abs, display, exists, loose, parentExists,
-    project: loose ? null : project, known: !!meta, area: area || null, purpose,
+    path: abs, display, exists, loose,
+    project: loose ? null : project, known: !!meta, area: area || null,
     contextFiles,
   };
 }
@@ -18319,8 +18250,7 @@ async function handleRequest(req, res) {
         });
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/project/setup' && req.method === 'GET') {
-      // 2: purpose and title at setup, names in any alphabet, undo-setup.
-      json(res, 200, { version: 2 });
+      json(res, 200, { version: 1 });
     } else if (u.pathname === '/api/project/purpose' && (req.method === 'GET' || req.method === 'POST')) {
       try {
         let body = {};
@@ -18383,11 +18313,6 @@ async function handleRequest(req, res) {
         const p = JSON.parse(body || '{}');
         json(res, 200, removeArea(p.project, p.rel));
       } catch (e) { json(res, 400, { error: e.message }); }
-    } else if (u.pathname === '/api/project/undo-setup' && req.method === 'POST') {
-      let body = '';
-      for await (const chunk of req) body += chunk;
-      try { json(res, 200, undoProjectSetup((JSON.parse(body || '{}')).project)); }
-      catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/project/unregister' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
