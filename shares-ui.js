@@ -56,16 +56,45 @@
         <select id="shNewEnd" aria-label="When the new link ends"><option value="">no end date</option><option value="1">ends in a day</option><option value="7">ends in a week</option><option value="30">ends in a month</option></select>
         <button id="shCreate" class="primary">Make link</button>
       </div>
-      <p class="sh-ui-where">${whereHint(shares)}</p>
+      <div class="sh-ui-where" id="shWhere">${whereHtml(shares)}</div>
       <p class="sh-ui-error" id="shError" role="alert" hidden></p>
       <div class="btnrow"><button id="shClose">Done</button></div>`;
   }
-  function whereHint(shares) {
+  // Where links open: this computer's public address (design/92), or, until
+  // it has one, the networks it is on. The owner turns the address on here.
+  const PHASE = { connecting: 'Connecting to the relay…', claiming: 'Reserving the name…', certifying: 'Getting a certificate (about a minute)…' };
+  function whereHtml(shares) {
+    const pub = current && current.pub;
     const link = shares.length ? best(shares[0]) : null;
-    if (link && link.where === 'public') return 'Links open from anywhere.';
-    if (link && link.where === 'tailnet') return 'For now, links open for people on your Tailscale network. Links that open from anywhere come with the rockfrog.site address.';
-    return 'For now, links open on your home network only. Links that open from anywhere come with the rockfrog.site address.';
+    if (pub && pub.url) {
+      return `<p>Links open from anywhere, at <b>${escHtml(pub.url.replace(/^https:\/\//, ''))}</b>, while this computer is on. The address is yours; the relay passes the connection along without being able to read it.${pub.owner ? ' <button class="linklike" data-act="pub-off">Turn the public address off</button>' : ''}</p>`
+        + (pub.ctWarning ? `<p class="sh-ui-error">A certificate this computer did not ask for exists for this address (issued ${escHtml(pub.ctWarning.notBefore || '')} by ${escHtml(pub.ctWarning.issuer || 'someone')}). Someone may be able to pose as it: tell Rockfrog.</p>` : '');
+    }
+    const net = link && link.where === 'tailnet' ? 'For now, links open for people on your Tailscale network.' : 'For now, links open on your home network only.';
+    if (!pub || !pub.owner) return `<p>${net} This computer’s owner can give it a public address, so links open from anywhere.</p>`;
+    const busy = pub.on && PHASE[pub.phase];
+    const why = pub.on && ['error', 'refused'].includes(pub.phase) && pub.error ? `<p class="sh-ui-error">${escHtml(pub.error)}</p>` : '';
+    return `<p>${net} To open them from anywhere, give this computer a public address:</p>
+      <div class="sh-ui-pub"><span>https://</span><input id="shPubName" value="${escHtml(pub.name || '')}" placeholder="yourname" maxlength="30" autocomplete="off" spellcheck="false" aria-label="The name of this computer's public address"><span>.${escHtml(pub.domain || 'rockfrog.site')}</span>
+      <button id="shPubOn" class="primary"${busy ? ' disabled' : ''}>${busy ? escHtml(busy) : 'Turn on'}</button></div>${why}
+      <p class="sh-ui-small">Visitors connect to this computer through Rockfrog’s relay, encrypted all the way: the certificate lives here, so the relay cannot read or change what they see. Links work while this computer is on.</p>`;
   }
+  async function loadPub() {
+    try { current.pub = await call('/api/public-links'); } catch { current.pub = null; }
+  }
+  let pubTimer = 0;
+  function pollPub() {
+    clearTimeout(pubTimer);
+    if (!current || !current.pub || !current.pub.on || !PHASE[current.pub.phase]) return;
+    pubTimer = setTimeout(async () => {
+      if (!current) return;
+      await loadPub();
+      // Links change when the address becomes ready.
+      if (current.pub && current.pub.phase === 'ready') await refresh(); else renderWhere();
+      pollPub();
+    }, 1500);
+  }
+  function renderWhere() { const el = overlay && overlay.querySelector('#shWhere'); if (el && current) el.innerHTML = whereHtml(current.shares || []); }
   function fail(e) {
     const el = overlay && overlay.querySelector('#shError');
     if (!el) return;
@@ -95,6 +124,17 @@
     const share = id && current.shares.find(s => s.id === id);
     try {
       if (b.id === 'shClose') return close();
+      if (b.id === 'shPubOn') {
+        const name = overlay.querySelector('#shPubName').value.trim().toLowerCase();
+        current.pub = await call('/api/public-links', { on: true, name });
+        renderWhere(); pollPub();
+        return;
+      }
+      if (b.dataset.act === 'pub-off') {
+        if (!confirm('Turn the public address off? Links stop opening from outside your networks until it is on again.')) return;
+        current.pub = await call('/api/public-links', { on: false });
+        return refresh();
+      }
       if (b.id === 'shCreate') {
         const days = Number(overlay.querySelector('#shNewEnd').value || 0);
         const out = await call('/api/shares', { path: current.path, role: overlay.querySelector('#shNewRole').value, expiresAt: days ? Date.now() + days * DAY : null });
@@ -130,7 +170,11 @@
     try { await call('/api/shares/change', { id, role: sel.value }); await refresh(); }
     catch (err) { fail(err); }
   }
-  function onKey(e) { if (e.key === 'Escape' && overlay && !overlay.hidden) { e.stopPropagation(); close(); } }
+  function onKey(e) {
+    if (!overlay || overlay.hidden) return;
+    if (e.key === 'Escape') { e.stopPropagation(); close(); }
+    else if (e.key === 'Enter' && e.target && e.target.id === 'shPubName') { e.preventDefault(); overlay.querySelector('#shPubOn')?.click(); }
+  }
 
   async function open(path, title) {
     if (!path) return;
@@ -146,9 +190,9 @@
     current = { path, title: title || path.split(/[\\/]/).pop(), shares: [] };
     overlay.hidden = false;
     overlay.querySelector('.dialog').innerHTML = '<p class="sh-ui-hint">Loading…</p>';
-    try { await refresh(); } catch (e) { render(); fail(e); }
+    try { await loadPub(); await refresh(); pollPub(); } catch (e) { render(); fail(e); }
   }
-  function close() { if (overlay) overlay.hidden = true; current = null; }
+  function close() { clearTimeout(pubTimer); if (overlay) overlay.hidden = true; current = null; }
 
   // The document's Share button (live-file.js head) and its ⋯ entry.
   document.addEventListener('click', e => {

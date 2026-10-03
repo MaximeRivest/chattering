@@ -13,6 +13,11 @@
 #   PUBLIC_SSH    1 (default): SSH open to the internet, keys only.
 #                 0: SSH only through Tailscale (after `tailscale up`).
 #   TZ_NAME       time zone for the nightly reboot (America/Toronto)
+#   SITE_DOMAIN   public addresses for shared links (design/92), e.g.
+#                 rockfrog.site: <name>.SITE_DOMAIN reaches a person's own
+#                 computer. HAProxy then holds :443 and passes those TLS
+#                 streams, unread, to the relay (anywhere/site.js); every
+#                 other name goes to Caddy, as before. Empty: not offered.
 #
 # The relay's code is not installed here: deploy-relay.sh (run from a
 # checkout) puts a pushed commit in /opt/chattering-anywhere/releases.
@@ -22,6 +27,9 @@ DOMAIN="${DOMAIN:?set DOMAIN, e.g. DOMAIN=encrypted-link-to-your-devices.rockfro
 PUBLIC_SSH="${PUBLIC_SSH:-1}"
 TZ_NAME="${TZ_NAME:-America/Toronto}"
 RELAY_PORT=8790
+SITE_DOMAIN="${SITE_DOMAIN:-}"
+SITE_PORT=8791       # the relay's port for those streams (behind HAProxy)
+CADDY_TLS_PORT=8443  # Caddy's https, behind HAProxy, when SITE_DOMAIN is set
 CADDY_FPR=65760C51EDEA2017CEA2CA15155B6D79CA56EA34      # Caddy's published signing key
 TAILSCALE_FPR=2596A99EAAB33821893C0A79458CA832957F5868  # Tailscale's published signing key
 
@@ -84,7 +92,7 @@ EOF
 
 say "install: caddy, coturn, node, tailscale, nftables, unattended-upgrades"
 apt_get update -qq
-apt_get install -y -qq caddy coturn nodejs tailscale nftables unattended-upgrades >/dev/null
+apt_get install -y -qq caddy coturn nodejs tailscale nftables unattended-upgrades ${SITE_DOMAIN:+haproxy} >/dev/null
 node -e 'const [a] = process.versions.node.split(".").map(Number); if (a < 20) { console.error("node " + process.version + " is too old"); process.exit(1); }'
 
 say "security updates every day, from every source; reboot at 04:00 when one needs it"
@@ -144,7 +152,11 @@ LoadCredential=turn:/etc/chattering-anywhere/turn-secret
 # no addresses. The one thing the relay writes.
 StateDirectory=chattering-anywhere
 Environment=USAGE_FILE=%S/chattering-anywhere/usage.json
-ExecStart=/usr/bin/node /opt/chattering-anywhere/current/anywhere/relay.js
+${SITE_DOMAIN:+# Public addresses (anywhere/site.js): names → computers is the other thing it writes.
+Environment=SITE_DOMAIN=$SITE_DOMAIN SITE_PORT=$SITE_PORT
+Environment=SITE_NAMES_FILE=%S/chattering-anywhere/site-names.json
+Environment=SITE_HOMES_FILE=/etc/chattering-site/homes
+}ExecStart=/usr/bin/node /opt/chattering-anywhere/current/anywhere/relay.js
 Restart=always
 RestartSec=2
 # Its own throwaway user; nothing to write; no way out. It only answers
@@ -184,13 +196,64 @@ WantedBy=multi-user.target
 EOF
 systemctl enable chattering-anywhere >/dev/null 2>&1
 
+if [ -n "$SITE_DOMAIN" ]; then
+  say "who may take a name under $SITE_DOMAIN (one computer id a line; read on every claim)"
+  install -d -m 0755 -o root -g root /etc/chattering-site
+  [ -f /etc/chattering-site/homes ] || printf '# Computers invited to take a name under %s (design/92).\n# One id a line (Chattering shows it when it is refused), a # comment after it.\n' "$SITE_DOMAIN" > /etc/chattering-site/homes
+  chmod 0644 /etc/chattering-site/homes
+fi
+
 say "Caddy: the certificate (Let's Encrypt only), https in front of the relay, no access log"
+if [ -n "$SITE_DOMAIN" ]; then
+  # Behind HAProxy: Caddy's https moves to $CADDY_TLS_PORT (closed to the
+  # internet by the firewall) and learns each visitor's address from the
+  # PROXY header HAProxy sends. Redirects to https are written out, because
+  # Caddy's own would name its port. No HTTP/3: UDP does not pass HAProxy.
+  CADDY_GLOBAL="	http_port 80
+	https_port $CADDY_TLS_PORT
+	auto_https disable_redirects
+	servers :$CADDY_TLS_PORT {
+		listener_wrappers {
+			proxy_protocol {
+				timeout 5s
+				allow 127.0.0.1/32 ::1/128
+			}
+			tls
+		}
+		protocols h1 h2
+	}"
+  CADDY_SITES="
+http://$DOMAIN {
+	redir https://{host}{uri} 308
+}
+
+# Certificate checks for <name>.$SITE_DOMAIN: the relay answers them for the
+# computer that holds the name (which keeps its key); anything else goes to https.
+http://*.$SITE_DOMAIN {
+	header -Server
+	reverse_proxy 127.0.0.1:$RELAY_PORT
+}
+
+http://$SITE_DOMAIN {
+	redir https://{host}{uri} 308
+}
+
+# The domain itself is not anyone's computer: Rockfrog's page.
+$SITE_DOMAIN {
+	header -Server
+	redir https://rockfrog.ai/ 302
+}"
+else
+  CADDY_GLOBAL=""
+  CADDY_SITES=""
+fi
 write /etc/caddy/Caddyfile 0644 root:root <<EOF && CADDY_CHANGED=1 || CADDY_CHANGED=0
 {
 	# No admin API: nothing on this machine can reconfigure Caddy.
 	admin off
 	# Certificates from Let's Encrypt only (the domain's CAA records say so too).
 	acme_ca https://acme-v02.api.letsencrypt.org/directory
+$CADDY_GLOBAL
 	# Caddy's own messages (certificates, start, stop) stay; the kinds that
 	# carry a visitor's address do not: a request that failed, the proxy's
 	# errors, and Go's TLS handshake errors ("from 1.2.3.4").
@@ -206,6 +269,7 @@ $DOMAIN {
 	# No "log" directive: Caddy writes no access log.
 	reverse_proxy 127.0.0.1:$RELAY_PORT
 }
+$CADDY_SITES
 EOF
 # With the admin API off there is no reload: a change is a restart.
 write /etc/systemd/system/caddy.service.d/10-relay.conf 0644 root:root <<'EOF' && systemctl daemon-reload || true
@@ -219,6 +283,54 @@ EOF
 caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null
 systemctl enable caddy >/dev/null 2>&1
 [ "$CADDY_CHANGED" = 1 ] && systemctl restart caddy || systemctl start caddy
+
+if [ -n "$SITE_DOMAIN" ]; then
+  say "HAProxy on :443: names under $SITE_DOMAIN to the relay, unread; every other name to Caddy"
+  write /etc/haproxy/haproxy.cfg 0644 root:root <<EOF && HAPROXY_CHANGED=1 || HAPROXY_CHANGED=0
+# Written by setup-ubuntu.sh (design/92). Reads only the name a visitor's
+# TLS hello asks for; never decrypts. No log lines: no visitor addresses.
+global
+	user haproxy
+	group haproxy
+	chroot /var/lib/haproxy
+	maxconn 20000
+	stats socket /run/haproxy/admin.sock mode 600 level admin
+
+defaults
+	mode tcp
+	timeout connect 5s
+	timeout client 2h
+	timeout server 2h
+	timeout client-fin 30s
+	timeout server-fin 30s
+
+frontend https
+	bind :443
+	bind :::443 v6only
+	tcp-request inspect-delay 5s
+	tcp-request content accept if { req.ssl_hello_type 1 }
+	use_backend homes if { req.ssl_sni -m end .$SITE_DOMAIN }
+	default_backend caddy
+
+backend caddy
+	server caddy 127.0.0.1:$CADDY_TLS_PORT send-proxy-v2
+
+backend homes
+	server relay 127.0.0.1:$SITE_PORT send-proxy-v2
+EOF
+  write /etc/systemd/system/haproxy.service.d/10-relay.conf 0644 root:root <<'EOF' && systemctl daemon-reload || true
+[Service]
+Restart=always
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+EOF
+  haproxy -c -f /etc/haproxy/haproxy.cfg >/dev/null
+  systemctl enable haproxy >/dev/null 2>&1
+  [ "$HAPROXY_CHANGED" = 1 ] && systemctl restart haproxy || systemctl start haproxy
+fi
 
 say "coturn: TURN for phones with no direct path; never towards this machine or a private network; no logs"
 # The server's public addresses: those on the default route's interface
@@ -348,8 +460,8 @@ table inet relay {
 		meta l4proto ipv6-icmp accept
 		udp dport 68 accept comment "DHCP: this server's IPv4 address"
 		$SSH_RULE
-		tcp dport { 80, 443 } accept comment "Caddy: the page, the introductions"
-		udp dport 443 accept comment "Caddy: HTTP/3"
+		tcp dport { 80, 443 } accept comment "Caddy (HAProxy in front when there are public addresses)"
+		udp dport 443 accept comment "Caddy: HTTP/3 (unused while HAProxy holds 443)"
 		tcp dport { 3478, 5349 } accept comment "coturn"
 		udp dport 3478 accept comment "coturn"
 		udp dport 49152-65535 accept comment "coturn: relayed media"

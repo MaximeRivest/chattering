@@ -122,6 +122,8 @@ const ROUTES = {
   '/api/artifacts/declare': 'guest',
   // Shared links (design/92): sharing outward is the household's, never a
   // guest's; the handler checks the file and who made each link.
+  'GET /api/public-links': 'member',
+  'POST /api/public-links': 'owner',
   'GET /api/shares': 'member',
   'POST /api/shares': 'member',
   'POST /api/shares/change': 'member',
@@ -480,6 +482,8 @@ const EVENTS = {
   users: () => () => true,
   // A phone paired, connected or removed: the settings page asks again.
   anywhere: () => () => true,
+  // The public address changed state (design/92): a ping, the dialog refetches.
+  'public-links': () => () => true,
   // The AI accounts changed (design/73): a ping, the browser refetches.
   'ai-accounts': () => () => true,
   // Chattering's AI programs as they run (design/74): the household's, like

@@ -35,7 +35,12 @@
                           address (for rate limits only) is X-Forwarded-For
      USAGE_FILE           where the usage totals are kept (usage.js); empty =
                           memory only. GET /_usage on the relay's own port,
-                          from this machine, reads them. */
+                          from this machine, reads them.
+     SITE_DOMAIN          public addresses for shared links (site.js,
+                          design/92): <name>.SITE_DOMAIN; empty = off
+     SITE_PORT            the TCP port HAProxy hands those TLS streams to (8791)
+     SITE_NAMES_FILE      names → computers (the one other thing written)
+     SITE_HOMES_FILE      computers invited to take a name, one id a line */
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -44,6 +49,7 @@ const zlib = require('zlib');
 const { acceptWebSocket, refuseUpgrade } = require('../wsserver.js');
 const P = require('./protocol.js');
 const { createUsage } = require('./usage.js');
+const { createSite } = require('./site.js');
 
 const LIMITS = {
   message: 16 * 1024,        // one signalling message
@@ -71,6 +77,8 @@ function createRelay(opts = {}) {
   // Totals only, per day and month (usage.js): how much, never who.
   const usage = opts.usage || createUsage({ file: String(env.USAGE_FILE || ''), now: opts.now });
   const perAddress = new Map(); // address → open sockets (memory only)
+  // Public addresses for shared links (site.js): off unless SITE_DOMAIN.
+  const site = opts.site || createSite({ env, now: opts.now });
 
   // TURN credentials the coturn "use-auth-secret" way: the name is when it
   // stops working, the password an HMAC of the name. coturn checks both
@@ -140,6 +148,7 @@ function createRelay(opts = {}) {
       }
       res.writeHead(404, { 'Content-Type': 'text/plain', ...SECURITY }); return res.end('not found\n');
     }
+    if (site.enabled && site.http(req, res, u)) return;
     if (u.pathname === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); return res.end('ok\n'); }
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET, HEAD' }); return res.end(); }
     let name = u.pathname;
@@ -185,6 +194,7 @@ function createRelay(opts = {}) {
   }
   function onUpgradeInner(req, socket, head) {
     const u = pathOf(req.url);
+    if (u && site.upgrade(req, socket, head, u, acceptWebSocket, refuseUpgrade)) return;
     if (!u || u.pathname !== '/signal') return refuseUpgrade(socket, 404, 'Not Found');
     const addr = addressOf(req);
     if ((perAddress.get(addr) || 0) >= LIMITS.perAddress) return refuseUpgrade(socket, 429, 'Too Many Requests');
@@ -320,16 +330,17 @@ function createRelay(opts = {}) {
   const server = http.createServer(serve);
   server.on('upgrade', onUpgrade);
   server.on('clientError', (e, socket) => { try { socket.destroy(); } catch {} });
-  return { server, homes, iceServers, usage, close: () => { clearInterval(sweeper); clearInterval(saver); usage.save(); server.close(); } };
+  return { server, homes, iceServers, usage, site, close: () => { clearInterval(sweeper); clearInterval(saver); usage.save(); server.close(); site.close(); } };
 }
 
 if (require.main === module) {
   const relay = createRelay();
   for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { relay.usage.save(); process.exit(0); });
   const port = Number(process.env.PORT || 8790), host = process.env.HOST || '127.0.0.1';
+  if (relay.site.enabled) relay.site.tcp.listen(Number(process.env.SITE_PORT || 8791), host);
   relay.server.listen(port, host, () => {
     // The one line this program ever prints: that it started.
-    process.stdout.write(`chattering anywhere relay on ${host}:${port}${process.env.TURN_SECRET || process.env.TURN_SECRET_FILE ? ' (TURN credentials on)' : ' (no TURN: phones without a direct path cannot connect)'}\n`);
+    process.stdout.write(`chattering anywhere relay on ${host}:${port}${process.env.TURN_SECRET || process.env.TURN_SECRET_FILE ? ' (TURN credentials on)' : ' (no TURN: phones without a direct path cannot connect)'}${relay.site.enabled ? ', addresses under ' + relay.site.domain : ''}\n`);
   });
 }
 

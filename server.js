@@ -18260,6 +18260,27 @@ async function handleRequest(req, res) {
         // The shared box empties for everyone who was writing in it.
         if (p.clearCompose !== false && collab.has('compose:' + p.id)) collab.clear('compose:' + p.id);
       } catch (e) { json(res, e.needsForce ? 409 : e.status || 400, { error: e.message, needsForce: !!e.needsForce }); }
+    } else if (u.pathname === '/api/public-links' && req.method === 'GET') {
+      json(res, 200, publicLinksView(identity));
+    } else if (u.pathname === '/api/public-links' && req.method === 'POST') {
+      // Turning the public address on or off, and its name: the owner's.
+      if (!policy.isOwnerTier(identity)) return json(res, 403, { error: 'Only this computer\u2019s owner turns its public address on or off.' });
+      try {
+        const p = await readJsonBody(req, 4096);
+        const next = { ...(appSettings.publicLinks || {}) };
+        if ('on' in p) next.on = p.on === true;
+        if ('name' in p) {
+          const n = String(p.name || '').trim().toLowerCase();
+          if (n && !require('./anywhere/site.js').validName(n)) return json(res, 400, { error: 'A name is 3 to 30 lowercase letters, digits or dashes (not at the start or end), and a few common words are kept.' });
+          next.name = n;
+        }
+        if (next.on && !next.name) return json(res, 400, { error: 'Choose a name first.' });
+        appSettings = settingsLib.normalizeSettings({ ...appSettings, publicLinks: next });
+        saveAppSettings();
+        siteHome.sync();
+        console.log('[public links] ' + identity.user.name + ' turned the public address ' + (next.on ? 'on as ' + next.name : 'off'));
+        json(res, 200, publicLinksView(identity));
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/shares' && req.method === 'GET') {
       // Shared links (design/92): the owner side.
       try { json(res, 200, await sharesApi(identity, req, u)); }
@@ -20490,7 +20511,7 @@ function shareStaticFile(name) {
 }
 const shareGate = sharesLib.createShareGate({
   store: shareStore, collab, resolve: resolveShare, limiter: shareLimiter,
-  clientAddress: req => authGuard.clientAddress(req),
+  clientAddress: req => req.socket.visitorIp || authGuard.clientAddress(req),
   // Secure cookies only where the browser surely sees https: our own TLS, or
   // Tailscale Serve in front (it proxies from this machine).
   isSecure: req => !!req.socket.encrypted || (['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress) && String(req.headers['x-forwarded-proto'] || '').toLowerCase() === 'https'),
@@ -20498,6 +20519,38 @@ const shareGate = sharesLib.createShareGate({
   acceptWebSocket, refuseUpgrade, log: msg => console.error(msg),
 });
 setInterval(() => { shareGate.sweep().catch(() => {}); }, 60e3).unref();
+// This computer's public address (design/92, site-home.js): visitors come
+// through the relay with their TLS, which ends here. Only shared links
+// answer there; nothing else of Chattering, previews included.
+const siteHome = require('./site-home.js').createSiteHome({
+  dataDir: DATA_DIR,
+  relayUrl: () => (appSettings.anywhere && appSettings.anywhere.relay) || anywhereLib.DEFAULT_RELAY,
+  wanted: () => !!(appSettings.publicLinks && appSettings.publicLinks.on && appSettings.publicLinks.name) && process.env.CHATTERING_NO_PUBLIC_LINKS !== '1',
+  desiredName: () => (appSettings.publicLinks && appSettings.publicLinks.name) || '',
+  homeKey: () => anywhere.homeKey(),
+  acmeDirectory: process.env.CHATTERING_ACME_DIRECTORY || undefined,
+  // Tests: the test authority's own TLS certificate (Pebble).
+  acmeCa: process.env.CHATTERING_ACME_CA_FILE ? fs.readFileSync(process.env.CHATTERING_ACME_CA_FILE) : undefined,
+  ctCheck: !process.env.CHATTERING_ACME_DIRECTORY,
+  handler: (req, res) => {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+    shareGate.handle(req, res).then(done => {
+      if (done) return;
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Robots-Tag': 'noindex' });
+      res.end('Nothing here. Links shared from Chattering look like ' + 'https://' + String(req.headers.host || '').replace(/[^a-z0-9.:-]/gi, '') + '/s/…\n');
+    }).catch(() => { try { res.end(); } catch {} });
+  },
+  upgrade: shareUpgrade,
+  onChange: () => broadcast({ type: 'public-links' }),
+  log: msg => console.error(msg),
+});
+setTimeout(() => siteHome.sync(), 3000).unref();
+function publicLinksView(identity) {
+  const st = siteHome.status();
+  const base = { on: !!(appSettings.publicLinks && appSettings.publicLinks.on), name: (appSettings.publicLinks && appSettings.publicLinks.name) || '', phase: st.phase, url: st.url, domain: st.domain || 'rockfrog.site', owner: policy.isOwnerTier(identity) };
+  if (!policy.isOwnerTier(identity)) return base;
+  return { ...base, error: st.error, invited: st.invited, homeId: st.homeId, certificate: st.certificate, visitors: st.visitors, ctWarning: st.ctWarning };
+}
 function shareUpgrade(req, socket, head) {
   shareGate.upgrade(req, socket, head)
     .then(done => { if (!done) refuseUpgrade(socket, 404, 'Not Found'); })
@@ -20510,7 +20563,9 @@ function shareLinks(share) {
   const secret = shareStore.secretOf(share);
   const tail = '/s/' + share.id + '/#' + secret;
   const out = [];
-  if (appSettings.shareBase) out.push({ where: 'public', url: String(appSettings.shareBase).replace(/\/+$/, '').replace('{id}', share.id) + tail, who: 'Anyone with the link' });
+  const pub = siteHome.status();
+  if (pub.url) out.push({ where: 'public', url: pub.url + tail, who: 'Anyone with the link, from anywhere' });
+  else if (appSettings.shareBase) out.push({ where: 'public', url: String(appSettings.shareBase).replace(/\/+$/, '').replace('{id}', share.id) + tail, who: 'Anyone with the link' });
   const tailnet = tailnetName();
   if (tailnet) out.push({ where: 'tailnet', url: `https://${tailnet}:${PREVIEW_TAILNET_PORT}${tail}`, who: 'People on your Tailscale network' });
   if (!isLoopback(HOST)) for (const ip of lanAddresses().slice(0, 1)) out.push({ where: 'lan', url: `https://${ip}:${PREVIEW_TLS_PORT}${tail}`, who: 'People on your home network (their browser warns once about the certificate)' });

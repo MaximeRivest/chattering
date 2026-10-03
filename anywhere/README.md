@@ -69,7 +69,7 @@ scp anywhere/deploy/setup-ubuntu.sh ubuntu@SERVER:/tmp/
 ssh ubuntu@SERVER 'sudo DOMAIN=encrypted-link-to-your-devices.rockfrog.ai bash /tmp/setup-ubuntu.sh'
 ssh ubuntu@SERVER 'sudo tailscale up --advertise-tags=tag:relay --hostname=encrypted-link-relay --ssh=false --accept-dns=false'
 RELAY_HOST=ubuntu@SERVER anywhere/deploy/deploy-relay.sh
-ssh ubuntu@encrypted-link-relay 'sudo DOMAIN=encrypted-link-to-your-devices.rockfrog.ai PUBLIC_SSH=0 bash /tmp/setup-ubuntu.sh'
+ssh ubuntu@encrypted-link-relay 'sudo DOMAIN=encrypted-link-to-your-devices.rockfrog.ai SITE_DOMAIN=rockfrog.site PUBLIC_SSH=0 bash /tmp/setup-ubuntu.sh'
 ```
 
 `setup-ubuntu.sh` (safe to run again) installs Caddy from Caddy's signed
@@ -100,6 +100,20 @@ community section, get Canonical's security fixes too.
 
 Other systems: `deploy/nixos.nix` (NixOS), `deploy/anywhere-relay.service`
 and `deploy/turnserver.conf` (any systemd Linux, by hand).
+
+## Public addresses for shared links (design/92)
+
+With `SITE_DOMAIN=rockfrog.site` the same server gives each invited
+computer `https://<name>.rockfrog.site`: HAProxy holds :443, passes those
+TLS streams unread to `site.js` (which pipes them to the computer through a
+tunnel it opens), and hands every other name to Caddy as before. The
+computer holds the certificate. Invite a computer by adding its id (shown
+in Chattering when it is refused) to `/etc/chattering-site/homes`; no
+restart needed.
+
+```sh
+ssh ubuntu@encrypted-link-relay 'sudo DOMAIN=encrypted-link-to-your-devices.rockfrog.ai SITE_DOMAIN=rockfrog.site PUBLIC_SSH=0 bash /tmp/setup-ubuntu.sh'
+```
 
 ## Pointing Chattering at another relay
 

@@ -145,6 +145,9 @@ const DEFAULT_SETTINGS = {
   // Chattering Anywhere (design/85): phones reach this computer through a
   // relay. relay: its address, '' for Rockfrog's; off: the owner's switch.
   anywhere: { relay: '', off: false },
+  // This computer's public address for shared links (design/92):
+  // https://<name>.rockfrog.site, through the relay, TLS ending here.
+  publicLinks: { on: false, name: '' },
   // Agents continued in their own interactive program (design/91), per
   // agent: 'off' (never), 'choose' (Chattering's box, the program a click
   // away), 'always' (the program). Claude Code has no box of Chattering's
@@ -460,6 +463,7 @@ function normalizeSettings(input) {
   const publicDoor = src.publicDoor === true;
   const tailscaleApiKey = typeof src.tailscaleApiKey === 'string' ? src.tailscaleApiKey.trim().slice(0, 200) : '';
   const anywhere = normalizeAnywhere(src.anywhere);
+  const publicLinks = normalizePublicLinks(src.publicLinks);
   const liveTerminal = normalizeLiveTerminal(src.liveTerminal);
   // A fixed model needs both halves; half a choice is Pi's default.
   const piDefault = src.usePiDefault === true || !provider || !model;
@@ -504,6 +508,7 @@ function normalizeSettings(input) {
     publicDoor,
     tailscaleApiKey,
     anywhere,
+    publicLinks,
     liveTerminal,
   };
 }
@@ -528,6 +533,12 @@ function normalizeLiveTerminal(raw) {
 
 // A relay is an https address (http only on this computer itself, for
 // running one beside it); anything else is no choice: the default.
+function normalizePublicLinks(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const name = String(src.name || '').trim().toLowerCase();
+  return { on: src.on === true, name: /^[a-z0-9](?:[a-z0-9-]{1,28}[a-z0-9])$/.test(name) ? name : '' };
+}
+
 function normalizeAnywhere(raw) {
   const src = raw && typeof raw === 'object' ? raw : {};
   let relay = '';

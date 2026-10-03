@@ -129,6 +129,63 @@ nothing else on the computer is reachable from a share.
 - While visitors are connected the file is watched on its own, so an
   agent's write reaches them even in a folder Chattering does not watch.
 
+## The public address (built 2026-10-02)
+
+`https://<name>.rockfrog.site` reaches one computer. Modules: relay
+`anywhere/site.js` (+ `relay.js`), home `site-home.js`, `acme.js`; deploy
+`setup-ubuntu.sh` (`SITE_DOMAIN`). Tests: `test/site.test.js` (Pebble,
+Let's Encrypt's test server; a real browser through the relay).
+
+```
+visitor ──TLS (ends on the home)──▶ relay :443 HAProxy ── SNI *.rockfrog.site ──▶ site.js
+                                                    └─ any other name ─▶ Caddy (PROXY v2), as before
+site.js: reads the name in the hello only, asks the home (its /site WebSocket)
+         to open a tunnel (/site/tunnel?cid), pipes the bytes both ways
+home:    TLSSocket over the tunnel, its own certificate; only the shared-links
+         gate answers (no app, no previews): 404 for anything else
+```
+
+- **The certificate is the home's.** HTTP-01 through the relay: Caddy on
+  :80 sends `http://*.rockfrog.site` to `relay.js`, which answers the
+  challenge tokens its home sent it over the authenticated connection.
+  Renewed 30 days before it ends. Per-home certificates, not wildcards
+  (CAA forbids wildcards: `issuewild ";"`), so nothing on the relay or in
+  DNS changes when a computer joins.
+- **Why not DNS-01 as design/86 planned:** it would need either a DNS API
+  token on the relay or acme-dns run by Rockfrog; HTTP-01 through the
+  relay needs neither and gives Rockfrog the same power it has anyway as
+  the domain's owner (it could get a certificate for any name under it).
+  That power is watched: each home reads crt.sh daily and reports a
+  certificate it did not ask for (`ctWarning`, shown in the Share dialog).
+- **Names are by invitation** (`/etc/chattering-site/homes`, one computer
+  id a line, read on every claim) until abuse can be handled (reports, a
+  kill switch per name). One name per computer; first come; kept in
+  `site-names.json`, the relay's one new piece of state.
+- **Only the relay's front changed for everyone else:** HAProxy holds :443
+  and hands every other name to Caddy on 8443 with the visitor's address
+  (PROXY v2). Cost: no HTTP/3 for the relay's page (UDP does not pass
+  through HAProxy).
+- **DNS** (Cloudflare, DNS only, DNSSEC on, DS at GoDaddy): `rockfrog.site`
+  and `*.rockfrog.site` A/AAAA → the relay; CAA `letsencrypt.org` only.
+- **Settings**: `publicLinks: { on, name }`; the owner turns it on in the
+  Share dialog. `/api/public-links` (GET household, POST owner).
+
+Trade-offs of the public address:
+
+- **A computer that is off is a browser error** ("site can't be reached"),
+  not a friendly page: the relay holds no certificate for the name, so it
+  cannot answer in its place. Once the page has loaded, the page itself
+  says the computer went away and reconnects.
+- **Until rockfrog.site is on the Public Suffix List**, every name shares
+  Let's Encrypt's limit of 50 new certificates a week for the domain, and
+  browsers treat `a.rockfrog.site` and `b.rockfrog.site` as the same *site*
+  (not the same origin: cookies are host-only and pages cannot read each
+  other). Submit the PSL request after a few weeks of use.
+- **Every visitor connection is a new WebSocket from the home to the
+  relay** (one round trip more on a new connection; browsers reuse them).
+- **The relay can see who visits which name** (addresses, sizes, times), in
+  memory only, like any internet router. It cannot see what is said.
+
 ## Trade-offs, stated
 
 - **Links open on the tailnet only until rockfrog.site is running.** The
@@ -163,18 +220,13 @@ nothing else on the computer is reachable from a share.
 
 ## The domain
 
-`rockfrog.site` was available on 2026-10-02 (RDAP, Radix registry). To do,
-in this order (Maxime):
-
-1. Register it for **3 years** (the Public Suffix List asks for more than
-   two years left at submission), registrar lock and auto-renew on.
-2. Put its DNS on a provider with an API, full CAA and DNSSEC (design/86
-   recommends deSEC or Cloudflare DNS in *DNS only* mode); DNSSEC on; CAA
-   limited to Let's Encrypt with our account.
-3. Submit `rockfrog.site` to the Public Suffix List (a `_psl` TXT record
-   and a pull request), so each `<user>.rockfrog.site` is its own site to
-   browsers (cookies, storage) and to Let's Encrypt's rate limits. Weeks to
-   merge, months to reach every browser; nothing waits on it.
+**Registered 2026-10-02** at GoDaddy for 3 years (renews in 2029), DNS
+on Cloudflare (same account as
+rockfrog.ai), DNSSEC on (DS key tag 2371 at GoDaddy), registrar lock and
+auto-renew on. Remaining: submit `rockfrog.site` to the Public Suffix List
+(a `_psl` TXT record and a pull request), so each `<name>.rockfrog.site` is
+its own site to browsers and to Let's Encrypt's limits. Weeks to merge,
+months to reach every browser; nothing waits on it.
 
 Trade-off: `.site` is a cheap ending that spam lists watch more than
 `.page` or `.com`; ChatGPT uses `chatgpt.site` for the same purpose.
@@ -182,9 +234,8 @@ Trade-off: `.site` is a cheap ending that spam lists watch more than
 
 ## Next
 
-1. The relay: SNI routing for `*.rockfrog.site`, a byte stream per visitor
-   over the computer's existing connection, acme-dns, certificates on the
-   computer, CT watch (design/86's list, shared with Level 2).
+1. Public Suffix List submission for rockfrog.site; abuse reports and a
+   per-name kill switch on the relay; then names for everyone.
 2. Frozen copies: publish an artifact folder by content; then `.md`,
    conversations (with the review screen), notebooks, slides.
 3. Live programs behind the gate (design/76).

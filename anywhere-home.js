@@ -522,7 +522,10 @@ function createAnywhereHome(opts) {
   }
 
   ensureKey().then(() => sync()).catch(e => log('anywhere: ' + e.message));
-  return { status, pair, pairingState, cancelPairing, forget, prune, refresh, stop, sync, homeId: async () => (await ensureKey()).homeId, devicesOf: userId => state.devices.filter(d => d.userId === userId).map(publicDevice), _peers: peers };
+  return { status, pair, pairingState, cancelPairing, forget, prune, refresh, stop, sync, homeId: async () => (await ensureKey()).homeId,
+    // The same key proves this computer to the public-address relay (site-home.js).
+    homeKey: async () => { const k = await ensureKey(); return { homeId: k.homeId, spki: k.spki, sign: bytes => P.sign(k.privateKey, bytes) }; },
+    devicesOf: userId => state.devices.filter(d => d.userId === userId).map(publicDevice), _peers: peers };
 }
 
 // The pairing link as a QR code, black on white with its quiet zone.
