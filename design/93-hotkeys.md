@@ -42,7 +42,7 @@ off for hotkeys. The program is any published made program with one text
 input it can fill (others optional); its last answer is what is delivered.
 
 **Starters** (settings → hotkeys): *Fix spelling and grammar*
-(Super+Ctrl+G, selection → replace), *Translate to English* (Super+Ctrl+E),
+(Super+Ctrl+G, selection → replace), *Translate to English* (Super+Ctrl+U; E is Omarchy's emoji picker),
 *Explain this* (Super+Ctrl+Y, → notification). Choosing one makes its
 program (`fix_writing`, `to_english`, `explain_text`) in this install's
 own programs folder and publishes it, unless someone made it already; it

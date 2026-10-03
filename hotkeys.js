@@ -64,7 +64,8 @@ const STARTERS = [
   {
     id: 'to_english',
     label: 'Translate to English',
-    keys: 'Super+Ctrl+E',
+    // Super+Ctrl+E is Omarchy's emoji picker; U, Y, J, M and X are free there.
+    keys: 'Super+Ctrl+U',
     input: 'selection',
     output: 'replace',
     definition: {

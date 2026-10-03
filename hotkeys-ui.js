@@ -85,7 +85,7 @@
       <div class="set-field">
         <label for="hkKeys">keys</label>
         <div class="row"><input id="hkKeys" type="text" value="${esc(e.keys || '')}" placeholder="click here and press the keys, or type Super+Ctrl+G" spellcheck="false" autocomplete="off"></div>
-        <div class="set-help">Use Super (${IS_MAC ? '⌘' : 'the Windows key'}), Ctrl or Alt with a letter, a digit or a key like F5. A combination your desktop already uses is reported per computer below.</div>
+        <div class="set-help">Use Super (${IS_MAC ? '⌘' : 'the Windows key'}), Ctrl or Alt with a letter, a digit or a key like F5. If nothing appears when you press them, your desktop (or one of your hotkeys) already uses that combination: choose another, or type it. A combination taken on a computer is reported below, per computer.</div>
       </div>
       <div class="set-field">
         <label for="hkProgram">program</label>
