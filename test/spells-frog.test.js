@@ -18,6 +18,7 @@ function world({ focused = { id: 'w1', app: 'org.mozilla.thunderbird', terminal:
     async pointer() { return pointer; },
     async monitors() { return [{ name: 'DP-1', x: 0, y: 0, w: 1920, h: 1080, focused: true }, { name: 'HDMI-A-1', x: 1920, y: 0, w: 1920, h: 1080 }]; },
     async windowRect() { return { x: 100, y: 80, w: 1200, h: 800 }; },
+    async windowRects() { const r = { x: 100, y: 80, w: 1200, h: 800 }; return { w1: r, w2: r, other: r }; },
     async selection() { return world.selectionNow; },
     async primaryText() { return world.primary || ''; },
     async setClipboard(t) { did.push(['clipboard', t]); },

@@ -64,19 +64,47 @@
   }
 
   // ---- where things go ----
-  const vw = () => window.innerWidth, vh = () => window.innerHeight;
+  // The screen's size: the page's own once the host has given it its size;
+  // until then (a layer just shown measures 0 by 0) the size the helper sent.
+  const vw = () => window.innerWidth || (S && S.screen && S.screen.w) || 1920;
+  const vh = () => window.innerHeight || (S && S.screen && S.screen.h) || 1080;
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  // Where the pointer may land, from where things are laid out, not where
+  // an animation has them this frame: measured mid-hop, the frog was a
+  // fifth of its size, and the host let clicks through everywhere else.
+  // The frog gets room for its hops and its hover lean.
+  const PAD = { frog: 14, other: 2 };
+  function box(el) {
+    let x = 0, y = 0;
+    for (let e = el; e && e !== document.body; e = e.offsetParent) { x += e.offsetLeft; y += e.offsetTop; }
+    return { x, y, w: el.offsetWidth, h: el.offsetHeight };
+  }
+  let lastRects = '';
   function rectsChanged() {
     const rs = [];
     for (const el of [frog, panel, pill]) {
-      if (!el || !el.isConnected) continue;
-      const r = el.getBoundingClientRect();
-      if (r.width && r.height) rs.push({ x: Math.floor(r.left) - 2, y: Math.floor(r.top) - 2, w: Math.ceil(r.width) + 4, h: Math.ceil(r.height) + 4 });
+      if (!el || !el.isConnected || el.classList.contains('leave')) continue;
+      const b = box(el), p = el === frog ? PAD.frog : PAD.other;
+      if (b.w && b.h) rs.push({ x: Math.floor(b.x) - p, y: Math.floor(b.y) - p, w: Math.ceil(b.w) + 2 * p, h: Math.ceil(b.h) + 2 * p });
     }
+    const key = JSON.stringify(rs);
+    if (key === lastRects) return;
+    lastRects = key;
     send({ type: 'rects', rects: rs });
   }
+  // A timer, not an animation frame: a page whose screen is asleep gets no
+  // frames, and the pointer region must still follow.
   let rectT = 0;
-  const rectsSoon = () => { cancelAnimationFrame(rectT); rectT = requestAnimationFrame(rectsChanged); };
+  const rectsSoon = () => { clearTimeout(rectT); rectT = setTimeout(rectsChanged, 16); };
+  // The real size arrives after the layer is shown: place everything again.
+  window.addEventListener('resize', () => {
+    if (frog && S) placeFrog();
+    if (panel && frog) placePanel(panel);
+    if (pill && frog) placePill(pill);
+    rectsSoon();
+  });
+  // Anything added, moved or resized: measure again.
+  new MutationObserver(rectsSoon).observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class'] });
   new ResizeObserver(rectsSoon).observe(root);
 
   // The frog stands with its feet at `at` (the end of the selection, or the
@@ -164,6 +192,8 @@
     blinkLoop();
     if (m.open) openMenu(); else idleSoon(m.linger || 5000);
     rectsSoon();
+    // Drawn: the helper times how long a frog takes to appear.
+    requestAnimationFrame(() => requestAnimationFrame(() => send({ type: 'shown' })));
   }
 
   // ---- the menu ----

@@ -67,6 +67,15 @@ test('the frog, its book, a correction and a rewrite, in a browser', { timeout: 
   const f = await b.ev(`(() => { const r = document.querySelector('.frog').getBoundingClientRect(); return [r.left, r.bottom]; })()`);
   assert.ok(f[0] >= 640 && f[0] < 700 && Math.abs(f[1] - 308) < 4, 'beside the end of the selection, feet on its line: ' + f);
   await b.until(`window.__out.filter(m => m.type === 'rects').pop()?.rects.length === 1`, 'one place to click: the frog');
+  // The clickable place is the whole frog, measured as laid out (the bug: it
+  // was measured mid-hop, a fifth of the frog), and it covers the frog
+  // wherever an animation takes it.
+  const clickable = (await b.out('rects')).pop().rects[0];
+  const frogBox = await b.ev(`(() => { const r = document.querySelector('.frog').getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; })()`);
+  assert.ok(clickable.x <= frogBox.x && clickable.y <= frogBox.y && clickable.x + clickable.w >= frogBox.x + frogBox.w && clickable.y + clickable.h >= frogBox.y + frogBox.h,
+    'the whole frog takes the pointer: ' + JSON.stringify({ clickable, frogBox }));
+  assert.ok(clickable.w >= 60 && clickable.h >= 100);
+  assert.ok((await b.out('shown')).length >= 1, 'the page says when the frog is drawn');
   assert.equal(await b.ev(`(() => { const f = document.querySelector('.frog'); return [...f.querySelectorAll('*')].some(e => e.scrollWidth > e.clientWidth + 1 && getComputedStyle(e).overflowX !== 'visible'); })()`), false, 'no scrollbar anywhere in the frog');
   assert.equal((await b.out('keyboard')).length, 0, 'the frog alone never asks for the keys');
 

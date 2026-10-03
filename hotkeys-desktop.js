@@ -221,6 +221,11 @@ function hyprland() {
         return { name: m.name, x: m.x, y: m.y, w, h, focused: !!m.focused };
       });
     },
+    async windowRects() {
+      const out = {};
+      for (const c of JSON.parse(await hyprctl('clients', '-j'))) out[c.address] = { x: c.at[0], y: c.at[1], w: c.size[0], h: c.size[1] };
+      return out;
+    },
     async windowRect(win) {
       const all = JSON.parse(await hyprctl('clients', '-j'));
       const c = all.find(x => x.address === win.id);
