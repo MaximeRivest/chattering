@@ -15,7 +15,7 @@ body { font: var(--fs-body)/1.45 var(--font); color: var(--text); -webkit-user-s
 .frog.small { --frog-w: 45px; --frog-h: 75px; }
 .frog img { position: absolute; left: -21.5%; top: -0.5%; width: 135.3%; height: 100.9%; pointer-events: none; -webkit-user-drag: none; }
 .frog .fbody { position: absolute; inset: 0; transform-origin: 50% 100%; animation: breathe 2.8s ease-in-out infinite; }
-.frog.enter { animation: hopIn .55s cubic-bezier(.25, 1.5, .5, 1) both; }
+.frog.enter { animation: hopIn .28s cubic-bezier(.3, 1.4, .5, 1) both; }
 .frog.leave { animation: hopOut .3s ease-in both; }
 .frog:hover .fbody { animation: none; transform: rotate(-4deg) scale(1.06); transition: transform .15s; }
 .frog.busy .fbody { animation: bob .42s ease-in-out infinite alternate; }
@@ -24,7 +24,7 @@ body { font: var(--fs-body)/1.45 var(--font); color: var(--text); -webkit-user-s
 .frog.shake .fbody { animation: shake .45s ease-in-out 2; }
 .frog:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: var(--r); }
 @keyframes breathe { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.025, .975); } }
-@keyframes hopIn { 0% { transform: translateY(26px) scale(.2); opacity: 0; } 55% { transform: translateY(-12px) scale(1.05, .95); opacity: 1; } 75% { transform: scale(.94, 1.06); } 100% { transform: none; } }
+@keyframes hopIn { 0% { transform: translateY(10px) scale(.7); opacity: .3; } 60% { transform: translateY(-6px) scale(1.03, .97); opacity: 1; } 100% { transform: none; } }
 @keyframes hopOut { to { transform: translateY(18px) scale(.3); opacity: 0; } }
 @keyframes bob { from { transform: translateY(0) rotate(-2deg); } to { transform: translateY(-5px) rotate(2deg); } }
 @keyframes jump { 0%, 100% { transform: none; } 40% { transform: translateY(-16px) scale(.96, 1.05); } 70% { transform: scale(1.06, .94); } }

@@ -52,6 +52,7 @@ class Host:
         self.system_dark = False
         self.last_theme = None
         self.portal = None
+        self.unmap_timer = 0
 
     # ---- the window: a layer over one whole screen, see-through ----
     def build(self):
@@ -104,7 +105,15 @@ class Host:
                 return m
         return mons.get_item(0) if mons.get_n_items() else None
 
+    # A layer shown again costs about 200 ms to draw; one left up, empty and
+    # see-through, costs nothing to show. So it stays up for a minute after
+    # the frog leaves, taking neither pointer nor keys, then goes.
+    LINGER_S = 60
+
     def show_on(self, name):
+        if self.unmap_timer:
+            GLib.source_remove(self.unmap_timer)
+            self.unmap_timer = 0
         mon = self.gdk_monitor(name)
         if self.visible and mon is self.monitor:
             return
@@ -119,10 +128,20 @@ class Host:
         self.set_rects([])
 
     def hide(self):
+        if not self.visible:
+            return
+        self.set_keyboard(False)
+        self.set_rects([])
+        if self.unmap_timer:
+            GLib.source_remove(self.unmap_timer)
+        self.unmap_timer = GLib.timeout_add_seconds(self.LINGER_S, self.unmap)
+
+    def unmap(self):
+        self.unmap_timer = 0
         if self.visible:
-            self.set_keyboard(False)
             self.win.set_visible(False)
             self.visible = False
+        return False
 
     # Where the pointer may land: only these rectangles. An empty region
     # lets every click through.
