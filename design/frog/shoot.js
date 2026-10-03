@@ -15,12 +15,13 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     const ev = async e => (await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true })).result.result?.value;
     const shot = async name => { const r = await send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(out, name), Buffer.from(r.result.data, 'base64')); };
     await send('Runtime.enable'); await send('Page.enable');
-    await send('Emulation.setDeviceMetricsOverride', { width: 900, height: 640, deviceScaleFactor: 1, mobile: false });
+    await send('Emulation.setDeviceMetricsOverride', { width: 1000, height: 680, deviceScaleFactor: 1, mobile: false });
     await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: dark ? 'dark' : 'light' }] });
     await send('Page.navigate', { url }); await sleep(1200);
+    await ev(`(() => { const t = document.getElementById('theme'); if (t) { t.value = ${JSON.stringify(dark ? 'dark' : 'light')}; t.onchange(); } })()`);
     const mouse = async (type, x, y) => send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
     // Select "i has went … realy good." with the mouse: find its screen positions.
-    const pos = await ev(`(() => { const p = document.querySelector('.doc p'); const t = p.firstChild; const r = document.createRange();
+    const pos = await ev(`(() => { const p = document.querySelector('#doc p'); const t = p.firstChild; const r = document.createRange();
       const a = t.data.indexOf('i has'), b = t.data.indexOf('good.') + 5; r.setStart(t, a); r.setEnd(t, a + 1); const s = r.getBoundingClientRect();
       r.setStart(t, b - 1); r.setEnd(t, b); const e = r.getBoundingClientRect(); return [s.left + 1, s.top + s.height / 2, e.right - 1, e.top + e.height / 2]; })()`);
     await mouse('mousePressed', pos[0], pos[1]); await mouse('mouseMoved', (pos[0] + pos[2]) / 2, pos[3]); await mouse('mouseMoved', pos[2], pos[3]); await mouse('mouseReleased', pos[2], pos[3]);
@@ -31,7 +32,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'g', code: 'KeyG', text: 'g' }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'g', code: 'KeyG' });
     await sleep(500); await shot('4-casting.png'); await sleep(1300); await shot('5-answer.png');
     await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter' }); await sleep(400); await shot('6-replaced.png');
-    console.log('text now:', await ev(`document.querySelector('.doc p').textContent.slice(0, 80)`));
+    console.log('text now:', await ev(`document.querySelector('#doc p').textContent.slice(0, 80)`));
     console.log('errors:', JSON.stringify(errors));
   } finally { try { ws.close(); } catch {} br.kill(); await sleep(400); fs.rmSync(dir, { recursive: true, force: true }); }
 })().catch(e => { console.error('FAILED', e); process.exit(1); });

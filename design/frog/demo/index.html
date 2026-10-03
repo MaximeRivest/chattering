@@ -3,39 +3,69 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Frog spells — a demo</title>
+<title>Chattering, anywhere — the frog's spells</title>
 <style>
-:root {
-  --bg: #f3ede1; --paper: #fffaf0; --ink: #2a2118; --dim: #6e6152; --line: #e2d6c0;
-  --accent: #b8862b; --accent-ink: #fffaf0; --sel: #f1dca3; --mark: #fbe7a6; --mark-ink: #4a3300;
-  --card: #fffaf0; --card-line: #d8c6a4; --hover: #f5e9cf; --shadow: 0 12px 34px rgba(60, 40, 10, .22), 0 2px 6px rgba(60, 40, 10, .12);
-  --gold: #c99a3b; --glow: rgba(233, 189, 92, .35);
-  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #12100d; --paper: #1c1813; --ink: #f1e8d8; --dim: #b3a58d; --line: #332b21;
-    --accent: #e0b456; --accent-ink: #1c1406; --sel: #5a4520; --mark: #6b4f14; --mark-ink: #fff1c9;
-    --card: #211c15; --card-line: #4a3d2a; --hover: #2e271d; --shadow: 0 14px 40px rgba(0, 0, 0, .6), 0 0 0 1px rgba(224, 180, 86, .08);
-    --gold: #e0b456; --glow: rgba(224, 180, 86, .28);
-  }
-}
+/* ===== The page around: another app (a mail client), not Chattering ===== */
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.65 Inter, system-ui, -apple-system, "Segoe UI", sans-serif; }
-main { max-width: 900px; margin: 0 auto; padding: 28px 22px 140px; position: relative; }
-h1 { font: 600 28px/1.2 var(--serif); margin: 0 0 6px; }
-.lead { color: var(--dim); margin: 0 0 18px; font-size: 15px; }
-.doc { max-width: 640px; background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 22px 26px; }
-.doc p { margin: 0 0 14px; }
-.doc p:last-child { margin: 0; }
-::selection { background: var(--sel); }
-.opts { margin-top: 14px; font-size: 14px; color: var(--dim); display: flex; gap: 18px; flex-wrap: wrap; }
-.opts label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+html, body { margin: 0; }
+body { background: #d9dcdf; color: #222; font: 15px/1.6 system-ui, "Segoe UI", Roboto, sans-serif; min-height: 100vh; }
+body.night { background: #2a2c30; }
+.stage { max-width: 940px; margin: 0 auto; padding: 18px 20px 120px; position: relative; }
+.demo-bar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; font-size: 13px; color: #444; margin-bottom: 12px; }
+body.night .demo-bar { color: #c8c8c8; }
+.demo-bar b { font-weight: 600; }
+.demo-bar select { font: inherit; }
+.demo-bar label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+.app { background: #fff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,.18); max-width: 680px; overflow: hidden; }
+body.night .app { background: #1f2023; color: #ddd; box-shadow: 0 2px 10px rgba(0,0,0,.5); }
+.app-bar { display: flex; align-items: center; gap: 8px; padding: 9px 14px; background: #f1f2f4; border-bottom: 1px solid #e3e4e7; font-size: 13px; color: #555; }
+body.night .app-bar { background: #2b2c30; border-color: #3a3b40; color: #aaa; }
+.dots { display: flex; gap: 6px; margin-right: 6px; } .dots i { width: 11px; height: 11px; border-radius: 50%; background: #d4d6da; display: block; }
+body.night .dots i { background: #4a4c52; }
+.app-field { padding: 8px 18px; border-bottom: 1px solid #eee; font-size: 14px; color: #666; }
+body.night .app-field { border-color: #333; color: #999; }
+.app-field b { color: #333; font-weight: 500; } body.night .app-field b { color: #ddd; }
+.app-body { padding: 16px 18px 22px; }
+.app-body p { margin: 0 0 12px; }
+.app-body p:last-child { margin: 0; }
+.app-body ::selection { background: #b3d4fc; } body.night .app-body ::selection { background: #3d5a80; }
 
-/* ---- the frog ---------------------------------------------------------- */
-#frog { position: absolute; width: 60px; height: 100px; z-index: 20; cursor: pointer; display: none;
-  transform-origin: 50% 100%; filter: drop-shadow(0 4px 6px rgba(0, 0, 0, .22)); }
-#frog.busy { filter: drop-shadow(0 0 14px var(--glow)) drop-shadow(0 4px 6px rgba(0, 0, 0, .22)); }
+/* ===== Chattering, anywhere: everything below is the product ===== */
+/* The Rockfrog palettes (design/tokens.css). The real overlay takes the
+   person's own Chattering theme; this demo carries the two Rockfrog ones. */
+.ch {
+  --bg: #f3f5f1; --surface-1: #fbfcfa; --surface-2: #eceee9; --surface-3: #e1e5df;
+  --border: #dce2db; --border-strong: #b7beb6;
+  --text: #101412; --text-dim: #4f5751; --text-faint: #737c75;
+  --red: #a4443a; --green: #377a4c; --yellow: #85650f;
+  --accent: #377a4c; --accent-strong: #2f6c42; --accent-ink: #ffffff;
+  --ins: #cfe6d4; --ins-ink: #10301a;
+  --shadow-color: rgba(16, 20, 18, .14);
+  --shadow: 0 1px 2px rgba(16, 20, 18, .06), 0 14px 40px rgba(16, 20, 18, .14);
+  --roundness: 1.6;
+  --r: calc(6px * var(--roundness)); --r-sm: calc(4px * var(--roundness)); --r-menu: calc(10px * var(--roundness)); --r-pill: 999px;
+  --font: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --fs-title: 15px; --fs-body: 13px; --fs-label: 12px; --fs-meta: 12px; --fs-micro: 11px;
+  color-scheme: light;
+}
+.ch.dark {
+  --bg: #101412; --surface-1: #1a1f1b; --surface-2: #232824; --surface-3: #2d332e;
+  --border: #4f5650; --border-strong: #727a73;
+  --text: #e1e6e1; --text-dim: #c9d0ca; --text-faint: #adb4ae;
+  --red: #f9b2a7; --green: #99d1a4; --yellow: #dbc183;
+  --accent: #99d1a4; --accent-strong: #377a4c; --accent-ink: #ffffff;
+  --ins: #29452f; --ins-ink: #e1e6e1;
+  --shadow-color: rgba(0, 0, 0, .5);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 16px 44px rgba(0, 0, 0, .5);
+  color-scheme: dark;
+}
+.ch, .ch * { font-family: var(--font); }
+
+/* -- the frog -- */
+#frog { position: absolute; width: 60px; height: 100px; z-index: 20; cursor: pointer; display: none; transform-origin: 50% 100%;
+  filter: drop-shadow(0 4px 6px rgba(0, 0, 0, .22)); }
+#frog.small { width: 45px; height: 75px; }
 #frog img { position: absolute; left: -21.5%; top: -0.5%; width: 135.3%; height: 100.9%; object-fit: fill; pointer-events: none; user-select: none; -webkit-user-drag: none; }
 #frog .body { position: absolute; inset: 0; transform-origin: 50% 100%; animation: breathe 2.8s ease-in-out infinite; }
 #frog.enter { animation: hopIn .55s cubic-bezier(.25, 1.5, .5, 1) both; }
@@ -44,214 +74,269 @@ h1 { font: 600 28px/1.2 var(--serif); margin: 0 0 6px; }
 #frog.busy .body { animation: bob .42s ease-in-out infinite alternate; }
 #frog.cheer .body { animation: jump .5s cubic-bezier(.3, 1.6, .5, 1) 2; }
 #frog.shake .body { animation: shake .45s ease-in-out 2; }
+#frog.busy { filter: drop-shadow(0 0 12px rgba(233, 189, 92, .55)) drop-shadow(0 4px 6px rgba(0, 0, 0, .22)); }
 @keyframes breathe { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.025, .975); } }
-@keyframes hopIn { 0% { transform: translateY(26px) scale(.2, .2); opacity: 0; } 55% { transform: translateY(-12px) scale(1.05, .95); opacity: 1; } 75% { transform: translateY(0) scale(.94, 1.06); } 100% { transform: none; } }
+@keyframes hopIn { 0% { transform: translateY(26px) scale(.2); opacity: 0; } 55% { transform: translateY(-12px) scale(1.05, .95); opacity: 1; } 75% { transform: scale(.94, 1.06); } 100% { transform: none; } }
 @keyframes hopOut { to { transform: translateY(18px) scale(.3); opacity: 0; } }
 @keyframes bob { from { transform: translateY(0) rotate(-2deg); } to { transform: translateY(-5px) rotate(2deg); } }
-@keyframes jump { 0% { transform: none; } 40% { transform: translateY(-16px) scale(.96, 1.05); } 70% { transform: translateY(0) scale(1.06, .94); } 100% { transform: none; } }
+@keyframes jump { 0%, 100% { transform: none; } 40% { transform: translateY(-16px) scale(.96, 1.05); } 70% { transform: scale(1.06, .94); } }
 @keyframes shake { 0%, 100% { transform: none; } 25% { transform: rotate(-6deg); } 75% { transform: rotate(6deg); } }
-#frog.small { width: 45px; height: 75px; }
-.tip { position: absolute; left: 50%; bottom: 100%; transform: translate(-50%, -2px); white-space: nowrap; font-size: 12.5px; font-weight: 600;
-  background: var(--ink); color: var(--paper); padding: 3px 9px; border-radius: 99px; opacity: 0; transition: opacity .15s; pointer-events: none; }
-#frog:hover .tip { opacity: 1; }
-.spark { position: absolute; width: 8px; height: 8px; z-index: 21; pointer-events: none; color: #f1c74c; font-size: 13px; line-height: 8px;
-  animation: spark .9s ease-out forwards; }
+.spark { position: absolute; z-index: 21; pointer-events: none; color: #e9bd5c; font-size: 12px; line-height: 1; animation: spark .9s ease-out forwards; }
 @keyframes spark { from { transform: translate(0, 0) scale(.6); opacity: 1; } to { transform: translate(var(--dx), var(--dy)) scale(1.2); opacity: 0; } }
 
-/* ---- the spell book (menu) and the answer ------------------------------- */
-.card { position: absolute; z-index: 30; background: var(--card); color: var(--ink); border: 1px solid var(--card-line); border-radius: 16px; box-shadow: var(--shadow);
-  animation: pop .16s ease-out both; }
-@keyframes pop { from { opacity: 0; transform: translateY(6px) scale(.97); } }
-#book { width: 330px; padding: 8px; }
-#book h2 { font: italic 600 19px/1.2 var(--serif); color: var(--gold); margin: 6px 10px 8px; }
-.card { background-image: radial-gradient(120% 80% at 0% 0%, var(--glow), transparent 60%); }
-.spell { display: flex; align-items: center; gap: 12px; width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left;
-  padding: 6px 10px; border-radius: 10px; cursor: pointer; opacity: 0; animation: fan .22s ease-out forwards; }
-.spell:hover, .spell.on { background: var(--hover); }
-.spell .ic { flex: 0 0 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; font-size: 18px; background: var(--hover); }
-.spell.on .ic, .spell:hover .ic { background: var(--accent); }
-.spell .nm { flex: 1; font-size: 15.5px; font-weight: 600; line-height: 1.25; }
-.spell.on .ic, .spell:hover .ic { box-shadow: 0 0 12px var(--glow); }
-.spell .out { font-size: 13px; color: var(--dim); margin-right: 2px; }
-kbd { font: 600 12.5px/1 ui-monospace, "SF Mono", Menlo, monospace; min-width: 24px; text-align: center; padding: 5px 7px; border-radius: 7px;
-  border: 1px solid var(--card-line); border-bottom-width: 2px; color: var(--dim); background: var(--paper); }
-@keyframes fan { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
-.free { display: flex; gap: 8px; padding: 8px 10px 4px; border-top: 1px solid var(--card-line); margin-top: 6px; }
-.free input { flex: 1; font: inherit; font-size: 15px; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--card-line); background: var(--paper); color: var(--ink); }
-.foot { font-size: 12px; color: var(--dim); padding: 4px 10px 2px; }
+/* -- a Chattering surface: the panel the menu and the answer share -- */
+.ch-panel { position: absolute; z-index: 30; background: var(--surface-1); color: var(--text); border: 1px solid var(--border-strong);
+  border-radius: var(--r-menu); box-shadow: var(--shadow); font-size: var(--fs-body); line-height: 1.45; animation: rise .14s ease-out both; }
+@keyframes rise { from { opacity: 0; transform: translateY(4px); } }
+.ch-head { display: flex; align-items: center; gap: 8px; padding: 9px 12px 8px; font-size: var(--fs-micro); color: var(--text-dim); border-bottom: 1px solid var(--border); }
+.ch-mark { width: 20px; height: 16px; flex: 0 0 20px; background: var(--text); -webkit-mask: url(mark.svg) center / contain no-repeat; mask: url(mark.svg) center / contain no-repeat; }
+.ch-name { font-weight: 600; color: var(--text); font-size: var(--fs-label); }
+.ch-sep { color: var(--text-faint); }
+.ch-where { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ch-link { color: var(--text-dim); text-decoration: none; font-size: var(--fs-micro); border-radius: var(--r-sm); padding: 2px 6px; cursor: pointer; background: none; border: 0; }
+.ch-link:hover { color: var(--text); background: var(--surface-2); }
 
-#answer { width: min(440px, calc(100vw - 30px)); padding: 14px 16px 12px; }
-#answer .title { font: italic 600 17px/1.2 var(--serif); color: var(--gold); margin-bottom: 8px; }
-#answer .text { font-size: 16.5px; line-height: 1.6; }
-#answer ins { text-decoration: none; background: var(--mark); color: var(--mark-ink); border-radius: 4px; padding: 0 2px; }
-#answer .row { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
-#answer .row .grow { flex: 1; font-size: 12.5px; color: var(--dim); }
-button.b { font: 600 14px/1 inherit; font-family: inherit; padding: 9px 14px; border-radius: 10px; border: 1px solid var(--card-line); background: var(--paper); color: var(--ink); cursor: pointer; }
-button.b.go { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-.shimmer { background: linear-gradient(90deg, transparent, rgba(241, 199, 76, .45), transparent); background-size: 200% 100%; animation: shimmer 1s linear infinite; border-radius: 4px; }
+/* the ask line: Chattering's composer in miniature */
+.ch-ask { margin: 10px 10px 4px; display: flex; align-items: center; gap: 6px; border: 1px solid var(--border-strong); border-radius: var(--r-pill);
+  background: var(--bg); padding: 3px 4px 3px 12px; }
+.ch-ask:focus-within { border-color: var(--accent); }
+.ch-ask input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; color: var(--text); font: 14px/1.4 var(--font); padding: 5px 0; }
+.ch-ask input::placeholder { color: var(--text-faint); }
+.ch-model { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 10px; border-radius: var(--r-pill);
+  border: 1px solid var(--border); background: var(--surface-1); color: var(--text-dim); font: var(--fs-micro) var(--font-mono); cursor: pointer; }
+.ch-model:hover { color: var(--text); border-color: var(--border-strong); }
+
+.ch-label { padding: 8px 14px 4px; font-size: var(--fs-micro); color: var(--text-dim); }
+.ch-list { padding: 0 6px 6px; }
+/* a row: like a conversation in the list, the current one with its green edge */
+.ch-row { position: relative; display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px 7px 12px; border: 0; background: none;
+  color: inherit; text-align: left; border-radius: var(--r); cursor: pointer; font: inherit; }
+.ch-row:hover { background: var(--surface-2); }
+.ch-row.on { background: var(--surface-2); }
+.ch-row.on::before { content: ""; position: absolute; left: 2px; top: 7px; bottom: 7px; width: 3px; border-radius: 3px; background: var(--accent); }
+.ch-ic { flex: 0 0 28px; height: 28px; border-radius: var(--r); display: grid; place-items: center; background: var(--surface-2); color: var(--text-dim); }
+.ch-row.on .ch-ic, .ch-row:hover .ch-ic { background: var(--surface-3); color: var(--text); }
+.ch-ic svg { width: 16px; height: 16px; }
+.ch-txt { flex: 1; min-width: 0; }
+.ch-title { display: block; font-size: var(--fs-body); font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ch-meta { display: block; font-size: var(--fs-micro); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ch kbd { flex: 0 0 auto; font: 500 var(--fs-micro)/1 var(--font-mono); min-width: 22px; text-align: center; padding: 4px 6px; border-radius: var(--r-sm);
+  border: 1px solid var(--border); border-bottom-width: 2px; color: var(--text-dim); background: var(--surface-1); }
+.ch-foot { white-space: nowrap; display: flex; align-items: center; gap: 10px; padding: 8px 14px 9px; border-top: 1px solid var(--border); font-size: var(--fs-micro); color: var(--text-dim); }
+.ch-foot .grow { flex: 1; }
+.ch-foot kbd { padding: 2px 5px; min-width: 0; }
+
+/* the answer */
+#answer { width: min(460px, calc(100vw - 24px)); }
+.ch-body { padding: 12px 14px 4px; font-size: 14.5px; line-height: 1.6; color: var(--text); }
+.ch-body ins { text-decoration: none; background: var(--ins); color: var(--ins-ink); border-radius: 3px; padding: 0 2px; }
+.ch-body del { color: var(--red); opacity: .8; text-decoration-thickness: 1px; margin-right: .3em; }
+.ch-body.plain del { display: none; } .ch-body.plain ins { background: none; color: inherit; padding: 0; }
+.ch-runline { padding: 2px 14px 0; font: var(--fs-micro) var(--font-mono); color: var(--text-faint); }
+.ch-acts { display: flex; align-items: center; gap: 6px; padding: 10px 10px 10px 14px; }
+.ch-acts .grow { flex: 1; display: flex; align-items: center; gap: 4px; font-size: var(--fs-micro); color: var(--text-dim); }
+.ch-btn { height: 30px; padding: 0 12px; border-radius: var(--r); border: 1px solid var(--border-strong); background: var(--surface-1); color: var(--text);
+  font: 500 var(--fs-body) var(--font); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.ch-btn:hover { background: var(--surface-2); }
+.ch-btn.go { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--accent-ink); }
+.ch-btn.go:hover { filter: brightness(1.08); }
+.ch-btn kbd { border: 0; background: rgba(255, 255, 255, .18); color: inherit; padding: 2px 5px; min-width: 0; }
+.ch-judge { width: 26px; height: 26px; border-radius: var(--r-sm); border: 1px solid var(--border); background: none; color: var(--text-dim); cursor: pointer; font-size: 13px; }
+.ch-judge:hover { color: var(--text); border-color: var(--border-strong); }
+.ch-judge.yes { color: var(--accent-ink); background: var(--accent-strong); border-color: var(--accent-strong); }
+.ch-judge.no { color: var(--accent-ink); background: var(--red); border-color: var(--red); }
+
+/* while it works: Chattering's "working" line, beside the frog */
+.ch-pill { position: absolute; z-index: 30; display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; border-radius: var(--r-pill);
+  background: var(--surface-1); border: 1px solid var(--border-strong); box-shadow: var(--shadow); font-size: var(--fs-meta); color: var(--text); white-space: nowrap; animation: rise .14s ease-out both; }
+.ch-pill .live { color: var(--green); font-weight: 600; }
+.ch-pill .dim { color: var(--text-dim); font-family: var(--font-mono); font-size: var(--fs-micro); }
+.ch-dots { display: inline-flex; gap: 3px; } .ch-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--green); animation: dot 1s infinite ease-in-out; display: block; }
+.ch-dots i:nth-child(2) { animation-delay: .15s; } .ch-dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes dot { 0%, 100% { opacity: .25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-2px); } }
+.shimmer { background: linear-gradient(90deg, transparent, rgba(125, 212, 146, .35), transparent); background-size: 200% 100%; animation: shimmer 1.1s linear infinite; border-radius: 3px; }
 @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
-.say { position: absolute; z-index: 30; font-size: 14px; background: var(--card); border: 1px solid var(--card-line); border-radius: 12px; padding: 7px 11px; box-shadow: var(--shadow); animation: pop .16s ease-out both; }
+@media (prefers-reduced-motion: reduce) { #frog .body, .ch-dots i, .shimmer { animation: none !important; } }
 </style>
 </head>
 <body>
-<main id="main">
-  <h1>The frog’s spellbook</h1>
-  <p class="lead">Select a few words with the mouse. The frog hops next to your selection. Click it (or press its key) and pick a spell. Ignore it and it hops away after a few seconds. The answers here are pretend; in Chattering they come from your programs.</p>
-  <div class="doc" id="doc">
-    <p>hey sam, i has went to the store yesterday and buyed three apple, its was realy good. their going to the meeting tomorow, can you send me the agenda before</p>
-    <p>Je vais être en retard ce matin, le métro est encore en panne. On se voit vers 10h?</p>
-    <p>The Bank of Canada held its policy rate at 2.25 per cent, citing slowing inflation and a softer labour market.</p>
+<div class="stage" id="stage">
+  <div class="demo-bar">
+    <b>Demo</b>
+    <label>Chattering theme
+      <select id="theme"><option value="system">follow the system</option><option value="light">Rockfrog light</option><option value="dark">Rockfrog dark</option></select></label>
+    <label><input type="checkbox" id="noPos"> the app does not say where the text is</label>
   </div>
-  <div class="opts">
-    <label><input type="checkbox" id="noPos"> pretend this app does not say where the text is (the frog waits in the corner)</label>
+
+  <!-- Another app: a mail window. Select text in it. -->
+  <div class="app" id="app">
+    <div class="app-bar"><span class="dots"><i></i><i></i><i></i></span>New message — Mail</div>
+    <div class="app-field">To: <b>Sam Tremblay</b></div>
+    <div class="app-field">Subject: <b>Tomorrow</b></div>
+    <div class="app-body" id="doc">
+      <p>hey sam, i has went to the store yesterday and buyed three apple, its was realy good. their going to the meeting tomorow, can you send me the agenda before</p>
+      <p>Je vais être en retard ce matin, le métro est encore en panne. On se voit vers 10h?</p>
+      <p>The Bank of Canada held its policy rate at 2.25 per cent, citing slowing inflation and a softer labour market.</p>
+    </div>
   </div>
-  <div id="frog" aria-label="Chattering: cast a spell" role="button" tabindex="-1">
-    <div class="body"><img id="frogImg" src="idle.webp" alt=""></div>
-    <div class="tip">Cast a spell</div>
+
+  <!-- Chattering, anywhere -->
+  <div class="ch" id="ch">
+    <div id="frog" aria-label="Chattering: cast a spell" role="button">
+      <div class="body"><img id="frogImg" src="idle.webp" alt=""></div>
+    </div>
   </div>
-</main>
+</div>
+
 <script>
 'use strict';
-const main = document.getElementById('main'), doc = document.getElementById('doc'), frog = document.getElementById('frog'), img = document.getElementById('frogImg');
-const POSES = ['idle', 'blink', 'wave', 'cast', 'happy', 'puzzled'];
-POSES.forEach(p => { const i = new Image(); i.src = p + '.webp'; }); // no flicker on the first swap
+const stage = document.getElementById('stage'), doc = document.getElementById('doc'), app = document.getElementById('app');
+const ch = document.getElementById('ch'), frog = document.getElementById('frog'), img = document.getElementById('frogImg');
+['idle', 'blink', 'wave', 'cast', 'happy', 'puzzled'].forEach(p => { const i = new Image(); i.src = p + '.webp'; });
 const pose = p => { img.src = p + '.webp'; };
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-// Pretend programs. Each spell: key, icon, name, what it does, and its answer.
-const FIXES = {
-  'hey sam, i has went to the store yesterday and buyed three apple, its was realy good. their going to the meeting tomorow, can you send me the agenda before':
-    'Hey Sam, I went to the store yesterday and bought three apples; they were really good. They’re going to the meeting tomorrow. Can you send me the agenda before?',
+// ---- theme: the person's Chattering theme (here: the two Rockfrog ones) ----
+const themeSel = document.getElementById('theme');
+const mq = matchMedia('(prefers-color-scheme: dark)');
+function applyTheme() {
+  const dark = themeSel.value === 'dark' || (themeSel.value === 'system' && mq.matches);
+  ch.classList.toggle('dark', dark);
+  document.body.classList.toggle('night', dark);
+}
+themeSel.onchange = applyTheme; mq.addEventListener('change', applyTheme); applyTheme();
+
+// The logo's mark, drawn small (a frog on an open book).
+// The Rockfrog mark (icons/mark.svg), tinted with the text colour.
+const MARK = '<span class="ch-mark" aria-hidden="true"></span>';
+const svg = d => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const ICON = {
+  fix: svg('<path d="M4 7h9M4 12h6M4 17h5"/><path d="M13 16l2.5 2.5L21 13"/>'),
+  translate: svg('<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.4 3.4 5.2 3.4 8.5s-1 6.1-3.4 8.5c-2.4-2.4-3.4-5.2-3.4-8.5s1-6.1 3.4-8.5z"/>'),
+  explain: svg('<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1 2V16h5.2v-.2c0-.8.4-1.5 1-2A6 6 0 0 0 12 3z"/>'),
+  polite: svg('<path d="M4 6.5h16v9H9l-4.5 3.5V6.5z"/><path d="M9.5 11.5c.7.7 1.5 1 2.5 1s1.8-.3 2.5-1"/>'),
+  shorter: svg('<circle cx="6" cy="7" r="2.5"/><circle cx="6" cy="17" r="2.5"/><path d="M8 8.5L20 17M8 15.5L20 7"/>'),
 };
+
+// ---- the person's programs, as spells (pretend answers here) ----
+const FIXES = { 'hey sam, i has went to the store yesterday and buyed three apple, its was realy good. their going to the meeting tomorow, can you send me the agenda before':
+  'Hey Sam, I went to the store yesterday and bought three apples; they were really good. They’re going to the meeting tomorrow. Can you send me the agenda before?' };
 const fix = t => FIXES[t] || t.replace(/\bi has went\b/g, 'I went').replace(/buyed three apple\b/g, 'bought three apples').replace(/its was realy/g, 'it was really')
   .replace(/^hey sam/, 'Hey Sam').replace(/\btheir going\b/g, 'they’re going').replace(/tomorow/g, 'tomorrow').replace(/^./, c => c.toUpperCase());
 const SPELLS = [
-  { key: 'G', ic: '✨', name: 'Fix spelling and grammar', hint: 'replaces the text', run: fix, replace: true },
-  { key: 'U', ic: '🌍', name: 'Translate to English', hint: 'replaces the text', replace: true,
+  { key: 'G', icon: 'fix', name: 'Fix spelling and grammar', program: 'fix_writing', out: 'replaces the text', replace: true, run: fix },
+  { key: 'U', icon: 'translate', name: 'Translate to English', program: 'to_english', out: 'replaces the text', replace: true,
     run: t => /métro/.test(t) ? 'I’m going to be late this morning; the subway is down again. See you around 10?' : fix(t) },
-  { key: 'Y', ic: '💡', name: 'Explain this', hint: 'shows an explanation', replace: false,
-    run: t => /Bank of Canada/.test(t) ? 'Canada’s central bank kept its key interest rate the same. That rate steers what loans and savings accounts pay; it held because prices are rising more slowly and jobs are harder to find.' : 'This says: “' + t.slice(0, 80) + '…”, in plain words.' },
-  { key: 'P', ic: '🤝', name: 'Make it more polite', hint: 'replaces the text', replace: true, run: t => 'Hi! Sorry to bother you — ' + fix(t).replace(/^./, c => c.toLowerCase()) + ' Thank you so much!' },
-  { key: 'S', ic: '✂️', name: 'Make it shorter', hint: 'replaces the text', replace: true, run: t => fix(t).split(/(?<=[.;?!])\s/)[0] },
+  { key: 'Y', icon: 'explain', name: 'Explain this', program: 'explain_text', out: 'shows an answer', replace: false,
+    run: t => /Bank of Canada/.test(t) ? 'Canada’s central bank kept its key interest rate the same. That rate steers what loans and savings accounts pay; it held because prices are rising more slowly and jobs are harder to find.' : 'In plain words: “' + t.slice(0, 80) + '…”.' },
+  { key: 'P', icon: 'polite', name: 'Make it more polite', program: 'polite', out: 'replaces the text', replace: true, run: t => 'Hi! Sorry to bother you — ' + fix(t).replace(/^./, c => c.toLowerCase()) + ' Thank you so much!' },
+  { key: 'S', icon: 'shorter', name: 'Make it shorter', program: 'shorter', out: 'replaces the text', replace: true, run: t => fix(t).split(/(?<=[.;?!])\s/)[0] },
 ];
+const MODEL = 'gpt-6-luna';
 
-let range = null, selText = '', fadeT = null, blinkT = null, card = null, state = 'off';
-const rel = r => { const m = main.getBoundingClientRect(); return { left: r.left - m.left, top: r.top - m.top, right: r.right - m.left, bottom: r.bottom - m.top }; };
+let range = null, selText = '', fadeT = null, blinkT = null, panel = null, state = 'off';
+const rel = r => { const m = stage.getBoundingClientRect(); return { left: r.left - m.left, top: r.top - m.top, right: r.right - m.left, bottom: r.bottom - m.top, width: r.width }; };
+const words = t => t.trim().split(/\s+/).filter(Boolean).length;
 
-function closeCards() { document.querySelectorAll('.card, .say').forEach(c => c.remove()); card = null; }
+function closePanels() { ch.querySelectorAll('.ch-panel, .ch-pill').forEach(c => c.remove()); panel = null; }
 function blinkLoop() {
   clearTimeout(blinkT);
-  blinkT = setTimeout(() => {
-    if (state === 'idle') { pose('blink'); setTimeout(() => state === 'idle' && pose('idle'), 140); }
-    blinkLoop();
-  }, 1800 + Math.random() * 3200);
+  blinkT = setTimeout(() => { if (state === 'idle') { pose('blink'); setTimeout(() => state === 'idle' && pose('idle'), 140); } blinkLoop(); }, 1800 + Math.random() * 3200);
 }
 function hopAway() {
   if (state === 'off') return;
-  state = 'off'; clearTimeout(fadeT); clearTimeout(blinkT); closeCards();
+  state = 'off'; clearTimeout(fadeT); clearTimeout(blinkT); closePanels();
   frog.classList.remove('enter', 'busy', 'cheer', 'shake'); frog.classList.add('leave');
   setTimeout(() => { if (state === 'off') { frog.style.display = 'none'; frog.classList.remove('leave'); } }, 360);
 }
-function idleSoon(ms = 5000) { clearTimeout(fadeT); fadeT = setTimeout(() => { if (!card && state === 'idle') hopAway(); }, ms); }
+function idleSoon(ms = 5000) { clearTimeout(fadeT); fadeT = setTimeout(() => { if (!panel && state === 'idle') hopAway(); }, ms); }
 
-// Where the frog stands: at the end of the selection, just above its last
-// line (layer 1 here: the page knows the rectangle). With "no position",
-// the corner of the window (the last layer).
+// Where the frog stands: in the margin beside the end of the selection (the
+// app says where its text is), else right after it, else the app's corner.
 function place() {
   frog.style.display = 'block';
-  const m = main.getBoundingClientRect();
+  const a = rel(app.getBoundingClientRect()), m = stage.getBoundingClientRect();
   if (document.getElementById('noPos').checked) {
-    frog.style.left = (m.width - 80) + 'px';
-    frog.style.top = (innerHeight - m.top - 120) + 'px';
-    return;
+    frog.classList.remove('small'); frog.style.left = (a.right - 76) + 'px'; frog.style.top = (a.bottom - 112) + 'px'; return;
   }
-  // The text's box: here the paragraph's container; on a desktop, the text
-  // field the accessibility system names.
-  const rects = range.getClientRects(); const r = rel(rects[rects.length - 1]);
-  const box = rel(doc.getBoundingClientRect());
-  const room = m.width - box.right;
-  if (room >= 80) {
-    frog.classList.remove('small');
-    frog.style.left = (box.right + 12) + 'px';
-    frog.style.top = (r.bottom - 100 + 10) + 'px';
-  } else {
-    frog.classList.add('small');
-    frog.style.left = Math.min(r.right + 4, m.width - 50) + 'px';
-    frog.style.top = (r.bottom - 75 + 8) + 'px';
-  }
+  const rects = range.getClientRects(), r = rel(rects[rects.length - 1]);
+  if (m.width - a.right >= 80) { frog.classList.remove('small'); frog.style.left = (a.right + 12) + 'px'; frog.style.top = (r.bottom - 90) + 'px'; }
+  else { frog.classList.add('small'); frog.style.left = Math.min(r.right + 4, m.width - 50) + 'px'; frog.style.top = (r.bottom - 67) + 'px'; }
 }
 function appear() {
-  closeCards();
-  place();
-  state = 'idle';
+  closePanels(); place(); state = 'idle';
   frog.classList.remove('leave', 'busy', 'cheer', 'shake'); void frog.offsetWidth; frog.classList.add('enter');
   pose('wave'); setTimeout(() => { if (state === 'idle') pose('idle'); }, 1100);
   blinkLoop(); idleSoon();
 }
 
 document.addEventListener('mouseup', e => {
-  if (frog.contains(e.target) || e.target.closest('.card')) return;
+  if (ch.contains(e.target) && e.target !== ch) return;
   setTimeout(() => {
-    const s = getSelection();
-    const t = s.rangeCount ? s.toString().trim() : '';
-    if (!t || t.split(/\s+/).length < 2 || !doc.contains(s.anchorNode)) { if (state !== 'busy') hopAway(); return; }
-    range = s.getRangeAt(0).cloneRange(); selText = s.toString();
-    appear();
+    const s = getSelection(), t = s.rangeCount ? s.toString().trim() : '';
+    if (!t || words(t) < 2 || !doc.contains(s.anchorNode)) { if (state !== 'busy') hopAway(); return; }
+    range = s.getRangeAt(0).cloneRange(); selText = s.toString(); appear();
   }, 10);
 });
-document.addEventListener('mousedown', e => { if (!frog.contains(e.target) && !e.target.closest('.card') && card) { closeCards(); idleSoon(2500); } });
-
-// Clicking never takes the selection away (mousedown is swallowed).
-frog.addEventListener('mousedown', e => e.preventDefault());
+document.addEventListener('mousedown', e => { if (panel && !ch.contains(e.target)) { closePanels(); idleSoon(2500); } });
+frog.addEventListener('mousedown', e => e.preventDefault()); // never takes the selection away
 frog.addEventListener('click', () => {
   if (state === 'busy') return;
-  if (card && card.id === 'book') { closeCards(); idleSoon(3000); return; }
-  if (!range || !selText.trim()) { say('Select a few words first!', 'puzzled'); return; }
-  openBook();
+  if (panel && panel.id === 'menu') { closePanels(); idleSoon(3000); return; }
+  if (!range || !selText.trim()) { pose('puzzled'); frog.classList.add('shake'); setTimeout(() => { frog.classList.remove('shake'); pose('idle'); }, 1000); return; }
+  openMenu();
 });
 
-function cardAt(el) {
-  main.appendChild(el);
-  const m = main.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;
+// A panel under the selection (the text stays in view), above it when
+// there is no room below, never off the window.
+function placePanel(el) {
+  ch.appendChild(el);
+  const m = stage.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;
   let x, y;
-  if (document.getElementById('noPos').checked || !range) {
-    x = parseFloat(frog.style.left) - w - 8; y = parseFloat(frog.style.top) + 70 - h;
-  } else {
+  if (document.getElementById('noPos').checked || !range) { x = parseFloat(frog.style.left) - w - 8; y = parseFloat(frog.style.top) + 96 - h; }
+  else {
     const rects = range.getClientRects(), last = rel(rects[rects.length - 1]), first = rel(rects[0]);
-    x = Math.min(last.right - 40, parseFloat(frog.style.left) + 30 - w);
-    y = last.bottom + 10;
-    // No room below: above the selection; no room there either: beside the frog, low on the screen.
+    x = Math.min(first.left, last.right - w + 60); y = last.bottom + 10;
     if (y + h > innerHeight - m.top - 8) y = first.top - h - 10 >= 4 - m.top ? first.top - h - 10 : innerHeight - m.top - h - 8;
   }
   el.style.left = Math.max(4, Math.min(x, m.width - w - 4)) + 'px';
   el.style.top = Math.max(4, y) + 'px';
 }
-function openBook() {
-  clearTimeout(fadeT); closeCards();
-  const el = document.createElement('div'); el.className = 'card'; el.id = 'book';
-  el.innerHTML = '<h2>Your spells</h2>' + SPELLS.map((s, i) => `<button class="spell${i === 0 ? ' on' : ''}" data-i="${i}" style="animation-delay:${i * 35}ms"><span class="ic">${s.ic}</span><span class="nm">${s.name}</span><kbd>${s.key}</kbd></button>`).join('')
-    + '<div class="free"><input id="freeSpell" placeholder="Or say what to do… (Enter)" autocomplete="off"></div><div class="foot">Press a spell’s letter, or ↑ ↓ and Enter · Esc closes · you see the answer before anything changes</div>';
-  el.addEventListener('mousedown', e => { if (e.target.id !== 'freeSpell') e.preventDefault(); });
-  el.querySelectorAll('.spell').forEach(b => b.onclick = () => cast(SPELLS[+b.dataset.i]));
-  el.querySelector('#freeSpell').addEventListener('keydown', e => {
-    if (e.key === 'Enter' && e.target.value.trim()) cast({ name: '“' + e.target.value.trim() + '”', replace: true, run: t => fix(t) + ' ✦' });
+function head(right = '') {
+  return `<div class="ch-head">${MARK}<span class="ch-name">Chattering</span><span class="ch-sep">·</span><span class="ch-where">${words(selText)} words in Mail</span>${right}</div>`;
+}
+
+function openMenu() {
+  clearTimeout(fadeT); closePanels();
+  const el = document.createElement('div'); el.className = 'ch-panel'; el.id = 'menu'; el.style.width = '340px';
+  el.innerHTML = head('<button class="ch-link" title="Settings → hotkeys in Chattering">edit spells</button>')
+    + `<div class="ch-ask"><input id="ask" placeholder="Ask, or say what to do…" autocomplete="off"><button class="ch-model" title="The model these spells use">${MODEL} ▾</button></div>`
+    + '<div class="ch-label">Your spells</div><div class="ch-list">'
+    + SPELLS.map((s, i) => `<button class="ch-row${i === 0 ? ' on' : ''}" data-i="${i}"><span class="ch-ic">${ICON[s.icon]}</span><span class="ch-txt"><span class="ch-title">${esc(s.name)}</span><span class="ch-meta">${esc(s.out)}</span></span><kbd>${s.key}</kbd></button>`).join('')
+    + '</div><div class="ch-foot"><span class="grow">Press a spell’s letter, or <kbd>↵</kbd></span><span><kbd>esc</kbd> closes</span></div>';
+  el.addEventListener('mousedown', e => { if (e.target.id !== 'ask') e.preventDefault(); });
+  el.querySelectorAll('.ch-row').forEach(b => { b.onclick = () => cast(SPELLS[+b.dataset.i]); b.onmouseenter = () => { el.querySelectorAll('.ch-row').forEach(x => x.classList.toggle('on', x === b)); }; });
+  el.querySelector('#ask').addEventListener('keydown', e => {
     e.stopPropagation();
+    if (e.key === 'Enter' && e.target.value.trim()) cast({ icon: 'fix', name: e.target.value.trim(), program: 'ask', replace: true, run: t => fix(t) });
+    if (e.key === 'Escape') { closePanels(); idleSoon(2500); }
   });
-  card = el; cardAt(el);
+  panel = el; placePanel(el);
 }
 document.addEventListener('keydown', e => {
-  if (!card || card.id !== 'book') {
-    if (card && card.id === 'answer') { if (e.key === 'Enter') { e.preventDefault(); card.querySelector('.go') ? card.querySelector('.go').click() : card.querySelector('[data-x]').click(); } if (e.key === 'Escape') card.querySelector('[data-x]').click(); }
+  if (!panel) return;
+  if (panel.id === 'answer') {
+    if (e.key === 'Enter') { e.preventDefault(); (panel.querySelector('.go') || panel.querySelector('[data-x]')).click(); }
+    if (e.key === 'Escape') panel.querySelector('[data-x]').click();
     return;
   }
-  const items = [...card.querySelectorAll('.spell')], cur = items.findIndex(b => b.classList.contains('on'));
+  if (panel.id !== 'menu') return;
+  const rows = [...panel.querySelectorAll('.ch-row')], cur = Math.max(0, rows.findIndex(b => b.classList.contains('on')));
   const sp = SPELLS.find(s => s.key === e.key.toUpperCase());
   if (sp && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); return cast(sp); }
-  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-    e.preventDefault(); items[cur].classList.remove('on');
-    items[(cur + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].classList.add('on');
-  }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); rows[cur].classList.remove('on'); rows[(cur + (e.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length].classList.add('on'); }
   if (e.key === 'Enter') { e.preventDefault(); cast(SPELLS[cur]); }
-  if (e.key === 'Escape') { closeCards(); idleSoon(2500); }
+  if (e.key === 'Escape') { closePanels(); idleSoon(2500); }
 });
 
 function sparkles(n = 7) {
@@ -259,71 +344,84 @@ function sparkles(n = 7) {
   for (let i = 0; i < n; i++) {
     const s = document.createElement('span'); s.className = 'spark'; s.textContent = '✦';
     s.style.left = fx + 'px'; s.style.top = fy + 'px';
-    s.style.setProperty('--dx', (Math.random() * 60 - 40) + 'px'); s.style.setProperty('--dy', (-20 - Math.random() * 40) + 'px');
-    s.style.animationDelay = (i * 60) + 'ms';
-    main.appendChild(s); setTimeout(() => s.remove(), 1400);
+    s.style.setProperty('--dx', (Math.random() * 60 - 30) + 'px'); s.style.setProperty('--dy', (-20 - Math.random() * 40) + 'px');
+    s.style.animationDelay = (i * 60) + 'ms'; ch.appendChild(s); setTimeout(() => s.remove(), 1400);
   }
 }
-// The selection shimmers while the spell works.
 let shimmerEl = null;
 function shimmer(on) {
   if (on && range) { try { shimmerEl = document.createElement('span'); shimmerEl.className = 'shimmer'; range.surroundContents(shimmerEl); getSelection().removeAllRanges(); range = document.createRange(); range.selectNodeContents(shimmerEl); } catch { shimmerEl = null; } }
   else if (shimmerEl) { const p = shimmerEl.parentNode, t = document.createTextNode(shimmerEl.textContent); p.replaceChild(t, shimmerEl); p.normalize(); shimmerEl = null; }
 }
+function pill(html) {
+  const el = document.createElement('div'); el.className = 'ch-pill'; el.innerHTML = html; ch.appendChild(el);
+  const f = frog.getBoundingClientRect(), m = stage.getBoundingClientRect();
+  let x = f.left - m.left - el.offsetWidth - 8; if (x < 4) x = f.right - m.left + 8;
+  el.style.left = x + 'px'; el.style.top = (f.top - m.top + f.height * .35) + 'px';
+  return el;
+}
 function cast(sp) {
-  closeCards(); clearTimeout(fadeT);
+  closePanels(); clearTimeout(fadeT);
   state = 'busy'; pose('cast'); frog.classList.remove('enter'); frog.classList.add('busy'); sparkles();
-  const text = selText;
+  const text = selText, started = performance.now();
   shimmer(true);
+  const p = pill(`<span class="ch-dots"><i></i><i></i><i></i></span><span class="live">${esc(sp.name)}</span><span class="dim">${MODEL}</span>`);
   const spk = setInterval(() => sparkles(3), 700);
   setTimeout(() => {
-    clearInterval(spk); frog.classList.remove('busy');
+    clearInterval(spk); p.remove(); frog.classList.remove('busy');
     const out = sp.run(text.trim());
-    if (sp.replace && out === text.trim()) { shimmer(false); return say('Nothing to fix ✓', 'happy'); }
+    if (sp.replace && out === text.trim()) {
+      shimmer(false); state = 'idle'; pose('happy');
+      const ok = pill('<span class="live">✓</span> Nothing to fix'); setTimeout(() => { ok.remove(); pose('idle'); }, 1800); idleSoon(2500); return;
+    }
     state = 'idle'; pose('happy'); frog.classList.add('cheer');
     setTimeout(() => { frog.classList.remove('cheer'); if (state === 'idle') pose('idle'); }, 1100);
-    answer(sp, text, out);
+    answer(sp, text, out, ((performance.now() - started) / 1000).toFixed(1));
   }, 1300);
 }
-// Changed words marked, the rest as it was.
-function marked(before, after) {
-  const a = before.trim().split(/(\s+)/), b = after.split(/(\s+)/);
-  const n = a.length, m = b.length, L = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+// The changes as Chattering's change review shows them: what went struck
+// through, what came marked. A word-level diff.
+function diff(before, after) {
+  const a = before.trim().split(/(\s+)/), b = after.split(/(\s+)/), n = a.length, m = b.length;
+  const L = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
   for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
   let i = 0, j = 0, out = '';
-  const esc = s => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-  while (j < m) {
-    if (i < n && a[i] === b[j]) { out += esc(b[j]); i++; j++; }
-    else if (i < n && L[i + 1][j] >= L[i][j + 1]) i++;
-    else { out += /^\s+$/.test(b[j]) ? b[j] : '<ins>' + esc(b[j]) + '</ins>'; j++; }
+  while (i < n || j < m) {
+    if (i < n && j < m && a[i] === b[j]) { out += esc(b[j]); i++; j++; }
+    else if (j < m && (i >= n || L[i][j + 1] > L[i + 1][j])) { out += /^\s+$/.test(b[j]) ? b[j] : '<ins>' + esc(b[j]) + '</ins>'; j++; }
+    else { if (!/^\s+$/.test(a[i])) out += '<del>' + esc(a[i]) + '</del>'; i++; }
   }
   return out;
 }
-function answer(sp, before, out) {
-  const el = document.createElement('div'); el.className = 'card'; el.id = 'answer';
-  el.innerHTML = `<div class="title">${sp.ic || '✦'} ${sp.name}</div><div class="text">${sp.replace ? marked(before, out) : out.replace(/[&<>]/g, '')}</div>
-    <div class="row"><span class="grow">${sp.replace ? 'Enter to replace · Esc to cancel' : 'Esc to close'}</span>
-    ${sp.replace ? '<button class="b" data-copy>Copy</button><button class="b go">Replace</button>' : '<button class="b" data-copy>Copy</button>'}<button class="b" data-x>${sp.replace ? 'Cancel' : 'Close'}</button></div>`;
+function answer(sp, before, out, secs) {
+  const el = document.createElement('div'); el.className = 'ch-panel'; el.id = 'answer';
+  const changes = sp.replace ? diff(before, out) : esc(out);
+  el.innerHTML = head((sp.replace ? '<button class="ch-link" data-view>plain text</button>' : '') + '<button class="ch-link" data-x title="Close (esc)">✕</button>')
+    + `<div class="ch-body" id="ansBody">${changes}</div>`
+    + `<div class="ch-runline">${esc(sp.program)} · v1 · ${MODEL} · ${secs} s</div>`
+    + `<div class="ch-acts"><span class="grow">Right? <button class="ch-judge" data-j="yes" title="Right: it joins the program's answer key">✓</button><button class="ch-judge" data-j="no" title="Wrong: say what it should have said, on the program's page">✗</button></span>`
+    + `<button class="ch-btn" data-again title="Cast it again">Again</button>`
+    + `<button class="ch-btn" data-copy>Copy</button>`
+    + (sp.replace ? `<button class="ch-btn go">Replace <kbd>↵</kbd></button>` : `<button class="ch-btn go" data-x>Done <kbd>↵</kbd></button>`)
+    + `</div>`;
   el.addEventListener('mousedown', e => e.preventDefault());
-  el.querySelector('[data-x]').onclick = () => { shimmer(false); closeCards(); idleSoon(2000); };
-  el.querySelector('[data-copy]').onclick = e => { navigator.clipboard && navigator.clipboard.writeText(out); e.target.textContent = 'Copied'; };
-  const go = el.querySelector('.go');
+  el.querySelectorAll('[data-x]').forEach(b => b.onclick = () => { shimmer(false); closePanels(); idleSoon(2000); });
+  el.querySelector('[data-copy]').onclick = e => { navigator.clipboard && navigator.clipboard.writeText(out); e.currentTarget.textContent = 'Copied'; };
+  el.querySelector('[data-again]').onclick = () => cast(sp);
+  el.querySelectorAll('[data-j]').forEach(b => b.onclick = () => { el.querySelectorAll('[data-j]').forEach(x => x.classList.remove('yes', 'no')); b.classList.add(b.dataset.j); });
+  const view = el.querySelector('[data-view]');
+  if (view) view.onclick = () => { const body = el.querySelector('#ansBody'); body.classList.toggle('plain'); view.textContent = body.classList.contains('plain') ? 'show changes' : 'plain text'; };
+  const go = el.querySelector('.go:not([data-x])');
   if (go) go.onclick = () => {
     const node = document.createTextNode(out);
     if (shimmerEl) { shimmerEl.parentNode.replaceChild(node, shimmerEl); shimmerEl = null; } else { range.deleteContents(); range.insertNode(node); }
-    closeCards(); selText = ''; range = null; sparkles(9); pose('happy'); frog.classList.add('cheer');
-    setTimeout(hopAway, 1200);
+    closePanels(); selText = ''; range = null; sparkles(9); pose('happy'); frog.classList.add('cheer');
+    const done = pill('<span class="live">✓</span> Replaced · <kbd>Ctrl</kbd> <kbd>Z</kbd> undoes it');
+    setTimeout(() => { done.remove(); hopAway(); }, 1800);
   };
-  card = el; cardAt(el);
+  panel = el; placePanel(el);
 }
-function say(text, p) {
-  closeCards(); state = 'idle'; pose(p); frog.classList.add('shake');
-  setTimeout(() => { frog.classList.remove('shake'); pose('idle'); }, 1000);
-  const el = document.createElement('div'); el.className = 'say'; el.textContent = text;
-  main.appendChild(el); el.style.left = (parseFloat(frog.style.left) + 70) + 'px'; el.style.top = (parseFloat(frog.style.top) + 10) + 'px';
-  setTimeout(() => el.remove(), 2200); idleSoon(3000);
-}
-document.getElementById('noPos').onchange = () => { if (state !== 'off' && range) { place(); closeCards(); } };
+document.getElementById('noPos').onchange = () => { if (state !== 'off' && range) { place(); closePanels(); } };
 </script>
 </body>
 </html>
