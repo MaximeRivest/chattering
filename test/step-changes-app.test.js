@@ -141,14 +141,32 @@ test('files changed: the list under the steps, the change read in place', { skip
   assert.deepEqual(await ev(`[...document.querySelectorAll('.sc-chips[data-sc-call="b1"] .sc-chip')].map(c => c.innerText.replace(/\\s+/g, ' ').trim())`), ['A chart.png picture', 'A data.csv +3']);
   assert.equal(await ev(`document.querySelector('.sc-count[data-sc-count="e1"]').innerText.replace(/\\s+/g, '')`), '+1−1', 'an edit step says how much it changed');
   await ev(`document.querySelector('.sc-chips[data-sc-call="b1"] .sc-chip[data-file-diff$="/data.csv"]').click(); 1`);
-  await until(`[...document.querySelectorAll('.sc-step-card')].find(c => c.dataset.scCard.startsWith('b1\\n'))?.querySelector('.sc-code')`, 'the step\u2019s own card');
+  // A new data file reads as a table: its names, its rows, numbers to the right; sorted and filtered here.
+  const csvCard = `[...document.querySelectorAll('.sc-step-card')].find(c => c.dataset.scCard.startsWith('b1\\n'))`;
+  await until(`${csvCard}?.querySelector('.tv tbody tr')`, 'the step\u2019s own card, as a table');
+  const cells = `[...${csvCard}.querySelectorAll('.tv tbody tr[data-tv-row]')].map(r => [...r.querySelectorAll('td')].map(td => td.textContent))`;
+  assert.deepEqual(await ev(`[...${csvCard}.querySelectorAll('.tv thead th:not(.tv-rn)')].map(th => th.textContent.trim())`), ['x', 'y']);
+  assert.deepEqual(await ev(cells), [['1', '2'], ['3', '4']]);
+  assert.equal(await ev(`${csvCard}.querySelector('.tv td').classList.contains('tv-num')`), true, 'a number column');
+  assert.match(await ev(`${csvCard}.querySelector('.tv-sum').textContent`), /^2 rows · 2 columns$/);
+  await ev(`${csvCard}.querySelector('[data-tv-sort="1"]').click(); ${csvCard}.querySelector('[data-tv-sort="1"]').click(); 1`);
+  assert.deepEqual(await ev(cells), [['3', '4'], ['1', '2']], 'sorted by y, descending');
+  assert.equal(await ev(`${csvCard}.querySelector('th[aria-sort="descending"]').textContent.trim()`), 'y▼');
+  await ev(`(() => { const f = ${csvCard}.querySelector('.tv-filter'); f.value = '3'; f.dispatchEvent(new Event('input')); })(); 1`);
+  await until(`${cells}.length === 1`, 'the filter keeps the rows with 3');
+  assert.match(await ev(`${csvCard}.querySelector('.tv-sum').textContent`), /^1 of 2 rows/);
+  // Its text is one press away, and the table comes back as it was left.
+  await ev(`${csvCard}.querySelector('[data-sc-mode="source"]').click(); 1`);
+  assert.equal(await ev(`${csvCard}.querySelectorAll('.sc-read .sc-l').length`), 3);
+  await ev(`${csvCard}.querySelector('[data-sc-mode="table"]').click(); 1`);
+  assert.deepEqual(await ev(cells), [['3', '4']], 'the filter and the sort are kept');
   assert.equal(await ev(`[...document.querySelectorAll('.sc-step-card')].find(c => c.dataset.scCard.startsWith('b1\\n')).previousElementSibling.matches('.msg.tool')`), true, 'under its step');
   assert.equal(await ev(`document.querySelector('details.msg.tool[data-step="t:b1"]').open`), false, 'pressing the file does not unfold the command');
   await b.screenshot('step-changes-app.png');
 
   // A re-render keeps what was open; a second press closes it.
   await ev(`renderConv(); 1`);
-  await until(`document.querySelector('.sc-card[data-sc-card$="/app.js"] .sc-code') && [...document.querySelectorAll('.sc-step-card')].some(c => c.dataset.scCard.startsWith('b1\\n'))`, 'the open cards after a re-render');
+  await until(`document.querySelector('.sc-card[data-sc-card$="/app.js"] .sc-code') && [...document.querySelectorAll('.sc-step-card')].some(c => c.dataset.scCard.startsWith('b1\\n') && c.querySelector('.tv'))`, 'the open cards after a re-render');
   await ev(`document.querySelector('.sc-row[data-file-diff$="/app.js"]').click(); 1`);
   assert.equal(await ev(`!!document.querySelector('.sc-card[data-sc-card$="/app.js"]')`), false);
 

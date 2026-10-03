@@ -155,3 +155,49 @@ async function liveFileShowHTML(ws, preview) {
     host.append(frame);
   } catch (error) { if (current()) message.textContent = 'Could not prepare the preview. ' + error.message; }
 }
+
+// CSV and TSV (table-view.js): Table or Text, like HTML's Preview or Source.
+// The text editor stays mounted under the table: switching never loses
+// edits, and the table shows the text as it is in the editor, saved or not.
+// The choice is the device's (a reader of data opens tables; someone who
+// edits them may prefer the text), and the route's when a link names it.
+const TABLE_PREF_KEY = 'chattering.tableView.v1';
+function liveFileEnableTable(ws, opts = {}) {
+  if (fileWs !== ws || !ws.editor || !$('tableOn')) return;
+  $('tableOn').onclick = () => liveFileShowTable(ws, true, { remember: true });
+  $('tableOff').onclick = () => liveFileShowTable(ws, false, { remember: true });
+  let pref = 'table';
+  try { pref = localStorage.getItem(TABLE_PREF_KEY) || 'table'; } catch {}
+  const asked = opts.table === '1' || opts.table === 1 ? true : opts.table === '0' || opts.table === 0 ? false : null;
+  // Back from the side list (parked), it shows as it was left.
+  const on = asked ?? (opts.resumed && ws.tableOpen != null ? ws.tableOpen : pref !== 'text');
+  liveFileShowTable(ws, on, { route: false });
+}
+function liveFileShowTable(ws, on, { remember = false, route = true } = {}) {
+  if (fileWs !== ws || !ws.editor) return;
+  ws.tableView?.dispose();
+  ws.tableView = null;
+  ws.tableOpen = on;
+  if (remember) { try { localStorage.setItem(TABLE_PREF_KEY, on ? 'table' : 'text'); } catch {} }
+  const code = $('ffCompare').querySelector('.code-host');
+  if (!code) return;
+  code.hidden = on;
+  code.parentElement.querySelector('.lf-table-view')?.remove();
+  $('tableOn').setAttribute('aria-pressed', String(on));
+  $('tableOff').setAttribute('aria-pressed', String(!on));
+  // Beside a conversation the route is the conversation's.
+  if (route && ws.placement !== 'beside') setRoute('file', fileWsHash(ws));
+  if (!on) { ws.editor.focus(); return; }
+  const host = document.createElement('section');
+  host.className = 'lf-table-view';
+  code.after(host);
+  const state = ws.tableState || (ws.tableState = {});
+  const view = TableView.mount(host, ws.editor.getContent(), { path: ws.path, state });
+  let timer = 0;
+  ws.tableView = {
+    changed() { clearTimeout(timer); timer = setTimeout(() => { if (ws.tableView && fileWs === ws && ws.editor) view.update(ws.editor.getContent()); }, 250); },
+    focusFilter: () => view.focusFilter(),
+    dispose() { clearTimeout(timer); view.dispose(); host.remove(); },
+  };
+  liveFileRememberOpen(ws);
+}

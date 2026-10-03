@@ -43,6 +43,7 @@ function fileWsHash(ws) {
   if (ws.back) parts.push('back=' + encodeURIComponent(encodeURIComponent(ws.back)));
   parts.push('focus');
   if (ws.htmlPreviewOpen) parts.push('preview=1');
+  if (ws.tableOpen != null) parts.push('table=' + (ws.tableOpen ? 1 : 0));
   // A line a link asked for is part of the route. ws.line holds it until
   // fileWsAfterMount has moved the cursor, and the hash written on open keeps
   // it, so a reload or a shared link lands on that line, not the top.
@@ -214,6 +215,8 @@ function fileWsCloseEditor({ keepDraft = true, park = false } = {}) {
   fileWs.imageView?.dispose();
   fileWs.mediaView?.dispose();
   fileWs.htmlPreview?.dispose();
+  fileWs.tableView?.dispose();
+  fileWs.tableView = null;
   if (fileWs.editor && fileWs.editor.selection) {
     try { localStorage.setItem('chattering.cursor:' + fileWs.path, String(fileWs.editor.selection().line)); } catch {}
   }
@@ -257,8 +260,10 @@ function fileWsParkCode(ws) {
   ws.live = null;
   ws.htmlPreview?.dispose();
   ws.htmlPreview = null;
+  ws.tableView?.dispose();
+  ws.tableView = null;
   if (ws.collabUnsub) { try { ws.collabUnsub(); } catch {} ws.collabUnsub = null; }
-  host.hidden = false; // an HTML preview hid the source
+  host.hidden = false; // an HTML preview or a table hid the source
   host.remove();
   return OpenFiles.parkCode(ws, { host, scroll });
 }
@@ -465,6 +470,8 @@ async function fileWsMountCode(ws, opts) {
       // A person's own edit keeps the file open in the side list (design/77).
       if (change?.userEdit && !ws.readOnly && typeof OpenFiles !== 'undefined') OpenFiles.edited(ws.path, ws.project || '');
       markDirty();
+      // The table follows the text (an agent's write, someone typing in a shared file).
+      ws.tableView?.changed();
     },
     onSave: () => shared ? fileWsSharedSave(ws) : fileWsSaveCode(ws),
     onLineHover: line => liveFileHover(ws, line),
@@ -607,6 +614,7 @@ function fileWsAfterMount(ws, opts) {
   ws.line = null;
   liveFileAfterMount(ws);
   if (/\.html?$/i.test(ws.path)) liveFileEnableHTML(ws, opts);
+  if (typeof TableView !== 'undefined' && TableView.isTablePath(ws.path)) liveFileEnableTable(ws, opts);
   if (typeof liveFilePlaced === 'function') liveFilePlaced(ws);
 }
 

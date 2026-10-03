@@ -271,6 +271,8 @@
   // ---- the card ----
   function lang(path) { return typeof fileHighlightLang === 'function' ? fileHighlightLang(path) : 'txt'; }
   const isMd = p => /\.(md|markdown|mdx)$/i.test(p);
+  const isTable = p => typeof TableView !== 'undefined' && TableView.isTablePath(p);
+  const TABLE_MAX = 8 * 1024 * 1024; // characters drawn as a table here; past it, the file view
   function whatHtml(c, st) {
     const n = t => { const k = t ? t.split('\n').length - (t.endsWith('\n') ? 1 : 0) : 0; return `${k.toLocaleString()} ${k === 1 ? 'line' : 'lines'}`; };
     const main = c.kind === 'added' ? 'New file' + (c.next?.text != null ? ' · ' + n(c.next.text) : '')
@@ -293,7 +295,8 @@
     if (c.hunks) m.push(['changes', 'the edits']);
     else if (hasOld && hasNext) m.push(['changes', 'changes']);
     if (hasNext && isMd(c.path) && c.next.text.length <= 300000) m.push(['page', 'page']);
-    if (hasNext && !hasOld && !c.hunks) m.push(['source', isMd(c.path) ? 'source' : 'file']);
+    if (hasNext && isTable(c.path) && c.next.text.length <= TABLE_MAX) m.push(['table', 'table']);
+    if (hasNext && !hasOld && !c.hunks) m.push(['source', isMd(c.path) ? 'source' : isTable(c.path) ? 'text' : 'file']);
     if (!hasNext && hasOld) m.push(['was', 'what it was']);
     if (c.now != null && hasNext) m.push(['now', 'since then']);
     return m;
@@ -303,6 +306,7 @@
     if (c.kind === 'deleted') return 'none';
     if (m.includes('changes')) return 'changes';
     if (m.includes('page')) return 'page';
+    if (m.includes('table')) return 'table';
     if (m.includes('source')) return 'source';
     return 'none';
   }
@@ -316,6 +320,12 @@
       `<button type="button" data-sc-act="open" title="Open the file as it is now, beside the conversation (Shift: full page)">open</button>` +
       `<button type="button" data-sc-act="review" title="Review these steps: comment on lines, mark files reviewed, send notes back">review</button></span></div>` +
       `<div class="sc-body">${bodyHtml(key, st, c, mode)}</div>`;
+    // The table draws itself (sorting, filtering, opening rows), and keeps
+    // what the reader chose in st.table while the card is drawn again.
+    st.tableView?.dispose();
+    st.tableView = null;
+    const tableHost = card.querySelector('[data-sc-table]');
+    if (tableHost) st.tableView = TableView.mount(tableHost, c.next.text, { path: c.path, state: st.table || (st.table = {}), compact: true });
     card.dataset.ready = '1';
     wireCard(card, key, st, c);
     marks.apply(card);
@@ -355,6 +365,7 @@
     }
     if (mode === 'none') return c.kind === 'deleted' ? '' : `<p class="sc-note">${e(noteOf(c))}</p>`;
     if (mode === 'page') return pageHtml(st, c.next.text);
+    if (mode === 'table') return '<div class="sc-table" data-sc-table></div>';
     if (mode === 'source') return readHtml(st, c.next.text, c.path);
     if (mode === 'was') return readHtml(st, c.old.text, c.path);
     if (mode === 'now') return diffHtml(st, c.next.text, c.now, c.path, 'The file then (−) and now (+)');

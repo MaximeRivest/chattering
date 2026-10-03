@@ -2518,6 +2518,8 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <link rel="stylesheet" href="/anywhere-ui.css">
 <script src="/file-viewers.js"></script>
 <link rel="stylesheet" href="/file-viewers.css">
+<script src="/table-view.js"></script>
+<link rel="stylesheet" href="/table-view.css">
 <script src="/change-review-ui.js"></script>
 <script src="/review-locations-ui.js"></script>
 <link rel="stylesheet" href="/change-review.css">
@@ -2832,7 +2834,7 @@ function dispatchHash(h, { restore = false } = {}) {
     let browserContext = null, reviewRef = null;
     try { if (f.browser) browserContext = JSON.parse(f.browser.startsWith('{') ? f.browser : decodeURIComponent(f.browser)); } catch {}
     try { if (f.review) reviewRef = JSON.parse(f.review.startsWith('{') ? f.review : decodeURIComponent(f.review)); } catch {}
-    return openLiveFile(f.path, { project: f.project || null, line: f.line || null, from: f.from || null, to: f.to || null, back: f.back || null, preview: f.preview || null, browserContext, reviewRef, restore });
+    return openLiveFile(f.path, { project: f.project || null, line: f.line || null, from: f.from || null, to: f.to || null, back: f.back || null, preview: f.preview || null, table: f.table ?? null, browserContext, reviewRef, restore });
   }
   if (h.startsWith('doc=')) {
     // doc=PATH[&PROJECT][&conv=KEY]. conv= names the conversation the
@@ -18118,6 +18120,8 @@ document.addEventListener('keydown', e => {
   if (fileWs?.focused && e.target.closest?.('.live-file-view')) {
     if (e.target.closest('.cm-editor')) return;
     if (modHeld(e) && !e.altKey && e.key.toLowerCase() === 'f' && fileWs.htmlPreviewOpen) return;
+    // The table finds rows with its own filter.
+    if (modHeld(e) && !e.altKey && e.key.toLowerCase() === 'f' && fileWs.tableOpen && fileWs.tableView) { e.preventDefault(); fileWs.tableView.focusFilter(); return; }
     if (modHeld(e) && !e.altKey && e.key.toLowerCase() === 'f' && fileWs.editor?.openSearch) { e.preventDefault(); fileWs.editor.openSearch(); return; }
     if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 's') { e.preventDefault(); fileWs.kind === 'md' ? autosaveDocument() : fileWsSaveCode(fileWs); return; }
   }

@@ -192,6 +192,7 @@ function liveFileHead(ws) {
     <span id="docStatus" role="status">Opening…</span>
     <span id="liveServiceStatus" title="Built-in language support; no language server connected">${esc(liveLanguage(ws.path))}</span>
     ${/\.html?$/i.test(ws.path) ? '<div class="lf-html-switch" role="group" aria-label="HTML view"><button id="htmlSource" aria-pressed="true">Source</button><button id="htmlPreview" aria-pressed="false">Preview</button></div>' : ''}
+    ${typeof TableView !== 'undefined' && TableView.isTablePath(ws.path) ? '<div class="lf-html-switch" role="group" aria-label="How to show this data"><button id="tableOn" aria-pressed="false" title="Read the rows as a table: sort, filter, open a row">Table</button><button id="tableOff" aria-pressed="true" title="The text itself, to edit">Text</button></div>' : ''}
     <button id="docReload" hidden title="Reload the current disk file">Reload</button>
     <button id="liveHistory" class="lf-wide" title="Recorded versions of this file: read one, or compare two">History</button>
     <button id="liveWithConv" class="lf-wide lf-page-only" title="This file with its conversation beside it: the conversation that opened it or last worked on it">☷ Conversation beside</button>

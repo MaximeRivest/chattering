@@ -1,0 +1,74 @@
+/* CSV and TSV as a table (table-view.js): in a change card and in the file view. */
+
+.tv-host { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
+.tv-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 6px 12px; border-bottom: 1px solid var(--border); font-size: var(--fs-meta); color: var(--text-dim); }
+.tv-sum { white-space: nowrap; }
+.tv-warn { color: var(--warn); min-width: 0; }
+.tv-warn:empty { display: none; }
+.tv-tools { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
+.tv-host .tv-filter { min-height: 0; width: 15em; max-width: 40vw; height: 24px; padding: 0 8px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg); color: var(--text); font: inherit; font-size: 12px; }
+.tv-filter:focus { outline: none; border-color: var(--accent); }
+.tv-host .tv-full { min-height: 0; height: 24px; padding: 0 9px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg); color: var(--text-dim); font-size: 11px; white-space: nowrap; }
+.tv-full:hover { color: var(--text); border-color: var(--border-strong); }
+.tv-full[aria-pressed="true"] { color: var(--text); border-color: var(--border-strong); background: var(--surface-2); }
+
+/* The table scrolls in its box, both ways; the names and row numbers stay. */
+.tv-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.tv-compact .tv-scroll { flex: none; max-height: min(70vh, 640px); }
+.tv-scroll:focus { outline: none; }
+.tv-scroll:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.tv { border-collapse: separate; border-spacing: 0; font-size: 12.5px; line-height: 1.45; color: var(--text); font-variant-numeric: tabular-nums; }
+.tv th, .tv td { padding: 4px 10px; text-align: left; vertical-align: top; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.tv thead th { position: sticky; top: 0; z-index: 2; padding: 0; background: var(--surface-1); border-bottom: 1px solid var(--border-strong); font-weight: 600; }
+.tv thead th button {
+  display: flex; align-items: baseline; gap: 6px; width: 100%; height: auto; min-height: 28px; padding: 5px 10px; border: 0; border-radius: 0;
+  background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; white-space: nowrap;
+}
+.tv thead th button:hover { background: var(--surface-2); }
+.tv thead th button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.tv thead th.tv-num button { justify-content: flex-end; }
+.tv thead th:not(.tv-rn) { min-width: calc(var(--w, 6ch) * 1.15 + 20px); } /* ch is a digit; letters run wider */
+.tv-hname { overflow: hidden; text-overflow: ellipsis; max-width: max(var(--w, 6ch), 10ch); }
+.tv-hname i { color: var(--text-faint); font-weight: 400; }
+.tv-arrow { font-size: 9px; color: var(--accent); min-width: 1ch; }
+.tv .tv-rn { position: sticky; left: 0; z-index: 1; min-width: 3ch; padding: 4px 8px; text-align: right; color: var(--text-faint); background: var(--surface-1); font-weight: 400; font-family: var(--font-mono); font-size: 11px; user-select: none; }
+.tv thead .tv-rn { z-index: 3; padding: 5px 8px; vertical-align: bottom; }
+
+/* Cells: a few lines each, the row opened (click, Enter) shows all of it. */
+.tv td { min-width: 6ch; max-width: 42ch; }
+.tv td.tv-num { text-align: right; white-space: nowrap; min-width: 0; max-width: none; }
+.tv-cell { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tv-open .tv-cell, .tv-whole .tv-cell { display: block; -webkit-line-clamp: unset; line-clamp: none; overflow: visible; }
+.tv-whole td { max-width: 60ch; }
+.tv tbody tr[data-tv-row] { cursor: pointer; }
+.tv tbody tr[data-tv-row]:hover td { background: var(--surface-1); }
+.tv tbody tr.tv-open td { background: color-mix(in srgb, var(--accent) 7%, var(--bg)); }
+.tv tbody tr.tv-open .tv-rn { color: var(--text); }
+.tv tbody tr.tv-active td, .tv tbody tr.tv-active th { box-shadow: inset 0 2px 0 var(--accent), inset 0 -2px 0 var(--accent); }
+.tv td.tv-empty::after { content: "–"; color: var(--text-faint); }
+.tv td.tv-empty .tv-cell { display: none; }
+.tv td.tv-extra { color: var(--warn); font-style: italic; }
+.tv mark { background: color-mix(in srgb, var(--warn) 40%, transparent); color: inherit; border-radius: 2px; }
+.tv-more-row td, .tv-none td { padding: 0; border-right: 0; position: sticky; left: 0; }
+.tv-more { display: block; width: auto; height: auto; min-height: 30px; padding: 4px 14px; border: 0; border-radius: 0; background: transparent; color: var(--accent); font-size: var(--fs-micro); text-align: left; cursor: pointer; }
+.tv-more:hover { background: var(--surface-2); }
+.tv-none td { padding: 12px 14px; color: var(--text-dim); font-size: var(--fs-meta); }
+
+/* In the file view, the table is the page. */
+.lf-table-view { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+.lf-table-view > .tv-host { flex: 1; }
+
+@media (pointer: coarse), (max-width: 700px) {
+  .tv-host .tv-filter, .tv-host .tv-full { height: 36px; }
+  .tv-host .tv-filter { width: 10em; }
+  .tv td { max-width: 30ch; }
+  .tv thead th button { min-height: 40px; }
+}
+
+/* E-ink: no tint to read, lines and weight instead. */
+:root[data-theme-mode="binary"] .tv tbody tr.tv-open td { background: none; }
+:root[data-theme-mode="binary"] .tv tbody tr.tv-open .tv-rn { font-weight: 700; text-decoration: underline; }
+:root[data-theme-mode="binary"] .tv tbody tr[data-tv-row]:hover td { background: none; }
+:root[data-theme-mode="binary"] .tv mark { background: none; outline: 1px solid var(--text); }
+:root[data-theme-mode="binary"] .tv-full[aria-pressed="true"] { outline: 1px solid var(--text); }
+:root[data-theme-mode="binary"] .tv thead th { border-bottom: 2px solid var(--text); }
