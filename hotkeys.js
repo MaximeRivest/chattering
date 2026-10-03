@@ -201,7 +201,13 @@ function fieldFor(def, wanted) {
 // it stays away, and the model of the question typed into its book.
 // summonKeys: the key combination that calls the frog with its book open on
 // whatever is selected (keyboard selections, apps it stays away from).
-const FROG_DEFAULTS = Object.freeze({ on: true, theme: 'rockfrog', skip: ['terminal'], minWords: 2, model: null, summonKeys: 'Super+Ctrl+M' });
+// mode: where it lives. 'beside': it appears beside a selection and leaves;
+// 'spot': it lives in one place on the screen, asleep, and wakes when a
+// selection could use it; 'call': only its key calls it. size: small,
+// medium, large.
+const FROG_MODES = ['beside', 'spot', 'call'];
+const FROG_SIZES = ['small', 'medium', 'large'];
+const FROG_DEFAULTS = Object.freeze({ on: true, mode: 'beside', size: 'medium', theme: 'rockfrog', skip: ['terminal'], minWords: 2, model: null, summonKeys: 'Super+Ctrl+M' });
 function normalizeFrog(raw) {
   const r = raw && typeof raw === 'object' ? raw : {};
   const theme = /^[a-z0-9][a-z0-9-]{0,47}$/.test(String(r.theme || '')) ? String(r.theme) : FROG_DEFAULTS.theme;
@@ -211,7 +217,10 @@ function normalizeFrog(raw) {
   let summonKeys = FROG_DEFAULTS.summonKeys;
   if (r.summonKeys === null || r.summonKeys === '') summonKeys = null;
   else if (r.summonKeys !== undefined) { try { summonKeys = keys.format(keys.parse(r.summonKeys)); } catch (e) { throw fail(e.message); } }
-  return { on: r.on !== false, theme, skip, minWords, model, summonKeys };
+  // `on: false` from before modes existed means "only when I call it".
+  const mode = FROG_MODES.includes(r.mode) ? r.mode : r.on === false ? 'call' : FROG_DEFAULTS.mode;
+  const size = FROG_SIZES.includes(r.size) ? r.size : FROG_DEFAULTS.size;
+  return { on: mode !== 'call', mode, size, theme, skip, minWords, model, summonKeys };
 }
 
 /** The spells in the frog's book: the hotkeys that are on, read the selection and are in the book, each with its letter and icon. */
@@ -261,7 +270,11 @@ function createHotkeys({ file, now = () => Date.now() }) {
   // ---- the frog ----
   function frog(userId) { return normalizeFrog(state.people[userId] && state.people[userId].frog); }
   function setFrog(userId, raw) {
-    personOf(userId).frog = normalizeFrog({ ...frog(userId), ...(raw && typeof raw === 'object' ? raw : {}) });
+    const patch = { ...(raw && typeof raw === 'object' ? raw : {}) };
+    // A mode says it all; an old page's `on` alone still works.
+    if (patch.on !== undefined && patch.mode === undefined) patch.mode = patch.on === false ? 'call' : (frog(userId).mode === 'call' ? 'beside' : frog(userId).mode);
+    delete patch.on;
+    personOf(userId).frog = normalizeFrog({ ...frog(userId), ...patch });
     changed(userId);
     return frog(userId);
   }
@@ -399,4 +412,4 @@ function createHotkeys({ file, now = () => Date.now() }) {
   };
 }
 
-module.exports = { createHotkeys, normalizeBinding, normalizeFrog, spellsOf, FROG_DEFAULTS, fieldFor, answerText, normalCode, INPUTS, OUTPUTS, STARTERS, KEY_PREFIX, PAIR_TTL_MS };
+module.exports = { createHotkeys, normalizeBinding, normalizeFrog, spellsOf, FROG_DEFAULTS, FROG_MODES, FROG_SIZES, fieldFor, answerText, normalCode, INPUTS, OUTPUTS, STARTERS, KEY_PREFIX, PAIR_TTL_MS };

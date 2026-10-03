@@ -270,7 +270,7 @@ function hyprland() {
       try { w = JSON.parse(await hyprctl('activewindow', '-j')); } catch {}
       if (!w || !w.address) throw new Error('No window has the keyboard focus.');
       const terminal = TERMINAL_CLASSES.has(String(w.class || '').toLowerCase()) || (w.tags || []).some(t => String(t).replace(/\*$/, '') === 'terminal');
-      return { id: w.address, app: w.class || '', terminal };
+      return { id: w.address, app: w.class || '', terminal, fullscreen: !!w.fullscreen };
     },
     async selection(win) {
       const snap = await snapshot();

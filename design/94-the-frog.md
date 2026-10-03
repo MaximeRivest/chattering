@@ -73,6 +73,31 @@ to every computer; Rockfrog follows the desktop's light or dark.
   for a question typed into the book, which also says whether its answer
   replaces the text; judging from the frog.
 
+## Where it lives (added the same day)
+
+People find a frog in the way, so it has three homes (settings → hotkeys →
+the frog, and its own right-click menu):
+
+- **beside the text** (the default): it appears beside a selection and
+  leaves, as above. Dragged, it stays where it was dropped this time.
+- **in its spot**: it lives where the person put it, asleep (its slow
+  breath, a few z's). A selection it could help with wakes it: it sits up,
+  its throat glows; clicked, its book opens beside it, toward the middle of
+  the screen. Ignored, it dozes off again after eight seconds. Clicked
+  asleep with nothing selected, it says so. Its home is kept per computer
+  and per screen, from the nearest corner (`<data>/hotkeys-frog-home.json`),
+  so a screen that changes size keeps it in its corner. It hides while a
+  window is full screen, and comes back after.
+- **only when I call it**: no frog until its key.
+
+Its right-click menu: live here (or come beside the text), smaller or
+larger (its feet stay where they were), sleep for an hour, stay away from
+this app, settings. From a computer, Chattering accepts only these
+(`PUT /api/hotkeys/device/frog`: mode, size, an app to add to the list).
+Sizes: small 40×66, medium 60×100, large 80×133. A drag past five pixels is
+a drag, not a click; while it lasts the whole screen takes the pointer, so
+a fast move cannot outrun the frog's own small region.
+
 ## Decisions
 
 - **When it appears.** A selection of at least two words (settings: 1–8),
@@ -135,6 +160,16 @@ to every computer; Rockfrog follows the desktop's light or dark.
   the screen size the helper sends.
 
 ## Trade-offs, stated
+
+- **In its spot, the overlay is always there**: an empty see-through
+  layer over that screen, the frog its only clickable part. Its cost when
+  nothing moves is small, but it may keep a full-screen game from the
+  compositor's direct path, which is why the frog hides for full-screen
+  windows.
+- **"When it can help" is a rule, not a judgement**: a selection of enough
+  words, in an app it does not stay away from. Knowing whether the text
+  needs help (typos, a foreign language) would mean reading every
+  selection with a model or a dictionary; not done.
 
 - **The overlay lingers.** For a minute after the frog leaves, an empty
   see-through layer stays over the screen (no pointer, no keys). It may

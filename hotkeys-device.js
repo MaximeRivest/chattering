@@ -260,16 +260,24 @@ function appName(win) {
  * desk.overlayHost(); `api(route, body)` reaches Chattering.
  */
 function createFrog({ desk, helper, host: givenHost = null, api = null, now = () => Date.now(), settleMs = SETTLE_MS }) {
-  const request = api || ((route, body, timeoutMs) => call(helper.link, 'POST', route, body, { timeoutMs }));
+  const request = api || ((route, body, timeoutMs, method = 'POST') => call(helper.link, method, route, body, { timeoutMs }));
   let host = givenHost, hostFailures = [], disabled = null;
   let shown = null;   // { text, win, monitor }
   let mode = 'off';   // off | idle | panel | busy
   let last = null;    // the last spell cast: { spell } or { ask }, and its answer
   let settleT = 0, quietUntil = 0, pendingText = null;
   let timing = null; // { settled, sent }: how long a frog takes to appear (logged, no text)
+  let spotOn = null;   // the screen the frog lives on, while it is there (mode 'spot')
+  let spotAway = false; // hidden for a full-screen window
+  let snoozeUntil = 0;
+  let lastApp = '';
+  const SIZE = { small: [40, 66], medium: [60, 100], large: [80, 133] };
+  const homeFile = () => path.join(dirs().data, 'hotkeys-frog-home.json');
 
   // A Chattering that sends no frog settings is older than the frog: off.
-  const settings = () => helper.frog || { on: false, skip: ['terminal'], minWords: 2, theme: { id: 'rockfrog' } };
+  const settings = () => helper.frog || { on: false, mode: 'call', skip: ['terminal'], minWords: 2, theme: { id: 'rockfrog' } };
+  const frogMode = () => settings().mode || (settings().on === false ? 'call' : 'beside');
+  const common = () => ({ spells: helper.spells, model: settings().askModel || '', theme: settings().theme || { id: 'rockfrog' }, size: settings().size || 'medium' });
 
   // ---- the host ----
   function startHost() {
@@ -290,12 +298,13 @@ function createFrog({ desk, helper, host: givenHost = null, api = null, now = ()
       // Gone while it held the keys: give them back to the app, or nothing
       // would have the keyboard.
       if (mode === 'panel' && shown && desk.focus) desk.focus(shown.win).catch(() => {});
-      host = null; mode = 'off'; shown = null;
+      host = null; mode = 'off'; shown = null; spotOn = null;
       if (code === 3) return disable('This desktop does not offer the layer shell the frog needs (GNOME does not).');
       const t = now(); hostFailures = hostFailures.filter(x => t - x < 60000).concat(t);
       const why = errTail.trim().split('\n').filter(l => !/a11y|appsink|GStreamer/i.test(l)).pop() || ('exit ' + code);
       log('frog host stopped: ' + why);
       if (hostFailures.length >= 3) disable('Its overlay keeps stopping: ' + why);
+      else if (frogMode() === 'spot') setTimeout(() => showSpot().catch(() => {}), 2000); // it lives there: back
     });
     host = {
       send: m => { try { child.stdin.write(JSON.stringify(m) + '\n'); } catch {} },
@@ -314,7 +323,7 @@ function createFrog({ desk, helper, host: givenHost = null, api = null, now = ()
 
   // ---- when it appears ----
   function onSelection(text) {
-    if (disabled || !settings().on) return;
+    if (disabled || frogMode() === 'call' || now() < snoozeUntil) return;
     if (now() < quietUntil || mode === 'panel' || mode === 'busy' || helper.busy) return;
     pendingText = text;
     clearTimeout(settleT);
@@ -326,6 +335,7 @@ function createFrog({ desk, helper, host: givenHost = null, api = null, now = ()
     if (!String(text).trim() || T.words(text) < (st.minWords || 2) || text.length > MAX_CHARS) { if (mode === 'idle') hide(); return; }
     if (shown && mode === 'idle' && shown.text === text) return;
     const settled = now();
+    if (frogMode() === 'spot') return wakeFor(text);
     // Everything the desktop must say, asked at once.
     const [win, look] = await Promise.all([desk.focused().catch(() => null), lookAround()]);
     if (!win || !look) return;
@@ -334,13 +344,12 @@ function createFrog({ desk, helper, host: givenHost = null, api = null, now = ()
     const place = where(win, look);
     if (!place) return;
     timing = { settled, sent: now() };
-    shown = { text, win, monitor: place.monitor };
+    shown = { text, win, monitor: place.monitor }; lastApp = win.app || '';
     mode = 'idle';
     if (!startHost()) return;
     host.send({
       type: 'show', monitor: place.monitor, at: place.at, corner: place.corner, screen: place.screen,
-      words: T.words(text), app: appName(win), spells: helper.spells, model: st.askModel || '',
-      theme: st.theme || { id: 'rockfrog' }, linger: 5000,
+      words: T.words(text), app: appName(win), linger: 5000, ...common(),
     });
   }
   // The pointer, the screens and every window's rectangle, in one go.
@@ -362,7 +371,61 @@ function createFrog({ desk, helper, host: givenHost = null, api = null, now = ()
     const mon = mons.find(m => inside(anchor, m)) || mons.find(m => m.focused) || mons[0];
     return { monitor: mon.name, at: { x: anchor.x - mon.x, y: anchor.y - mon.y }, corner: !byPointer, screen: { w: mon.w, h: mon.h } };
   }
-  function hide() { if (host && mode !== 'off') host.send({ type: 'hide' }); mode = 'off'; shown = null; }
+  function hide() { if (host && mode !== 'off') host.send({ type: 'hide' }); mode = 'off'; shown = null; spotOn = null; }
+
+  // ---- its spot (mode 'spot') ----
+  // Where it lives, per computer and per screen, from the nearest corner:
+  // a screen that changes size keeps the frog in its corner.
+  function homes() { return readJson(homeFile()) || { monitor: null, places: {} }; }
+  function homeFor(mon) {
+    const [w, h] = SIZE[settings().size || 'medium'] || SIZE.medium;
+    const p = homes().places[mon.name];
+    if (!p) return { x: mon.w - w - 28, y: mon.h - h - 28 };
+    return { x: p.right ? mon.w - p.dx - w : p.dx, y: p.bottom ? mon.h - p.dy - h : p.dy };
+  }
+  function saveHome(monName, m) {
+    const sw = m.screen ? m.screen.w : 1920, sh = m.screen ? m.screen.h : 1080;
+    const right = m.x + m.w / 2 > sw / 2, bottom = m.y + m.h / 2 > sh / 2;
+    const all = homes();
+    all.monitor = monName;
+    all.places[monName] = { right, bottom, dx: Math.round(right ? sw - m.x - m.w : m.x), dy: Math.round(bottom ? sh - m.y - m.h : m.y) };
+    writeJson(homeFile(), all);
+  }
+  async function showSpot() {
+    if (disabled || frogMode() !== 'spot' || spotAway) return;
+    if (!startHost()) return;
+    const mons = await desk.monitors().catch(() => []);
+    if (!mons.length) return;
+    const saved = homes().monitor;
+    const mon = mons.find(m => m.name === saved) || mons.find(m => m.focused) || mons[0];
+    spotOn = mon.name;
+    if (mode === 'panel' || mode === 'busy') return;
+    mode = 'idle';
+    host.send({ type: 'show', mode: 'spot', asleep: true, monitor: mon.name, home: homeFor(mon), screen: { w: mon.w, h: mon.h }, words: 0, app: '', ...common() });
+  }
+  async function wakeFor(text) {
+    const win = await desk.focused().catch(() => null);
+    if (!win) return;
+    const st = settings(), skip = (st.skip || []).map(x => String(x).toLowerCase());
+    if ((skip.includes('terminal') && win.terminal) || skip.includes(String(win.app || '').toLowerCase())) return;
+    if (!spotOn) await showSpot();
+    if (!spotOn) return;
+    shown = { text, win, monitor: spotOn }; lastApp = win.app || '';
+    mode = 'idle';
+    host.send({ type: 'wake', words: T.words(text), app: appName(win) });
+  }
+  // The desktop moved on: the frog beside the text leaves; the one in its
+  // spot goes back to sleep, and hides for a full-screen window.
+  async function onDesktop(name, data) {
+    if (name !== 'activewindowv2' && name !== 'workspacev2' && name !== 'fullscreen') return;
+    if (frogMode() === 'spot') {
+      if (mode === 'idle' && host) host.send({ type: 'sleep' });
+      const win = await desk.focused().catch(() => null);
+      const full = name === 'fullscreen' ? data === '1' : !!(win && win.fullscreen);
+      if (full && !spotAway) { spotAway = true; if (mode === 'idle') hide(); }
+      else if (!full && spotAway) { spotAway = false; await showSpot(); }
+    } else if (mode === 'idle' && name !== 'fullscreen') hide();
+  }
 
   // ---- what the person does ----
   async function fromPage(m) {
@@ -380,7 +443,19 @@ function createFrog({ desk, helper, host: givenHost = null, api = null, now = ()
           if (shown && desk.focus) await desk.focus(shown.win);
         }
       }
-      else if (m.type === 'hidden') { mode = 'off'; shown = null; }
+      else if (m.type === 'hidden') { mode = 'off'; shown = null; spotOn = null; }
+      else if (m.type === 'moved') { if (frogMode() === 'spot' && spotOn) saveHome(spotOn, m); }
+      else if (m.type === 'set') {
+        const patch = {}; if (m.mode) patch.mode = m.mode; if (m.size) patch.size = m.size;
+        if (helper.frog) Object.assign(helper.frog, patch); // at once here; Chattering confirms
+        await request('/api/hotkeys/device/frog', patch, 15000, 'PUT');
+        if (m.mode === 'spot') { spotOn = shown ? shown.monitor : spotOn; }
+      }
+      else if (m.type === 'snooze') { snoozeUntil = now() + (Number(m.minutes) || 60) * 60000; }
+      else if (m.type === 'skip-app') {
+        const app = (shown && shown.win && shown.win.app) || lastApp;
+        if (app) { if (helper.frog) helper.frog.skip = [...(helper.frog.skip || []), String(app).toLowerCase()]; await request('/api/hotkeys/device/frog', { skipApp: app }, 15000, 'PUT'); }
+      }
       else if (m.type === 'close') { if (mode === 'panel') mode = 'idle'; }
       else if (m.type === 'cast') await cast({ spell: helper.spells.find(s => s.id === m.id) });
       else if (m.type === 'ask') await cast({ ask: String(m.request || '') });
@@ -440,7 +515,12 @@ function createFrog({ desk, helper, host: givenHost = null, api = null, now = ()
       if (current.trim() !== text.trim()) return await onClipboard('Your selection changed');
       try { await desk.paste(win, out); } catch { return await onClipboard('The paste did not go through'); }
       host.send({ type: 'done', html: '<span class="live">✓</span> Replaced · <kbd>Ctrl</kbd> <kbd>Z</kbd> undoes it', ms: 2200 });
-    } finally { helper.busy = false; quietUntil = now() + AFTER_REPLACE_MS; }
+    } finally {
+      helper.busy = false; quietUntil = now() + AFTER_REPLACE_MS;
+      // Beside the text the page says when the frog has left; in its spot
+      // it just goes back to sleep, ready for the next selection.
+      if (frogMode() === 'spot') { mode = 'idle'; shown = null; }
+    }
   }
   async function giveBack(win) {
     // The page gave the keys back a moment ago. The window must have the
@@ -458,31 +538,50 @@ function createFrog({ desk, helper, host: givenHost = null, api = null, now = ()
     if (disabled || !helper.frog) return;
     if (helper.busy || mode === 'busy') return;
     const text = desk.primaryText ? await desk.primaryText().catch(() => '') : '';
+    if (frogMode() === 'spot' && !spotAway) {
+      if (!spotOn) await showSpot();
+      if (!spotOn) return;
+      const win = await desk.focused().catch(() => null);
+      if (!win) return;
+      if (!String(text).trim() || text.length > MAX_CHARS) {
+        host.send({ type: 'problem', title: 'Nothing is selected', message: 'Select some text first, then call me.', again: false });
+        return;
+      }
+      shown = { text, win, monitor: spotOn }; lastApp = win.app || ''; mode = 'idle';
+      host.send({ type: 'wake', words: T.words(text), app: appName(win) });
+      host.send({ type: 'open' });
+      return;
+    }
     const [win, look] = await Promise.all([desk.focused().catch(() => null), lookAround()]);
     if (!win || !look) return;
     const place = where(win, look);
     if (!place || !startHost()) return;
     if (!String(text).trim()) {
       shown = { text: '', win, monitor: place.monitor }; mode = 'idle';
-      host.send({ type: 'show', monitor: place.monitor, at: place.at, corner: place.corner, screen: place.screen, words: 0, app: appName(win), spells: helper.spells, model: settings().askModel || '', theme: settings().theme || { id: 'rockfrog' }, linger: 4000 });
+      host.send({ type: 'show', monitor: place.monitor, at: place.at, corner: place.corner, screen: place.screen, words: 0, app: appName(win), linger: 4000, ...common() });
       host.send({ type: 'problem', title: 'Nothing is selected', message: 'Select some text first, then call me.', again: false });
       return;
     }
     if (text.length > MAX_CHARS) return;
     shown = { text, win, monitor: place.monitor }; mode = 'idle';
-    host.send({ type: 'show', open: true, monitor: place.monitor, at: place.at, corner: place.corner, screen: place.screen, words: T.words(text), app: appName(win), spells: helper.spells, model: settings().askModel || '', theme: settings().theme || { id: 'rockfrog' } });
+    host.send({ type: 'show', open: true, monitor: place.monitor, at: place.at, corner: place.corner, screen: place.screen, words: T.words(text), app: appName(win), ...common() });
   }
 
   helper.onChange(why => {
     if (why === 'summon') summon().catch(e => log('frog: ' + e.message));
     if (why === 'press') hide();
-    if (why === 'changed') { if (!settings().on) hide(); else warm(); }
+    if (why === 'changed') { if (frogMode() === 'call') hide(); warm(); }
   });
 
   // Ready before the first selection: starting the host costs a second or two.
-  function warm() { if (settings().on && !disabled) startHost(); }
+  // In its spot, the frog goes there.
+  function warm() {
+    if (disabled) return;
+    if (frogMode() === 'spot') showSpot().catch(e => log('frog: ' + e.message));
+    else { if (spotOn) hide(); if (frogMode() === 'beside') startHost(); }
+  }
 
-  return { onSelection, hide, startHost, summon, warm, get mode() { return mode; }, get disabled() { return disabled; }, stop: () => host && host.stop && host.stop() };
+  return { onSelection, hide, startHost, summon, warm, onDesktop, showSpot, get mode() { return mode; }, get disabled() { return disabled; }, stop: () => host && host.stop && host.stop() };
 }
 
 async function runHelper() {
@@ -512,7 +611,7 @@ async function runHelper() {
   const stopSelection = frog ? desk.watchSelection(t => frog.onSelection(t)) : () => {};
   if (!frog) helper.frogStatus = { available: false, reason: desk.reason || 'The frog is not built for this desktop yet.' };
   // The frog leaves when the person moves to another window or workspace.
-  const onEvent = (name) => { if (frog && (name === 'workspacev2' || name === 'activewindowv2') && frog.mode === 'idle') frog.hide(); };
+  const onEvent = (name, data) => { if (frog) frog.onDesktop(name, data).catch(() => {}); };
   const stopWatch = desk.supported ? desk.watch(() => { log('the desktop reloaded its configuration: binding again'); setTimeout(() => helper.applyAll(), 300); }, onEvent) : () => {};
   const quit = async () => {
     stop.stopped = true;

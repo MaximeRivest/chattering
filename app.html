@@ -293,6 +293,7 @@ body.side-layout #agentsPop[data-panel="inbox"] #agentsLegacy:not(:empty) { bord
 /* List items must keep their natural height; only the list itself shrinks. */
 .mpick.project-scope-picker .mp-row { flex: 0 0 auto; flex-direction: column; align-items: stretch; gap: 3px; padding: 8px 12px; line-height: 1.35; }
 .mpick.project-scope-picker .mp-row b { flex: none; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.mpick.project-scope-picker .mp-create { border-top: 1px solid var(--border); color: var(--accent); }
 .mpick.project-scope-picker .mp-row small { flex: none; font-size: var(--fs-micro); line-height: 1.35; color: var(--text-dim); white-space: normal; overflow-wrap: anywhere; }
 .mpick.project-scope-picker .mp-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 @media (max-width: 700px) { .mpick.project-scope-picker { width: auto; max-width: 100%; max-height: 72dvh; } }
@@ -461,6 +462,8 @@ body.conv #convHeadExtra { display: inline-flex; flex-shrink: 0; }
 .hk-bookonly { font-family: var(--font); color: var(--text-dim); border-style: dashed; }
 .hk-frog-row { display: flex; gap: var(--sp-3); align-items: flex-start; margin-bottom: var(--sp-2); }
 .hk-frog-pic { width: 46px; height: 58px; object-fit: contain; flex: 0 0 46px; }
+.hk-modes { display: flex; flex-direction: column; gap: 4px; margin-bottom: var(--sp-2); }
+.hk-modes .hint { display: block; margin-left: 22px; }
 .hk-approve { border: 1px solid var(--border); border-radius: var(--r); padding: var(--sp-3); }
 .hk-approve p { margin: 0 0 var(--sp-2); }
 .hk-edit select { min-width: 0; max-width: 100%; }
@@ -738,11 +741,12 @@ body:not(.home) #left, body:not(.home) #ganttResize { display: none !important; 
 .project-row-label:hover { background: var(--surface-2); }
 /* The corner cell above the project rows: the birth place of a new project.
    It lives in the 18px day-label strip, so the chart geometry does not move. */
-.project-new-cell { position: absolute; left: 0; top: 0; width: 168px; height: 18px; line-height: 18px;
-  box-sizing: border-box; padding: 0 8px; overflow: hidden; white-space: nowrap;
-  background: var(--surface-1); border-right: 1px solid var(--border-strong); border-bottom: 1px solid var(--border);
-  color: var(--text-faint); font-size: 10px; pointer-events: auto; cursor: pointer; }
-.project-new-cell:hover, .project-new-cell:focus-visible { color: var(--accent); background: var(--surface-2); }
+.project-new-cell { position: absolute; left: 0; top: 0; width: 168px; height: 32px; line-height: 30px; /* the whole date strip (TimelineChart.HEADER_HEIGHT) */
+  box-sizing: border-box; margin: 0; padding: 0 10px; overflow: hidden; white-space: nowrap; text-align: left;
+  background: var(--surface-1); border: 0; border-right: 1px solid var(--border-strong); border-bottom: 1px solid var(--border); border-radius: 0;
+  color: var(--accent); font: 600 12px var(--font); pointer-events: auto; cursor: pointer; }
+.project-new-cell:hover, .project-new-cell:focus-visible { background: var(--surface-2); text-decoration: underline; }
+.project-new-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .project-labels.narrow .project-new-cell { width: 34px; padding: 0; text-align: center; }
 .project-row-label.hl { background: var(--surface-3); }
 .project-row-label.hl strong { color: var(--accent); }
@@ -1369,6 +1373,14 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
 .ps-help { color: var(--text-dim); font-size: 13px; line-height: 1.5; margin-top: 4px; }
 .ps-path { display: block; overflow-wrap: anywhere; font-size: 14px; }
 .ps-preview { border-left: 3px solid var(--border-strong); padding: 8px; }
+.ps-preview.pending { color: var(--text-dim); }
+.ps-where-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ps-where-line .ps-preview { flex: 1 1 200px; margin: 0; }
+.ps-where { border-left: 3px solid var(--border); padding-left: 10px; }
+.ps-optional { color: var(--text-dim); font-weight: normal; font-size: 12px; }
+.ps-body > label { display: block; }
+.ps-body > label textarea { margin-top: 6px; display: block; }
+.ps-next { border-top: 1px solid var(--border); padding-top: 10px; }
 .ps-card button, .ps-card summary { min-height: 44px; font-size: 13px; }
 .ps-card summary { cursor: pointer; line-height: 44px; }
 .ps-status { margin: 0; color: var(--text); overflow-wrap: anywhere; font-size: 13px; }
@@ -5343,7 +5355,7 @@ function projectLabelsHtml(layout) {
   if (!layout.projects) return '';
   const phone = phoneDevice();
   // A new project is a new row, so the entry point heads the row column.
-  const bornCell = `<div class="project-new-cell" data-new-project tabindex="0" title="Create a project or add an existing folder (P)">${phone ? '+' : '+ new project'}</div>`;
+  const bornCell = `<button type="button" class="project-new-cell" data-new-project style="height:${LABEL_H}px;line-height:${LABEL_H - 2}px" title="Create a project or add a folder you already have (P)" aria-label="New project">${phone ? '+' : '+ New project'}</button>`;
   return `<div class="project-labels${phone ? ' narrow' : ''}">${bornCell}${layout.projects.map(row => {
     const top = LABEL_H + row.baseLane * PROJECT_LANE_H;
     const height = row.laneCount * PROJECT_LANE_H;
@@ -8342,6 +8354,13 @@ function mgShowPop(el, key, items) {
 // unreviewed path lives on the transcript's + button (startSiblingConversation).
 async function startReviewedConversation(project, opts = {}) {
   if (!project || project === '?') return errToast('no project to start in');
+  // A project with no conversations has no memory to review: its first
+  // conversation starts on the ordinary new-conversation page in its folder,
+  // where the agent, model and purpose chip are all choices until sending.
+  if (!opts.epicId && !opts.area && !sessions.some(s => projectOf(s) === project)) {
+    const rec = (projectFolds.created || []).find(c => c.name === project);
+    if (rec && rec.cwd) return startDraftIn(rec.cwd);
+  }
   document.querySelectorAll('.ctx-confirm').forEach(el => el.remove());
   const include = { map: true, epics: opts.epicId ? [opts.epicId] : [], notes: false, evidenceKeys: [], epicMemory: opts.epicId || null };
   // The "where" of the start: project root, a declared area (identity +
@@ -12108,7 +12127,8 @@ function contextChipParts(c) {
     const words = String(c.text || '').replace(/\s+/g, ' ').trim();
     return ['instructions', words.slice(0, 28) + (words.length > 28 ? '…' : '')];
   }
-  return [c.project || '?', c.kind || ''];
+  // The intent document is the purpose a person wrote for the project.
+  return [c.project || '?', c.kind === 'intent' ? 'purpose' : c.kind || ''];
 }
 
 function renderAgentContext() {
@@ -15501,8 +15521,8 @@ $('newLoose').onclick = startLooseConversation;
 $('tabsNew').onclick = startLooseConversation;
 
 // ---- project setup ----
-function openNewProjectForm() {
-  openProjectSetup();
+function openNewProjectForm(opts) {
+  openProjectSetup(opts);
 }
 // Dialog focus stays inside the form. Closing returns to its trigger.
 function projectSetupDialog(title, body) {
@@ -15546,46 +15566,70 @@ function projectSetupDialog(title, body) {
 }
 
 function projectFolderPreview(parent, name) {
-  return (parent || '~/Projects').replace(/\/+$/, '') + '/' + name.trim().replace(/\s+/g, '-');
+  return (parent || '~/Projects').replace(/\/+$/, '') + '/' + name.trim().normalize('NFC').replace(/\s+/g, '-');
 }
+// Letters of any alphabet, digits, ". _ -" and spaces; the server applies the same rule.
+const PROJECT_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{M}\p{N}._ -]{0,80}$/u;
 
-function openProjectSetup() {
+// One form, then straight to the first message. Setup itself starts nothing:
+// it makes or adds the folder and keeps an optional purpose. The next screen
+// is the ordinary new-conversation page in that folder, where nothing runs
+// until the person sends. opts prefill the form; opts.onCreated replaces
+// that next step (a draft that asked for its missing folder keeps its text).
+function openProjectSetup(opts = {}) {
   if (document.querySelector('.project-setup')) return;
-  const d = projectSetupDialog('Set up a project', `<div class="ps-body">
-    <fieldset class="ps-choice"><legend>Where will you work?</legend>
-      <label><input type="radio" name="operation" value="create" checked> Create new project</label>
-      <label><input type="radio" name="operation" value="add"> Add existing folder</label>
+  const d = projectSetupDialog('New project', `<div class="ps-body">
+    <fieldset class="ps-choice"><legend>Start from</legend>
+      <label><input type="radio" name="operation" value="create" checked> A new folder</label>
+      <label><input type="radio" name="operation" value="add"> A folder I already have</label>
     </fieldset>
     <div class="ps-create">
-      <label>Project name<input class="ps-name" type="text" maxlength="81" autocomplete="off" aria-describedby="ps-name-hint"></label>
-      <p id="ps-name-hint" class="ps-help">Spaces become hyphens in the new folder name.</p>
-      <label>Parent folder<input class="ps-parent" type="text" autocomplete="off"></label>
-      <p class="ps-help">Folder to create</p><output class="ps-preview ps-path"></output>
-      <details><summary class="ps-git-summary">Version history: Git enabled</summary><label class="ps-check"><input class="ps-git" type="checkbox" checked> Initialize Git version history</label></details>
+      <label>Name<input class="ps-name" type="text" maxlength="81" autocomplete="off" spellcheck="false" aria-describedby="ps-where-line"></label>
+      <div class="ps-where-line" id="ps-where-line"><span class="ps-help">Folder</span> <output class="ps-preview ps-path"></output><button type="button" class="ghost ps-where-toggle" aria-expanded="false" aria-controls="ps-where">Change</button></div>
+      <div class="ps-where" id="ps-where" hidden>
+        <label>Inside this folder<input class="ps-parent" type="text" autocomplete="off" spellcheck="false"></label>
+        <button type="button" class="ps-parent-browse">Browse folders</button>
+        <div class="ps-browser ps-parent-browser" hidden></div>
+      </div>
+      <details><summary class="ps-git-summary">Version history: Git on</summary><label class="ps-check"><input class="ps-git" type="checkbox" checked> Keep version history with Git</label></details>
     </div>
     <div class="ps-add" hidden>
-      <label>Existing folder<input class="ps-existing" type="text" autocomplete="off" placeholder="Paste a full folder path"></label>
+      <label>Folder<input class="ps-existing" type="text" autocomplete="off" spellcheck="false" placeholder="A full path, like ~/Documents/thesis"></label>
       <button type="button" class="ps-browse">Browse folders</button>
-      <div class="ps-browser" hidden></div>
-      <p class="ps-help">Files stay where they are. Adding this folder does not change its contents.</p>
+      <div class="ps-browser ps-existing-browser" hidden></div>
+      <p class="ps-help">Files stay where they are. Adding the folder does not change anything in it.</p>
     </div>
-    <p class="ps-help">No agent starts now. You can start a conversation after setup.</p>
+    <label>What is it for? <span class="ps-optional">optional</span><textarea class="ps-intent" rows="3" maxlength="20000" aria-describedby="ps-intent-hint"></textarea></label>
+    <p id="ps-intent-hint" class="ps-help">A sentence or two on the goal. Agents read it at the start of each conversation here. You can change it any time.</p>
+    <p class="ps-help ps-next">Next, you write the first message. Nothing runs until you send it.</p>
   </div>`);
   const {q} = d;
-  let operation = 'create', browseVersion = 0;
-  q('.ps-parent').value = localStorage.getItem('chattering.newProjectParent') || '~/Projects';
-  q('.ps-existing').value = '';
+  let operation = opts.operation === 'add' ? 'add' : 'create', browseVersion = 0;
+  d.form.querySelector(`[name="operation"][value="${operation}"]`).checked = true;
+  q('.ps-parent').value = opts.parent || localStorage.getItem('chattering.newProjectParent') || '~/Projects';
+  q('.ps-name').value = opts.name || '';
+  q('.ps-existing').value = opts.path || '';
   const update = () => {
     q('.ps-create').hidden = operation !== 'create'; q('.ps-add').hidden = operation !== 'add';
     q('.ps-submit').textContent = operation === 'create' ? 'Create project' : 'Add project';
-    q('.ps-preview').textContent = q('.ps-name').value.trim() ? projectFolderPreview(q('.ps-parent').value, q('.ps-name').value) : 'Enter a project name to see the folder path.';
+    const name = q('.ps-name').value.trim();
+    q('.ps-preview').textContent = projectFolderPreview(q('.ps-parent').value, name || '…');
+    q('.ps-preview').classList.toggle('pending', !name);
     q('.ps-name').required = operation === 'create'; q('.ps-existing').required = operation === 'add';
+  };
+  const showWhere = open => {
+    q('.ps-where').hidden = !open; q('.ps-where-toggle').setAttribute('aria-expanded', String(open));
+    q('.ps-where-toggle').textContent = open ? 'Done' : 'Change';
+    if (open) q('.ps-parent').focus();
+    else { q('.ps-parent-browser').hidden = true; ++browseVersion; }
   };
   d.form.querySelectorAll('[name="operation"]').forEach(el => el.onchange = () => { operation = el.value; d.status(''); update(); });
   q('.ps-name').oninput = update; q('.ps-parent').oninput = update;
-  q('.ps-git').onchange = () => { q('.ps-git-summary').textContent = q('.ps-git').checked ? 'Version history: Git enabled' : 'Version history: off'; };
-  async function browse(folder) {
-    const version = ++browseVersion, panel = q('.ps-browser');
+  q('.ps-where-toggle').onclick = () => showWhere(q('.ps-where').hidden);
+  q('.ps-git').onchange = () => { q('.ps-git-summary').textContent = q('.ps-git').checked ? 'Version history: Git on' : 'Version history: off'; };
+  // One folder browser, two uses: the parent of a new folder, or the folder to add.
+  async function browse(folder, panel, input, done) {
+    const version = ++browseVersion;
     panel.hidden = false; panel.textContent = 'Loading folders…';
     try {
       const response = await fetch('/api/fs/dirs?path=' + encodeURIComponent(folder));
@@ -15594,11 +15638,9 @@ function openProjectSetup() {
       if (out.error) throw new Error(out.error);
       panel.innerHTML = `<div class="ps-browser-head"><button type="button" class="ps-up" aria-label="Go to parent folder" ${out.parent ? '' : 'disabled'}>↑ Up</button><span class="ps-path">${esc(out.path)}</span><button type="button" class="ps-use">Choose this folder</button></div>
         <div class="ps-folders">${out.dirs.map((dir, i) => `<button type="button" data-folder="${i}"><span>${esc(dir.name)}</span>${dir.known ? '<span class="ps-help">Already a project</span>' : '<span aria-hidden="true">›</span>'}</button>`).join('') || '<p>No subfolders. Choose this folder or go up.</p>'}</div>`;
-      panel.querySelector('.ps-up').onclick = () => { if (out.parent) browse(out.parent); };
-      panel.querySelector('.ps-use').onclick = () => {
-        q('.ps-existing').value = out.path; panel.hidden = true; q('.ps-existing').focus(); d.status('Folder selected. Click Add project to finish.');
-      };
-      panel.querySelectorAll('[data-folder]').forEach(b => b.onclick = () => browse(out.path.replace(/\/$/, '') + '/' + out.dirs[Number(b.dataset.folder)].name));
+      panel.querySelector('.ps-up').onclick = () => { if (out.parent) browse(out.parent, panel, input, done); };
+      panel.querySelector('.ps-use').onclick = () => { input.value = out.path; panel.hidden = true; update(); input.focus(); done(); };
+      panel.querySelectorAll('[data-folder]').forEach(b => b.onclick = () => browse(out.path.replace(/\/$/, '') + '/' + out.dirs[Number(b.dataset.folder)].name, panel, input, done));
       panel.querySelector('.ps-use').focus();
     } catch (e) {
       if (version !== browseVersion) return;
@@ -15606,34 +15648,40 @@ function openProjectSetup() {
       d.status(e.message);
     }
   }
-  q('.ps-browse').onclick = () => browse(q('.ps-existing').value || q('.ps-parent').value || '~/Projects');
+  q('.ps-browse').onclick = () => browse(q('.ps-existing').value || q('.ps-parent').value || '~/Projects', q('.ps-existing-browser'), q('.ps-existing'), () => d.status('Folder selected. Click Add project to finish.'));
+  q('.ps-parent-browse').onclick = () => browse(q('.ps-parent').value || '~/Projects', q('.ps-parent-browser'), q('.ps-parent'), () => d.status(''));
   d.form.onsubmit = async e => {
     e.preventDefault();
-    const name = q('.ps-name').value.trim();
-    if (operation === 'create' && !/^[A-Za-z0-9][A-Za-z0-9._ -]{0,80}$/.test(name)) {
+    const name = q('.ps-name').value.trim().normalize('NFC');
+    if (operation === 'create' && !PROJECT_NAME_RE.test(name)) {
       d.status('Start the name with a letter or number. Use letters, numbers, spaces, dots, hyphens, or underscores.'); q('.ps-name').focus(); return;
     }
     const parent = q('.ps-parent').value || '~/Projects';
-    const body = operation === 'create' ? {operation, name, parent, git: q('.ps-git').checked} : {operation, path: q('.ps-existing').value};
+    const purpose = q('.ps-intent').value.trim();
+    const body = operation === 'create' ? {operation, name, parent, git: q('.ps-git').checked, purpose} : {operation, path: q('.ps-existing').value, purpose};
     ++browseVersion;
     d.busy(true); d.status(operation === 'create' ? 'Creating project…' : 'Adding project…');
     let out;
     try {
       let capability;
       try { capability = await (await fetch('/api/project/setup')).json(); } catch {}
-      if (!capability || capability.version !== 1) throw new Error('Project setup needs the updated server. Wait for active work to finish, restart Chattering, then retry.');
+      if (!capability || !(capability.version >= 2)) throw new Error('Project setup needs the updated server. Wait for active work to finish, restart Chattering, then retry.');
       out = await postJson('/api/project/create', body);
       if (out.error) throw new Error(out.error);
     }
     catch (error) { d.busy(false); d.status(error.message + ' Your entries are kept.'); return; }
     if (operation === 'create') localStorage.setItem('chattering.newProjectParent', parent);
     d.busy(false); d.close();
-    toast((operation === 'create' ? 'Project created' : 'Project added') + ' · ' + out.cwd);
     if (out.warning) errToast(out.warning);
-    try { await load(); await showProjectOverview(out.project); }
-    catch { errToast('Project saved, but the view could not load. Refresh to find it.'); }
+    try { await load(); } catch { errToast('Project saved, but the lists could not refresh. Refresh the page to see it.'); }
+    const created = { project: out.project, title: out.title || out.project, cwd: out.cwd, adopted: !!out.adopted, at: Date.now() };
+    if (typeof opts.onCreated === 'function') await opts.onCreated(created);
+    else await startDraftIn(out.cwd, { created });
+    // Making a project is choosing it: the side column follows (design/51).
+    if (typeof adoptWorkspaceProject === 'function') adoptWorkspaceProject(out.project, { select: true, stamp: true });
   };
-  update(); q('.ps-name').focus();
+  update();
+  (operation === 'add' ? q('.ps-existing') : q('.ps-name')).focus();
 }
 
 async function editProjectPurpose(project) {
@@ -17035,7 +17083,7 @@ function renderSideNew() {
   const p = sideNewProject();
   $('sideNew').querySelector('span').textContent = p ? 'new here' : 'new';
   $('sideNew').title = p ? 'New conversation in ' + p : 'New conversation (C) — a blank page: no project memory, home folder, pi defaults';
-  $('sideNewMore').hidden = !p;
+  $('sideNewMore').hidden = false; // always: it also offers "New project…"
   const scope = workspaceScope();
   $('sideProject').querySelector('span').textContent = ProjectScope.label(scope);
   $('sideProject').title = scope && scope !== LOOSE_PROJECT ? 'Open project memory · ' + scope : scope ? 'Open conversations without a project' : 'Browse all projects';
@@ -17081,8 +17129,14 @@ function openWorkspaceProjectPicker(anchor = $('sideProjectMore')) {
     const rows = [{ name: '', title: 'All projects', cwd: 'On this machine' }, { name: LOOSE_PROJECT, title: 'No project', cwd: 'Conversations and files without a project' }, ...sidebarProjectRows()];
     const q = input.value.trim().toLocaleLowerCase();
     const matches = rows.filter(p => !q || `${p.name} ${p.title} ${p.cwd}`.toLocaleLowerCase().includes(q));
-    list.innerHTML = matches.map(p => `<button type="button" class="mp-row${workspaceScope() === p.name ? ' on' : ''}" data-workspace-project="${esc(p.name)}" aria-pressed="${workspaceScope() === p.name}" title="${esc(p.cwd || p.name || p.title)}"><b>${esc(p.name && p.name !== LOOSE_PROJECT ? p.name : p.title)}</b>${p.name && p.name !== LOOSE_PROJECT && p.title && p.title !== p.name ? `<small>${esc(p.title)}</small>` : ''}</button>`).join('') || '<div class="mp-empty">No matching projects.</div>';
+    // Creating sits where projects are chosen. A search with no exact match
+    // offers that name, so "find it, or make it" is one gesture.
+    const typed = input.value.trim();
+    const exact = typed && rows.some(p => [p.name, p.title].some(x => x && x.toLocaleLowerCase() === q));
+    const createRow = `<button type="button" class="mp-row mp-create" data-workspace-create title="Make a new folder a project, or add one you already have"><b>+ New project${typed && !exact ? ` “${esc(typed)}”` : ''}…</b></button>`;
+    list.innerHTML = (matches.map(p => `<button type="button" class="mp-row${workspaceScope() === p.name ? ' on' : ''}" data-workspace-project="${esc(p.name)}" aria-pressed="${workspaceScope() === p.name}" title="${esc(p.cwd || p.name || p.title)}"><b>${esc(p.name && p.name !== LOOSE_PROJECT ? p.name : p.title)}</b>${p.name && p.name !== LOOSE_PROJECT && p.title && p.title !== p.name ? `<small>${esc(p.title)}</small>` : ''}</button>`).join('') || '<div class="mp-empty">No matching projects.</div>') + createRow;
     list.querySelectorAll('[data-workspace-project]').forEach(button => button.onclick = () => { const p = button.dataset.workspaceProject; close(true); chooseWorkspaceProject(p); });
+    list.querySelector('[data-workspace-create]').onclick = () => { close(); openNewProjectForm(typed && !exact ? { name: typed } : {}); };
     position();
   };
   input.oninput = paint;
@@ -17128,7 +17182,8 @@ $('sideNewMore').onclick = e => {
   e.stopPropagation();
   closeFileActionMenu();
   const p = sideNewProject();
-  const items = [['New here · ' + p, startScopedConversation], ['New, no project', () => startLooseConversation()]];
+  const items = [...(p ? [['New here · ' + p, startScopedConversation], ['New, no project', () => startLooseConversation()]] : [['New conversation', () => startLooseConversation()]]),
+    ['New project…', () => openNewProjectForm()]];
   const menu = document.createElement('div');
   menu.className = 'file-action-menu ag-menu';
   menu.setAttribute('role', 'menu');

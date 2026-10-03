@@ -118,11 +118,16 @@
     return `<div class="set-group hk-frog">
       <h3>the frog</h3>
       <div class="hk-frog-row"><img src="/overlay/frog/wave.webp" alt="" class="hk-frog-pic">
-        <div><label class="set-check"><input type="checkbox" id="hkFrogOn"${f.on !== false ? ' checked' : ''}> appear beside text I select, with my spells</label>
-        <div class="set-help">Select a few words in any app; the frog hops beside them. Click it to cast a spell, or type what to do. You see the answer before anything changes. If you ignore it, it hops away.</div>
+        <div class="hk-modes">${[
+          ['beside', 'beside the text', 'Select a few words in any app: it hops in beside them, and leaves if you do not need it.'],
+          ['spot', 'in its spot', 'It lives where you put it, asleep, and wakes when you select text it can help with. Drag it to move it.'],
+          ['call', 'only when I call it', 'No frog until you press its key.'],
+        ].map(([v, label, help]) => `<label class="set-check"><input type="radio" name="hkFrogMode" value="${v}"${(f.mode || 'beside') === v ? ' checked' : ''}> <b>${label}</b> <span class="hint">${help}</span></label>`).join('')}</div>
+        <div class="set-help">Click it to cast a spell, or type what to do; you see the answer before anything changes. Right-click it to move it home, change its size, give it a rest, or keep it out of an app.</div>
         ${where ? `<div class="hk-where">${where}</div>` : ''}</div></div>
       <div class="set-field"><label for="hkFrogKeys">call it with</label><div class="row"><input id="hkFrogKeys" type="text" value="${esc(f.summonKeys || '')}" placeholder="no key" spellcheck="false" autocomplete="off"></div>
         <div class="set-help">Opens the frog’s book on whatever is selected: for text selected with the keyboard, or in apps it stays away from. Click the box and press the keys.</div></div>
+      <div class="set-field"><label for="hkFrogSize">size</label><div class="row"><select id="hkFrogSize">${[['small', 'small'], ['medium', 'medium'], ['large', 'large']].map(([v, l]) => `<option value="${v}"${(f.size || 'medium') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div></div>
       <div class="set-field"><label for="hkFrogTheme">looks</label><div class="row"><select id="hkFrogTheme">${themes}</select></div></div>
       <div class="set-field"><label for="hkFrogSkip">stays away from</label><div class="row"><input id="hkFrogSkip" type="text" value="${esc((f.skip || []).join(', '))}" placeholder="terminal, keepassxc" spellcheck="false"></div>
         <div class="set-help">Apps by name, separated by commas; <code>terminal</code> means every terminal (you select there to copy).</div></div>
@@ -225,12 +230,13 @@
     const frogSave = act(async () => {
       const m = $('#hkFrogModel').value;
       state = { ...state, ...(await api('PUT', '/api/hotkeys/frog', {
-        on: $('#hkFrogOn').checked, theme: $('#hkFrogTheme').value, minWords: Number($('#hkFrogWords').value), summonKeys: $('#hkFrogKeys').value.trim() || null,
+        mode: (rootEl.querySelector('input[name="hkFrogMode"]:checked') || {}).value || 'beside', size: $('#hkFrogSize').value, theme: $('#hkFrogTheme').value, minWords: Number($('#hkFrogWords').value), summonKeys: $('#hkFrogKeys').value.trim() || null,
         skip: $('#hkFrogSkip').value.split(',').map(x => x.trim()).filter(Boolean),
         model: m ? { provider: m.slice(0, m.indexOf('/')), model: m.slice(m.indexOf('/') + 1) } : null,
       })) };
     });
-    ['#hkFrogOn', '#hkFrogTheme', '#hkFrogWords', '#hkFrogModel', '#hkFrogSkip', '#hkFrogKeys'].forEach(sel => { const el = $(sel); if (el) el.onchange = frogSave; });
+    ['#hkFrogSize', '#hkFrogTheme', '#hkFrogWords', '#hkFrogModel', '#hkFrogSkip', '#hkFrogKeys'].forEach(sel => { const el = $(sel); if (el) el.onchange = frogSave; });
+    rootEl.querySelectorAll('input[name="hkFrogMode"]').forEach(r => r.onchange = frogSave);
     // Recording the summon key, as the hotkey editor does.
     const fk = $('#hkFrogKeys');
     if (fk) fk.onkeydown = e => {

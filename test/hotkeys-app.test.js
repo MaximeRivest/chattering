@@ -151,6 +151,14 @@ test('browser: a starter hotkey, a computer linked by its code, a press answered
   const rated = await call('/api/hotkeys/device/rate', { method: 'POST', body: { call: asked.body.call, verdict: 'right' }, headers: device });
   assert.equal(rated.status, 200, JSON.stringify(rated.body));
   assert.equal((await call('/api/hotkeys/device/rate', { method: 'POST', body: { call: 'someone-elses-call', verdict: 'wrong' }, headers: device })).status, 404, 'only answers this computer was given');
+  // From the frog's own right-click menu: where it lives, its size, an app to leave alone; nothing else.
+  const fromFrog = await call('/api/hotkeys/device/frog', { method: 'PUT', body: { mode: 'spot', size: 'large', skipApp: 'KeePassXC', theme: 'eink', model: { provider: 'x', model: 'y' } }, headers: device });
+  assert.equal(fromFrog.status, 200, JSON.stringify(fromFrog.body));
+  assert.deepEqual([fromFrog.body.frog.mode, fromFrog.body.frog.size, fromFrog.body.frog.theme, fromFrog.body.frog.model], ['spot', 'large', 'rockfrog-dark', null], 'its menu changes only what it offers');
+  assert.ok(fromFrog.body.frog.skip.includes('keepassxc'));
+  const old = (await call('/api/hotkeys/frog', { method: 'PUT', body: { on: false }, headers: auth })).body;
+  assert.equal(old.frog.mode, 'call', 'the older "off" means only when called');
+  await call('/api/hotkeys/frog', { method: 'PUT', body: { mode: 'beside' }, headers: auth });
   await call('/api/hotkeys/device/status', { method: 'POST', body: { desktop: 'Hyprland', supported: true, report: [], frog: { available: false, reason: 'no layer shell here' } }, headers: device });
   await evaluate(`location.hash = '#settings=profile'`);
   await evaluate(`location.hash = '#settings=hotkeys'`);

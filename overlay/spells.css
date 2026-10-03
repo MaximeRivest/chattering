@@ -12,7 +12,26 @@ body { font: var(--fs-body)/1.45 var(--font); color: var(--text); -webkit-user-s
 
 /* ---- the frog ---- */
 .frog { position: absolute; width: var(--frog-w); height: var(--frog-h); cursor: pointer; transform-origin: 50% 100%; filter: drop-shadow(0 4px 6px rgba(0, 0, 0, .25)); }
-.frog.small { --frog-w: 45px; --frog-h: 75px; }
+.frog.size-small { --frog-w: 40px; --frog-h: 66px; }
+.frog.size-large { --frog-w: 80px; --frog-h: 133px; }
+.frog.dragging { cursor: grabbing; }
+.frog.dragging .fbody { animation: none !important; transform: scale(1.06) rotate(-3deg); }
+/* Asleep in its spot: slow breath and a few z's; awake when it can help. */
+.frog.asleep .fbody { animation: breatheSlow 4.2s ease-in-out infinite; }
+.frog.awake { filter: drop-shadow(0 0 10px rgba(233, 189, 92, .45)) drop-shadow(0 4px 6px rgba(0, 0, 0, .25)); }
+.frog.awake .fbody { animation: perk .5s cubic-bezier(.3, 1.6, .5, 1) 1, breathe 2.8s ease-in-out .5s infinite; }
+@keyframes breatheSlow { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.03, .97); } }
+@keyframes perk { 0% { transform: translateY(0); } 40% { transform: translateY(-8px) scale(.98, 1.04); } 100% { transform: none; } }
+.zzz { position: absolute; right: -6px; top: 4%; width: 24px; height: 40px; pointer-events: none; display: none; }
+.frog.asleep .zzz { display: block; }
+.zzz i { position: absolute; left: 0; bottom: 0; font: 600 11px/1 var(--font-mono); font-style: normal; color: var(--text-dim); opacity: 0; animation: zzz 3.6s ease-out infinite; }
+.zzz i:nth-child(2) { animation-delay: 1.2s; font-size: 9px; } .zzz i:nth-child(3) { animation-delay: 2.4s; font-size: 8px; }
+@keyframes zzz { 0% { transform: translate(0, 0); opacity: 0; } 15% { opacity: .9; } 100% { transform: translate(12px, -34px); opacity: 0; } }
+.ctx { width: 250px; padding: 6px; }
+.ctx .item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px; border: 0; background: none; color: var(--text); font: inherit; text-align: left; border-radius: var(--r); cursor: pointer; }
+.ctx .item:hover, .ctx .item:focus-visible { background: var(--surface-2); outline: none; }
+.ctx .item small { margin-left: auto; color: var(--text-dim); font-size: var(--fs-micro); }
+.ctx hr { border: 0; border-top: 1px solid var(--border); margin: 4px 6px; }
 .frog img { position: absolute; left: -21.5%; top: -0.5%; width: 135.3%; height: 100.9%; pointer-events: none; -webkit-user-drag: none; }
 .frog .fbody { position: absolute; inset: 0; transform-origin: 50% 100%; animation: breathe 2.8s ease-in-out infinite; }
 .frog.enter { animation: hopIn .28s cubic-bezier(.3, 1.4, .5, 1) both; }

@@ -53,6 +53,8 @@ class Host:
         self.last_theme = None
         self.portal = None
         self.unmap_timer = 0
+        self.rects = []
+        self.dragging = False
 
     # ---- the window: a layer over one whole screen, see-through ----
     def build(self):
@@ -217,7 +219,16 @@ class Host:
                 self.to_page(m)
             self.queue = []
         elif t == "rects":
-            self.set_rects(msg.get("rects") or [])
+            self.rects = msg.get("rects") or []
+            if not self.dragging:
+                self.set_rects(self.rects)
+            return
+        elif t == "drag":
+            # While the frog is dragged the whole screen takes the pointer,
+            # so a quick move cannot outrun the frog's own small region.
+            self.dragging = bool(msg.get("on"))
+            whole = [{"x": 0, "y": 0, "w": max(1, self.win.get_width()), "h": max(1, self.win.get_height())}]
+            self.set_rects(whole if self.dragging else self.rects)
             return
         elif t == "keyboard":
             self.set_keyboard(bool(msg.get("on")))

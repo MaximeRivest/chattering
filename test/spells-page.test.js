@@ -34,11 +34,23 @@ async function browser(t) {
   };
   const send = (method, params = {}) => new Promise(r => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
   const ev = async e => { const r = await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true }); if (r.result.exceptionDetails) throw new Error(r.result.exceptionDetails.exception?.description); return r.result.result.value; };
-  const until = async (e, what) => { for (let i = 0; i < 100; i++) { if (await ev(`!!(${e})`).catch(() => false)) return; await sleep(50); } throw new Error('timed out: ' + what); };
+  const until = async (e, what, ms = 5000) => { for (let i = 0; i < ms / 50; i++) { if (await ev(`!!(${e})`).catch(() => false)) return; await sleep(50); } throw new Error('timed out: ' + what); };
   const key = async (k, code) => { await send('Input.dispatchKeyEvent', { type: 'keyDown', key: k, code: code || k, text: k.length === 1 ? k : undefined }); await send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code: code || k }); };
   const click = async sel => {
     const [x, y] = await ev(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
     for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
+  };
+  const drag = async (x0, y0, x1, y1) => {
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x0, y: y0 });
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: x0, y: y0, button: 'left', buttons: 1, clickCount: 1 });
+    for (let i = 1; i <= 8; i++) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x0 + (x1 - x0) * i / 8, y: y0 + (y1 - y0) * i / 8, button: 'left', buttons: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x1, y: y1, button: 'left', buttons: 0, clickCount: 1 });
+  };
+  const rightClick = async sel => {
+    const [x, y] = await ev(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'right', buttons: 2, clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'right', buttons: 0, clickCount: 1 });
   };
   const shot = async file => { const r = await send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(file, Buffer.from(r.result.data, 'base64')); };
   await send('Runtime.enable'); await send('Page.enable');
@@ -46,7 +58,7 @@ async function browser(t) {
   await send('Page.addScriptToEvaluateOnNewDocument', { source: 'window.__out = []; window.spellsHost = m => window.__out.push(m);' });
   await send('Page.navigate', { url: PAGE });
   await until(`window.Spells && window.__out.some(m => m.type === 'ready')`, 'the page ready');
-  return { ev, until, key, click, shot, errors, out: async type => ev(`window.__out.filter(m => m.type === ${JSON.stringify(type)})`) };
+  return { ev, until, key, click, drag, rightClick, shot, errors, out: async type => ev(`window.__out.filter(m => m.type === ${JSON.stringify(type)})`) };
 }
 
 const SPELLS = [
@@ -154,5 +166,79 @@ test('the frog, its book, a correction and a rewrite, in a browser', { timeout: 
   assert.equal(await b.ev(`document.documentElement.dataset.theme`), 'rockfrog-dark');
   assert.equal(await b.ev(`getComputedStyle(document.querySelector('.panel')).backgroundColor`), 'rgb(26, 31, 27)', 'Rockfrog dark’s surface');
   if (shots) await b.shot(path.join(shots, 'problem-dark.png'));
+  assert.deepEqual(b.errors, []);
+});
+
+test('in its spot: asleep, woken by a selection, dragged, resized, and its right-click menu', { timeout: 60000 }, async t => {
+  const b = await browser(t);
+  // Asleep in its spot, bottom right.
+  await b.ev(`Spells.receive(${JSON.stringify(show({ mode: 'spot', asleep: true, home: { x: 1180, y: 680 }, screen: { w: 1280, h: 800 }, words: 0, app: '' }))})`);
+  await b.until(`document.querySelector('.frog.asleep')`, 'asleep');
+  await new Promise(r => setTimeout(r, 400));
+  assert.match(await b.ev(`document.querySelector('.frog img').src`), /sleep\.webp$/);
+  assert.equal(await b.ev(`getComputedStyle(document.querySelector('.zzz')).display`), 'block', 'its z\u2019s');
+  if (process.env.SPELLS_SHOTS) { await new Promise(r => setTimeout(r, 1400)); await b.shot(path.join(process.env.SPELLS_SHOTS, 'spot-asleep.png')); }
+  const at = await b.ev(`[parseFloat(document.querySelector('.frog').style.left), parseFloat(document.querySelector('.frog').style.top)]`);
+  assert.deepEqual(at, [1180, 680], 'at home');
+
+  // Clicked asleep with nothing selected: it says what it needs, and sleeps on.
+  await b.click('.frog');
+  await b.until(`document.querySelector('.pill') && /Select some text/.test(document.querySelector('.pill').textContent)`, 'it asks for a selection');
+  assert.equal((await b.out('keyboard')).length, 0);
+
+  // A selection wakes it; clicked, the book opens beside it (above: it sits low).
+  await b.ev(`Spells.receive(${JSON.stringify(JSON.stringify({ type: 'wake', words: 12, app: 'Mail' }))})`);
+  await b.until(`document.querySelector('.frog.awake')`, 'awake');
+  if (process.env.SPELLS_SHOTS) { await new Promise(r => setTimeout(r, 700)); await b.shot(path.join(process.env.SPELLS_SHOTS, 'spot-awake.png')); }
+  await new Promise(r => setTimeout(r, 2600));
+  await b.click('.frog');
+  await b.until(`document.querySelector('.panel.menu')`, 'the book');
+  const above = await b.ev(`(() => { const p = document.querySelector('.panel.menu').getBoundingClientRect(), f = document.querySelector('.frog').getBoundingClientRect(); return p.bottom <= f.top; })()`);
+  assert.equal(above, true, 'above the frog, which sits low');
+  assert.match(await b.ev(`document.querySelector('.menu .where').textContent`), /12 words in Mail/);
+  await b.key('Escape');
+  await b.until(`!document.querySelector('.panel')`, 'closed');
+
+  // Dragged: the whole screen takes the pointer while it moves, then the new home.
+  const f = await b.ev(`(() => { const r = document.querySelector('.frog').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+  await b.drag(f[0], f[1], 200, 300);
+  await b.until(`window.__out.some(m => m.type === 'moved')`, 'moved');
+  const drags = (await b.out('drag')).map(m => m.on);
+  assert.deepEqual(drags, [true, false]);
+  const moved = (await b.out('moved')).pop();
+  assert.ok(Math.abs(moved.x - (200 - (f[0] - 1180))) <= 2 && Math.abs(moved.y - (300 - (f[1] - 680))) <= 2, 'where it was dropped: ' + JSON.stringify(moved));
+  assert.equal(await b.ev(`!!document.querySelector('.panel')`), false, 'a drag is not a click');
+  await b.until(`Math.abs(window.__out.filter(m => m.type === 'rects').pop().rects[0].x - ${moved.x - 14}) <= 1`, 'the pointer region followed it');
+
+  // Right-click: its menu. Smaller: its feet stay where they were.
+  const feet = await b.ev(`parseFloat(document.querySelector('.frog').style.top) + document.querySelector('.frog').offsetHeight`);
+  await b.rightClick('.frog');
+  await b.until(`document.querySelector('.panel.ctx')`, 'its menu');
+  const items = await b.ev(`[...document.querySelectorAll('.ctx .item')].map(e => e.dataset.k)`);
+  if (process.env.SPELLS_SHOTS) await b.shot(path.join(process.env.SPELLS_SHOTS, 'spot-ctx.png'));
+  assert.deepEqual(items, ['beside', 'smaller', 'larger', 'snooze', 'skip', 'settings']);
+  await b.click('.ctx [data-k="smaller"]');
+  await b.until(`window.__out.some(m => m.type === 'set' && m.size === 'small')`, 'smaller');
+  assert.deepEqual(await b.ev(`[document.querySelector('.frog').offsetWidth, document.querySelector('.frog').offsetHeight]`), [40, 66]);
+  assert.equal(await b.ev(`parseFloat(document.querySelector('.frog').style.top) + document.querySelector('.frog').offsetHeight`), feet, 'feet where they were');
+  await b.rightClick('.frog');
+  await b.until(`document.querySelector('.panel.ctx')`, 'its menu again');
+  await b.click('.ctx [data-k="snooze"]');
+  await b.until(`window.__out.some(m => m.type === 'snooze' && m.minutes === 60)`, 'a rest');
+  assert.deepEqual(b.errors, []);
+});
+
+test('beside the text, its right-click makes "here" its home', { timeout: 60000 }, async t => {
+  const b = await browser(t);
+  await b.ev(`Spells.receive(${JSON.stringify(show())})`);
+  await b.until(`document.querySelector('.frog')`, 'the frog');
+  await new Promise(r => setTimeout(r, 500));
+  await b.rightClick('.frog');
+  await b.until(`document.querySelector('.panel.ctx')`, 'its menu');
+  assert.equal(await b.ev(`document.querySelector('.ctx [data-k]').dataset.k`), 'spot');
+  await b.click('.ctx [data-k="spot"]');
+  await b.until(`window.__out.some(m => m.type === 'set' && m.mode === 'spot')`, 'it lives here now');
+  assert.ok((await b.out('moved')).length === 1, 'and here is its home');
+  await b.until(`document.querySelector('.frog.asleep')`, 'it goes to sleep there', 4000);
   assert.deepEqual(b.errors, []);
 });

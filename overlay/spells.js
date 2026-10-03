@@ -5,11 +5,15 @@
 // to Chattering; the host (host-gtk.py) shows this page in a see-through
 // layer over one screen and passes messages both ways:
 //
-//   in   show {at, words, app, spells, model, theme, systemDark, corner}
-//        working {label}   answer {...}   problem {title, message}
-//        done {text}       hide
+//   in   show {mode, size, at | home, words, app, spells, model, theme, systemDark, corner, screen, asleep}
+//        wake {words, app}   sleep   working {label}   answer {...}
+//        problem {title, message}   done {html}   hide
+//   (mode 'beside': the frog appears at `at` and leaves; 'spot': it lives at
+//   `home`, asleep, and wakes when a selection could use it)
 //   out  cast {id}   ask {request}   replace   copy   again   judge {call, verdict}
-//        close   hidden   settings   ready
+//        close   hidden   settings   ready   shown   moved {x, y, w, h}
+//        set {mode | size}   snooze {minutes}   skip-app   (its right-click menu)
+//        drag {on} (host only: the whole screen takes the pointer while dragging)
 //        and, for the host only: rects [{x, y, w, h}] (where the pointer may
 //        land; elsewhere it falls through to the app below) and
 //        keyboard {on} (whether the page needs the keys).
@@ -111,11 +115,14 @@
   // window's corner), beside it to the right, else to the left near the
   // screen's edge.
   function placeFrog() {
-    const small = !!S.small;
-    frog.classList.toggle('small', small);
-    const w = small ? 45 : 60, h = small ? 75 : 100;
-    let x = S.corner ? S.at.x - w : S.at.x + 10, y = S.at.y - h + 8;
-    if (x + w > vw() - 4) x = S.at.x - w - 10;
+    for (const k of Object.keys(SIZES)) frog.classList.toggle('size-' + k, (S.size || 'medium') === k);
+    const [w, h] = size();
+    let x, y;
+    if (spot()) { x = S.home.x; y = S.home.y; }
+    else {
+      x = S.corner ? S.at.x - w : S.at.x + 10; y = S.at.y - h + 8;
+      if (x + w > vw() - 4) x = S.at.x - w - 10;
+    }
     frog.style.left = clamp(x, 4, vw() - w - 4) + 'px';
     frog.style.top = clamp(y, 4, vh() - h - 4) + 'px';
   }
@@ -124,6 +131,15 @@
   function placePanel(el) {
     const f = frog.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;
     const rightSide = f.left > vw() / 2;
+    if (spot() || el.classList.contains('ctx')) {
+      // Beside the frog where it lives: toward the middle of the screen.
+      const low = f.top + f.height / 2 > vh() / 2;
+      const x = rightSide ? f.left - w + f.width : f.left;
+      const y = low ? f.top - h - 8 : f.bottom + 8;
+      el.style.left = clamp(x, 8, vw() - w - 8) + 'px';
+      el.style.top = clamp(y, 8, vh() - h - 8) + 'px';
+      return;
+    }
     let x = rightSide ? f.left - w + 24 : f.left - 12;
     let y = (S.at.y || f.bottom) + 14;
     if (y + h > vh() - 8) y = f.top - h - 6;
@@ -140,7 +156,11 @@
   }
 
   // ---- the frog ----
-  const POSES = ['idle', 'blink', 'wave', 'cast', 'happy', 'puzzled'];
+  const POSES = ['idle', 'blink', 'wave', 'cast', 'happy', 'puzzled', 'sleep', 'wake'];
+  const SIZES = { small: [40, 66], medium: [60, 100], large: [80, 133] };
+  const size = () => SIZES[(S && S.size) || 'medium'] || SIZES.medium;
+  const spot = () => !!(S && S.mode === 'spot');
+  let awake = false, sleepT = 0, dragging = null, ignoreClick = false;
   POSES.forEach(p => { const i = new Image(); i.src = 'frog/' + p + '.webp'; });
   const pose = p => { if (img) img.src = 'frog/' + p + '.webp'; };
   function blinkLoop() {
@@ -159,7 +179,25 @@
   }
   function idleSoon(ms) {
     clearTimeout(fadeT);
+    if (spot()) { sleepSoon(Math.max(ms, 8000)); return; }
     fadeT = setTimeout(() => { if (mode === 'idle') hopAway(); }, ms);
+  }
+  // In its spot the frog never leaves: it goes back to sleep.
+  function rest() { if (spot()) { closePanel(); keyboard(false); mode = 'idle'; goSleep(); } else hopAway(); }
+  function sleepSoon(ms) { clearTimeout(sleepT); sleepT = setTimeout(() => { if (mode === 'idle') goSleep(); }, ms); } // waking cancels it
+  function goSleep() {
+    if (!frog) return;
+    clearTimeout(sleepT); awake = false;
+    frog.classList.remove('awake', 'busy', 'cheer', 'shake'); frog.classList.add('asleep');
+    pose('sleep');
+  }
+  function wakeUp(m) {
+    if (!frog) return;
+    if (m) { S.words = m.words; S.app = m.app; }
+    awake = true; clearTimeout(sleepT);
+    frog.classList.remove('asleep'); void frog.offsetWidth; frog.classList.add('awake');
+    pose('wake'); setTimeout(() => { if (awake && mode === 'idle') pose('idle'); }, 1400);
+    sleepSoon(8000);
   }
   function hopAway() {
     if (mode === 'off') return;
@@ -180,20 +218,124 @@
     if (!frog) {
       frog = document.createElement('div'); frog.className = 'frog'; frog.tabIndex = -1;
       frog.setAttribute('role', 'button'); frog.setAttribute('aria-label', 'Chattering: cast a spell on the selected text');
-      frog.innerHTML = '<div class="fbody"><img alt=""></div>';
+      frog.innerHTML = '<div class="fbody"><img alt=""></div><div class="zzz" aria-hidden="true"><i>z</i><i>z</i><i>z</i></div>';
       img = frog.querySelector('img');
       frog.addEventListener('mousedown', e => e.preventDefault());
-      frog.addEventListener('click', () => { if (mode === 'menu') { closePanel(); keyboard(false); mode = 'idle'; idleSoon(3000); } else if (mode === 'idle') openMenu(); });
+      frog.addEventListener('click', onFrogClick);
+      frog.addEventListener('pointerdown', dragStart);
+      frog.addEventListener('contextmenu', e => { e.preventDefault(); openCtx(); });
       root.appendChild(frog);
     }
     placeFrog();
-    frog.classList.remove('leave', 'busy', 'cheer', 'shake'); void frog.offsetWidth; frog.classList.add('enter');
-    mode = 'idle'; pose('wave'); setTimeout(() => { if (mode === 'idle') pose('idle'); }, 1100);
+    frog.classList.remove('leave', 'busy', 'cheer', 'shake', 'asleep', 'awake'); void frog.offsetWidth; frog.classList.add('enter');
+    mode = 'idle'; awake = !spot();
+    if (spot() && m.asleep !== false && !m.open) { goSleep(); }
+    else { pose('wave'); setTimeout(() => { if (mode === 'idle') pose('idle'); }, 1100); }
     blinkLoop();
-    if (m.open) openMenu(); else idleSoon(m.linger || 5000);
+    if (m.open) { awake = true; openMenu(); } else if (!spot()) idleSoon(m.linger || 5000); else if (awake) sleepSoon(8000);
     rectsSoon();
     // Drawn: the helper times how long a frog takes to appear.
     requestAnimationFrame(() => requestAnimationFrame(() => send({ type: 'shown' })));
+  }
+
+  function onFrogClick() {
+    if (ignoreClick) { ignoreClick = false; return; }
+    if (mode === 'menu' || (panel && panel.classList.contains('ctx'))) { closePanel(); keyboard(false); mode = 'idle'; idleSoon(3000); return; }
+    if (mode !== 'idle') return;
+    // Asleep with nothing to work on: it says what it needs.
+    if (spot() && (!awake || !S.words)) { pose('puzzled'); frog.classList.remove('asleep'); note('Select some text, then click me', 2200, false); sleepSoon(2400); return; }
+    openMenu();
+  }
+
+  // Dragging: past a few pixels a press is a drag, not a click. While it
+  // lasts the whole screen takes the pointer (the host is told), so a fast
+  // move cannot leave the frog behind.
+  function dragStart(e) {
+    if (e.button !== 0 || mode === 'busy') return;
+    const f = frog.getBoundingClientRect();
+    dragging = { sx: e.clientX, sy: e.clientY, dx: e.clientX - f.left, dy: e.clientY - f.top, moved: false, id: e.pointerId };
+    frog.setPointerCapture(e.pointerId);
+    frog.addEventListener('pointermove', dragMove);
+    frog.addEventListener('pointerup', dragEnd);
+    frog.addEventListener('pointercancel', dragEnd);
+  }
+  function dragMove(e) {
+    if (!dragging) return;
+    if (!dragging.moved) {
+      if (Math.hypot(e.clientX - dragging.sx, e.clientY - dragging.sy) < 5) return;
+      dragging.moved = true; frog.classList.add('dragging'); frog.classList.remove('enter');
+      closePanel(); closePill(); clearTimeout(fadeT); clearTimeout(sleepT);
+      send({ type: 'drag', on: true });
+    }
+    const [w, h] = size();
+    frog.style.left = clamp(e.clientX - dragging.dx, 4, vw() - w - 4) + 'px';
+    frog.style.top = clamp(e.clientY - dragging.dy, 4, vh() - h - 4) + 'px';
+  }
+  function dragEnd() {
+    if (!dragging) return;
+    const d = dragging; dragging = null;
+    frog.removeEventListener('pointermove', dragMove);
+    frog.removeEventListener('pointerup', dragEnd);
+    frog.removeEventListener('pointercancel', dragEnd);
+    if (!d.moved) return;
+    ignoreClick = true; setTimeout(() => { ignoreClick = false; }, 300);
+    frog.classList.remove('dragging');
+    send({ type: 'drag', on: false });
+    const [w, h] = size();
+    const x = parseFloat(frog.style.left), y = parseFloat(frog.style.top);
+    if (spot()) S.home = { x, y };
+    send({ type: 'moved', x, y, w, h, screen: { w: vw(), h: vh() } });
+    rectsSoon();
+    if (spot()) { if (!awake) goSleep(); else sleepSoon(8000); } else idleSoon(8000);
+  }
+
+  // Right-click: where it lives, its size, a rest, an app to leave alone.
+  function openCtx() {
+    if (mode === 'busy') return;
+    clearTimeout(fadeT); clearTimeout(sleepT); closePanel(); closePill();
+    const items = [];
+    if (spot()) items.push(['beside', 'Come beside the text instead']);
+    else items.push(['spot', 'Live here, asleep until I can help']);
+    if ((S.size || 'medium') !== 'small') items.push(['smaller', 'Smaller']);
+    if ((S.size || 'medium') !== 'large') items.push(['larger', 'Larger']);
+    items.push(['hr']);
+    items.push(['snooze', 'Sleep for an hour']);
+    if (S.app) items.push(['skip', 'Stay away from ' + S.app]);
+    items.push(['hr']);
+    items.push(['settings', 'Settings…', 'in Chattering']);
+    const el = document.createElement('div'); el.className = 'panel ctx'; el.setAttribute('role', 'menu'); el.tabIndex = -1;
+    el.innerHTML = items.map(([k, label, hint]) => k === 'hr' ? '<hr>' : `<button class="item" role="menuitem" data-k="${k}">${esc(label)}${hint ? `<small>${esc(hint)}</small>` : ''}</button>`).join('');
+    el.addEventListener('mousedown', e => e.preventDefault());
+    el.querySelectorAll('[data-k]').forEach(b => b.onclick = () => ctxDo(b.dataset.k));
+    el.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePanel(); keyboard(false); mode = 'idle'; idleSoon(3000); } });
+    panel = el; mode = 'menu'; root.appendChild(el); placePanel(el); keyboard(true);
+    setTimeout(() => el.focus({ preventScroll: true }), 0); rectsSoon();
+  }
+  function ctxDo(k) {
+    closePanel(); keyboard(false); mode = 'idle';
+    const order = ['small', 'medium', 'large'], i = order.indexOf(S.size || 'medium');
+    if (k === 'spot') {
+      // Here becomes its home.
+      S.mode = 'spot'; S.home = { x: parseFloat(frog.style.left), y: parseFloat(frog.style.top) };
+      const [w, h] = size();
+      send({ type: 'moved', x: S.home.x, y: S.home.y, w, h, screen: { w: vw(), h: vh() } });
+      send({ type: 'set', mode: 'spot' });
+      note('I’ll sleep here, and wake when I can help', 2400, false);
+      sleepSoon(2500);
+    } else if (k === 'beside') { send({ type: 'set', mode: 'beside' }); hopAway(); }
+    else if (k === 'smaller' || k === 'larger') {
+      S.size = order[Math.max(0, Math.min(2, i + (k === 'larger' ? 1 : -1)))];
+      // Its feet stay where they were.
+      const bottom = parseFloat(frog.style.top) + frog.offsetHeight, left = parseFloat(frog.style.left);
+      placeFrog();
+      frog.style.left = clamp(left, 4, vw() - size()[0] - 4) + 'px';
+      frog.style.top = clamp(bottom - size()[1], 4, vh() - size()[1] - 4) + 'px';
+      if (spot()) { S.home = { x: parseFloat(frog.style.left), y: parseFloat(frog.style.top) }; send({ type: 'moved', x: S.home.x, y: S.home.y, w: size()[0], h: size()[1], screen: { w: vw(), h: vh() } }); }
+      send({ type: 'set', size: S.size });
+      rectsSoon(); idleSoon(5000);
+    } else if (k === 'snooze') { send({ type: 'snooze', minutes: 60 }); note('Sleeping for an hour', 1800, false); if (spot()) sleepSoon(1900); else setTimeout(hopAway, 1900); }
+    else if (k === 'skip') { send({ type: 'skip-app' }); note('I’ll stay away from ' + esc(S.app), 1800, false); if (spot()) sleepSoon(1900); else setTimeout(hopAway, 1900); }
+    else if (k === 'settings') { send({ type: 'settings' }); rest(); }
   }
 
   // ---- the menu ----
@@ -304,7 +446,7 @@
     rectsSoon();
   }
   function act(what) {
-    if (what === 'close') { closePanel(); keyboard(false); mode = 'idle'; pose('idle'); idleSoon(1500); send({ type: 'close' }); return; }
+    if (what === 'close') { closePanel(); keyboard(false); mode = 'idle'; pose('idle'); idleSoon(1500); send({ type: 'close' }); if (spot()) sleepSoon(4000); return; }
     if (what === 'again') { send({ type: 'again' }); working(answerData && answerData.label || 'Again'); return; }
     if (what === 'copy') { send({ type: 'copy' }); closePanel(); keyboard(false); mode = 'idle'; note('<span class="live">✓</span> Copied to the clipboard', 1800); return; }
     if (what === 'replace') { send({ type: 'replace' }); closePanel(); keyboard(false); mode = 'busy'; return; }
@@ -314,7 +456,7 @@
     closePill();
     const el = document.createElement('div'); el.className = 'pill'; el.setAttribute('role', 'status'); el.innerHTML = htmlText;
     pill = el; root.appendChild(el); placePill(el); rectsSoon();
-    setTimeout(() => { if (pill === el) closePill(); if (away) hopAway(); }, ms);
+    setTimeout(() => { if (pill === el) closePill(); if (away) rest(); }, ms);
   }
   function problem(p) {
     stopWorking(); closePanel();
@@ -340,6 +482,7 @@
     if (mode !== 'menu') return;
     const rows = [...panel.querySelectorAll('.row')], cur = Math.max(0, rows.findIndex(b => b.classList.contains('on')));
     if (e.key === 'Escape') { e.preventDefault(); closePanel(); keyboard(false); mode = 'idle'; idleSoon(2500); return; }
+    if (panel.classList.contains('ctx')) return;
     if (e.key === 'Tab') { e.preventDefault(); panel.querySelector('#ask').focus(); return; }
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault(); if (!rows.length) return;
@@ -365,6 +508,8 @@
       else if (m.type === 'problem') { if (frog) problem(m); }
       else if (m.type === 'done') { stopWorking(); if (frog) { pose('happy'); frog.classList.add('cheer'); sparkles(9); note(m.html || esc(m.text || 'Done'), m.ms || 2200); } }
       else if (m.type === 'hide') hopAway();
+      else if (m.type === 'wake') { if (frog && mode === 'idle') wakeUp(m); }
+      else if (m.type === 'sleep') { if (frog && mode === 'idle') goSleep(); }
       else if (m.type === 'theme') applyTheme(m.theme, m.systemDark);
     },
     get state() { return { mode, panel: panel && panel.className, words: S && S.words }; },

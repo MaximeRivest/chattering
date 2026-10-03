@@ -39,8 +39,9 @@ function world({ focused = { id: 'w1', app: 'org.mozilla.thunderbird', terminal:
   };
   const host = { send: m => sent.push(m), onMessage: h => { pageHandler = h; } };
   const calls = [];
-  const api = async (route, body) => {
-    calls.push([route, body]);
+  const api = async (route, body, timeoutMs, method = 'POST') => {
+    calls.push([route, body, method]);
+    if (route === '/api/hotkeys/device/frog') return { frog: {} };
     if (route === '/api/hotkeys/device/run') return body.id === 'cccccc'
       ? { text: 'It means you went shopping.', program: 'explain_text', version: 'v1', model: 'openai-codex/gpt-6-luna', call: 'c-explain' }
       : { text: 'I went to the store.', program: 'fix_writing', version: 'v2', model: 'openai-codex/gpt-6-luna', call: 'c-fix' };
@@ -94,7 +95,7 @@ test('a spell: the selected text goes out, the answer comes back with its facts'
   await tick(20);
   w.page({ type: 'keyboard', on: true });
   await w.page({ type: 'cast', id: 'aaaaaa' });
-  assert.deepEqual(w.calls[0], ['/api/hotkeys/device/run', { id: 'aaaaaa', text: '  i has went to the store ' }]);
+  assert.deepEqual(w.calls[0].slice(0, 2), ['/api/hotkeys/device/run', { id: 'aaaaaa', text: '  i has went to the store ' }]);
   const a = w.sent.find(m => m.type === 'answer');
   assert.equal(a.kind, 'replace');
   assert.equal(a.before, 'i has went to the store');
@@ -108,7 +109,7 @@ test('a spell: the selected text goes out, the answer comes back with its facts'
 
   // Judged from the page: to Chattering.
   await w.page({ type: 'judge', call: 'c-explain', verdict: 'wrong' });
-  assert.deepEqual(w.calls.pop(), ['/api/hotkeys/device/rate', { call: 'c-explain', verdict: 'wrong' }]);
+  assert.deepEqual(w.calls.pop().slice(0, 2), ['/api/hotkeys/device/rate', { call: 'c-explain', verdict: 'wrong' }]);
 });
 
 test('replace: pasted over the same selection with its spaces kept, else left on the clipboard', async () => {
@@ -136,7 +137,7 @@ test('a question typed into the book, and the answer it decides', async () => {
   w.frog.onSelection('i has went to the store');
   await tick(20);
   await w.page({ type: 'ask', request: 'make it present perfect' });
-  assert.deepEqual(w.calls[0], ['/api/hotkeys/device/ask', { request: 'make it present perfect', text: 'i has went to the store' }]);
+  assert.deepEqual(w.calls[0].slice(0, 2), ['/api/hotkeys/device/ask', { request: 'make it present perfect', text: 'i has went to the store' }]);
   assert.equal(w.sent.find(m => m.type === 'answer').kind, 'replace');
   await w.page({ type: 'again' });
   assert.equal(w.calls.filter(c => c[0] === '/api/hotkeys/device/ask').length, 2, 'again asks again');
@@ -192,4 +193,54 @@ test('a Chattering older than the frog sends no frog settings: it stays off', as
   w.helper.fire('summon');
   await tick(20);
   assert.equal(w.sent.length, 0);
+});
+
+test('in its spot: it goes home asleep, a selection wakes it, its home is kept per screen', async t => {
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'frog-home-'));
+  const prev = process.env.CHATTERING_DATA_DIR; process.env.CHATTERING_DATA_DIR = dir;
+  t.after(() => { fs.rmSync(dir, { recursive: true, force: true }); if (prev === undefined) delete process.env.CHATTERING_DATA_DIR; else process.env.CHATTERING_DATA_DIR = prev; });
+  const w = world({ selectionNow: 'i has went to the store' });
+  w.helper.frog.mode = 'spot';
+  w.helper.fire('changed');
+  await tick(20);
+  const home = w.sent.find(m => m.type === 'show');
+  assert.ok(home && home.mode === 'spot' && home.asleep === true);
+  assert.deepEqual([home.monitor, home.home], ['DP-1', { x: 1920 - 60 - 28, y: 1080 - 100 - 28 }], 'bottom right of the focused screen by default');
+
+  // A selection wakes it where it is: no frog at the pointer.
+  w.frog.onSelection('i has went to the store');
+  await tick(20);
+  assert.equal(w.sent.filter(m => m.type === 'show').length, 1);
+  assert.deepEqual(w.sent.pop(), { type: 'wake', words: 6, app: 'Thunderbird' });
+  await w.page({ type: 'cast', id: 'aaaaaa' });
+  await w.page({ type: 'replace' });
+  assert.deepEqual(w.did.find(d => d[0] === 'paste'), ['paste', 'w1', 'I went to the store.'], 'the spell works on the selection, from the spot');
+
+  // Dragged to the top left: kept for this screen, from its nearest corner.
+  await w.page({ type: 'moved', x: 40, y: 50, w: 60, h: 100, screen: { w: 1920, h: 1080 } });
+  const saved = JSON.parse(fs.readFileSync(path.join(dir, 'hotkeys-frog-home.json'), 'utf8'));
+  assert.deepEqual(saved, { monitor: 'DP-1', places: { 'DP-1': { right: false, bottom: false, dx: 40, dy: 50 } } });
+  await w.frog.showSpot();
+  assert.deepEqual(w.sent.filter(m => m.type === 'show').pop().home, { x: 40, y: 50 });
+
+  // A full-screen window: it hides, and comes back after.
+  world.focus = { ...world.focus, fullscreen: true };
+  await w.frog.onDesktop('fullscreen', '1');
+  assert.equal(w.sent.pop().type, 'hide');
+  w.page({ type: 'hidden' });
+  world.focus = { ...world.focus, fullscreen: false };
+  await w.frog.onDesktop('fullscreen', '0');
+  assert.equal(w.sent.pop().type, 'show');
+
+  // Its right-click menu: size and mode go to Chattering; a rest; an app left alone.
+  await w.page({ type: 'set', size: 'small' });
+  assert.deepEqual(w.calls.pop(), ['/api/hotkeys/device/frog', { size: 'small' }, 'PUT']);
+  await w.page({ type: 'skip-app' });
+  assert.deepEqual(w.calls.pop(), ['/api/hotkeys/device/frog', { skipApp: 'org.mozilla.thunderbird' }, 'PUT']);
+  await w.page({ type: 'snooze', minutes: 60 });
+  const n = w.sent.length;
+  w.frog.onSelection('some other words now');
+  await tick(20);
+  assert.equal(w.sent.length, n, 'asleep for an hour: a selection does not wake it');
 });

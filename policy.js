@@ -174,6 +174,7 @@ const ROUTES = {
   '/api/project/purpose': 'member',
   '/api/project/create': 'member',
   '/api/project/unregister': 'member',
+  '/api/project/undo-setup': 'member',
   '/api/project/context': 'member',
   '/api/project/fold': 'member',
   '/api/project/unfold': 'member',
@@ -389,7 +390,7 @@ const ROUTES = {
 const BEFORE_SIGN_IN = ['/api/sync/join', '/api/file/preview-assets/*',
   // A computer's hotkey helper (design/93): asking for a code, then its own credential.
   '/api/hotkeys/pair', '/api/hotkeys/pair/poll', '/api/hotkeys/device', '/api/hotkeys/device/*', '/api/hotkeys/device/status', '/api/hotkeys/device/run',
-  '/api/hotkeys/device/ask', '/api/hotkeys/device/rate'];
+  '/api/hotkeys/device/ask', '/api/hotkeys/device/rate', '/api/hotkeys/device/frog'];
 
 function normalizeEntry(raw) {
   const e = typeof raw === 'string' ? { level: raw } : { ...raw };
