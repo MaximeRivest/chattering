@@ -6725,8 +6725,12 @@ async function madeView(name, identity) {
 // One call of a made program, in the context Chattering's own run in: the
 // model of settings → model, the person the call is for (usage and budget),
 // a time limit, a stop signal.
-function madeCall(definition, inputs, { person, caller = {}, signal = null, onEvent = null, timeoutMs = 3 * 60 * 1000, purpose }) {
+// A hotkey (design/93) may name its own model, thinking level and circuit.
+function madeCall(definition, inputs, { person, caller = {}, signal = null, onEvent = null, timeoutMs = 3 * 60 * 1000, purpose, model, thinking, health }) {
   const ctx = { automatic: false, timeoutMs, signal, purpose: purpose || 'program:' + definition.name, person: person ? person.id : null };
+  if (model && model.provider && model.model) ctx.model = { provider: model.provider, model: model.model };
+  if (thinking) ctx.thinking = thinking;
+  if (health) ctx.health = health;
   const who = { ...caller };
   for (const [k, v] of Object.entries(who)) if (v === undefined || v === null || v === '') delete who[k];
   return modelCallContext.run(ctx, () => aiPrograms.runMade(definition, inputs, { caller: who, signal, onEvent }));
@@ -6801,6 +6805,126 @@ async function madeEndpoint(req, res, name, { person, key = null }) {
     if (stream && !res.writableEnded) res.end();
   }
 }
+// ---- hotkeys (design/93) ----
+// A person binds key combinations to the programs made here; the helper on
+// each of their computers (hotkeys-device.js) keeps them on the desktop and
+// sends what a key read. The store (hotkeys.js) holds the hotkeys and the
+// linked computers; the programs are the made programs above, so every
+// answer lands in the program's log, to be judged like any other call.
+const hotkeysLib = require('./hotkeys.js');
+const hotkeyStore = hotkeysLib.createHotkeys({ file: path.join(DATA_DIR, 'hotkeys.json') });
+const hotkeyLimiter = programsDeploy.createLimiter({ perMinute: 30, atOnce: 2 });
+const HOTKEY_TEXT_MAX = 20000;
+// The fields the page and the helper accept, so a stored report stays small.
+const HOTKEY_STATES = new Set(['on', 'taken', 'bad', 'unsupported']);
+const hotkeyClean = (v, n) => String(v ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, n);
+// A circuit of its own: a fast model failing under a keystroke never pauses notes and memory.
+let hotkeyHealthCircuit = null;
+const hotkeyHealth = () => (hotkeyHealthCircuit ||= createModelHealth({ baseCooldownMs: 60 * 1000 }));
+// Guests and walled people: a hotkey runs on the owner's model outside their walls.
+const hotkeyRefusal = user => (!user || user.disabled ? 'This person cannot use hotkeys.' : (user.scope === 'guest' || user.walled) ? 'Hotkeys are not available to guests yet.' : null);
+const hotkeyLabel = b => b.label || (hotkeysLib.STARTERS.find(s => s.definition.name === b.program) || {}).label || b.program.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
+
+// The programs a person may bind: the made programs in places they may act
+// in, with whether a hotkey can feed each one (published, one text input).
+function hotkeyPrograms(identity) {
+  const out = [];
+  for (const p of madePrograms.list()) {
+    if (p.project) { try { assertCan(identity, 'act', { project: p.project, creator: projectCreatorOf(p.project) }, 'project ' + p.project); } catch { continue; } }
+    const live = madePrograms.liveDefinition(p.name);
+    const def = live && live.definition;
+    const f = def ? hotkeysLib.fieldFor(def, null) : {};
+    out.push({ name: p.name, project: p.project || null, live: !!def, field: f.field || null, problem: f.error || null,
+      inputs: def ? def.inputs.map(i => i.name) : [], description: def ? String(def.description || '').split('\n')[0].slice(0, 200) : '' });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+// Everything settings → hotkeys shows.
+function hotkeysView(identity) {
+  const person = identity.user || usersLib.ownerOf(roster);
+  return {
+    bindings: hotkeyStore.bindings(person.id),
+    programs: hotkeyPrograms(identity),
+    starters: hotkeysLib.STARTERS.map(s => ({ id: s.id, label: s.label, keys: s.keys, input: s.input, output: s.output, program: s.definition.name, made: madePrograms.has(s.definition.name) })),
+    computers: hotkeyStore.computers(person.id),
+    inputs: hotkeysLib.INPUTS, outputs: hotkeysLib.OUTPUTS,
+    settingsModel: currentModelLabel(),
+  };
+}
+// A starter: its program made and published here if no one has yet, then a
+// hotkey for it. A starter program someone already made is used as it is.
+async function hotkeyStarter(identity, id) {
+  const starter = hotkeysLib.STARTERS.find(s => s.id === id);
+  if (!starter) throw Object.assign(new Error('No such starter.'), { status: 404 });
+  const person = identity.user || usersLib.ownerOf(roster);
+  const def = programsDeploy.normalizeDefinition(starter.definition);
+  let note = '';
+  if (!madePrograms.has(def.name)) {
+    const folder = madeFolderFor(null, def.name);
+    if (fs.existsSync(path.join(folder, programsDeploy.SOURCE))) throw Object.assign(new Error(`${folder} already holds a program.`), { status: 409 });
+    const made = await aiPrograms.madeManifest(def);
+    programsDeploy.writeSource(folder, def, made.manifest);
+    madePrograms.add({ name: def.name, module: MADE_MODULE, folder, project: null, by: person.id });
+    madePrograms.publish(def.name, { version: made.version, by: person.id });
+    programLogChanged();
+  } else if (!madePrograms.liveDefinition(def.name)) {
+    note = `${def.name} exists but is not published: publish it on its page and the hotkey works.`;
+  }
+  const list = hotkeyStore.bindings(person.id).map(b => ({ ...b }));
+  const clash = list.find(b => b.on && hotkeysLib.normalizeBinding({ ...b }).keys === hotkeysLib.normalizeBinding({ keys: starter.keys, program: def.name }).keys);
+  list.push({ keys: starter.keys, label: starter.label, program: def.name, input: starter.input, output: starter.output, on: !clash });
+  if (clash) note = `${starter.keys} is already your hotkey for ${clash.program}: the new one is off until you give it other keys.`;
+  hotkeyStore.setBindings(person.id, list);
+  return { ...hotkeysView(identity), note };
+}
+// What a linked computer is given: the hotkeys that are on, and whose they are.
+function hotkeyDeviceView(person, computer) {
+  return {
+    version: hotkeyStore.version(person.id),
+    person: { id: person.id, name: person.name },
+    computer: { id: computer.id, name: computer.name },
+    bindings: hotkeyStore.bindings(person.id).filter(b => b.on).map(b => ({ id: b.id, keys: b.keys, label: hotkeyLabel(b), program: b.program, input: b.input, output: b.output })),
+  };
+}
+// One press: the text a computer read, through the program, back as text.
+async function hotkeyRun(person, computer, p) {
+  const fail = (status, message) => Object.assign(new Error(message), { status });
+  const b = hotkeyStore.binding(person.id, String(p.id || ''));
+  if (!b || !b.on) throw fail(404, 'This hotkey is not set up any more.');
+  const identity = identityOfUserId(person.id);
+  if (!identity) throw fail(401, 'This person cannot use hotkeys.');
+  assertMadeAccess(identity, b.program);
+  const live = madePrograms.liveDefinition(b.program);
+  if (!live) throw fail(409, `${b.program} is not published: publish it on its page in Chattering.`);
+  const f = hotkeysLib.fieldFor(live.definition, b.field);
+  if (f.error) throw fail(409, f.error);
+  const text = typeof p.text === 'string' ? p.text : '';
+  if (!text.trim()) throw fail(400, 'There is no text to work on.');
+  if (text.length > HOTKEY_TEXT_MAX) throw fail(413, `A hotkey takes at most ${HOTKEY_TEXT_MAX} characters.`);
+  const inputs = programsDeploy.checkInputs(live.definition, { [f.field]: text });
+  const turn = hotkeyLimiter.take('person:' + person.id);
+  if (!turn.ok) throw fail(429, 'Too many hotkeys at once: ' + turn.why + '.');
+  try {
+    assertWithinBudget(person);
+    const out = await madeCall(live.definition, inputs, {
+      person, model: b.model || undefined, thinking: 'off', health: hotkeyHealth(), timeoutMs: 2 * 60 * 1000,
+      caller: { kind: 'hotkey', user: programPerson(person), key: computer.name },
+    });
+    const n = madeVersionNames(b.program).get(live.version);
+    return { text: hotkeysLib.answerText(live.definition, out.outputs), program: b.program, version: n ? 'v' + n : null, call: out.callId };
+  } catch (e) {
+    if (e.status) throw e;
+    const f2 = madeFailure(e);
+    throw fail(f2.status, f2.body.error);
+  } finally { turn.release(); }
+}
+// A computer's report: which hotkeys its desktop took, which it refused.
+function hotkeyStatusOf(p) {
+  const report = (Array.isArray(p && p.report) ? p.report : []).slice(0, 60)
+    .map(r => ({ id: hotkeyClean(r && r.id, 32), state: HOTKEY_STATES.has(r && r.state) ? r.state : 'bad', ...(r && r.by ? { by: hotkeyClean(r.by, 120) } : {}) }));
+  return { at: new Date().toISOString(), desktop: hotkeyClean(p && p.desktop, 40), supported: !(p && p.supported === false), reason: hotkeyClean(p && p.reason, 200) || null, report };
+}
+
 // The model's draft (program_draft) as a definition that passes the checks:
 // names made into names, kinds into shapes, a taken name numbered. Its
 // examples come back in the program's own inputs, for the person to review.
@@ -16950,6 +17074,57 @@ async function handleRequest(req, res) {
       if (req.method === 'POST') return madeEndpoint(req, res, madeAddress[1], { person, key: hit.key });
       return json(res, 405, { error: 'POST the inputs as JSON, or GET what the program takes and gives.' });
     }
+    // Hotkeys (design/93): a computer asks for a code, the person approves it
+    // signed in (below), and the computer's credential (chk_…) then opens
+    // these routes for that person and no other. Before sign-in: the
+    // computer has no cookie, and its credential is no sign-in.
+    if (u.pathname === '/api/hotkeys/pair' && req.method === 'POST') {
+      try { return json(res, 200, hotkeyStore.startPairing(await programBody(req, 4096))); }
+      catch (e) { return json(res, e.status || 400, { error: e.message }); }
+    }
+    if (u.pathname === '/api/hotkeys/pair/poll' && req.method === 'POST') {
+      try { return json(res, 200, hotkeyStore.poll((await programBody(req, 4096)).pairing)); }
+      catch (e) { return json(res, e.status || 400, { error: e.message }); }
+    }
+    if (u.pathname === '/api/hotkeys/device' || u.pathname.startsWith('/api/hotkeys/device/')) {
+      const computer = hotkeyStore.computerFor(presentedKey);
+      if (!computer) {
+        if (!(await gate())) return;
+        if (presentedKey) noteSignIn('fail', { via: 'hotkeys' }, presentedKey);
+        return json(res, 401, { error: 'This computer is not linked (or was unlinked).', code: 'unlinked' });
+      }
+      const person = usersLib.findUser(roster, computer.user);
+      const refusal = hotkeyRefusal(person);
+      if (refusal) return json(res, 401, { error: refusal, code: 'person' });
+      try {
+        if (u.pathname === '/api/hotkeys/device' && req.method === 'GET') {
+          // A long poll: answered at once when the hotkeys changed since the
+          // version the computer has, else when they change, else after `wait`.
+          hotkeyStore.seen(computer);
+          const since = Number(u.searchParams.get('since'));
+          const wait = Math.min(30, Math.max(0, Number(u.searchParams.get('wait')) || 0));
+          if (wait && since === hotkeyStore.version(person.id)) {
+            await hotkeyStore.waitForChange(person.id, since, wait * 1000);
+            if (res.destroyed) return;
+            if (!hotkeyStore.computerFor(presentedKey)) return json(res, 401, { error: 'This computer was unlinked.', code: 'unlinked' });
+          }
+          return json(res, 200, hotkeyDeviceView(person, computer));
+        }
+        if (u.pathname === '/api/hotkeys/device' && req.method === 'DELETE') {
+          hotkeyStore.forget(person.id, computer.id);
+          return json(res, 200, { ok: true });
+        }
+        if (u.pathname === '/api/hotkeys/device/status' && req.method === 'POST') {
+          hotkeyStore.seen(computer, hotkeyStatusOf(await programBody(req, 64 * 1024)));
+          return json(res, 200, { ok: true });
+        }
+        if (u.pathname === '/api/hotkeys/device/run' && req.method === 'POST') {
+          hotkeyStore.seen(computer);
+          return json(res, 200, await hotkeyRun(person, computer, await programBody(req, 256 * 1024)));
+        }
+        return json(res, 404, { error: 'no such route' });
+      } catch (e) { return json(res, e.status || 500, { error: e.message }); }
+    }
     // Company sign-in (OpenID Connect, design/72): before any credential,
     // like the invite and token doors below, and behind the same limiter.
     if (u.pathname === '/auth/sso' && req.method === 'GET') {
@@ -17122,6 +17297,8 @@ async function handleRequest(req, res) {
       '/harness-composer-ui.js': { file: 'harness-composer-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/codex-ui.js': { file: 'codex-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/live-terminal-ui.js': { file: 'live-terminal-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/hotkeys-keys.js': { file: 'hotkeys-keys.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/hotkeys-ui.js': { file: 'hotkeys-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/live-terminal.css': { file: 'live-terminal.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/harness/compose-commands.js': { file: 'harness/compose-commands.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/linediff.js': { file: 'linediff.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
@@ -18621,6 +18798,39 @@ async function handleRequest(req, res) {
         await Promise.all(Array.from({ length: Math.min(3, rows.length) }, worker));
         if (!stop.signal.aborted) { madePrograms.noteTest(d.entry.name, d.version, tally); send('done', tally); }
       } finally { finished = true; if (!res.writableEnded) res.end(); programLogChanged(); }
+    } else if (u.pathname === '/api/hotkeys' && req.method === 'GET') {
+      // Settings → hotkeys (design/93): this person's hotkeys, the programs
+      // they may bind, their linked computers and what each reported.
+      const refusal = hotkeyRefusal(identity.user || usersLib.ownerOf(roster));
+      if (refusal) return json(res, 403, { error: refusal });
+      json(res, 200, hotkeysView(identity));
+    } else if (u.pathname === '/api/hotkeys' && req.method === 'PUT') {
+      try {
+        const p = await programBody(req, 256 * 1024);
+        hotkeyStore.setBindings((identity.user || usersLib.ownerOf(roster)).id, p.bindings);
+        json(res, 200, hotkeysView(identity));
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/hotkeys/starter' && req.method === 'POST') {
+      try { json(res, 200, await hotkeyStarter(identity, String((await programBody(req, 4096)).id || ''))); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/hotkeys/code' && req.method === 'GET') {
+      const d = hotkeyStore.describeCode(u.searchParams.get('code'));
+      if (!d) json(res, 404, { error: 'This code is not waiting here (a code lasts ten minutes). Ask the computer for a new one.' });
+      else json(res, 200, d);
+    } else if (u.pathname === '/api/hotkeys/approve' && req.method === 'POST') {
+      // The person approves a computer's code: it becomes theirs.
+      try {
+        const p = await programBody(req, 4096);
+        const person = identity.user || usersLib.ownerOf(roster);
+        const refusal = hotkeyRefusal(person);
+        if (refusal) return json(res, 403, { error: refusal });
+        json(res, 200, { computer: hotkeyStore.approve(String(p.code || ''), person.id, { deny: p.deny === true }) });
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/hotkeys/computers/forget' && req.method === 'POST') {
+      try {
+        const p = await programBody(req, 4096);
+        json(res, 200, { forgotten: hotkeyStore.forget((identity.user || usersLib.ownerOf(roster)).id, String(p.id || ''), { any: policy.isOwnerTier(identity) }) });
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/programs/publish' && req.method === 'POST') {
       // What the endpoint answers with: the draft as it is now, copied.
       try {
@@ -18745,6 +18955,7 @@ async function handleRequest(req, res) {
           killGuestSlice(p.id, { revert: true });
           guestApiSecrets.delete(p.id);
           out = { removed: usersLib.removeUser(roster, p.id).id };
+          hotkeyStore.forgetPerson(out.removed);
           // Their grants go with them; a peer install that acted as them
           // loses its credential here and its pulls stop. Copies already
           // on their machine are theirs: nothing here can recall them.

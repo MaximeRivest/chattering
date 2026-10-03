@@ -13,6 +13,7 @@ require('./win-hide.js'); // first: on Windows nothing this starts opens a windo
 //   chattering-app autostart on|off   start with the session
 //   chattering-app update [--force]   install the newest release, keep the old one
 //   chattering-app rollback   go back to the previous version
+//   chattering-app hotkeys …  your AI programs on hotkeys (connect, run, status, forget)
 //   chattering-app version
 //
 // The server runs as the signed-in person, on this machine only, in the
@@ -215,6 +216,17 @@ function autostart(on) {
   return f;
 }
 
+// The hotkey helper with the session (Linux desktops: XDG autostart). macOS
+// and Windows get theirs with their desktop adapters (hotkeys-desktop.js).
+function hotkeysAutostart(on) {
+  if (platform.IS_MAC || platform.IS_WIN) fail('hotkeys are not built for this system yet');
+  const f = path.join(os.homedir(), '.config', 'autostart', 'chattering-hotkeys.desktop');
+  if (!on) { try { fs.unlinkSync(f); } catch {} return f; }
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, `[Desktop Entry]\nType=Application\nName=Chattering hotkeys\nExec=${launcherCommand().map(a => `"${a}"`).join(' ')} hotkeys run\nX-GNOME-Autostart-enabled=true\n`);
+  return f;
+}
+
 // ---- update and rollback -------------------------------------------------------------------------
 function assetName(version) {
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
@@ -358,8 +370,11 @@ async function main(argv) {
     if (cmd === 'update') return await update({ force });
     if (cmd === 'rollback') return await rollback();
     if (cmd === 'bundle-open') return await bundleOpen();
+    // Hotkeys (design/93): the helper that keeps a person's hotkeys on this desktop.
+    if (cmd === 'hotkeys' && rest[0] === 'autostart') { const on = rest[1] !== 'off'; say((on ? 'Your hotkeys will start with your session: ' : 'Your hotkeys no longer start with your session: ') + hotkeysAutostart(on)); return; }
+    if (cmd === 'hotkeys') return await require('./hotkeys-device.js').main(rest);
     if (cmd === 'version' || cmd === '--version') { say('Chattering ' + VERSION + ' · Node ' + process.version + ' · Pi ' + (runtime.piVersion() || 'not found')); return; }
-    if (cmd === 'help' || cmd === '--help' || cmd === '-h') { say(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 17).map(l => l.replace(/^\/\/ ?/, '')).join('\n')); return; }
+    if (cmd === 'help' || cmd === '--help' || cmd === '-h') { say(fs.readFileSync(__filename, 'utf8').split('\n').slice(2, 18).map(l => l.replace(/^\/\/ ?/, '')).join('\n')); return; }
     fail('unknown command "' + cmd + '" (chattering-app help)');
   } catch (e) { fail(e.message); }
 }

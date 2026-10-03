@@ -447,6 +447,19 @@ body.conv #convHeadExtra { display: inline-flex; flex-shrink: 0; }
 .mach-item input { min-width: 0; }
 .mach-item .row, .set-field .row { display: flex; gap: var(--sp-2); align-items: center; }
 .set-field .row input { flex: 1 1 auto; min-width: 0; }
+/* settings → hotkeys (hotkeys-ui.js, design/93) */
+.hk-row { display: grid; grid-template-columns: minmax(8em, auto) 1fr auto auto auto auto; gap: var(--sp-2); align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.hk-row.off .hk-what, .hk-row.off .hk-keys { opacity: .55; }
+.hk-row .set-check { margin: 0; }
+.hk-what { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.hk-what .hint, .hk-where, .hk-bad, .hk-live { font-size: var(--fs-meta); }
+.hk-bad { color: var(--danger); }
+.hk-live { color: var(--success); }
+.hk-keys, .settings-pane kbd { font-family: var(--font-mono, monospace); font-size: var(--fs-meta); padding: 1px 6px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: var(--r-sm); background: var(--surface-2); white-space: nowrap; justify-self: start; }
+.hk-starters { flex-wrap: wrap; }
+.hk-approve { border: 1px solid var(--border); border-radius: var(--r); padding: var(--sp-3); }
+.hk-approve p { margin: 0 0 var(--sp-2); }
+.hk-edit select { min-width: 0; max-width: 100%; }
 .mach-link { display: block; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Away from home the header quiets down: reading and talking need no
    list count. */
@@ -2516,6 +2529,8 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <script src="/harness-composer-ui.js"></script>
 <script src="/codex-ui.js"></script>
 <script src="/live-terminal-ui.js"></script>
+<script src="/hotkeys-keys.js"></script>
+<script src="/hotkeys-ui.js"></script>
 <link rel="stylesheet" href="/live-terminal.css">
 <script src="/linediff.js"></script>
 <script src="/notebook-env.js"></script>
@@ -2767,7 +2782,7 @@ function describeRoute(h) {
   const base = p => String(p || '').split('/').filter(Boolean).pop() || p;
   const json = s => { try { return JSON.parse(s.startsWith('{') ? s : dec(s)); } catch { return null; } };
   if (!h) return { kind: 'home', title: 'Gantt' };
-  if (h === 'settings' || h.startsWith('settings=')) return { kind: 'settings', title: 'settings' };
+  if (h === 'settings' || h.startsWith('settings=') || h.startsWith('hotkeys-connect=')) return { kind: 'settings', title: 'settings' };
   if (h === 'usage') return { kind: 'usage', title: 'usage' };
   if (h === 'programs' || h === 'program-new' || h.startsWith('program=')) return window.Programs ? Programs.describe(h) : { kind: 'programs', title: 'AI programs' };
   if (h.startsWith('q=')) return { kind: 'home', title: 'search “' + dec(h.slice(2)) + '”' };
@@ -2820,6 +2835,8 @@ function projectNameForRoot(root) {
 function dispatchHash(h, { restore = false } = {}) {
   if (!h) return goHome();
   if (h === 'settings' || h.startsWith('settings=')) return showSettings(settingsPaneOf(h));
+  // A computer asks to run this person's hotkeys (design/93): its code, to approve.
+  if (h.startsWith('hotkeys-connect=') && window.Hotkeys) { Hotkeys.pendingCode(decodeURIComponent(h.slice('hotkeys-connect='.length))); return showSettings('hotkeys'); }
   if (h === 'usage') return showUsageDashboard();
   // AI programs (design/74): the list, one program's page, making one (design/75).
   if ((h === 'programs' || h === 'program-new' || h.startsWith('program=')) && window.Programs) return Programs.dispatch(h);
@@ -16259,6 +16276,7 @@ const SETTINGS_PANES = [
   ['sound', 'sound', 'What the speakers do when a run finishes; voice commands.'],
   ['search', 'search', 'Meaning-based search on the GPU server.'],
   ['snippets', 'snippets', 'Sentences you type often.'],
+  ['hotkeys', 'hotkeys', 'Run your AI programs from anywhere on your computer: select text, press keys.'],
   ['machines', 'machines', 'Other Chattering installs to switch to.'],
   ['people', 'people', 'Who is admitted on this machine, and their links.'],
   ['team', 'team', 'Company sign-in, walls per person, spending limits.'],
@@ -16885,6 +16903,7 @@ const SETTINGS_PANE_RENDER = {
   sound: [paneSound, bindPaneSound],
   search: [paneSearch, bindPaneSearch],
   snippets: [paneSnippets, bindPaneSnippets],
+  hotkeys: [() => window.Hotkeys ? Hotkeys.settingsHtml() : '', root => window.Hotkeys && Hotkeys.bindSettings(root)],
   ai: [paneAi, bindPaneAi],
   agents: [() => window.LiveTerminal ? LiveTerminal.settingsHtml(settingsState && settingsState.canEditSettings !== false) : '', root => window.LiveTerminal && LiveTerminal.bindSettings(root)],
   machines: [paneMachines, bindPaneMachines],
@@ -16907,7 +16926,7 @@ function renderSettings() {
       <button type="button" data-go="usage" title="Tokens, cost estimates, and subscription value">usage and cost →</button>
       <div class="brand">Chattering, by <a href="https://rockfrog.ai" target="_blank" rel="noopener">Rockfrog</a></div>
     </nav>
-    <section class="settings-pane">${settingsState && settingsState.canEditSettings === false && !['profile', 'people', 'appearance', 'jobs'].includes(settingsPane) ? `<div class="set-readonly hint">These are ${esc((settingsState.hostname || 'this machine'))}'s settings; only its owner or an admin can change them. Your appearance choices stay yours.</div>` : ''}${settingsState ? paint() : '<div class="empty">loading settings…</div>'}</section>
+    <section class="settings-pane">${settingsState && settingsState.canEditSettings === false && !['profile', 'people', 'appearance', 'jobs', 'hotkeys'].includes(settingsPane) ? `<div class="set-readonly hint">These are ${esc((settingsState.hostname || 'this machine'))}'s settings; only its owner or an admin can change them. Your appearance choices stay yours.</div>` : ''}${settingsState ? paint() : '<div class="empty">loading settings…</div>'}</section>
   </div>`;
   const root = $('settingsRoot');
   root.querySelectorAll('.settings-nav [data-pane]').forEach(b => b.onclick = () => showSettingsPane(b.dataset.pane));

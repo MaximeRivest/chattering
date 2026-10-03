@@ -136,7 +136,7 @@ SECRET=$(cat /etc/chattering-anywhere/turn-secret)
 
 say "the relay's service (its code arrives with deploy-relay.sh)"
 install -d -m 0755 -o root -g root /opt/chattering-anywhere /opt/chattering-anywhere/releases
-write /etc/systemd/system/chattering-anywhere.service 0644 root:root <<EOF && systemctl daemon-reload || true
+write /etc/systemd/system/chattering-anywhere.service 0644 root:root <<EOF && { systemctl daemon-reload; RELAY_UNIT_CHANGED=1; } || RELAY_UNIT_CHANGED=0
 [Unit]
 Description=Chattering Anywhere relay (the meeting point; keeps nothing)
 After=network-online.target
@@ -195,6 +195,8 @@ TasksMax=64
 WantedBy=multi-user.target
 EOF
 systemctl enable chattering-anywhere >/dev/null 2>&1
+# A changed unit (new settings) takes effect only on a restart.
+[ "$RELAY_UNIT_CHANGED" = 1 ] && systemctl try-restart chattering-anywhere || true
 
 if [ -n "$SITE_DOMAIN" ]; then
   say "who may take a name under $SITE_DOMAIN (one computer id a line; read on every claim)"

@@ -290,6 +290,16 @@ const ROUTES = {
   // project's folder: the handlers also check the right to act on it. The
   // endpoint itself (/programs/<name>) is outside /api: a key opens that one
   // program, a signed-in person needs 'member' (server.js checks both).
+  // Hotkeys (design/93): a person's own hotkeys and computers; never a
+  // guest's (a hotkey runs on the owner's model outside their walls). The
+  // computer's own routes (/api/hotkeys/pair, /api/hotkeys/device…) take
+  // its credential before sign-in: BEFORE_SIGN_IN below.
+  'GET /api/hotkeys': 'member',
+  'PUT /api/hotkeys': 'member',
+  'POST /api/hotkeys/starter': 'member',
+  'GET /api/hotkeys/code': 'member',
+  'POST /api/hotkeys/approve': 'member',
+  'POST /api/hotkeys/computers/forget': 'member',
   'POST /api/programs/draft': 'member',
   'POST /api/programs/create': 'member',
   'GET /api/programs/made': 'member',
@@ -369,7 +379,9 @@ const ROUTES = {
 // Answered before sign-in, each with its own proof (an invite, a device
 // link, a capability in the path). Listed so that the completeness test
 // knows someone looked at them; the gate never sees them.
-const BEFORE_SIGN_IN = ['/api/sync/join', '/api/file/preview-assets/*'];
+const BEFORE_SIGN_IN = ['/api/sync/join', '/api/file/preview-assets/*',
+  // A computer's hotkey helper (design/93): asking for a code, then its own credential.
+  '/api/hotkeys/pair', '/api/hotkeys/pair/poll', '/api/hotkeys/device', '/api/hotkeys/device/*', '/api/hotkeys/device/status', '/api/hotkeys/device/run'];
 
 function normalizeEntry(raw) {
   const e = typeof raw === 'string' ? { level: raw } : { ...raw };
