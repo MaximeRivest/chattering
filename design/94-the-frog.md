@@ -76,7 +76,7 @@ to every computer; Rockfrog follows the desktop's light or dark.
 ## Decisions
 
 - **When it appears.** A selection of at least two words (settings: 1–8),
-  still for 350 ms (a drag does not summon it), not over 20,000 characters,
+  still for 250 ms (a drag does not summon it), not over 20,000 characters,
   not in an app it stays away from: terminals by default (people select
   there to copy), any app by name. Nothing while a panel is open or a spell
   works. It leaves when the person moves to another window or workspace,
@@ -120,7 +120,26 @@ to every computer; Rockfrog follows the desktop's light or dark.
   version it was read at; a save from a stale page (another tab or device
   changed it meanwhile) is refused and the page shows the list as it is.
 
+- **Fast.** The host starts with the helper, not on the first selection
+  (1–2 s); the desktop is asked everything at once (about 30 ms); the
+  layer stays up, empty and click-through, for a minute after the frog
+  leaves, since showing it again cost about 200 ms of drawing; the hop in
+  is 0.28 s from a visible start. Measured on the laptop (5120×1440): drawn
+  60 ms after the selection settles, 200 ms the first time in a session.
+  The helper logs this for every frog (no text).
+- **Clickable where it is.** The page reports its pointer region from the
+  layout, not from the animation's frame (measured mid-hop, the first build
+  made a fifth of the frog clickable), on a timer (a page whose screen
+  sleeps gets no animation frames), and again on every change. Until the
+  layer has its size (a layer just shown measures 0 by 0), the page uses
+  the screen size the helper sends.
+
 ## Trade-offs, stated
+
+- **The overlay lingers.** For a minute after the frog leaves, an empty
+  see-through layer stays over the screen (no pointer, no keys). It may
+  keep a full-screen game from the compositor's direct path for that
+  minute.
 
 - **It watches selections.** The helper sees the text of every selection
   of two words or more on that computer, in memory, to decide whether to
