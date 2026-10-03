@@ -303,6 +303,7 @@ const ROUTES = {
   'GET /api/hotkeys': 'member',
   'PUT /api/hotkeys': 'member',
   'POST /api/hotkeys/starter': 'member',
+  'PUT /api/hotkeys/frog': 'member',
   'GET /api/hotkeys/code': 'member',
   'POST /api/hotkeys/approve': 'member',
   'POST /api/hotkeys/computers/forget': 'member',
@@ -387,7 +388,8 @@ const ROUTES = {
 // knows someone looked at them; the gate never sees them.
 const BEFORE_SIGN_IN = ['/api/sync/join', '/api/file/preview-assets/*',
   // A computer's hotkey helper (design/93): asking for a code, then its own credential.
-  '/api/hotkeys/pair', '/api/hotkeys/pair/poll', '/api/hotkeys/device', '/api/hotkeys/device/*', '/api/hotkeys/device/status', '/api/hotkeys/device/run'];
+  '/api/hotkeys/pair', '/api/hotkeys/pair/poll', '/api/hotkeys/device', '/api/hotkeys/device/*', '/api/hotkeys/device/status', '/api/hotkeys/device/run',
+  '/api/hotkeys/device/ask', '/api/hotkeys/device/rate'];
 
 function normalizeEntry(raw) {
   const e = typeof raw === 'string' ? { level: raw } : { ...raw };

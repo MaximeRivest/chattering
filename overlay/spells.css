@@ -1,0 +1,109 @@
+/* The frog's spells (design/94). Chattering's own tokens (design/tokens.css)
+   and its components' manners: the panel is a menu surface, a spell is a
+   list row with the green edge when current, small facts in mono. */
+html, body { margin: 0; height: 100%; background: transparent !important; overflow: hidden; }
+body { font: var(--fs-body)/1.45 var(--font); color: var(--text); -webkit-user-select: none; user-select: none; cursor: default; }
+:root { --frog-w: 60px; --frog-h: 100px; --ins: color-mix(in srgb, var(--green) 24%, var(--surface-1)); --ins-ink: var(--text); }
+:root[data-theme="rockfrog"], :root[data-theme="rockfrog-light"] { --ins: #cfe6d4; --ins-ink: #10301a; }
+:root[data-theme="rockfrog-dark"] { --ins: #29452f; --ins-ink: #e1e6e1; }
+@media (prefers-color-scheme: dark) { :root[data-theme="rockfrog"] { --ins: #29452f; --ins-ink: #e1e6e1; } }
+.ch { position: fixed; inset: 0; pointer-events: none; }
+.ch > * { pointer-events: auto; }
+
+/* ---- the frog ---- */
+.frog { position: absolute; width: var(--frog-w); height: var(--frog-h); cursor: pointer; transform-origin: 50% 100%; filter: drop-shadow(0 4px 6px rgba(0, 0, 0, .25)); }
+.frog.small { --frog-w: 45px; --frog-h: 75px; }
+.frog img { position: absolute; left: -21.5%; top: -0.5%; width: 135.3%; height: 100.9%; pointer-events: none; -webkit-user-drag: none; }
+.frog .fbody { position: absolute; inset: 0; transform-origin: 50% 100%; animation: breathe 2.8s ease-in-out infinite; }
+.frog.enter { animation: hopIn .55s cubic-bezier(.25, 1.5, .5, 1) both; }
+.frog.leave { animation: hopOut .3s ease-in both; }
+.frog:hover .fbody { animation: none; transform: rotate(-4deg) scale(1.06); transition: transform .15s; }
+.frog.busy .fbody { animation: bob .42s ease-in-out infinite alternate; }
+.frog.busy { filter: drop-shadow(0 0 12px rgba(233, 189, 92, .55)) drop-shadow(0 4px 6px rgba(0, 0, 0, .25)); }
+.frog.cheer .fbody { animation: jump .5s cubic-bezier(.3, 1.6, .5, 1) 2; }
+.frog.shake .fbody { animation: shake .45s ease-in-out 2; }
+.frog:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: var(--r); }
+@keyframes breathe { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.025, .975); } }
+@keyframes hopIn { 0% { transform: translateY(26px) scale(.2); opacity: 0; } 55% { transform: translateY(-12px) scale(1.05, .95); opacity: 1; } 75% { transform: scale(.94, 1.06); } 100% { transform: none; } }
+@keyframes hopOut { to { transform: translateY(18px) scale(.3); opacity: 0; } }
+@keyframes bob { from { transform: translateY(0) rotate(-2deg); } to { transform: translateY(-5px) rotate(2deg); } }
+@keyframes jump { 0%, 100% { transform: none; } 40% { transform: translateY(-16px) scale(.96, 1.05); } 70% { transform: scale(1.06, .94); } }
+@keyframes shake { 0%, 100% { transform: none; } 25% { transform: rotate(-6deg); } 75% { transform: rotate(6deg); } }
+.spark { position: absolute; pointer-events: none !important; color: #e9bd5c; font-size: 12px; line-height: 1; animation: spark .9s ease-out forwards; }
+@keyframes spark { from { transform: translate(0, 0) scale(.6); opacity: 1; } to { transform: translate(var(--dx), var(--dy)) scale(1.2); opacity: 0; } }
+
+/* ---- a Chattering surface ---- */
+.panel { position: absolute; background: var(--surface-1); color: var(--text); border: 1px solid var(--border-strong); border-radius: var(--r-menu);
+  box-shadow: 0 1px 2px var(--shadow-soft), 0 14px 40px var(--shadow-color); animation: rise .14s ease-out both; outline: none; }
+@keyframes rise { from { opacity: 0; transform: translateY(4px); } }
+.head { display: flex; align-items: center; gap: 8px; padding: 9px 12px 8px; font-size: var(--fs-micro); color: var(--text-dim); border-bottom: 1px solid var(--border); }
+.mark { width: 20px; height: 16px; flex: 0 0 20px; background: var(--text); -webkit-mask: url(mark.svg) center / contain no-repeat; mask: url(mark.svg) center / contain no-repeat; }
+.name { font-weight: 600; color: var(--text); font-size: var(--fs-label); }
+.sep { color: var(--text-faint); }
+.where { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link { color: var(--text-dim); font: var(--fs-micro) var(--font); border-radius: var(--r-sm); padding: 2px 6px; cursor: pointer; background: none; border: 0; }
+.link:hover, .link:focus-visible { color: var(--text); background: var(--surface-2); outline: none; }
+
+.ask { margin: 10px 10px 4px; display: flex; align-items: center; gap: 6px; border: 1px solid var(--border-strong); border-radius: var(--r-pill);
+  background: var(--bg); padding: 3px 4px 3px 12px; }
+.ask:focus-within { border-color: var(--accent); }
+.ask input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; color: var(--text); font: 14px/1.4 var(--font); padding: 5px 0; -webkit-user-select: text; user-select: text; }
+.ask input::placeholder { color: var(--text-faint); }
+.model { flex: 0 0 auto; height: 26px; line-height: 24px; padding: 0 10px; border-radius: var(--r-pill); border: 1px solid var(--border); color: var(--text-dim); font: var(--fs-micro)/24px var(--font-mono); max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.label { padding: 8px 14px 4px; font-size: var(--fs-micro); color: var(--text-dim); }
+.list { padding: 0 6px 6px; max-height: 50vh; overflow-y: auto; }
+.row { position: relative; display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px 7px 12px; border: 0; background: none; color: inherit;
+  text-align: left; border-radius: var(--r); cursor: pointer; font: inherit; }
+.row:hover, .row.on { background: var(--surface-2); }
+.row.on::before { content: ""; position: absolute; left: 2px; top: 7px; bottom: 7px; width: 3px; border-radius: var(--r-sm); background: var(--accent); }
+.ic { flex: 0 0 28px; height: 28px; border-radius: var(--r); display: grid; place-items: center; background: var(--surface-2); color: var(--text-dim); }
+.row.on .ic, .row:hover .ic { background: var(--surface-3); color: var(--text); }
+.ic svg { width: 16px; height: 16px; }
+.txt { flex: 1; min-width: 0; }
+.title { display: block; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.meta { display: block; font-size: var(--fs-micro); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+kbd { flex: 0 0 auto; font: 500 var(--fs-micro)/1 var(--font-mono); min-width: 22px; text-align: center; padding: 4px 6px; border-radius: var(--r-sm);
+  border: 1px solid var(--border); border-bottom-width: 2px; color: var(--text-dim); background: var(--surface-1); }
+.typing .row kbd { opacity: .35; }
+.empty { padding: 10px 14px 12px; color: var(--text-dim); font-size: var(--fs-meta); }
+.foot { display: flex; align-items: center; gap: 10px; padding: 8px 14px 9px; border-top: 1px solid var(--border); font-size: var(--fs-micro); color: var(--text-dim); white-space: nowrap; }
+.foot .grow { flex: 1; }
+.foot kbd { padding: 2px 5px; min-width: 0; }
+
+.answer { width: min(480px, calc(100vw - 16px)); }
+.body { padding: 12px 14px 4px; font-size: 14.5px; line-height: 1.6; color: var(--text); max-height: 45vh; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.body ins { text-decoration: none; background: var(--ins); color: var(--ins-ink); border-radius: var(--r-sm); padding: 0 2px; }
+.body del { color: var(--red); text-decoration-thickness: 1px; }
+.runline { padding: 4px 14px 0; font: var(--fs-micro) var(--font-mono); color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.acts { display: flex; align-items: center; gap: 6px; padding: 10px 10px 10px 14px; }
+.acts .grow { flex: 1; display: flex; align-items: center; gap: 4px; font-size: var(--fs-micro); color: var(--text-dim); }
+.btn { height: 30px; padding: 0 12px; border-radius: var(--r); border: 1px solid var(--border-strong); background: var(--surface-1); color: var(--text);
+  font: 500 var(--fs-body) var(--font); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.btn:hover { background: var(--surface-2); }
+.btn:focus-visible, .judge:focus-visible, .row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.btn.go { background: var(--accent-strong, var(--accent)); border-color: var(--accent-strong, var(--accent)); color: var(--accent-ink); }
+.btn.go:hover { filter: brightness(1.08); }
+.btn kbd { border: 0; background: rgba(255, 255, 255, .2); color: inherit; padding: 2px 5px; min-width: 0; }
+.judge { width: 26px; height: 26px; border-radius: var(--r-sm); border: 1px solid var(--border); background: none; color: var(--text-dim); cursor: pointer; font-size: 13px; }
+.judge:hover { color: var(--text); border-color: var(--border-strong); }
+.judge.yes { color: var(--accent-ink); background: var(--accent-strong, var(--accent)); border-color: var(--accent-strong, var(--accent)); }
+.judge.no { color: var(--accent-ink); background: var(--red); border-color: var(--red); }
+.problem { padding: 12px 14px; color: var(--text); font-size: var(--fs-body); }
+.problem b { color: var(--red); font-weight: 600; }
+
+.pill { position: absolute; display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px; border-radius: var(--r-pill);
+  background: var(--surface-1); border: 1px solid var(--border-strong); box-shadow: 0 10px 28px var(--shadow-color); font-size: var(--fs-meta); color: var(--text); white-space: nowrap; animation: rise .14s ease-out both; }
+.pill .live { color: var(--green); font-weight: 600; }
+.pill .dim { color: var(--text-dim); font-family: var(--font-mono); font-size: var(--fs-micro); }
+.pill kbd { padding: 2px 5px; min-width: 0; }
+.dots { display: inline-flex; gap: 3px; } .dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--green); animation: dot 1s infinite ease-in-out; display: block; }
+.dots i:nth-child(2) { animation-delay: .15s; } .dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes dot { 0%, 100% { opacity: .25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-2px); } }
+
+/* Motion off (the system's choice, or a theme without motion such as e-ink). */
+.still *, .still *::before { animation: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+/* Binary e-ink: no shadow, no half-tones, a solid frame. */
+:root[data-theme-mode="binary"] .panel, :root[data-theme-mode="binary"] .pill { box-shadow: none; border: 2px solid var(--text); background: var(--bg); }
+:root[data-theme-mode="binary"] .frog { filter: none; }

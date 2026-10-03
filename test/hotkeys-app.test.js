@@ -24,6 +24,10 @@ const input = fs.readFileSync(0, 'utf8');
 fs.appendFileSync(${JSON.stringify(path.join(dir, 'pi-calls.jsonl'))}, JSON.stringify({ system, input, args }) + '\\n');
 const text = system.startsWith('Function: fix_writing')
   ? '<fixed_text>\\n' + (/i has went/.test(input) ? 'I went to the store.' : 'unchanged') + '\\n</fixed_text>'
+  : system.startsWith('Function: selection_ask')
+  ? '<kind>\\nreplace\\n</kind>\\n<result>\\nI have gone to the store.\\n</result>'
+  : system.startsWith('Function: shorter')
+  ? '<shorter_text>\\nShort.\\n</shorter_text>'
   : '<result>\\nok\\n</result>';
 process.stdout.write(JSON.stringify({ type: 'message_end', message: { role: 'assistant', content: [{ type: 'text', text }], stopReason: 'stop',
   provider: 'fake', model: 'fake-1', timestamp: Date.now(), usage: { input: 40, output: 6, cacheRead: 0, cacheWrite: 0, totalTokens: 46 } } }) + '\\n');
@@ -119,6 +123,38 @@ test('browser: a starter hotkey, a computer linked by its code, a press answered
   await evaluate(`document.querySelector('.hk-row [data-on]').click()`);
   const woke = await waiting;
   assert.equal(woke.body.bindings.length, 0, 'the hotkey turned off');
+
+  // The frog (design/94): its settings reach the computer; a spell without
+  // keys lives in its book only; a question typed into it; judging an answer.
+  const frogSet = (await call('/api/hotkeys/frog', { method: 'PUT', body: { theme: 'rockfrog-dark', minWords: 3, skip: ['terminal', 'keepassxc'] }, headers: auth })).body;
+  assert.equal(frogSet.frog.theme, 'rockfrog-dark');
+  assert.ok(frogSet.themes.some(t => t.id === 'eink'), 'the themes it may wear');
+  await call('/api/hotkeys/starter', { method: 'POST', body: { id: 'shorter' }, headers: auth });
+  // A save from the page as it was before the starter: refused, not an undo.
+  await evaluate(`document.querySelector('.hk-row [data-on]').click()`);
+  await until(`/changed meanwhile/.test(document.querySelector('#hkRoot').innerText)`, 'the stale save refused');
+  await until(`document.querySelectorAll('.hk-row').length === 2 && /book only/.test(document.querySelector('#hkRoot').innerText)`, 'the book-only spell shown');
+  assert.ok((await call('/api/hotkeys', { headers: auth })).body.bindings.some(b2 => b2.program === 'shorter'), 'the starter is still there');
+  const dv = (await call('/api/hotkeys/device?since=-1', { headers: device })).body;
+  assert.equal(dv.frog.theme.id, 'rockfrog-dark');
+  assert.equal(dv.frog.minWords, 3);
+  assert.deepEqual(dv.frog.skip, ['terminal', 'keepassxc']);
+  const shorterSpell = dv.spells.find(sp => sp.program === 'shorter');
+  assert.ok(shorterSpell && shorterSpell.letter && shorterSpell.keys === null, 'in the book, with a letter, without keys');
+  assert.ok(!dv.bindings.some(b2 => b2.program === 'shorter'), 'and never bound on the desktop');
+  const shortened = (await call('/api/hotkeys/device/run', { method: 'POST', body: { id: shorterSpell.id, text: 'a long text to shorten' }, headers: device })).body;
+  assert.equal(shortened.text, 'Short.');
+  const asked = await call('/api/hotkeys/device/ask', { method: 'POST', body: { request: 'make it present perfect', text: 'i has went to the store' }, headers: device });
+  assert.equal(asked.status, 200, JSON.stringify(asked.body));
+  assert.deepEqual([asked.body.kind, asked.body.text, asked.body.program], ['replace', 'I have gone to the store.', 'selection_ask']);
+  assert.match(piCalls().at(-1).input, /make it present perfect[\s\S]*i has went to the store/);
+  const rated = await call('/api/hotkeys/device/rate', { method: 'POST', body: { call: asked.body.call, verdict: 'right' }, headers: device });
+  assert.equal(rated.status, 200, JSON.stringify(rated.body));
+  assert.equal((await call('/api/hotkeys/device/rate', { method: 'POST', body: { call: 'someone-elses-call', verdict: 'wrong' }, headers: device })).status, 404, 'only answers this computer was given');
+  await call('/api/hotkeys/device/status', { method: 'POST', body: { desktop: 'Hyprland', supported: true, report: [], frog: { available: false, reason: 'no layer shell here' } }, headers: device });
+  await evaluate(`location.hash = '#settings=profile'`);
+  await evaluate(`location.hash = '#settings=hotkeys'`);
+  await until(`/testbox: no layer shell here/.test((document.querySelector('.hk-frog') || {}).innerText || '')`, 'the frog\u2019s word from the computer');
 
   // Unlinked on the page: its credential opens nothing.
   await evaluate(`window.confirm = () => true`);

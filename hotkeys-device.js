@@ -115,28 +115,39 @@ const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 function createHelper({ desk, readLink = () => readJson(linkFile()) }) {
   let link = readLink();
   let bindings = [];
+  let spells = [];
+  let frogSettings = null;
   let person = null;
   let busy = false;
   let reported = null;
+  let frogStatus = null; // what the frog can do here: { available, reason }
+  const listeners = new Set(); // told when the hotkeys or the frog's settings change
 
   async function applyAll() {
     const pressArgv = id => [process.execPath, __filename, 'press', id];
     let report;
     if (!desk.supported) report = bindings.map(b => ({ id: b.id, state: 'unsupported' }));
     else {
-      try { report = await desk.apply(bindings, pressArgv); }
+      // The frog's own key: its book, open on the selection.
+      const summon = frogSettings && frogSettings.summonKeys ? [{ id: 'frog', keys: frogSettings.summonKeys, label: 'Open the frog\u2019s book', program: 'frog' }] : [];
+      try { report = await desk.apply([...bindings, ...summon], pressArgv); }
       catch (e) { log(e.message); report = bindings.map(b => ({ id: b.id, state: 'bad', by: e.message })); }
     }
     reported = report;
     writeJson(statusFile(), { server: link && link.server, person, at: new Date().toISOString(), desktop: desk.label, supported: desk.supported, reason: desk.reason || null, bindings: bindings.map(b => ({ ...b, ...(report.find(r => r.id === b.id) || {}) })) });
-    if (link) call(link, 'POST', '/api/hotkeys/device/status', { desktop: desk.label, supported: desk.supported, reason: desk.reason || null, report }).catch(e => log('status: ' + e.message));
+    reportStatus();
+  }
+  function reportStatus() {
+    if (link) call(link, 'POST', '/api/hotkeys/device/status', { desktop: desk.label, supported: desk.supported, reason: desk.reason || null, report: reported || [], frog: frogStatus }).catch(e => log('status: ' + e.message));
   }
 
   async function press(id) {
+    if (id === 'frog') { for (const f of listeners) f('summon'); return; }
     const b = bindings.find(x => x.id === id);
     if (!b) return desk.notify('Chattering', 'This hotkey is not set up any more.');
     if (busy) return desk.notify('Chattering', 'Still working on the last hotkey.', { ms: 2000 });
     busy = true;
+    for (const f of listeners) f('press');
     const started = Date.now();
     let progress = 0;
     try {
@@ -194,7 +205,10 @@ function createHelper({ desk, readLink = () => readJson(linkFile()) }) {
           since = r.version;
           person = r.person;
           bindings = r.bindings;
+          spells = r.spells || [];
+          frogSettings = r.frog || null;
           await applyAll();
+          for (const f of listeners) f('changed');
           log(`${bindings.length} hotkey(s) for ${person.name}: ${reported.filter(x => x.state === 'on').length} live`);
         }
       } catch (e) {
@@ -211,7 +225,245 @@ function createHelper({ desk, readLink = () => readJson(linkFile()) }) {
     }
   }
 
-  return { press, follow, applyAll, get bindings() { return bindings; } };
+  return {
+    press, follow, applyAll, reportStatus,
+    get bindings() { return bindings; }, get spells() { return spells; }, get frog() { return frogSettings; },
+    get link() { return link; }, get person() { return person; },
+    get busy() { return busy; }, set busy(v) { busy = v; },
+    set frogStatus(v) { frogStatus = v; reportStatus(); },
+    onChange(f) { listeners.add(f); return () => listeners.delete(f); },
+  };
+}
+
+// ---- the frog (design/94) ---------------------------------------------------------
+//
+// When the person selects a few words, the frog hops beside them; clicked,
+// it opens their spells. This part decides when it appears and does the
+// work; the page (overlay/spells.html) draws it, in a host that shows it
+// over the screen (overlay/host-gtk.py). The selected text stays here and
+// goes to Chattering only when a spell is cast.
+
+const T = require('./overlay/spells-text.js');
+const SETTLE_MS = 350;        // a selection still for this long is a selection, not a drag
+const AFTER_REPLACE_MS = 1500; // our own paste changes the selection: not a new one
+const OUTPUT_KIND = { replace: 'replace', paste: 'replace', clipboard: 'copy', notify: 'answer' };
+
+function appName(win) {
+  const c = String(win.app || '').split('.').pop().replace(/[-_]/g, ' ').trim();
+  if (!c) return '';
+  if (/^chrom(e|ium)/i.test(c)) return 'Chromium';
+  return c.replace(/^./, x => x.toUpperCase());
+}
+
+/**
+ * The frog's controller. `host` is { send(msg), onMessage(cb) } or made from
+ * desk.overlayHost(); `api(route, body)` reaches Chattering.
+ */
+function createFrog({ desk, helper, host: givenHost = null, api = null, now = () => Date.now(), settleMs = SETTLE_MS }) {
+  const request = api || ((route, body, timeoutMs) => call(helper.link, 'POST', route, body, { timeoutMs }));
+  let host = givenHost, hostFailures = [], disabled = null;
+  let shown = null;   // { text, win, monitor }
+  let mode = 'off';   // off | idle | panel | busy
+  let last = null;    // the last spell cast: { spell } or { ask }, and its answer
+  let settleT = 0, quietUntil = 0, pendingText = null;
+
+  const settings = () => helper.frog || { on: true, skip: ['terminal'], minWords: 2, theme: { id: 'rockfrog' } };
+
+  // ---- the host ----
+  function startHost() {
+    if (host || disabled) return host;
+    const how = desk.overlayHost ? desk.overlayHost(path.join(__dirname, 'overlay', 'host-gtk.py')) : { reason: 'This desktop has no overlay yet.' };
+    if (how.reason) { disable(how.reason); return null; }
+    const child = spawn(how.file, how.args, { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...how.env } });
+    let carry = '', errTail = '';
+    const handlers = new Set();
+    child.stdout.on('data', d => {
+      carry += d;
+      const lines = carry.split('\n'); carry = lines.pop();
+      for (const l of lines) { let m; try { m = JSON.parse(l); } catch { continue; } for (const h of handlers) h(m); }
+    });
+    child.stderr.on('data', d => { errTail = (errTail + d).slice(-2000); });
+    child.on('error', e => log('frog host: ' + e.message));
+    child.on('exit', code => {
+      // Gone while it held the keys: give them back to the app, or nothing
+      // would have the keyboard.
+      if (mode === 'panel' && shown && desk.focus) desk.focus(shown.win).catch(() => {});
+      host = null; mode = 'off'; shown = null;
+      if (code === 3) return disable('This desktop does not offer the layer shell the frog needs (GNOME does not).');
+      const t = now(); hostFailures = hostFailures.filter(x => t - x < 60000).concat(t);
+      const why = errTail.trim().split('\n').filter(l => !/a11y|appsink|GStreamer/i.test(l)).pop() || ('exit ' + code);
+      log('frog host stopped: ' + why);
+      if (hostFailures.length >= 3) disable('Its overlay keeps stopping: ' + why);
+    });
+    host = {
+      send: m => { try { child.stdin.write(JSON.stringify(m) + '\n'); } catch {} },
+      onMessage: h => handlers.add(h),
+      stop: () => { try { child.stdin.end(); } catch {} child.kill(); },
+    };
+    host.onMessage(fromPage);
+    helper.frogStatus = { available: true };
+    return host;
+  }
+  function disable(reason) {
+    disabled = reason; log('frog: ' + reason);
+    helper.frogStatus = { available: false, reason };
+  }
+  if (givenHost) givenHost.onMessage(fromPage);
+
+  // ---- when it appears ----
+  function onSelection(text) {
+    if (disabled || !settings().on) return;
+    if (now() < quietUntil || mode === 'panel' || mode === 'busy' || helper.busy) return;
+    pendingText = text;
+    clearTimeout(settleT);
+    settleT = setTimeout(() => consider(pendingText).catch(e => log('frog: ' + e.message)), settleMs);
+  }
+  async function consider(text) {
+    if (mode === 'panel' || mode === 'busy' || helper.busy) return;
+    const st = settings();
+    if (!String(text).trim() || T.words(text) < (st.minWords || 2) || text.length > MAX_CHARS) { if (mode === 'idle') hide(); return; }
+    if (shown && mode === 'idle' && shown.text === text) return;
+    const win = await desk.focused().catch(() => null);
+    if (!win) return;
+    const skip = (st.skip || []).map(x => String(x).toLowerCase());
+    if ((skip.includes('terminal') && win.terminal) || skip.includes(String(win.app || '').toLowerCase())) return;
+    const place = await where(win);
+    if (!place) return;
+    shown = { text, win, monitor: place.monitor };
+    mode = 'idle';
+    if (!startHost()) return;
+    host.send({
+      type: 'show', monitor: place.monitor, at: place.at, corner: place.corner,
+      words: T.words(text), app: appName(win), spells: helper.spells, model: st.askModel || '',
+      theme: st.theme || { id: 'rockfrog' }, linger: 5000,
+    });
+  }
+  // Beside the end of the selection: the pointer is there when a mouse
+  // selection ends. The pointer outside the window means the keys made the
+  // selection: the frog waits in the window's corner instead.
+  async function where(win) {
+    const [p, mons, rect] = await Promise.all([desk.pointer(), desk.monitors(), desk.windowRect(win)]);
+    if (!rect || !mons.length) return null;
+    const inside = (pt, r) => pt.x >= r.x && pt.x < r.x + r.w && pt.y >= r.y && pt.y < r.y + r.h;
+    const byPointer = inside(p, rect);
+    const anchor = byPointer ? p : { x: rect.x + rect.w - 18, y: rect.y + rect.h - 14 };
+    const mon = mons.find(m => inside(anchor, m)) || mons.find(m => m.focused) || mons[0];
+    return { monitor: mon.name, at: { x: anchor.x - mon.x, y: anchor.y - mon.y }, corner: !byPointer };
+  }
+  function hide() { if (host && mode !== 'off') host.send({ type: 'hide' }); mode = 'off'; shown = null; }
+
+  // ---- what the person does ----
+  async function fromPage(m) {
+    try {
+      if (m.type === 'keyboard') {
+        if (m.on) mode = 'panel';
+        else {
+          if (mode === 'panel') mode = 'idle';
+          // The desktop does not say when the keyboard went back to the app
+          // (its active window never changed): give it back ourselves.
+          if (shown && desk.focus) await desk.focus(shown.win);
+        }
+      }
+      else if (m.type === 'hidden') { mode = 'off'; shown = null; }
+      else if (m.type === 'close') { if (mode === 'panel') mode = 'idle'; }
+      else if (m.type === 'cast') await cast({ spell: helper.spells.find(s => s.id === m.id) });
+      else if (m.type === 'ask') await cast({ ask: String(m.request || '') });
+      else if (m.type === 'again') { if (last) await cast(last.what); }
+      else if (m.type === 'copy') { if (last && last.answer) await desk.setClipboard(last.answer.text); if (mode !== 'off') mode = 'idle'; }
+      else if (m.type === 'replace') await replace();
+      else if (m.type === 'judge') { if (m.call) await request('/api/hotkeys/device/rate', { call: m.call, verdict: m.verdict || null }, 15000); }
+      else if (m.type === 'settings') { if (helper.link) openInBrowser(helper.link.server.replace(/\/+$/, '') + '/#settings=hotkeys'); hide(); }
+      else if (m.type === 'unsupported') disable(m.reason || 'The overlay cannot run here.');
+    } catch (e) {
+      log('frog: ' + e.message);
+      if (host && shown) host.send({ type: 'problem', title: 'That did not work', message: e.message });
+    }
+  }
+
+  async function cast(what) {
+    if (!shown || (!what.spell && !what.ask)) return;
+    if (helper.busy) return;
+    helper.busy = true; mode = 'busy';
+    const label = what.spell ? what.spell.label : '“' + what.ask + '”';
+    const started = now();
+    try {
+      const res = what.spell
+        ? await request('/api/hotkeys/device/run', { id: what.spell.id, text: shown.text }, 3 * 60 * 1000)
+        : await request('/api/hotkeys/device/ask', { request: what.ask, text: shown.text }, 3 * 60 * 1000);
+      const kind = what.spell ? (OUTPUT_KIND[what.spell.output] || 'answer') : res.kind;
+      const answer = { kind, text: String(res.text || ''), call: res.call || null };
+      last = { what, answer };
+      if (kind === 'replace' && T.keepEdges(shown.text, answer.text) === shown.text) {
+        host.send({ type: 'done', html: '<span class="live">✓</span> Nothing to change', ms: 2200 });
+      } else {
+        host.send({ type: 'answer', kind, label, before: shown.text.trim(), text: answer.text.trim(), program: res.program || '', version: res.version || '',
+          model: res.model || '', secs: Math.round((now() - started) / 100) / 10, call: answer.call });
+      }
+      log(`frog: ${res.program || 'spell'}: ${shown.text.length} chars, ${((now() - started) / 1000).toFixed(1)} s`);
+    } catch (e) {
+      host.send({ type: 'problem', title: label, message: e.message });
+    } finally { helper.busy = false; if (mode === 'busy') mode = 'panel'; }
+  }
+
+  // Replace the selection with the answer, safely: the keyboard goes back
+  // to the app, the selection there is read once more, and only if it is
+  // still the text the spell worked on is it pasted over. Else the answer
+  // waits on the clipboard.
+  async function replace() {
+    if (!shown || !last || !last.answer) return;
+    const { win, text } = shown, out = T.keepEdges(text, last.answer.text);
+    helper.busy = true; mode = 'busy'; quietUntil = now() + 60000;
+    // Whatever stops the paste, the answer is not lost: it waits on the clipboard.
+    const onClipboard = async why => {
+      await desk.setClipboard(last.answer.text).catch(() => {});
+      host.send({ type: 'done', html: why + ', so the answer is on the clipboard: <kbd>Ctrl</kbd> <kbd>V</kbd>', ms: 4200 });
+    };
+    try {
+      try { await giveBack(win); } catch { return await onClipboard('The app did not take the keyboard back'); }
+      const current = await desk.selection(win).catch(() => '');
+      if (current.trim() !== text.trim()) return await onClipboard('Your selection changed');
+      try { await desk.paste(win, out); } catch { return await onClipboard('The paste did not go through'); }
+      host.send({ type: 'done', html: '<span class="live">✓</span> Replaced · <kbd>Ctrl</kbd> <kbd>Z</kbd> undoes it', ms: 2200 });
+    } finally { helper.busy = false; quietUntil = now() + AFTER_REPLACE_MS; }
+  }
+  async function giveBack(win) {
+    // The page gave the keys back a moment ago. The window must have the
+    // keyboard again for the paste (an app reads the clipboard only then);
+    // the desktop's active window cannot tell, so focus it, then let the
+    // app take the focus in.
+    if (desk.focus) await desk.focus(win);
+    await new Promise(r => setTimeout(r, 120));
+    const f = await desk.focused().catch(() => null);
+    if (!f || f.id !== win.id) throw new Error('Could not give the keyboard back to ' + (appName(win) || 'the app') + ': the answer is on the clipboard.');
+  }
+
+  // Called by its key: the book opens on whatever is selected, wherever.
+  async function summon() {
+    if (disabled) return;
+    if (helper.busy || mode === 'busy') return;
+    const text = desk.primaryText ? await desk.primaryText().catch(() => '') : '';
+    const win = await desk.focused().catch(() => null);
+    if (!win) return;
+    const place = await where(win);
+    if (!place || !startHost()) return;
+    if (!String(text).trim()) {
+      shown = { text: '', win, monitor: place.monitor }; mode = 'idle';
+      host.send({ type: 'show', monitor: place.monitor, at: place.at, corner: place.corner, words: 0, app: appName(win), spells: helper.spells, model: settings().askModel || '', theme: settings().theme || { id: 'rockfrog' }, linger: 4000 });
+      host.send({ type: 'problem', title: 'Nothing is selected', message: 'Select some text first, then call me.', again: false });
+      return;
+    }
+    if (text.length > MAX_CHARS) return;
+    shown = { text, win, monitor: place.monitor }; mode = 'idle';
+    host.send({ type: 'show', open: true, monitor: place.monitor, at: place.at, corner: place.corner, words: T.words(text), app: appName(win), spells: helper.spells, model: settings().askModel || '', theme: settings().theme || { id: 'rockfrog' } });
+  }
+
+  helper.onChange(why => {
+    if (why === 'summon') summon().catch(e => log('frog: ' + e.message));
+    if (why === 'press') hide();
+    if (why === 'changed' && !settings().on) hide();
+  });
+
+  return { onSelection, hide, startHost, summon, get mode() { return mode; }, get disabled() { return disabled; }, stop: () => host && host.stop && host.stop() };
 }
 
 async function runHelper() {
@@ -231,16 +483,23 @@ async function runHelper() {
   const server = net.createServer(c => {
     let buf = '';
     c.on('data', d => { buf += d; if (buf.length > 200) c.destroy(); });
-    c.on('end', () => { const id = buf.trim(); c.end(); if (/^[a-z0-9]{6,32}$/.test(id)) helper.press(id); });
+    c.on('end', () => { const id = buf.trim(); c.end(); if (id === 'frog' || /^[a-z0-9]{6,32}$/.test(id)) helper.press(id); });
     c.on('error', () => {});
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(sock, resolve); });
   if (process.platform !== 'win32') fs.chmodSync(sock, 0o600);
   const stop = { stopped: false };
-  const stopWatch = desk.supported ? desk.watch(() => { log('the desktop reloaded its configuration: binding again'); setTimeout(() => helper.applyAll(), 300); }) : () => {};
+  const frog = desk.supported && desk.watchSelection ? createFrog({ desk, helper }) : null;
+  const stopSelection = frog ? desk.watchSelection(t => frog.onSelection(t)) : () => {};
+  if (!frog) helper.frogStatus = { available: false, reason: desk.reason || 'The frog is not built for this desktop yet.' };
+  // The frog leaves when the person moves to another window or workspace.
+  const onEvent = (name) => { if (frog && (name === 'workspacev2' || name === 'activewindowv2') && frog.mode === 'idle') frog.hide(); };
+  const stopWatch = desk.supported ? desk.watch(() => { log('the desktop reloaded its configuration: binding again'); setTimeout(() => helper.applyAll(), 300); }, onEvent) : () => {};
   const quit = async () => {
     stop.stopped = true;
     stopWatch();
+    stopSelection();
+    if (frog) frog.stop();
     server.close();
     if (desk.supported) await desk.clear();
     process.exit(0);
@@ -312,4 +571,4 @@ async function main(argv) {
 
 if (require.main === module) main(process.argv.slice(2)).catch(e => { console.error('hotkeys: ' + e.message); process.exit(1); });
 
-module.exports = { main, createHelper, keepEdges, socketPath };
+module.exports = { main, createHelper, createFrog, keepEdges, socketPath, appName };

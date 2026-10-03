@@ -6851,7 +6851,38 @@ function hotkeysView(identity) {
     computers: hotkeyStore.computers(person.id),
     inputs: hotkeysLib.INPUTS, outputs: hotkeysLib.OUTPUTS,
     settingsModel: currentModelLabel(),
+    version: hotkeyStore.version(person.id),
+    frog: hotkeyStore.frog(person.id),
+    spells: hotkeysLib.spellsOf(hotkeyStore.bindings(person.id), hotkeyLabel),
+    themes: hotkeyThemes(),
   };
+}
+// The themes the frog may wear: Chattering's own, and this install's custom ones.
+const HOTKEY_BUILTIN_THEMES = [['rockfrog', 'Rockfrog (follows the desktop’s light or dark)'], ['rockfrog-light', 'Rockfrog light'], ['rockfrog-dark', 'Rockfrog dark'], ['dark', 'Dark'], ['light', 'Light'], ['gray', 'Gray'], ['eink', 'E-ink']];
+function hotkeyThemes() {
+  let custom = [];
+  try { custom = themesLib.readCustomThemes(THEMES_DIR).valid.map(t => ({ id: t.id, name: t.name || t.id })); } catch {}
+  return [...HOTKEY_BUILTIN_THEMES.map(([id, name]) => ({ id, name })), ...custom];
+}
+// The theme as a computer's overlay needs it: its id, and its CSS when it is one of this install's own.
+function hotkeyThemeFor(id) {
+  if (HOTKEY_BUILTIN_THEMES.some(([b]) => b === id)) return { id, css: '' };
+  try {
+    const t = themesLib.readCustomThemes(THEMES_DIR).valid.find(x => x.id === id);
+    if (t) return { id, css: themesLib.bundleCustomThemes(THEMES_DIR) };
+  } catch {}
+  return { id: 'rockfrog', css: '' };
+}
+// The model label a person's frog shows for questions typed into its book.
+const hotkeyAskModel = person => { const m = hotkeyStore.frog(person.id).model; return m ? m.provider + '/' + m.model : currentModelLabel(); };
+// The answers each computer was given lately: only those may it judge.
+const hotkeyCalls = new Map(); // computer id → Set of call ids (the last 200)
+function hotkeyCallMade(computer, callId) {
+  if (!callId) return;
+  let set = hotkeyCalls.get(computer.id);
+  if (!set) hotkeyCalls.set(computer.id, set = new Set());
+  set.add(callId);
+  while (set.size > 200) set.delete(set.values().next().value);
 }
 // A starter: its program made and published here if no one has yet, then a
 // hotkey for it. A starter program someone already made is used as it is.
@@ -6873,7 +6904,7 @@ async function hotkeyStarter(identity, id) {
     note = `${def.name} exists but is not published: publish it on its page and the hotkey works.`;
   }
   const list = hotkeyStore.bindings(person.id).map(b => ({ ...b }));
-  const clash = list.find(b => b.on && hotkeysLib.normalizeBinding({ ...b }).keys === hotkeysLib.normalizeBinding({ keys: starter.keys, program: def.name }).keys);
+  const clash = starter.keys ? list.find(b => b.on && b.keys && b.keys === hotkeysLib.normalizeBinding({ keys: starter.keys, program: def.name }).keys) : null;
   list.push({ keys: starter.keys, label: starter.label, program: def.name, input: starter.input, output: starter.output, on: !clash });
   if (clash) note = `${starter.keys} is already your hotkey for ${clash.program}: the new one is off until you give it other keys.`;
   hotkeyStore.setBindings(person.id, list);
@@ -6885,8 +6916,37 @@ function hotkeyDeviceView(person, computer) {
     version: hotkeyStore.version(person.id),
     person: { id: person.id, name: person.name },
     computer: { id: computer.id, name: computer.name },
-    bindings: hotkeyStore.bindings(person.id).filter(b => b.on).map(b => ({ id: b.id, keys: b.keys, label: hotkeyLabel(b), program: b.program, input: b.input, output: b.output })),
+    bindings: hotkeyStore.bindings(person.id).filter(b => b.on && b.keys).map(b => ({ id: b.id, keys: b.keys, label: hotkeyLabel(b), program: b.program, input: b.input, output: b.output })),
+    spells: hotkeysLib.spellsOf(hotkeyStore.bindings(person.id), hotkeyLabel),
+    frog: { ...hotkeyStore.frog(person.id), theme: hotkeyThemeFor(hotkeyStore.frog(person.id).theme), askModel: hotkeyAskModel(person) },
   };
+}
+// A question typed into the frog's book about the selected text: Chattering's
+// own program (selection_ask), which also says whether its answer replaces the text.
+async function hotkeyAsk(person, computer, p) {
+  const fail = (status, message) => Object.assign(new Error(message), { status });
+  const request = typeof p.request === 'string' ? p.request.trim().slice(0, 2000) : '';
+  const text = typeof p.text === 'string' ? p.text : '';
+  if (!request) throw fail(400, 'Say what to do with the text.');
+  if (!text.trim()) throw fail(400, 'There is no text to work on.');
+  if (text.length > HOTKEY_TEXT_MAX) throw fail(413, `A spell takes at most ${HOTKEY_TEXT_MAX} characters.`);
+  const turn = hotkeyLimiter.take('person:' + person.id);
+  if (!turn.ok) throw fail(429, 'Too many spells at once: ' + turn.why + '.');
+  try {
+    assertWithinBudget(person);
+    const model = hotkeyStore.frog(person.id).model;
+    const { outputs, callId } = await aiProgram('selection_ask', { request, text }, {
+      automatic: false, thinking: 'off', timeoutMs: 2 * 60 * 1000, person: person.id, health: hotkeyHealth(),
+      ...(model ? { model: { provider: model.provider, model: model.model } } : {}),
+      caller: { kind: 'hotkey', user: programPerson(person), key: computer.name },
+    });
+    hotkeyCallMade(computer, callId);
+    return { kind: outputs.kind === 'replace' ? 'replace' : 'answer', text: String(outputs.result || ''), program: 'selection_ask', model: hotkeyAskModel(person), call: callId };
+  } catch (e) {
+    if (e.status) throw e;
+    const f2 = madeFailure(e);
+    throw fail(f2.status, f2.body.error);
+  } finally { turn.release(); }
 }
 // One press: the text a computer read, through the program, back as text.
 async function hotkeyRun(person, computer, p) {
@@ -6913,7 +6973,9 @@ async function hotkeyRun(person, computer, p) {
       caller: { kind: 'hotkey', user: programPerson(person), key: computer.name },
     });
     const n = madeVersionNames(b.program).get(live.version);
-    return { text: hotkeysLib.answerText(live.definition, out.outputs), program: b.program, version: n ? 'v' + n : null, call: out.callId };
+    hotkeyCallMade(computer, out.callId);
+    return { text: hotkeysLib.answerText(live.definition, out.outputs), program: b.program, version: n ? 'v' + n : null, call: out.callId,
+      model: b.model ? b.model.provider + '/' + b.model.model : currentModelLabel() };
   } catch (e) {
     if (e.status) throw e;
     const f2 = madeFailure(e);
@@ -6924,7 +6986,8 @@ async function hotkeyRun(person, computer, p) {
 function hotkeyStatusOf(p) {
   const report = (Array.isArray(p && p.report) ? p.report : []).slice(0, 60)
     .map(r => ({ id: hotkeyClean(r && r.id, 32), state: HOTKEY_STATES.has(r && r.state) ? r.state : 'bad', ...(r && r.by ? { by: hotkeyClean(r.by, 120) } : {}) }));
-  return { at: new Date().toISOString(), desktop: hotkeyClean(p && p.desktop, 40), supported: !(p && p.supported === false), reason: hotkeyClean(p && p.reason, 200) || null, report };
+  const frog = p && p.frog && typeof p.frog === 'object' ? { available: p.frog.available === true, reason: hotkeyClean(p.frog.reason, 300) || null } : null;
+  return { at: new Date().toISOString(), desktop: hotkeyClean(p && p.desktop, 40), supported: !(p && p.supported === false), reason: hotkeyClean(p && p.reason, 200) || null, report, frog };
 }
 
 // The model's draft (program_draft) as a definition that passes the checks:
@@ -16992,6 +17055,8 @@ const APP_FILES = {
     '/icon-512.png': { file: 'icons/icon-512.png', type: 'image/png', cache: 'public, max-age=86400', compress: false },
     '/apple-touch-icon.png': { file: 'icons/apple-touch-icon.png', type: 'image/png', cache: 'public, max-age=86400', compress: false },
     '/icon.svg': { file: 'icon.svg', type: 'image/svg+xml', cache: 'public, max-age=86400' },
+    // The frog (design/94), for settings → hotkeys.
+    ...Object.fromEntries(['idle', 'blink', 'wave', 'cast', 'happy', 'puzzled'].map(p => ['/overlay/frog/' + p + '.webp', { file: 'overlay/frog/' + p + '.webp', type: 'image/webp', cache: 'public, max-age=86400', compress: false }])),
     '/icon-maskable-512.png': { file: 'icons/icon-maskable-512.png', type: 'image/png', cache: 'public, max-age=86400', compress: false },
     '/favicon.svg': { file: 'icons/favicon.svg', type: 'image/svg+xml', cache: 'public, max-age=86400' },
     '/mark.svg': { file: 'icons/mark.svg', type: 'image/svg+xml', cache: 'public, max-age=86400' },
@@ -17231,6 +17296,22 @@ async function handleRequest(req, res) {
         if (u.pathname === '/api/hotkeys/device/status' && req.method === 'POST') {
           hotkeyStore.seen(computer, hotkeyStatusOf(await programBody(req, 64 * 1024)));
           return json(res, 200, { ok: true });
+        }
+        if (u.pathname === '/api/hotkeys/device/ask' && req.method === 'POST') {
+          hotkeyStore.seen(computer);
+          return json(res, 200, await hotkeyAsk(person, computer, await programBody(req, 256 * 1024)));
+        }
+        if (u.pathname === '/api/hotkeys/device/rate' && req.method === 'POST') {
+          // Right or wrong, from the frog's answer: only an answer this computer was given.
+          const p = await programBody(req, 4096);
+          const call = String(p.call || '');
+          if (!(hotkeyCalls.get(computer.id) || new Set()).has(call)) return json(res, 404, { error: 'This computer was not given that answer.' });
+          const verdict = p.verdict === 'right' || p.verdict === 'wrong' ? p.verdict : null;
+          const log = programLog();
+          log.refresh({ force: true });
+          const r = log.rate({ call, verdict, by: programPerson(person), origin: 'review' });
+          programLogChanged();
+          return json(res, 200, { ok: true, state: r.state });
         }
         if (u.pathname === '/api/hotkeys/device/run' && req.method === 'POST') {
           hotkeyStore.seen(computer);
@@ -18823,7 +18904,13 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/hotkeys' && req.method === 'PUT') {
       try {
         const p = await programBody(req, 256 * 1024);
-        hotkeyStore.setBindings((identity.user || usersLib.ownerOf(roster)).id, p.bindings);
+        hotkeyStore.setBindings((identity.user || usersLib.ownerOf(roster)).id, p.bindings, { since: p.version });
+        json(res, 200, hotkeysView(identity));
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/hotkeys/frog' && req.method === 'PUT') {
+      // The frog's settings (design/94): its computers hear of a change at once.
+      try {
+        hotkeyStore.setFrog((identity.user || usersLib.ownerOf(roster)).id, await programBody(req, 16 * 1024));
         json(res, 200, hotkeysView(identity));
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/hotkeys/starter' && req.method === 'POST') {

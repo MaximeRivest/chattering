@@ -21,6 +21,15 @@
 //                                     cursor, then put the clipboard back
 //   notify(title, body, {replace, ms}) → id     dismiss(id)
 //
+// For the frog (design/94), optional:
+//   watchSelection(onText) → stop   each new selection's text, as the app
+//                                   offers it (no copy, the clipboard untouched)
+//   pointer() → {x, y}              the pointer, in the desktop's layout
+//   monitors() → [{name, x, y, w, h}]   screens, logical size
+//   windowRect(window) → {x, y, w, h}
+//   focus(window)                   give the keyboard back to a window
+//   overlayHost() → {file, args, env} | {reason}   how to start the overlay
+//
 // Hyprland is built. Windows, macOS, GNOME, KDE and X11 are named here so the
 // helper can say what it is on and why it cannot help yet.
 const fs = require('fs');
@@ -178,7 +187,60 @@ function hyprland() {
       await evalLua('local t = _G.chattering_hotkeys or {}\nfor _, h in ipairs(t) do pcall(function() h:unbind() end) end\n_G.chattering_hotkeys = {}').catch(() => {});
       handles = 0;
     },
-    watch(onReset) {
+    // The primary selection: what is selected, offered by the app the moment
+    // it is selected (GTK, Qt, Chromium, Firefox, terminals). Read through
+    // wl-paste's watch, at most 20,001 bytes each time, base64 on one line.
+    watchSelection(onText) {
+      let stopped = false, child = null, carry = '';
+      const start = () => {
+        if (stopped) return;
+        child = spawn('wl-paste', ['--primary', '--type', 'text', '--watch', 'sh', '-c', 'head -c 20001 | base64 -w0; echo'], { stdio: ['ignore', 'pipe', 'ignore'] });
+        child.stdout.on('data', d => {
+          carry += d;
+          const lines = carry.split('\n');
+          carry = lines.pop();
+          for (const l of lines) { try { onText(Buffer.from(l, 'base64').toString('utf8')); } catch {} }
+        });
+        child.on('exit', () => { child = null; if (!stopped) setTimeout(start, 2000); });
+        child.on('error', () => {});
+      };
+      start();
+      return () => { stopped = true; if (child) child.kill(); };
+    },
+    async primaryText() {
+      return String(await run('wl-paste', ['--primary', '--no-newline', '--type', 'text'], { timeout: 1500 }).catch(() => '')).slice(0, 20001);
+    },
+    async pointer() {
+      const p = JSON.parse(await hyprctl('cursorpos', '-j'));
+      return { x: Math.round(p.x), y: Math.round(p.y) };
+    },
+    async monitors() {
+      return JSON.parse(await hyprctl('monitors', '-j')).map(m => {
+        const turned = m.transform % 2 === 1;
+        const w = Math.round((turned ? m.height : m.width) / m.scale), h = Math.round((turned ? m.width : m.height) / m.scale);
+        return { name: m.name, x: m.x, y: m.y, w, h, focused: !!m.focused };
+      });
+    },
+    async windowRect(win) {
+      const all = JSON.parse(await hyprctl('clients', '-j'));
+      const c = all.find(x => x.address === win.id);
+      return c ? { x: c.at[0], y: c.at[1], w: c.size[0], h: c.size[1] } : null;
+    },
+    async focus(win) {
+      await hyprctl('dispatch', `hl.dsp.focus({ window = "address:${win.id}" })`).catch(() => {});
+    },
+    // The overlay host: overlay/host-gtk.py with GTK 4, gtk4-layer-shell and
+    // WebKitGTK 6. A packaged install names its own (CHATTERING_OVERLAY_HOST,
+    // a program that runs Python with them); else the system's python3, with
+    // the layer-shell library found in the usual places.
+    overlayHost(script) {
+      if (process.env.CHATTERING_OVERLAY_HOST) return { file: process.env.CHATTERING_OVERLAY_HOST, args: [script], env: {} };
+      const lib = ['/usr/lib/libgtk4-layer-shell.so.0', '/usr/lib64/libgtk4-layer-shell.so.0', '/usr/lib/x86_64-linux-gnu/libgtk4-layer-shell.so.0', '/usr/lib/aarch64-linux-gnu/libgtk4-layer-shell.so.0']
+        .find(f => fs.existsSync(f));
+      if (!lib) return { reason: 'The frog needs gtk4-layer-shell, WebKitGTK 6 and PyGObject (on Debian or Ubuntu: apt install libgtk4-layer-shell0 gir1.2-gtk4layershell-1.0 gir1.2-webkit-6.0 python3-gi python3-gi-cairo).' };
+      return { file: 'python3', args: [script], env: { LD_PRELOAD: lib } };
+    },
+    watch(onReset, onEvent) {
       const dir = path.join(process.env.XDG_RUNTIME_DIR || '/tmp', 'hypr', process.env.HYPRLAND_INSTANCE_SIGNATURE || '');
       let sock = null, stopped = false, carry = '';
       const connect = () => {
@@ -189,6 +251,7 @@ function hyprland() {
           const lines = carry.split('\n');
           carry = lines.pop();
           if (lines.some(l => l.startsWith('configreloaded>>'))) onReset();
+          if (onEvent) for (const l of lines) { const i = l.indexOf('>>'); if (i > 0) onEvent(l.slice(0, i), l.slice(i + 2)); }
         });
         sock.on('error', () => {});
         sock.on('close', () => { if (!stopped) setTimeout(connect, 2000); });

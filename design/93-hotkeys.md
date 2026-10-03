@@ -1,6 +1,6 @@
 # 93 — Hotkeys: your AI programs, anywhere on your computer
 
-Status: built 2026-10-03 for Hyprland (Linux). macOS, Windows, GNOME, KDE
+Status: built 2026-10-03 for Hyprland (Linux). The frog (selected text, no key to remember) builds on it: design/94. macOS, Windows, GNOME, KDE
 and X11 are named by the helper and not built. Follows design/75 (making
 programs and giving them an address).
 

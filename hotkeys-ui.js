@@ -29,7 +29,7 @@
   async function api(method, url, body) {
     const res = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || ('error ' + res.status));
+    if (!res.ok) throw Object.assign(new Error(data.error || ('error ' + res.status)), { status: res.status });
     return data;
   }
 
@@ -61,11 +61,11 @@
     const prog = state.programs.find(p => p.name === b.program);
     const problem = !prog ? `No program named ${b.program} is here any more.` : !prog.live ? `${b.program} is not published: publish it on its page.` : (b.field ? null : prog.problem);
     return `<div class="hk-row${b.on ? '' : ' off'}" data-i="${i}">
-      <kbd class="hk-keys">${esc(keyLabel(b.keys))}</kbd>
+      ${b.keys ? `<kbd class="hk-keys">${esc(keyLabel(b.keys))}</kbd>` : '<span class="hk-keys hk-bookonly" title="No keys: cast from the frog\u2019s book">book only</span>'}
       <div class="hk-what">
         <b>${esc(b.label || human(b.program))}</b>
-        <span class="hint">${esc(state.inputs[b.input])} → ${esc(b.program)} → ${esc(state.outputs[b.output])}${b.model ? ' · ' + esc(b.model.provider + '/' + b.model.model) : ''}</span>
-        ${problem ? `<span class="hk-bad">${esc(problem)}</span>` : b.on && state.computers.length ? `<span class="hk-where">${statusOn(b)}</span>` : ''}
+        <span class="hint">${esc(state.inputs[b.input])} → ${esc(b.program)} → ${esc(state.outputs[b.output])}${b.model ? ' · ' + esc(b.model.provider + '/' + b.model.model) : ''}${b.book !== false && b.input === 'selection' ? ' · in the frog\u2019s book' : ''}</span>
+        ${problem ? `<span class="hk-bad">${esc(problem)}</span>` : b.on && b.keys && state.computers.length ? `<span class="hk-where">${statusOn(b)}</span>` : ''}
       </div>
       <label class="set-check" title="${b.on ? 'On' : 'Off'}"><input type="checkbox" data-on${b.on ? ' checked' : ''}> on</label>
       <a class="ghost" href="#program=${encodeURIComponent(b.program)}" title="See its answers, judge them, change its instruction">program</a>
@@ -84,7 +84,7 @@
       <h3>${e.isNew ? 'new hotkey' : 'edit hotkey'}</h3>
       <div class="set-field">
         <label for="hkKeys">keys</label>
-        <div class="row"><input id="hkKeys" type="text" value="${esc(e.keys || '')}" placeholder="click here and press the keys, or type Super+Ctrl+G" spellcheck="false" autocomplete="off"></div>
+        <div class="row"><input id="hkKeys" type="text" value="${esc(e.keys || '')}" placeholder="optional: click here and press the keys (Super+Ctrl+G)" spellcheck="false" autocomplete="off"></div>
         <div class="set-help">Use Super (${IS_MAC ? '⌘' : 'the Windows key'}), Ctrl or Alt with a letter, a digit or a key like F5. If nothing appears when you press them, your desktop (or one of your hotkeys) already uses that combination: choose another, or type it. A combination taken on a computer is reported below, per computer.</div>
       </div>
       <div class="set-field">
@@ -99,9 +99,36 @@
         <div class="row"><select id="hkModel"><option value="">the settings model (${esc(state.settingsModel || 'settings → model')})</option>${list.map(m => `<option value="${esc(m.id)}"${m.id === curModel ? ' selected' : ''}>${esc(m.id)}</option>`).join('')}${curModel && !list.some(m => m.id === curModel) ? `<option value="${esc(curModel)}" selected>${esc(curModel)}</option>` : ''}</select></div>
         <div class="set-help">A small fast model makes a hotkey feel quick (about 2 seconds). Thinking is off for hotkeys.</div>
       </div>
+      <label class="set-check"><input type="checkbox" id="hkBook"${e.book !== false ? ' checked' : ''}${(e.input || 'selection') !== 'selection' ? ' disabled' : ''}> in the frog’s book (it appears beside text you select)</label>
       <div class="set-field"><label for="hkLabel">name</label><div class="row"><input id="hkLabel" type="text" value="${esc(e.label || '')}" placeholder="${esc(human(e.program) || 'shown while it works')}" maxlength="60"></div></div>
       <div class="row"><button type="button" id="hkSave">save</button><button type="button" class="ghost" id="hkCancel">cancel</button></div>
       <div class="set-status" id="hkEditStatus"></div>
+    </div>`;
+  }
+
+  function frogHtml() {
+    const f = state.frog || {};
+    const list = models || [];
+    const cur = f.model ? f.model.provider + '/' + f.model.model : '';
+    const themes = (state.themes || []).map(t => `<option value="${esc(t.id)}"${t.id === f.theme ? ' selected' : ''}>${esc(t.name)}</option>`).join('');
+    const where = state.computers.map(c => {
+      const fs = c.status && c.status.frog;
+      return !fs ? '' : fs.available ? `<span class="hk-live">● ${esc(c.name)}</span>` : `<span class="hk-bad">${esc(c.name)}: ${esc(fs.reason || 'not available')}</span>`;
+    }).filter(Boolean).join(' · ');
+    return `<div class="set-group hk-frog">
+      <h3>the frog</h3>
+      <div class="hk-frog-row"><img src="/overlay/frog/wave.webp" alt="" class="hk-frog-pic">
+        <div><label class="set-check"><input type="checkbox" id="hkFrogOn"${f.on !== false ? ' checked' : ''}> appear beside text I select, with my spells</label>
+        <div class="set-help">Select a few words in any app; the frog hops beside them. Click it to cast a spell, or type what to do. You see the answer before anything changes. If you ignore it, it hops away.</div>
+        ${where ? `<div class="hk-where">${where}</div>` : ''}</div></div>
+      <div class="set-field"><label for="hkFrogKeys">call it with</label><div class="row"><input id="hkFrogKeys" type="text" value="${esc(f.summonKeys || '')}" placeholder="no key" spellcheck="false" autocomplete="off"></div>
+        <div class="set-help">Opens the frog’s book on whatever is selected: for text selected with the keyboard, or in apps it stays away from. Click the box and press the keys.</div></div>
+      <div class="set-field"><label for="hkFrogTheme">looks</label><div class="row"><select id="hkFrogTheme">${themes}</select></div></div>
+      <div class="set-field"><label for="hkFrogSkip">stays away from</label><div class="row"><input id="hkFrogSkip" type="text" value="${esc((f.skip || []).join(', '))}" placeholder="terminal, keepassxc" spellcheck="false"></div>
+        <div class="set-help">Apps by name, separated by commas; <code>terminal</code> means every terminal (you select there to copy).</div></div>
+      <div class="set-field"><label for="hkFrogWords">wakes for</label><div class="row"><select id="hkFrogWords">${[1, 2, 3, 5, 8].map(n => `<option value="${n}"${n === (f.minWords || 2) ? ' selected' : ''}>${n} word${n === 1 ? '' : 's'} or more</option>`).join('')}</select></div></div>
+      <div class="set-field"><label for="hkFrogModel">questions you type</label><div class="row"><select id="hkFrogModel"><option value="">the settings model (${esc(state.settingsModel || '')})</option>${list.map(m => `<option value="${esc(m.id)}"${m.id === cur ? ' selected' : ''}>${esc(m.id)}</option>`).join('')}${cur && !list.some(m => m.id === cur) ? `<option value="${esc(cur)}" selected>${esc(cur)}</option>` : ''}</select></div>
+        <div class="set-help">What answers when you type into the frog’s book instead of picking a spell.</div></div>
     </div>`;
   }
 
@@ -139,7 +166,7 @@
     return `${rows || '<div class="set-help">No computer runs your hotkeys yet.</div>'}
       <div class="set-help">To link a computer, run this on it (it comes with Chattering), then approve the code it shows:</div>
       <div class="set-field"><div class="row"><code class="mach-link">chattering-app hotkeys connect ${esc(origin)}</code><button type="button" class="ghost" data-copy="chattering-app hotkeys connect ${esc(origin)}">copy</button></div></div>
-      <div class="set-help">Then keep <code>chattering-app hotkeys run</code> running with your session. Built so far for Hyprland on Linux; macOS and Windows are next.</div>`;
+      <div class="set-help">Then keep <code>chattering-app hotkeys run</code> running with your session (<code>chattering-app hotkeys autostart on</code>). Built so far for Linux desktops with Hyprland; the frog also needs GTK 4, gtk4-layer-shell and WebKitGTK 6. macOS and Windows are next.</div>`;
   }
 
   function paint() {
@@ -147,15 +174,17 @@
     if (!state) { rootEl.innerHTML = message ? `<div class="set-status">${esc(message)}</div>` : '<span class="hint">loading…</span>'; return; }
     const starters = state.starters.filter(s => !state.bindings.some(b => b.program === s.program));
     rootEl.innerHTML = `
-      <p class="lead">Run your AI programs from anywhere on your computer. Select some text, press the keys, and the program's answer replaces it, or goes to the clipboard, or shows as a notification. Every answer is kept on the program's page, where you can judge it and improve the program.</p>
+      <p class="lead">Your AI programs, anywhere on your computer: select text, and cast one from the frog or with its keys. The answer replaces the text, goes to the clipboard, or shows beside it. Every answer is kept on the program's page, where you can judge it and improve the program.</p>
       ${message ? `<div class="set-status">${esc(message)}</div>` : ''}
+      ${frogHtml()}
       <div class="set-group"><h3>link a computer</h3>${connectHtml()}</div>
       <div class="set-group">
-        <h3>your hotkeys</h3>
+        <h3>your spells</h3>
+        <div class="set-help">A spell is one of your programs: in the frog’s book, and on keys anywhere if you give it some.</div>
         ${state.bindings.length ? state.bindings.map(bindingRow).join('') : '<div class="set-help">None yet.</div>'}
         ${editing ? '' : `<div class="row"><button type="button" id="hkAdd">add a hotkey</button></div>`}
         ${starters.length && !editing ? `<div class="set-help">Or start with one of these (each becomes a program of its own, yours to change):</div>
-          <div class="row hk-starters">${starters.map(s => `<button type="button" class="ghost" data-starter="${esc(s.id)}" title="${esc(state.inputs[s.input])} → ${esc(state.outputs[s.output])}">${esc(s.label)} <kbd>${esc(keyLabel(s.keys))}</kbd></button>`).join('')}</div>` : ''}
+          <div class="row hk-starters">${starters.map(s => `<button type="button" class="ghost" data-starter="${esc(s.id)}" title="${esc(state.inputs[s.input])} → ${esc(state.outputs[s.output])}">${esc(s.label)} ${s.keys ? `<kbd>${esc(keyLabel(s.keys))}</kbd>` : '<span class="hint">book</span>'}</button>`).join('')}</div>` : ''}
       </div>
       ${editing ? editorHtml() : ''}
       <div class="set-group"><h3>your computers</h3>${computersHtml()}</div>
@@ -165,10 +194,13 @@
 
   // ---- acting --------------------------------------------------------------------
 
+  // The list is saved whole, with the version it was read at: a save from
+  // a stale page is refused, and the page shows the list as it is now.
   async function save(bindings) {
-    state = { ...state, ...(await api('PUT', '/api/hotkeys', { bindings })) };
+    try { state = { ...state, ...(await api('PUT', '/api/hotkeys', { bindings, version: state.version })) }; }
+    catch (e) { if (e.status === 409) { editing = null; await load(); } throw e; }
   }
-  const plain = b => ({ id: b.id, keys: b.keys, label: b.label, program: b.program, field: b.field, input: b.input, output: b.output, model: b.model, on: b.on });
+  const plain = b => ({ id: b.id, keys: b.keys || null, label: b.label, program: b.program, field: b.field, input: b.input, output: b.output, model: b.model, on: b.on, book: b.book !== false });
 
   function bind() {
     const $ = s => rootEl.querySelector(s);
@@ -189,7 +221,25 @@
         await save(state.bindings.filter((_, j) => j !== i).map(plain));
       });
     });
-    if ($('#hkAdd')) $('#hkAdd').onclick = () => { editing = { isNew: true, keys: '', program: '', input: 'selection', output: 'replace', on: true, model: null, label: '' }; paint(); };
+    // The frog's settings: saved as they change.
+    const frogSave = act(async () => {
+      const m = $('#hkFrogModel').value;
+      state = { ...state, ...(await api('PUT', '/api/hotkeys/frog', {
+        on: $('#hkFrogOn').checked, theme: $('#hkFrogTheme').value, minWords: Number($('#hkFrogWords').value), summonKeys: $('#hkFrogKeys').value.trim() || null,
+        skip: $('#hkFrogSkip').value.split(',').map(x => x.trim()).filter(Boolean),
+        model: m ? { provider: m.slice(0, m.indexOf('/')), model: m.slice(m.indexOf('/') + 1) } : null,
+      })) };
+    });
+    ['#hkFrogOn', '#hkFrogTheme', '#hkFrogWords', '#hkFrogModel', '#hkFrogSkip', '#hkFrogKeys'].forEach(sel => { const el = $(sel); if (el) el.onchange = frogSave; });
+    // Recording the summon key, as the hotkey editor does.
+    const fk = $('#hkFrogKeys');
+    if (fk) fk.onkeydown = e => {
+      if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey) return;
+      if (e.key === 'Backspace' && !e.ctrlKey && !e.altKey && !e.metaKey) { e.preventDefault(); fk.value = ''; frogSave(); return; }
+      const combo = K.fromEvent(e); if (!combo) return;
+      e.preventDefault(); fk.value = K.format(combo); frogSave();
+    };
+    if ($('#hkAdd')) $('#hkAdd').onclick = () => { editing = { isNew: true, keys: '', program: '', input: 'selection', output: 'replace', on: true, model: null, label: '', book: true }; paint(); };
     rootEl.querySelectorAll('[data-starter]').forEach(b => b.onclick = act(async () => {
       state = { ...state, ...(await api('POST', '/api/hotkeys/starter', { id: b.dataset.starter })) };
       message = state.note || '';
@@ -250,6 +300,7 @@
     editing.input = $('#hkInput').value;
     editing.output = $('#hkOutput').value;
     editing.label = $('#hkLabel').value.trim();
+    editing.book = $('#hkBook').checked;
     const m = $('#hkModel').value;
     editing.model = m ? { provider: m.slice(0, m.indexOf('/')), model: m.slice(m.indexOf('/') + 1) } : null;
   }
