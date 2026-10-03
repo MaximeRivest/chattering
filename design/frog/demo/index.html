@@ -33,10 +33,10 @@ h1 { font: 600 28px/1.2 var(--serif); margin: 0 0 6px; }
 .opts label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
 
 /* ---- the frog ---------------------------------------------------------- */
-#frog { position: absolute; width: 124px; height: 155px; z-index: 20; cursor: pointer; display: none;
+#frog { position: absolute; width: 60px; height: 100px; z-index: 20; cursor: pointer; display: none;
   transform-origin: 50% 100%; filter: drop-shadow(0 4px 6px rgba(0, 0, 0, .22)); }
 #frog.busy { filter: drop-shadow(0 0 14px var(--glow)) drop-shadow(0 4px 6px rgba(0, 0, 0, .22)); }
-#frog img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none; -webkit-user-drag: none; }
+#frog img { position: absolute; left: -21.5%; top: -0.5%; width: 135.3%; height: 100.9%; object-fit: fill; pointer-events: none; user-select: none; -webkit-user-drag: none; }
 #frog .body { position: absolute; inset: 0; transform-origin: 50% 100%; animation: breathe 2.8s ease-in-out infinite; }
 #frog.enter { animation: hopIn .55s cubic-bezier(.25, 1.5, .5, 1) both; }
 #frog.leave { animation: hopOut .35s ease-in both; }
@@ -50,8 +50,8 @@ h1 { font: 600 28px/1.2 var(--serif); margin: 0 0 6px; }
 @keyframes bob { from { transform: translateY(0) rotate(-2deg); } to { transform: translateY(-5px) rotate(2deg); } }
 @keyframes jump { 0% { transform: none; } 40% { transform: translateY(-16px) scale(.96, 1.05); } 70% { transform: translateY(0) scale(1.06, .94); } 100% { transform: none; } }
 @keyframes shake { 0%, 100% { transform: none; } 25% { transform: rotate(-6deg); } 75% { transform: rotate(6deg); } }
-#frog.small { width: 84px; height: 105px; }
-.tip { position: absolute; left: 50%; bottom: 100%; transform: translate(-50%, 6px); white-space: nowrap; font-size: 12.5px; font-weight: 600;
+#frog.small { width: 45px; height: 75px; }
+.tip { position: absolute; left: 50%; bottom: 100%; transform: translate(-50%, -2px); white-space: nowrap; font-size: 12.5px; font-weight: 600;
   background: var(--ink); color: var(--paper); padding: 3px 9px; border-radius: 99px; opacity: 0; transition: opacity .15s; pointer-events: none; }
 #frog:hover .tip { opacity: 1; }
 .spark { position: absolute; width: 8px; height: 8px; z-index: 21; pointer-events: none; color: #f1c74c; font-size: 13px; line-height: 8px;
@@ -160,8 +160,8 @@ function place() {
   frog.style.display = 'block';
   const m = main.getBoundingClientRect();
   if (document.getElementById('noPos').checked) {
-    frog.style.left = (m.width - 130) + 'px';
-    frog.style.top = (innerHeight - m.top - 175) + 'px';
+    frog.style.left = (m.width - 80) + 'px';
+    frog.style.top = (innerHeight - m.top - 120) + 'px';
     return;
   }
   // The text's box: here the paragraph's container; on a desktop, the text
@@ -169,14 +169,14 @@ function place() {
   const rects = range.getClientRects(); const r = rel(rects[rects.length - 1]);
   const box = rel(doc.getBoundingClientRect());
   const room = m.width - box.right;
-  if (room >= 130) {
+  if (room >= 80) {
     frog.classList.remove('small');
-    frog.style.left = (box.right - 8) + 'px';
-    frog.style.top = (r.bottom - 155 + 18) + 'px';
+    frog.style.left = (box.right + 12) + 'px';
+    frog.style.top = (r.bottom - 100 + 10) + 'px';
   } else {
     frog.classList.add('small');
-    frog.style.left = Math.min(r.right - 10, m.width - 86) + 'px';
-    frog.style.top = (r.bottom - 105 + 12) + 'px';
+    frog.style.left = Math.min(r.right + 4, m.width - 50) + 'px';
+    frog.style.top = (r.bottom - 75 + 8) + 'px';
   }
 }
 function appear() {
