@@ -27,7 +27,7 @@ async function fakeOpenAI({ models = ['fixture-chat'], reply = 'Hello! I am read
     let body = '';
     for await (const chunk of req) body += chunk;
     const auth = req.headers.authorization || '';
-    requests.push({ method: req.method, url: req.url, auth, body: body ? JSON.parse(body) : null });
+    requests.push({ method: req.method, url: req.url, auth, headers: req.headers, body: body ? JSON.parse(body) : null });
     if (apiKey && auth !== 'Bearer ' + apiKey) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: { message: 'bad key' } })); }
     if (req.method === 'GET' && /\/v1\/models\/?$/.test(req.url)) {
       res.writeHead(200, { 'content-type': 'application/json' });

