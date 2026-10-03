@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frog spells — a demo</title>
+<style>
+:root {
+  --bg: #f4f7f4; --paper: #ffffff; --ink: #18201b; --dim: #5d6a61; --line: #d9e2db;
+  --accent: #5fae6e; --accent-ink: #0f3d1a; --sel: #b9e3c1; --mark: #fff0a8; --mark-ink: #4a3b00;
+  --card: #ffffff; --card-line: #cfdad2; --hover: #eef6ef; --shadow: 0 10px 30px rgba(20, 40, 25, .18), 0 2px 6px rgba(20, 40, 25, .10);
+  --purple: #8a6cc4;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141916; --paper: #1b211d; --ink: #e9efe9; --dim: #9fada3; --line: #2c352f;
+    --accent: #7dd492; --accent-ink: #072b11; --sel: #2f5a3a; --mark: #5a4b12; --mark-ink: #fff3c4;
+    --card: #222a25; --card-line: #36423a; --hover: #2b352f; --shadow: 0 12px 34px rgba(0, 0, 0, .5), 0 2px 6px rgba(0, 0, 0, .4);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.65 Inter, system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 900px; margin: 0 auto; padding: 28px 22px 140px; position: relative; }
+h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -.01em; }
+.lead { color: var(--dim); margin: 0 0 18px; font-size: 15px; }
+.doc { max-width: 640px; background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 22px 26px; }
+.doc p { margin: 0 0 14px; }
+.doc p:last-child { margin: 0; }
+::selection { background: var(--sel); }
+.opts { margin-top: 14px; font-size: 14px; color: var(--dim); display: flex; gap: 18px; flex-wrap: wrap; }
+.opts label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+
+/* ---- the frog ---------------------------------------------------------- */
+#frog { position: absolute; width: 62px; height: 80px; z-index: 20; cursor: pointer; display: none;
+  transform-origin: 50% 100%; filter: drop-shadow(0 4px 6px rgba(0, 0, 0, .18)); }
+#frog img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none; -webkit-user-drag: none; }
+#frog .body { position: absolute; inset: 0; transform-origin: 50% 100%; animation: breathe 2.8s ease-in-out infinite; }
+#frog.enter { animation: hopIn .55s cubic-bezier(.25, 1.5, .5, 1) both; }
+#frog.leave { animation: hopOut .35s ease-in both; }
+#frog:hover .body { animation: none; transform: rotate(-4deg) scale(1.06); transition: transform .15s; }
+#frog.busy .body { animation: bob .42s ease-in-out infinite alternate; }
+#frog.cheer .body { animation: jump .5s cubic-bezier(.3, 1.6, .5, 1) 2; }
+#frog.shake .body { animation: shake .45s ease-in-out 2; }
+@keyframes breathe { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.025, .975); } }
+@keyframes hopIn { 0% { transform: translateY(26px) scale(.2, .2); opacity: 0; } 55% { transform: translateY(-12px) scale(1.05, .95); opacity: 1; } 75% { transform: translateY(0) scale(.94, 1.06); } 100% { transform: none; } }
+@keyframes hopOut { to { transform: translateY(18px) scale(.3); opacity: 0; } }
+@keyframes bob { from { transform: translateY(0) rotate(-2deg); } to { transform: translateY(-5px) rotate(2deg); } }
+@keyframes jump { 0% { transform: none; } 40% { transform: translateY(-16px) scale(.96, 1.05); } 70% { transform: translateY(0) scale(1.06, .94); } 100% { transform: none; } }
+@keyframes shake { 0%, 100% { transform: none; } 25% { transform: rotate(-6deg); } 75% { transform: rotate(6deg); } }
+#frog.small { width: 40px; height: 52px; }
+.tip { position: absolute; left: 50%; bottom: 100%; transform: translate(-50%, -4px); white-space: nowrap; font-size: 12.5px; font-weight: 600;
+  background: var(--ink); color: var(--paper); padding: 3px 9px; border-radius: 99px; opacity: 0; transition: opacity .15s; pointer-events: none; }
+#frog:hover .tip { opacity: 1; }
+.spark { position: absolute; width: 8px; height: 8px; z-index: 21; pointer-events: none; color: #f1c74c; font-size: 13px; line-height: 8px;
+  animation: spark .9s ease-out forwards; }
+@keyframes spark { from { transform: translate(0, 0) scale(.6); opacity: 1; } to { transform: translate(var(--dx), var(--dy)) scale(1.2); opacity: 0; } }
+
+/* ---- the spell book (menu) and the answer ------------------------------- */
+.card { position: absolute; z-index: 30; background: var(--card); color: var(--ink); border: 1px solid var(--card-line); border-radius: 16px; box-shadow: var(--shadow);
+  animation: pop .16s ease-out both; }
+@keyframes pop { from { opacity: 0; transform: translateY(6px) scale(.97); } }
+#book { width: 330px; padding: 8px; }
+#book h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 4px 10px 6px; font-weight: 700; }
+.spell { display: flex; align-items: center; gap: 12px; width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left;
+  padding: 6px 10px; border-radius: 10px; cursor: pointer; opacity: 0; animation: fan .22s ease-out forwards; }
+.spell:hover, .spell.on { background: var(--hover); }
+.spell .ic { flex: 0 0 30px; height: 30px; border-radius: 10px; display: grid; place-items: center; font-size: 18px; background: var(--hover); }
+.spell.on .ic, .spell:hover .ic { background: var(--accent); }
+.spell .nm { flex: 1; font-size: 15.5px; font-weight: 600; line-height: 1.25; }
+.spell .out { font-size: 13px; color: var(--dim); margin-right: 2px; }
+kbd { font: 600 12.5px/1 ui-monospace, "SF Mono", Menlo, monospace; min-width: 24px; text-align: center; padding: 5px 7px; border-radius: 7px;
+  border: 1px solid var(--card-line); border-bottom-width: 2px; color: var(--dim); background: var(--paper); }
+@keyframes fan { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
+.free { display: flex; gap: 8px; padding: 8px 10px 4px; border-top: 1px solid var(--card-line); margin-top: 6px; }
+.free input { flex: 1; font: inherit; font-size: 15px; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--card-line); background: var(--paper); color: var(--ink); }
+.foot { font-size: 12px; color: var(--dim); padding: 4px 10px 2px; }
+
+#answer { width: min(440px, calc(100vw - 30px)); padding: 14px 16px 12px; }
+#answer .title { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); font-weight: 700; margin-bottom: 6px; }
+#answer .text { font-size: 16.5px; line-height: 1.6; }
+#answer ins { text-decoration: none; background: var(--mark); color: var(--mark-ink); border-radius: 4px; padding: 0 2px; }
+#answer .row { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+#answer .row .grow { flex: 1; font-size: 12.5px; color: var(--dim); }
+button.b { font: 600 14px/1 inherit; font-family: inherit; padding: 9px 14px; border-radius: 10px; border: 1px solid var(--card-line); background: var(--paper); color: var(--ink); cursor: pointer; }
+button.b.go { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.shimmer { background: linear-gradient(90deg, transparent, rgba(241, 199, 76, .45), transparent); background-size: 200% 100%; animation: shimmer 1s linear infinite; border-radius: 4px; }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+.say { position: absolute; z-index: 30; font-size: 14px; background: var(--card); border: 1px solid var(--card-line); border-radius: 12px; padding: 7px 11px; box-shadow: var(--shadow); animation: pop .16s ease-out both; }
+</style>
+</head>
+<body>
+<main id="main">
+  <h1>Frog spells</h1>
+  <p class="lead">Select a few words with the mouse. The frog hops next to your selection. Click it (or press its key) and pick a spell. Ignore it and it hops away after a few seconds. The answers here are pretend; in Chattering they come from your programs.</p>
+  <div class="doc" id="doc">
+    <p>hey sam, i has went to the store yesterday and buyed three apple, its was realy good. their going to the meeting tomorow, can you send me the agenda before</p>
+    <p>Je vais être en retard ce matin, le métro est encore en panne. On se voit vers 10h?</p>
+    <p>The Bank of Canada held its policy rate at 2.25 per cent, citing slowing inflation and a softer labour market.</p>
+  </div>
+  <div class="opts">
+    <label><input type="checkbox" id="noPos"> pretend this app does not say where the text is (the frog waits in the corner)</label>
+  </div>
+  <div id="frog" aria-label="Chattering: cast a spell" role="button" tabindex="-1">
+    <div class="body"><img id="frogImg" src="idle.webp" alt=""></div>
+    <div class="tip">Cast a spell</div>
+  </div>
+</main>
+<script>
+'use strict';
+const main = document.getElementById('main'), doc = document.getElementById('doc'), frog = document.getElementById('frog'), img = document.getElementById('frogImg');
+const POSES = ['idle', 'blink', 'wave', 'cast', 'happy', 'puzzled'];
+POSES.forEach(p => { const i = new Image(); i.src = p + '.webp'; }); // no flicker on the first swap
+const pose = p => { img.src = p + '.webp'; };
+
+// Pretend programs. Each spell: key, icon, name, what it does, and its answer.
+const FIXES = {
+  'hey sam, i has went to the store yesterday and buyed three apple, its was realy good. their going to the meeting tomorow, can you send me the agenda before':
+    'Hey Sam, I went to the store yesterday and bought three apples; they were really good. They’re going to the meeting tomorrow. Can you send me the agenda before?',
+};
+const fix = t => FIXES[t] || t.replace(/\bi has went\b/g, 'I went').replace(/buyed three apple\b/g, 'bought three apples').replace(/its was realy/g, 'it was really')
+  .replace(/^hey sam/, 'Hey Sam').replace(/\btheir going\b/g, 'they’re going').replace(/tomorow/g, 'tomorrow').replace(/^./, c => c.toUpperCase());
+const SPELLS = [
+  { key: 'G', ic: '✨', name: 'Fix spelling and grammar', hint: 'replaces the text', run: fix, replace: true },
+  { key: 'U', ic: '🌍', name: 'Translate to English', hint: 'replaces the text', replace: true,
+    run: t => /métro/.test(t) ? 'I’m going to be late this morning; the subway is down again. See you around 10?' : fix(t) },
+  { key: 'Y', ic: '💡', name: 'Explain this', hint: 'shows an explanation', replace: false,
+    run: t => /Bank of Canada/.test(t) ? 'Canada’s central bank kept its key interest rate the same. That rate steers what loans and savings accounts pay; it held because prices are rising more slowly and jobs are harder to find.' : 'This says: “' + t.slice(0, 80) + '…”, in plain words.' },
+  { key: 'P', ic: '🤝', name: 'Make it more polite', hint: 'replaces the text', replace: true, run: t => 'Hi! Sorry to bother you — ' + fix(t).replace(/^./, c => c.toLowerCase()) + ' Thank you so much!' },
+  { key: 'S', ic: '✂️', name: 'Make it shorter', hint: 'replaces the text', replace: true, run: t => fix(t).split(/(?<=[.;?!])\s/)[0] },
+];
+
+let range = null, selText = '', fadeT = null, blinkT = null, card = null, state = 'off';
+const rel = r => { const m = main.getBoundingClientRect(); return { left: r.left - m.left, top: r.top - m.top, right: r.right - m.left, bottom: r.bottom - m.top }; };
+
+function closeCards() { document.querySelectorAll('.card, .say').forEach(c => c.remove()); card = null; }
+function blinkLoop() {
+  clearTimeout(blinkT);
+  blinkT = setTimeout(() => {
+    if (state === 'idle') { pose('blink'); setTimeout(() => state === 'idle' && pose('idle'), 140); }
+    blinkLoop();
+  }, 1800 + Math.random() * 3200);
+}
+function hopAway() {
+  if (state === 'off') return;
+  state = 'off'; clearTimeout(fadeT); clearTimeout(blinkT); closeCards();
+  frog.classList.remove('enter', 'busy', 'cheer', 'shake'); frog.classList.add('leave');
+  setTimeout(() => { if (state === 'off') { frog.style.display = 'none'; frog.classList.remove('leave'); } }, 360);
+}
+function idleSoon(ms = 5000) { clearTimeout(fadeT); fadeT = setTimeout(() => { if (!card && state === 'idle') hopAway(); }, ms); }
+
+// Where the frog stands: at the end of the selection, just above its last
+// line (layer 1 here: the page knows the rectangle). With "no position",
+// the corner of the window (the last layer).
+function place() {
+  frog.style.display = 'block';
+  const m = main.getBoundingClientRect();
+  if (document.getElementById('noPos').checked) {
+    frog.style.left = (m.width - 84) + 'px';
+    frog.style.top = (innerHeight - m.top - 120) + 'px';
+    return;
+  }
+  // The text's box: here the paragraph's container; on a desktop, the text
+  // field the accessibility system names.
+  const rects = range.getClientRects(); const r = rel(rects[rects.length - 1]);
+  const box = rel(doc.getBoundingClientRect());
+  const room = m.width - box.right;
+  if (room >= 70) {
+    frog.classList.remove('small');
+    frog.style.left = (box.right + 10) + 'px';
+    frog.style.top = (r.bottom - 80 + 8) + 'px';
+  } else {
+    frog.classList.add('small');
+    frog.style.left = Math.min(r.right + 2, m.width - 42) + 'px';
+    frog.style.top = (r.bottom - 52 + 6) + 'px';
+  }
+}
+function appear() {
+  closeCards();
+  place();
+  state = 'idle';
+  frog.classList.remove('leave', 'busy', 'cheer', 'shake'); void frog.offsetWidth; frog.classList.add('enter');
+  pose('wave'); setTimeout(() => { if (state === 'idle') pose('idle'); }, 1100);
+  blinkLoop(); idleSoon();
+}
+
+document.addEventListener('mouseup', e => {
+  if (frog.contains(e.target) || e.target.closest('.card')) return;
+  setTimeout(() => {
+    const s = getSelection();
+    const t = s.rangeCount ? s.toString().trim() : '';
+    if (!t || t.split(/\s+/).length < 2 || !doc.contains(s.anchorNode)) { if (state !== 'busy') hopAway(); return; }
+    range = s.getRangeAt(0).cloneRange(); selText = s.toString();
+    appear();
+  }, 10);
+});
+document.addEventListener('mousedown', e => { if (!frog.contains(e.target) && !e.target.closest('.card') && card) { closeCards(); idleSoon(2500); } });
+
+// Clicking never takes the selection away (mousedown is swallowed).
+frog.addEventListener('mousedown', e => e.preventDefault());
+frog.addEventListener('click', () => {
+  if (state === 'busy') return;
+  if (card && card.id === 'book') { closeCards(); idleSoon(3000); return; }
+  if (!range || !selText.trim()) { say('Select a few words first!', 'puzzled'); return; }
+  openBook();
+});
+
+function cardAt(el) {
+  main.appendChild(el);
+  const m = main.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;
+  let x, y;
+  if (document.getElementById('noPos').checked || !range) {
+    x = parseFloat(frog.style.left) - w - 8; y = parseFloat(frog.style.top) + 70 - h;
+  } else {
+    const rects = range.getClientRects(), last = rel(rects[rects.length - 1]), first = rel(rects[0]);
+    x = Math.min(last.right - 40, parseFloat(frog.style.left) + 30 - w);
+    y = last.bottom + 10;
+    // No room below: above the selection; no room there either: beside the frog, low on the screen.
+    if (y + h > innerHeight - m.top - 8) y = first.top - h - 10 >= 4 - m.top ? first.top - h - 10 : innerHeight - m.top - h - 8;
+  }
+  el.style.left = Math.max(4, Math.min(x, m.width - w - 4)) + 'px';
+  el.style.top = Math.max(4, y) + 'px';
+}
+function openBook() {
+  clearTimeout(fadeT); closeCards();
+  const el = document.createElement('div'); el.className = 'card'; el.id = 'book';
+  el.innerHTML = '<h2>Spells</h2>' + SPELLS.map((s, i) => `<button class="spell${i === 0 ? ' on' : ''}" data-i="${i}" style="animation-delay:${i * 35}ms"><span class="ic">${s.ic}</span><span class="nm">${s.name}</span><kbd>${s.key}</kbd></button>`).join('')
+    + '<div class="free"><input id="freeSpell" placeholder="Or say what to do… (Enter)" autocomplete="off"></div><div class="foot">Press a spell’s letter, or ↑ ↓ and Enter · Esc closes · you see the answer before anything changes</div>';
+  el.addEventListener('mousedown', e => { if (e.target.id !== 'freeSpell') e.preventDefault(); });
+  el.querySelectorAll('.spell').forEach(b => b.onclick = () => cast(SPELLS[+b.dataset.i]));
+  el.querySelector('#freeSpell').addEventListener('keydown', e => {
+    if (e.key === 'Enter' && e.target.value.trim()) cast({ name: '“' + e.target.value.trim() + '”', replace: true, run: t => fix(t) + ' ✦' });
+    e.stopPropagation();
+  });
+  card = el; cardAt(el);
+}
+document.addEventListener('keydown', e => {
+  if (!card || card.id !== 'book') {
+    if (card && card.id === 'answer') { if (e.key === 'Enter') { e.preventDefault(); card.querySelector('.go') ? card.querySelector('.go').click() : card.querySelector('[data-x]').click(); } if (e.key === 'Escape') card.querySelector('[data-x]').click(); }
+    return;
+  }
+  const items = [...card.querySelectorAll('.spell')], cur = items.findIndex(b => b.classList.contains('on'));
+  const sp = SPELLS.find(s => s.key === e.key.toUpperCase());
+  if (sp && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); return cast(sp); }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault(); items[cur].classList.remove('on');
+    items[(cur + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].classList.add('on');
+  }
+  if (e.key === 'Enter') { e.preventDefault(); cast(SPELLS[cur]); }
+  if (e.key === 'Escape') { closeCards(); idleSoon(2500); }
+});
+
+function sparkles(n = 7) {
+  const fx = parseFloat(frog.style.left) + 18, fy = parseFloat(frog.style.top) + 18;
+  for (let i = 0; i < n; i++) {
+    const s = document.createElement('span'); s.className = 'spark'; s.textContent = '✦';
+    s.style.left = fx + 'px'; s.style.top = fy + 'px';
+    s.style.setProperty('--dx', (Math.random() * 60 - 40) + 'px'); s.style.setProperty('--dy', (-20 - Math.random() * 40) + 'px');
+    s.style.animationDelay = (i * 60) + 'ms';
+    main.appendChild(s); setTimeout(() => s.remove(), 1400);
+  }
+}
+// The selection shimmers while the spell works.
+let shimmerEl = null;
+function shimmer(on) {
+  if (on && range) { try { shimmerEl = document.createElement('span'); shimmerEl.className = 'shimmer'; range.surroundContents(shimmerEl); getSelection().removeAllRanges(); range = document.createRange(); range.selectNodeContents(shimmerEl); } catch { shimmerEl = null; } }
+  else if (shimmerEl) { const p = shimmerEl.parentNode, t = document.createTextNode(shimmerEl.textContent); p.replaceChild(t, shimmerEl); p.normalize(); shimmerEl = null; }
+}
+function cast(sp) {
+  closeCards(); clearTimeout(fadeT);
+  state = 'busy'; pose('cast'); frog.classList.remove('enter'); frog.classList.add('busy'); sparkles();
+  const text = selText;
+  shimmer(true);
+  const spk = setInterval(() => sparkles(3), 700);
+  setTimeout(() => {
+    clearInterval(spk); frog.classList.remove('busy');
+    const out = sp.run(text.trim());
+    if (sp.replace && out === text.trim()) { shimmer(false); return say('Nothing to fix ✓', 'happy'); }
+    state = 'idle'; pose('happy'); frog.classList.add('cheer');
+    setTimeout(() => { frog.classList.remove('cheer'); if (state === 'idle') pose('idle'); }, 1100);
+    answer(sp, text, out);
+  }, 1300);
+}
+// Changed words marked, the rest as it was.
+function marked(before, after) {
+  const a = before.trim().split(/(\s+)/), b = after.split(/(\s+)/);
+  const n = a.length, m = b.length, L = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  let i = 0, j = 0, out = '';
+  const esc = s => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  while (j < m) {
+    if (i < n && a[i] === b[j]) { out += esc(b[j]); i++; j++; }
+    else if (i < n && L[i + 1][j] >= L[i][j + 1]) i++;
+    else { out += /^\s+$/.test(b[j]) ? b[j] : '<ins>' + esc(b[j]) + '</ins>'; j++; }
+  }
+  return out;
+}
+function answer(sp, before, out) {
+  const el = document.createElement('div'); el.className = 'card'; el.id = 'answer';
+  el.innerHTML = `<div class="title">${sp.ic || '✦'} ${sp.name}</div><div class="text">${sp.replace ? marked(before, out) : out.replace(/[&<>]/g, '')}</div>
+    <div class="row"><span class="grow">${sp.replace ? 'Enter to replace · Esc to cancel' : 'Esc to close'}</span>
+    ${sp.replace ? '<button class="b" data-copy>Copy</button><button class="b go">Replace</button>' : '<button class="b" data-copy>Copy</button>'}<button class="b" data-x>${sp.replace ? 'Cancel' : 'Close'}</button></div>`;
+  el.addEventListener('mousedown', e => e.preventDefault());
+  el.querySelector('[data-x]').onclick = () => { shimmer(false); closeCards(); idleSoon(2000); };
+  el.querySelector('[data-copy]').onclick = e => { navigator.clipboard && navigator.clipboard.writeText(out); e.target.textContent = 'Copied'; };
+  const go = el.querySelector('.go');
+  if (go) go.onclick = () => {
+    const node = document.createTextNode(out);
+    if (shimmerEl) { shimmerEl.parentNode.replaceChild(node, shimmerEl); shimmerEl = null; } else { range.deleteContents(); range.insertNode(node); }
+    closeCards(); selText = ''; range = null; sparkles(9); pose('happy'); frog.classList.add('cheer');
+    setTimeout(hopAway, 1200);
+  };
+  card = el; cardAt(el);
+}
+function say(text, p) {
+  closeCards(); state = 'idle'; pose(p); frog.classList.add('shake');
+  setTimeout(() => { frog.classList.remove('shake'); pose('idle'); }, 1000);
+  const el = document.createElement('div'); el.className = 'say'; el.textContent = text;
+  main.appendChild(el); el.style.left = (parseFloat(frog.style.left) + 70) + 'px'; el.style.top = (parseFloat(frog.style.top) + 10) + 'px';
+  setTimeout(() => el.remove(), 2200); idleSoon(3000);
+}
+document.getElementById('noPos').onchange = () => { if (state !== 'off' && range) { place(); closeCards(); } };
+</script>
+</body>
+</html>
