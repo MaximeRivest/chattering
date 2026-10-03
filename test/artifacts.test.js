@@ -194,6 +194,13 @@ test('a real server: versions follow the head, the preview origin serves them, w
   // The panel opens beside the conversation at the head's version.
   await evaluate(`document.querySelector('.art-card .art-open').click(); 1`);
   await until(`document.body.classList.contains('artifact-open') && document.querySelector('#artifactPane iframe')`, 'the panel');
+  // A web page can be published from the panel (design/92): the version on
+  // screen, its files shown before anything goes out.
+  await until(`!document.querySelector('#artifactPane [data-art-act="publish"]').hidden`, 'the Publish button');
+  await evaluate(`document.querySelector('#artifactPane [data-art-act="publish"]').click(); 1`);
+  await until(`document.getElementById('pubGo') && /Publish “The page”/.test(document.querySelector('.sh-ui .dialog').textContent) && /2 files/.test(document.querySelector('.sh-ui-files summary').textContent)`, 'the publishing dialog, with the files of the version shown');
+  assert.match(await evaluate(`document.querySelector('.sh-ui-files summary').textContent`), /the version on screen/);
+  await evaluate(`document.getElementById('shClose').click(); 1`);
   const src = await evaluate(`document.querySelector('#artifactPane iframe').src`);
   assert.ok(src.includes('/' + v2.snapshot + '/'), src);
   const box = await evaluate(`JSON.stringify([document.getElementById('artifactPane').getBoundingClientRect().left, document.getElementById('view').getBoundingClientRect().right])`);
