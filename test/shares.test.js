@@ -102,7 +102,15 @@ test('a real server: the gate, pictures, live edits on disk, viewers, names, end
   fs.mkdirSync(sessions, { recursive: true }); fs.mkdirSync(path.join(docs, 'img'), { recursive: true }); fs.mkdirSync(other, { recursive: true });
   spawnSync('git', ['init', '-q'], { cwd: work });
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
-  fs.writeFileSync(path.join(docs, 'notes.md'), '# Plan\n\nFirst line.\n\n![frog](img/frog.png)\n');
+  // A notebook as Chattering writes one: a cell, its output, a saved page
+  // its run made, and a diagram. The page reports, to its parent, whether it
+  // could reach the share's cookies (it must not: sandboxed).
+  fs.writeFileSync(path.join(docs, 'notes.md'), '# Plan\n\nFirst line.\n\n![frog](img/frog.png)\n\n## Code\n\n```py\nprint(1 + 2)\n```\n\n```output\n3\n```\n\n'
+    + '<iframe class="rat-output" src="_assets/generated/abc123.html" sandbox="allow-scripts" loading="lazy" style="width:100%;height:120px;border:0"></iframe>\n\n'
+    + '```mermaid\ngraph LR\n  A[Visitor] --> B[Relay] --> C[Home]\n```\n');
+  fs.mkdirSync(path.join(docs, '_assets', 'generated'), { recursive: true });
+  fs.writeFileSync(path.join(docs, '_assets', 'generated', 'abc123.html'), '<!doctype html><body><b id="x">SAVED RESULT</b><script>let c; try { c = document.cookie; c = "read"; } catch (e) { c = "blocked"; } parent.postMessage({ display: "ran", cookie: c, origin: self.origin }, "*");</script></body>');
+  fs.writeFileSync(path.join(docs, 'page.html'), '<p>not a saved result</p>');
   fs.writeFileSync(path.join(docs, 'img', 'frog.png'), png);
   fs.writeFileSync(path.join(docs, 'secrets.txt'), 'not a picture');
   fs.writeFileSync(path.join(other, 'private.png'), png);
@@ -185,6 +193,13 @@ test('a real server: the gate, pictures, live edits on disk, viewers, names, end
   assert.equal((await asset('../private/private.png')).status, 404, 'outside the folder');
   assert.equal((await asset('img/leak.png')).status, 404, 'a link leading outside');
   assert.equal((await asset('secrets.txt')).status, 404, 'not a picture');
+  // A page a run saved: served, always sandboxed, framed by the share only.
+  r = await asset('_assets/generated/abc123.html');
+  assert.equal(r.status, 200);
+  assert.match(await r.text(), /SAVED RESULT/);
+  assert.equal(r.headers.get('content-security-policy'), "sandbox allow-scripts; frame-ancestors 'self'");
+  assert.equal(r.headers.get('x-frame-options'), null);
+  assert.equal((await asset('page.html')).status, 404, 'a page outside _assets/generated');
   assert.equal((await asset(path.join(other, 'private.png'))).status, 404, 'an absolute path');
   assert.equal((await asset('file:///etc/passwd')).status, 404);
 
@@ -289,6 +304,20 @@ test('a real server: the gate, pictures, live edits on disk, viewers, names, end
   await owner.evaluate(`document.getElementById('shNewRole').value = 'edit'; document.getElementById('shCreate').click(); 1`);
   await owner.waitFor(`document.querySelector('.sh-ui-row .sh-ui-url') && /\\/s\\/[a-z2-7]{16}\\/#/.test(document.querySelector('.sh-ui-row .sh-ui-url').value)`, 'the new link in the dialog');
   assert.match(await owner.evaluate(`document.querySelector('.sh-ui-row select').value`), /^edit$/);
+  // What the owner sees, to compare with the visitor's page below.
+  await owner.waitFor(`document.querySelector('.doc-editor-host .cm-md-codeblock-line') && document.querySelector('.doc-editor-host .mmd-fig svg')`, 'the owner\u2019s document drawn');
+  const LOOK = `JSON.stringify((() => {
+    const st = (sel, props) => { const el = document.querySelector(sel); if (!el) return null; const cs = getComputedStyle(el); return Object.fromEntries(props.map(p => [p, cs[p]])); };
+    return {
+      code: st('.doc-editor-host .cm-md-codeblock-line:not([data-lang="output"])', ['fontFamily', 'fontSize', 'boxShadow', 'borderLeftWidth', 'paddingLeft']),
+      output: st('.doc-editor-host .cm-md-codeblock-line[data-lang="output"], .doc-editor-host .cm-output-line', ['borderLeftWidth', 'boxShadow', 'color']),
+      heading: st('.doc-editor-host .cm-md-h1-line', ['borderBottomWidth', 'paddingTop']),
+      text: st('.doc-editor-host .cm-content', ['fontFamily', 'fontSize', 'lineHeight']),
+      column: st('.doc-editor-host > div', ['maxWidth']),
+      diagram: !!document.querySelector('.doc-editor-host .mmd-fig svg'),
+    };
+  })())`;
+  const ownerLook = JSON.parse(await owner.evaluate(LOOK));
   const uiShareId = await owner.evaluate(`document.querySelector('.sh-ui-row').dataset.id`);
   const link = (await api('/api/shares?path=' + encodeURIComponent(doc))).body.shares.find(s => s.id === uiShareId).links.find(l => l.where === 'local').url;
   assert.deepEqual(problems.get(owner.sid) || [], [], 'the app shows no errors');
@@ -297,12 +326,25 @@ test('a real server: the gate, pictures, live edits on disk, viewers, names, end
   const visitor = await tab();
   const { evaluate, waitFor } = visitor;
   await send('Page.navigate', { url: link }, visitor.sid);
+  await waitFor(`document.readyState !== 'loading'`, 'the page');
+  await evaluate(`window.__msgs = []; addEventListener('message', e => window.__msgs.push(e.data)); 1`);
   await waitFor(`document.getElementById('nameInput')`, 'the name question');
   assert.match(await evaluate(`document.getElementById('card').textContent`), /shared “notes\.md” with you/);
   await evaluate(`document.getElementById('nameInput').value = 'Grace'; document.querySelector('#nameForm button[type=submit]').click(); 1`);
   await waitFor(`document.querySelector('#doc .cm-content') && document.getElementById('state').textContent === 'Live'`, 'the live document');
   assert.match(await evaluate(`document.getElementById('sub').textContent`), /you can edit/);
   await waitFor(`[...document.querySelectorAll('#doc img')].some(i => i.naturalWidth > 0 && /\\/asset\\?src=img%2Ffrog\\.png/.test(i.src))`, 'the picture through the share');
+  // The same look as the owner's: theme and CSS are one source (document-look.js, document-editor.css).
+  await waitFor(`document.querySelector('.doc-editor-host .mmd-fig svg')`, 'the diagram drawn for the visitor');
+  const visitorLook = JSON.parse(await evaluate(LOOK));
+  assert.ok(ownerLook.code && ownerLook.output && ownerLook.heading, JSON.stringify(ownerLook));
+  assert.deepEqual(visitorLook, ownerLook, 'the visitor sees the document as its owner does');
+  // The saved result ran, in its own sandbox: no cookies, an origin of its own.
+  await evaluate(`document.querySelector('#doc iframe.rat-output')?.scrollIntoView(); 1`);
+  await waitFor(`window.__msgs.some(m => m && m.display === 'ran')`, 'the saved result ran');
+  const ran = JSON.parse(await evaluate(`JSON.stringify(window.__msgs.find(m => m && m.display === 'ran'))`));
+  assert.equal(ran.cookie, 'blocked', 'a saved result cannot reach the share\u2019s cookies');
+  assert.equal(ran.origin, 'null', 'a saved result has an origin of its own');
   // Typing in the page reaches the file on the computer.
   await evaluate(`(() => { const c = document.querySelector('#doc .cm-content'); c.focus(); const s = getSelection(); s.selectAllChildren(c); s.collapseToEnd(); return 1; })()`);
   await send('Input.insertText', { text: '\nGrace typed this.\n' }, visitor.sid);

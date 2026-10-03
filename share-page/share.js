@@ -172,6 +172,7 @@
       theme: theme(),
       placeholder: info.role === 'edit' ? 'Start writing…' : '',
       lineGutter: false,
+      diagrams: DocumentLook.diagrams,
       assetResolver: url => /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith('//') ? url : base + '/asset?src=' + encodeURIComponent(url),
     });
     if (info.role !== 'edit') { try { editor.setReadonly(true); } catch {} }
@@ -191,30 +192,11 @@
     $('people').innerHTML = rows.slice(0, 8).map(u => `<span class="sh-bubble" style="--who:${/^#[0-9a-f]{6}$/i.test(u.color || '') ? u.color : '#888'}" title="${esc(u.name || 'someone')}">${esc((u.glyph || u.name || '?').slice(0, 1))}</span>`).join('') + (rows.length > 8 ? `<small>+${rows.length - 8}</small>` : '');
   }
 
-  // The editor's look, from the design tokens (the same mapping Chattering's
-  // own editor uses, without its e-ink and per-device parts).
-  function theme() {
-    const dark = matchMedia('(prefers-color-scheme: dark)').matches;
-    return {
-      name: 'chattering-share', isDark: dark,
-      '--editor-background': 'var(--bg)', '--editor-foreground': 'var(--text)', '--editor-cursor': 'var(--accent)',
-      '--editor-selection': 'color-mix(in srgb, var(--accent) 30%, var(--bg))', '--editor-selection-match': 'color-mix(in srgb, var(--accent) 18%, var(--bg))',
-      '--editor-active-line': 'transparent', '--editor-gutter': 'var(--bg)', '--editor-line-number': 'var(--text-faint)',
-      '--editor-font-family': 'var(--font)', '--editor-font-size': '16px', '--editor-line-height': '1.65',
-      '--widget-font-mono': 'var(--font-mono)', '--widget-font-sans': 'var(--font)', '--widget-surface': 'var(--surface-1)', '--widget-surface-hover': 'var(--surface-2)',
-      '--widget-border': 'var(--border)', '--widget-text': 'var(--text)', '--widget-text-muted': 'var(--text-dim)', '--widget-text-accent': 'var(--accent)',
-      '--syntax-keyword': 'var(--accent)', '--syntax-string': 'var(--cyan)', '--syntax-number': 'var(--magenta)', '--syntax-comment': 'var(--text-faint)',
-      '--syntax-function': 'var(--blue)', '--syntax-variable': 'var(--text)', '--syntax-type': 'var(--yellow)', '--syntax-heading': 'var(--text)',
-      '--syntax-link': 'var(--cyan)', '--syntax-quote': 'var(--text-dim)', '--syntax-code': 'var(--text-dim)', '--syntax-code-background': 'var(--surface-2)',
-      '--md-heading-weight': '700', '--md-heading-color': 'var(--text)', '--md-marker-color': 'var(--text-faint)', '--md-link-color': 'var(--cyan)',
-      '--md-code-color': 'var(--text-dim)', '--md-blockquote-border': 'var(--border-strong)', '--md-blockquote-color': 'var(--text-dim)',
-      '--md-list-marker-color': 'var(--text-faint)', '--md-hr-color': 'var(--border)', '--md-table-border': 'var(--border)',
-      '--md-table-header-bg': 'var(--surface-1)', '--md-checkbox-color': 'var(--accent)',
-      '--mrmd-bg': 'var(--bg)', '--mrmd-fg': 'var(--text)', '--mrmd-fg-muted': 'var(--text-dim)', '--mrmd-border': 'var(--border)',
-      '--mrmd-accent': 'var(--accent)', '--mrmd-panel-bg': 'var(--surface-2)', '--mrmd-popup-bg': 'var(--surface-2)',
-      '--mrmd-selection-overlay': 'color-mix(in srgb, var(--accent) 32%, transparent)',
-    };
-  }
+  // The editor's look: the same theme and diagrams as Chattering's own file
+  // view (document-look.js, document-editor.css), so a shared document reads
+  // the way its owner sees it.
+  function theme() { return DocumentLook.editorTheme({ isDark: DocumentLook.isDark() }); }
+  DocumentLook.configure({ mermaid: '/_c/share/mermaid.js' });
 
   // Links inside the document leave this page in a new tab, without telling
   // the other site where they came from.

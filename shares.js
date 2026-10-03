@@ -41,6 +41,7 @@ const MESSAGE_MAX = 512 * 1024;               // one WebSocket message from a vi
 const BUDGET = { bytes: 4 * 1024 * 1024, perMs: 60e3 }; // what one visitor may send per minute
 const ASSET_MAX = 25 * 1024 * 1024;
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.svg', '.bmp', '.ico']);
+const DISPLAY_EXT = new Set(['.html', '.htm']);
 
 const b64u = buf => Buffer.from(buf).toString('base64url');
 function base32(bytes) {
@@ -210,7 +211,7 @@ function createShareGate(deps) {
   };
   const strict = () => ({
     'Content-Security-Policy': ["default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'", "img-src 'self' data: blob: https:",
-      "font-src 'self' data:", "connect-src 'self'", "media-src 'self' data: blob:", "worker-src 'self' blob:", "frame-src 'none'", "object-src 'none'",
+      "font-src 'self' data:", "connect-src 'self'", "media-src 'self' data: blob:", "worker-src 'self' blob:", "frame-src 'self'", "object-src 'none'",
       "base-uri 'none'", "form-action 'none'", "frame-ancestors 'none'"].join('; '),
     'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY',
     'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cross-Origin-Opener-Policy': 'same-origin',
@@ -306,8 +307,12 @@ function createShareGate(deps) {
     }
   }
 
-  // Pictures the document shows: only image files, only in the document's
-  // own folder or below it, and never through a link that leads elsewhere.
+  // Pictures the document shows, and the pages a notebook's runs saved
+  // (```output displays: <iframe class="rat-output" src="_assets/generated/…">):
+  // only in the document's own folder or below it, never through a link that
+  // leads elsewhere; a page only from an _assets/generated folder, and always
+  // sandboxed (its own origin: it cannot reach the visitor's session, this
+  // page, or the cookies, whatever the document's text says).
   async function asset(req, res, share, src) {
     const r = await deps.resolve(share);
     const raw = String(src).split('#')[0].split('?')[0];
@@ -316,15 +321,25 @@ function createShareGate(deps) {
     try { rel = decodeURIComponent(raw); } catch { throw httpError(400, 'Bad path'); }
     const dir = await fs.promises.realpath(path.dirname(r.abs));
     const want = path.resolve(dir, rel);
-    if (!IMAGE_EXT.has(path.extname(want).toLowerCase())) throw httpError(404, 'Only pictures are shared with a document.');
+    const ext = path.extname(want).toLowerCase();
+    const display = DISPLAY_EXT.has(ext);
+    if (!IMAGE_EXT.has(ext) && !display) throw httpError(404, 'Only pictures and saved results are shared with a document.');
     let real, stat;
     try { real = await fs.promises.realpath(want); stat = await fs.promises.stat(real); } catch { throw httpError(404, 'Not found'); }
     if (!(real === dir || real.startsWith(dir + path.sep)) || !stat.isFile()) throw httpError(404, 'Not found');
+    if (display && !path.relative(dir, real).split(path.sep).slice(0, -1).join('/').match(/(^|\/)_assets\/generated$/)) throw httpError(404, 'Not found');
     if (stat.size > ASSET_MAX) throw httpError(413, 'This picture is too large to share.');
     const headers = { ...strict(), 'Cache-Control': 'private, no-cache' };
     // An SVG opened on its own runs no script (the policy above), and is
     // sandboxed besides.
     if (path.extname(real).toLowerCase() === '.svg') headers['Content-Security-Policy'] = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+    // A saved result runs its scripts, in a sandbox with an origin of its own,
+    // framed by this page only. It may load libraries from the web, as it
+    // does in Chattering.
+    if (display) {
+      headers['Content-Security-Policy'] = "sandbox allow-scripts; frame-ancestors 'self'";
+      delete headers['X-Frame-Options'];
+    }
     return deps.serveFile(req, res, { abs: real, stat }, deps.mimeOf(real), { maxBytes: ASSET_MAX, headers });
   }
 

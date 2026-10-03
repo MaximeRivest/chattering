@@ -129,6 +129,22 @@ nothing else on the computer is reachable from a share.
 - While visitors are connected the file is watched on its own, so an
   agent's write reaches them even in a folder Chattering does not watch.
 
+### The same look as in Chattering
+
+A shared document is drawn by the same editor with the same theme and CSS
+as the owner's file view: `document-look.js` (the editor theme from the
+design tokens, and ```mermaid diagrams) and `document-editor.css` (headings,
+code and output blocks, the reading column) are one source, loaded by
+`app.html` and by the share page. `test/shares.test.js` compares the
+computed styles of the same document in both and fails if they differ.
+A notebook's saved results (`<iframe class="rat-output"
+src="_assets/generated/…html">`) are served from an `_assets/generated`
+folder beside the document only, always with `sandbox allow-scripts` (an
+origin of their own: no cookies, no reach into the page), framed by the
+share page only. Differences that remain on purpose: no Run, AI, history
+or line gutter for visitors, and the visitor's own light or dark mode
+rather than the owner's theme.
+
 ## The public address (built 2026-10-02)
 
 `https://<name>.rockfrog.site` reaches one computer. Modules: relay

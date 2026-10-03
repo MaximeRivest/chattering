@@ -16,6 +16,7 @@
 <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=frog">
 <link rel="stylesheet" href="/tokens.css">
 <link rel="stylesheet" href="/surfaces.css">
+<script src="/document-look.js"></script>
 <script>
 // Is `file` the folder `root` or inside it? Paths arrive as the server's
 // system writes them: C:\work\a on Windows, /home/u/a elsewhere. Either
@@ -894,46 +895,6 @@ body.side-layout.zen:not(.home) .mgantt[data-mg-open] { left: 0; }
 .doc-var .v-preview { grid-column: 1 / -1; font-family: var(--font-mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .doc-var-detail { margin: 0; padding: 8px 10px; border-bottom: 1px solid var(--border); background: var(--surface-1); font-family: var(--font-mono); font-size: 11px; white-space: pre-wrap; word-break: break-word; max-height: 40vh; overflow: auto; }
 @media (max-width: 700px) { .doc-body { flex-direction: column; } .doc-vars { flex: 0 0 42%; border-left: 0; border-top: 1px solid var(--border); } }
-/* The page: the same reading column as a conversation (--read-max). */
-.doc-editor-host > div { max-width: var(--doc-width, var(--read-max)); margin: 0 auto; padding: 28px 20px 50vh; min-height: 100%; }
-/* A document's text is in the device's document font; code in it stays
-   monospace (live-file.js "how files look"). */
-.doc-editor-host:not(.code-host) { --editor-text-font: var(--doc-font, var(--font-mono)); }
-.doc-editor-host .cm-editor { height: auto; }
-.doc-editor-host .cm-scroller { overflow: visible; }
-/* One voice for markdown: the editor mirrors the conversation .md look.
-
-   CodeMirror geometry rules (learned from mrmd-editor's own code-block
-   plugin — see codeBlockStyles in mrmd-editor/src/index.js):
-   · NO margins on lines — CM maps positions from the line box; margins
-     sit outside it and break clicks, the caret, and up/down arrow motion.
-     Spacing uses padding only (inside the box, measured correctly).
-   · NO background-color on lines — CM paints the selection in a layer
-     BELOW .cm-line; an opaque ground hides it. An inset box-shadow gives
-     the same fill without joining layer painting.
-   · NO cursor-dependent font sizes — a size that flips with .cm-activeLine
-     relayouts the text under the mouse on every click.
-
-   Headings: same size as body, bold, a rule under h1/h2. */
-.doc-editor-host .cm-md-heading-line { padding-top: 14px; }
-.doc-editor-host .cm-md-h1-line, .doc-editor-host .cm-md-h2-line { border-bottom: 1px solid var(--border); padding-bottom: 3px; }
-/* Code blocks: the same box as .md pre — surface-2 ground, 1px border,
-   smaller mono. Per-line paint; the fence rows open and close the box. */
-.doc-editor-host .cm-md-codeblock-line { box-shadow: inset 0 0 0 9999px color-mix(in srgb, var(--surface-2) 85%, transparent); border-left: 1px solid var(--border); border-right: 1px solid var(--border); padding-left: 12px; padding-right: 12px; font-family: var(--font-mono); font-size: 0.834em; }
-.doc-editor-host .cm-md-codeblock-first { border-top: 1px solid var(--border); padding-top: 5px; }
-.doc-editor-host .cm-md-codeblock-last { border-bottom: 1px solid var(--border); padding-bottom: 5px; }
-/* Fence rows are quiet chrome: the info string reads as the small
-   language label (like .md pre[data-lang]::before). Constant size —
-   the label grows only via the marker span when the caret enters it. */
-.doc-editor-host .cm-md-codeblock-first, .doc-editor-host .cm-md-codeblock-last { color: var(--text-faint); font-size: 0.8em; line-height: 1.7; min-height: 1.4em; }
-/* Inline code: the conversation's quieter italic voice (no chip). */
-.doc-editor-host .cm-md-inline-code { font-style: italic; }
-/* A drawn ```mermaid fence: the figure is the same .mmd-fig the transcript
-   draws; the bundle only frames it. Its source (while drawing, or under an
-   error) reads as the code block it is. */
-.doc-editor-host .cm-diagram { padding: 8px 0; }
-.doc-editor-host .cm-diagram-source { font-family: var(--font-mono); font-size: 0.834em; color: var(--text); background: color-mix(in srgb, var(--surface-2) 85%, transparent); border: 1px solid var(--border); border-radius: 0; }
-.doc-editor-host .cm-diagram-error-message { color: var(--danger); font-size: var(--fs-micro); }
 /* Run status strip: kernel chip · state · cancel. Output lives IN the
    document (```output under the cell, MRMD style), never here. */
 .doc-run-strip { flex: 0 0 auto; display: flex; align-items: center; gap: var(--sp-3); padding: 4px 10px; font-size: var(--fs-micro); color: var(--text-dim); border-top: 1px solid var(--border-strong); background: var(--bg); }
@@ -942,9 +903,6 @@ body.side-layout.zen:not(.home) .mgantt[data-mg-open] { left: 0; }
 .doc-run-strip .doc-run-chip:empty { display: none; }
 .doc-run-strip .doc-run-state { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .doc-run-strip .doc-run-cancel { height: 22px; padding: 0 8px; font-size: var(--fs-micro); color: var(--danger); border-color: var(--border-strong); }
-/* Output blocks read as results, not as code: the conversation's run-out
-   voice — no side borders, a single quiet accent bar, dim text. */
-.doc-editor-host .cm-md-codeblock-line[data-lang="output"], .doc-editor-host .cm-md-codeblock-line.cm-output-line { border-left: 3px solid var(--border-strong); border-right: 0; box-shadow: none; color: var(--text-dim); }
 .doc-run-fix, .doc-run-setup { display: flex; align-items: center; gap: var(--sp-2); padding: 4px 10px; font-size: var(--fs-micro); border-top: 1px solid var(--border); flex-wrap: wrap; background: var(--bg); }
 .doc-run-setup .doc-setup-item { color: var(--text-dim); }
 .doc-run-setup .doc-setup-item b { color: var(--text); font-weight: 600; }
@@ -1337,8 +1295,6 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
 /* mermaid diagrams: the figure replaces the fence; the source stays one
    double-click away (and stays visible on render errors) */
 .mmd { margin: 8px 0; }
-.mmd-fig { background: var(--surface-1); border: 1px solid var(--border); padding: 10px; overflow-x: auto; text-align: center; }
-.mmd-fig svg { max-width: 100%; height: auto; }
 .mmd.ok:not(.show-src) .mmd-src { display: none; }
 .mmd-err { color: var(--danger); font-size: var(--fs-micro); margin-bottom: 4px; }
 /* transcript reasoning rows (everything view) */
@@ -2501,6 +2457,7 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
   <div id="readBody" tabindex="0"></div>
 </div>
 <link rel="stylesheet" href="/conversation-reader.css">
+<link rel="stylesheet" href="/document-editor.css">
 <link rel="stylesheet" href="/artifacts.css">
 <link rel="stylesheet" href="/conversation-draft.css">
 <link rel="stylesheet" href="/ai-connect.css">
@@ -3248,115 +3205,16 @@ function themeRepaint(repaint = true) {
 // ---- mermaid diagrams (```mermaid fences, everywhere markdown renders) ----
 // The library is vendored (/vendor/mermaid.min.js, ~3.5 MB) and loads only
 // when a diagram is actually on screen — the app stays fast and local-first.
-let mermaidLoad = null;
-// Resolve any CSS color to its luminance (tokens are hsl/hex strings).
-function cssColorLuma(c) {
-  const el = document.createElement('div');
-  el.style.color = c;
-  document.body.appendChild(el);
-  const rgb = (getComputedStyle(el).color.match(/\d+(\.\d+)?/g) || [0, 0, 0]).map(Number);
-  el.remove();
-  return (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255;
-}
 // Diagrams speak the app's design tokens (theme 'base' + themeVariables).
 // A diagram that styles itself (%%{init}%% directive, classDefs) still wins:
 // directives override the site config per diagram.
-function mermaidConfig() {
-  const tk = themeToken;
-  return {
-    startOnLoad: false,
-    securityLevel: 'strict',
-    theme: 'base',
-    themeVariables: {
-      darkMode: cssColorLuma(tk('--bg')) < 0.5,
-      background: tk('--bg'),
-      fontFamily: tk('--font') || 'ui-monospace, monospace',
-      fontSize: '13px',
-      // nodes and shapes
-      primaryColor: tk('--surface-2'),
-      primaryTextColor: tk('--text'),
-      primaryBorderColor: tk('--border-strong'),
-      secondaryColor: tk('--surface-1'),
-      secondaryTextColor: tk('--text'),
-      secondaryBorderColor: tk('--border'),
-      tertiaryColor: tk('--bg'),
-      tertiaryTextColor: tk('--text-dim'),
-      tertiaryBorderColor: tk('--border'),
-      mainBkg: tk('--surface-2'),
-      nodeBorder: tk('--border-strong'),
-      clusterBkg: tk('--surface-1'),
-      clusterBorder: tk('--border'),
-      // text and edges
-      textColor: tk('--text'),
-      titleColor: tk('--text'),
-      lineColor: tk('--text-dim'),
-      edgeLabelBackground: tk('--bg'),
-      // sequence diagrams
-      actorBkg: tk('--surface-2'),
-      actorBorder: tk('--border-strong'),
-      actorTextColor: tk('--text'),
-      actorLineColor: tk('--border-strong'),
-      signalColor: tk('--text-dim'),
-      signalTextColor: tk('--text-dim'),
-      labelBoxBkgColor: tk('--surface-1'),
-      labelBoxBorderColor: tk('--border-strong'),
-      labelTextColor: tk('--text'),
-      loopTextColor: tk('--text-dim'),
-      activationBkgColor: tk('--surface-3') || tk('--surface-2'),
-      activationBorderColor: tk('--accent'),
-      // notes
-      noteBkgColor: tk('--surface-1'),
-      noteTextColor: tk('--text-dim'),
-      noteBorderColor: tk('--border-strong'),
-      // states of error and emphasis
-      errorBkgColor: tk('--danger'),
-      errorTextColor: tk('--bg'),
-      // pies and sections lean on the terminal palette
-      pie1: tk('--accent'), pie2: tk('--cyan'), pie3: tk('--yellow'),
-      pie4: tk('--magenta'), pie5: tk('--blue'), pie6: tk('--red'),
-      pieTitleTextColor: tk('--text'),
-      pieSectionTextColor: tk('--text'),
-      pieLegendTextColor: tk('--text-dim'),
-    },
-  };
-}
-function loadMermaid() {
-  if (window.mermaid) return Promise.resolve();
-  if (!mermaidLoad) {
-    const load = new Promise((ok, bad) => {
-      const s = document.createElement('script');
-      s.src = '/vendor/mermaid.min.js';
-      s.onload = ok;
-      s.onerror = () => bad(new Error('mermaid.min.js failed to load'));
-      document.head.appendChild(s);
-    }).then(() => window.mermaid.initialize(mermaidConfig()));
-    // A failed load (or a failed initialize) is forgotten, so the next
-    // diagram tries again instead of inheriting a rejection for the session.
-    load.catch(() => { if (mermaidLoad === load) mermaidLoad = null; });
-    mermaidLoad = load;
-  }
-  return mermaidLoad;
-}
-let mermaidSeq = 0;
+function mermaidConfig() { return DocumentLook.mermaidConfig(); }
+function loadMermaid() { return DocumentLook.loadMermaid(); }
 // One diagram, drawn: the figure element every mermaid surface shares —
 // transcript and note boxes (renderMermaids) and the document editor
 // (mermaidDiagrams). Throws with mermaid's own message; the element mermaid
 // leaves in the page on a parse error is removed first.
-async function mermaidDiagramNode(source) {
-  await loadMermaid();
-  const id = 'mmd' + (++mermaidSeq);
-  try {
-    const { svg } = await window.mermaid.render(id, source);
-    const fig = document.createElement('div');
-    fig.className = 'mmd-fig';
-    fig.innerHTML = svg;
-    return fig;
-  } catch (e) {
-    const stray = document.getElementById(id) || document.getElementById('d' + id);
-    if (stray) stray.remove();
-    throw e;
-  }
-}
+async function mermaidDiagramNode(source) { return DocumentLook.diagramNode(source); }
 // The document editor draws ```mermaid fences through the same function, so
 // a diagram looks the same in a document as in the transcript that produced
 // it (vendor/mrmd-document/README.md, 0.13.0). One object: the bundle caches
@@ -6776,163 +6634,8 @@ function appThemeIsDark() {
 // The syntax map mirrors the app's sx-* palette (keyword=accent,
 // string=cyan, comment=faint, number=magenta, type=yellow).
 function mrmdHostTheme() {
-  const binary = themeMode() === 'binary';
-  return {
-    name: 'chattering',
-    isDark: appThemeIsDark(),
-
-    // editor surface
-    '--editor-background': 'var(--bg)',
-    '--editor-foreground': 'var(--text)',
-    '--editor-cursor': 'var(--accent)',
-    '--editor-selection': 'color-mix(in srgb, var(--accent) 30%, var(--bg))',
-    '--editor-selection-match': 'color-mix(in srgb, var(--accent) 18%, var(--bg))',
-    '--editor-active-line': 'transparent',
-    '--editor-gutter': 'var(--bg)',
-    '--editor-line-number': 'var(--text-faint)',
-    '--editor-line-number-active': 'var(--text-dim)',
-    '--editor-matching-bracket': 'color-mix(in srgb, var(--accent) 25%, var(--bg))',
-    // The file's text: its font (a document's is the device's choice,
-    // a code file's stays monospace) and size, scaled on this device
-    // (live-file.js "how files look").
-    '--editor-font-family': 'var(--editor-text-font, var(--font-mono))',
-    '--editor-font-size': 'calc(var(--fs-title) * var(--file-text-scale, 1))',
-    '--editor-line-height': '1.65',
-
-    // widgets (panels, tooltips, fold placeholders)
-    '--widget-font-mono': 'var(--font-mono)',
-    '--widget-font-sans': 'var(--font)',
-    '--widget-border-radius': 'var(--r-sm)',
-    '--widget-surface': 'var(--surface-1)',
-    '--widget-surface-hover': 'var(--surface-2)',
-    '--widget-surface-elevated': 'var(--surface-2)',
-    '--widget-surface-inset': 'var(--surface-1)',
-    '--widget-border': 'var(--border)',
-    '--widget-border-accent': 'var(--accent)',
-    '--widget-border-focus': 'var(--accent-strong)',
-    '--widget-text': 'var(--text)',
-    '--widget-text-muted': 'var(--text-dim)',
-    '--widget-text-accent': 'var(--accent)',
-    '--widget-success': 'var(--success)',
-    '--widget-warning': 'var(--warn)',
-    '--widget-error': 'var(--danger)',
-    '--widget-info': 'var(--blue)',
-
-    // syntax — the app's sx-* palette
-    '--syntax-keyword': 'var(--accent)',
-    '--syntax-control': 'var(--accent)',
-    '--syntax-string': 'var(--cyan)',
-    '--syntax-number': 'var(--magenta)',
-    '--syntax-comment': 'var(--text-faint)',
-    '--syntax-function': 'var(--blue)',
-    '--syntax-variable': 'var(--text)',
-    '--syntax-variable-special': 'var(--accent)',
-    '--syntax-property': 'var(--text)',
-    '--syntax-operator': 'var(--text-dim)',
-    '--syntax-punctuation': 'var(--text-dim)',
-    '--syntax-type': 'var(--yellow)',
-    '--syntax-class': 'var(--yellow)',
-    '--syntax-constant': 'var(--magenta)',
-    '--syntax-parameter': 'var(--text)',
-    '--syntax-regexp': 'var(--red)',
-    '--syntax-escape': 'var(--yellow)',
-    '--syntax-tag': 'var(--accent)',
-    '--syntax-attribute': 'var(--yellow)',
-    '--syntax-attribute-value': 'var(--cyan)',
-    '--syntax-heading': 'var(--text)',
-    '--syntax-link': 'var(--cyan)',
-    '--syntax-link-text': 'var(--cyan)',
-    '--syntax-emphasis': 'var(--text)',
-    '--syntax-strong': 'var(--text)',
-    '--syntax-strikethrough': 'var(--text-faint)',
-    '--syntax-quote': 'var(--text-dim)',
-    // inline code follows the conversation voice: quiet, dim, italic
-    '--syntax-code': 'var(--text-dim)',
-    '--syntax-code-background': 'var(--surface-2)',
-    '--syntax-meta': 'var(--text-dim)',
-    '--syntax-inserted': 'var(--green)',
-    '--syntax-deleted': 'var(--red)',
-    '--syntax-changed': 'var(--blue)',
-
-    // rendered markdown — mirrors the conversation .md styles: flat
-    // heading sizes with a rule under h1/h2 (rule via .cm-md-h*-line CSS),
-    // quiet italic inline code, square corners, thin blockquote bar.
-    '--md-heading-1-size': '1.15em',
-    '--md-heading-2-size': '1.15em',
-    '--md-heading-3-size': '1em',
-    '--md-heading-4-size': '1em',
-    '--md-heading-5-size': '1em',
-    '--md-heading-6-size': '1em',
-    '--md-heading-weight': '700',
-    '--md-heading-margin-top': '0',
-    '--md-heading-color': 'var(--text)',
-    '--md-marker-color': 'var(--text-faint)',
-    '--md-marker-font': 'var(--font)',
-    '--md-link-color': 'var(--cyan)',
-    '--md-link-decoration': 'underline',
-    '--md-code-background': 'transparent',
-    '--md-code-color': 'var(--text-dim)',
-    '--md-code-padding': '0',
-    '--md-code-radius': '0',
-    '--md-blockquote-border': 'var(--border-strong)',
-    '--md-blockquote-border-width': '2px',
-    '--md-blockquote-padding': '10px',
-    '--md-blockquote-color': 'var(--text-dim)',
-    '--md-list-marker-color': 'var(--text-faint)',
-    '--md-hr-color': 'var(--border)',
-    '--md-table-border': 'var(--border)',
-    '--md-table-header-bg': 'var(--surface-1)',
-    '--md-checkbox-color': 'var(--accent)',
-    '--md-alert-note-color': 'var(--blue)',
-    '--md-alert-tip-color': 'var(--green)',
-    '--md-alert-important-color': 'var(--magenta)',
-    '--md-alert-warning-color': 'var(--warn)',
-    '--md-alert-caution-color': 'var(--danger)',
-
-    // The selection overlay paints ABOVE line fills (code blocks) — a
-    // translucent accent keeps text readable while staying unmissable.
-    '--mrmd-selection-overlay': binary ? 'var(--overlay)' : 'color-mix(in srgb, var(--accent) 32%, transparent)',
-
-    // popups the bundle may open (menus, dialogs)
-    '--mrmd-ui-font': 'var(--font)',
-    '--mrmd-panel-bg': 'var(--surface-2)',
-    '--mrmd-popup-bg': 'var(--surface-2)',
-    '--mrmd-bg': 'var(--bg)',
-    '--mrmd-fg': 'var(--text)',
-    '--mrmd-fg-muted': 'var(--text-dim)',
-    '--mrmd-border': 'var(--border)',
-    '--mrmd-hover-bg': 'var(--surface-2)',
-    '--mrmd-active-bg': 'var(--surface-3)',
-    '--mrmd-selection-bg': 'color-mix(in srgb, var(--accent) 30%, var(--bg))',
-    '--mrmd-accent': 'var(--accent)',
-    '--mrmd-accent-hover': 'var(--accent-strong)',
-    '--mrmd-success': 'var(--success)',
-    '--mrmd-warning': 'var(--warn)',
-    '--mrmd-error': 'var(--danger)',
-    '--mrmd-shadow-md': 'var(--shadow)',
-    '--mrmd-shadow-lg': 'var(--shadow)',
-    '--mrmd-shadow-xl': 'var(--shadow)',
-    '--mrmd-menu-border': 'var(--border-strong)',
-    '--mrmd-dialog-border': 'var(--border-strong)',
-    '--mrmd-input-border': 'var(--border)',
-    '--mrmd-button-bg': 'var(--surface-2)',
-    '--mrmd-button-border': 'var(--border)',
-    '--mrmd-button-hover': 'var(--surface-3)',
-    '--mrmd-button-active': 'var(--surface-3)',
-
-    // binary e-ink: no half-tones — selection and brackets go solid
-    ...(binary ? {
-      '--editor-selection': 'var(--text)',
-      '--editor-selection-match': 'transparent',
-      '--editor-matching-bracket': 'transparent',
-      '--mrmd-selection-bg': 'var(--text)',
-      // the AI spark at rest: faint is a half-tone; solid, like the rest
-      '--mrmd-ai-spark-rest': '1',
-      // changes under review: no tinted grounds; bars, strike-through and underline say it
-      '--mrmd-review-inserted': 'transparent',
-      '--mrmd-review-deleted': 'transparent',
-    } : {}),
-  };
+  // The theme itself is shared with the page shared links open (document-look.js).
+  return DocumentLook.editorTheme({ isDark: appThemeIsDark(), binary: themeMode() === 'binary' });
 }
 
 // The document on screen: { path, project, sha, editor, runner, dirty,

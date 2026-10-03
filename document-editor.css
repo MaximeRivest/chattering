@@ -1,0 +1,50 @@
+/* How a Markdown document looks in the editor, for every page that shows
+   one (design/92): Chattering's file view and the page a shared link opens.
+   Its theme is document-look.js. Moved here from app.html, unchanged. */
+/* The page: the same reading column as a conversation (--read-max). */
+.doc-editor-host > div { max-width: var(--doc-width, var(--read-max)); margin: 0 auto; padding: 28px 20px 50vh; min-height: 100%; }
+/* A document's text is in the device's document font; code in it stays
+   monospace (live-file.js "how files look"). */
+.doc-editor-host:not(.code-host) { --editor-text-font: var(--doc-font, var(--font-mono)); }
+.doc-editor-host .cm-editor { height: auto; }
+.doc-editor-host .cm-scroller { overflow: visible; }
+/* One voice for markdown: the editor mirrors the conversation .md look.
+
+   CodeMirror geometry rules (learned from mrmd-editor's own code-block
+   plugin — see codeBlockStyles in mrmd-editor/src/index.js):
+   · NO margins on lines — CM maps positions from the line box; margins
+     sit outside it and break clicks, the caret, and up/down arrow motion.
+     Spacing uses padding only (inside the box, measured correctly).
+   · NO background-color on lines — CM paints the selection in a layer
+     BELOW .cm-line; an opaque ground hides it. An inset box-shadow gives
+     the same fill without joining layer painting.
+   · NO cursor-dependent font sizes — a size that flips with .cm-activeLine
+     relayouts the text under the mouse on every click.
+
+   Headings: same size as body, bold, a rule under h1/h2. */
+.doc-editor-host .cm-md-heading-line { padding-top: 14px; }
+.doc-editor-host .cm-md-h1-line, .doc-editor-host .cm-md-h2-line { border-bottom: 1px solid var(--border); padding-bottom: 3px; }
+/* Code blocks: the same box as .md pre — surface-2 ground, 1px border,
+   smaller mono. Per-line paint; the fence rows open and close the box. */
+.doc-editor-host .cm-md-codeblock-line { box-shadow: inset 0 0 0 9999px color-mix(in srgb, var(--surface-2) 85%, transparent); border-left: 1px solid var(--border); border-right: 1px solid var(--border); padding-left: 12px; padding-right: 12px; font-family: var(--font-mono); font-size: 0.834em; }
+.doc-editor-host .cm-md-codeblock-first { border-top: 1px solid var(--border); padding-top: 5px; }
+.doc-editor-host .cm-md-codeblock-last { border-bottom: 1px solid var(--border); padding-bottom: 5px; }
+/* Fence rows are quiet chrome: the info string reads as the small
+   language label (like .md pre[data-lang]::before). Constant size —
+   the label grows only via the marker span when the caret enters it. */
+.doc-editor-host .cm-md-codeblock-first, .doc-editor-host .cm-md-codeblock-last { color: var(--text-faint); font-size: 0.8em; line-height: 1.7; min-height: 1.4em; }
+/* Inline code: the conversation's quieter italic voice (no chip). */
+.doc-editor-host .cm-md-inline-code { font-style: italic; }
+/* A drawn ```mermaid fence: the figure is the same .mmd-fig the transcript
+   draws; the bundle only frames it. Its source (while drawing, or under an
+   error) reads as the code block it is. */
+.doc-editor-host .cm-diagram { padding: 8px 0; }
+.doc-editor-host .cm-diagram-source { font-family: var(--font-mono); font-size: 0.834em; color: var(--text); background: color-mix(in srgb, var(--surface-2) 85%, transparent); border: 1px solid var(--border); border-radius: 0; }
+.doc-editor-host .cm-diagram-error-message { color: var(--danger); font-size: var(--fs-micro); }
+
+/* Output blocks read as results, not as code: the conversation's run-out
+   voice — no side borders, a single quiet accent bar, dim text. */
+.doc-editor-host .cm-md-codeblock-line[data-lang="output"], .doc-editor-host .cm-md-codeblock-line.cm-output-line { border-left: 3px solid var(--border-strong); border-right: 0; box-shadow: none; color: var(--text-dim); }
+
+.mmd-fig { background: var(--surface-1); border: 1px solid var(--border); padding: 10px; overflow-x: auto; text-align: center; }
+.mmd-fig svg { max-width: 100%; height: auto; }

@@ -17342,6 +17342,8 @@ async function handleRequest(req, res) {
       '/conversation-tree.js': { file: 'conversation-tree.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/artifacts.js': { file: 'artifacts.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/shares-ui.js': { file: 'shares-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/document-look.js': { file: 'document-look.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+      '/document-editor.css': { file: 'document-editor.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
       '/made-panel.js': { file: 'made-panel.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/step-changes-ui.js': { file: 'step-changes-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
       '/step-changes.css': { file: 'step-changes.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
@@ -20705,6 +20707,9 @@ const SHARE_STATIC = {
   'share.js': { file: 'share-page/share.js', type: 'text/javascript; charset=utf-8' },
   'share.css': { file: 'share-page/share.css', type: 'text/css; charset=utf-8' },
   'tokens.css': { file: 'design/tokens.css', type: 'text/css; charset=utf-8' },
+  'document-look.js': { file: 'document-look.js', type: 'text/javascript; charset=utf-8' },
+  'document-editor.css': { file: 'document-editor.css', type: 'text/css; charset=utf-8' },
+  'mermaid.js': { file: 'vendor/mermaid.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
   'mrmd.js': { file: 'vendor/mrmd-document/0.25.0/mrmd-document.iife.min.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=86400' },
 };
 const shareStaticCache = new Map();
