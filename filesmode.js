@@ -323,6 +323,26 @@ async function fileWsJoinShared(ws) {
   try { const s = await collabJoin('file:' + ws.path); if (fileWs !== ws) { collabLeave(s); return null; } ws.collab = s; return s; }
   catch { return null; }
 }
+// The people listener and the reset listener of a shared file, as one
+// unsubscribe (ws.collabUnsub): wired at mount and again when a parked
+// editor comes back.
+function fileWsWatchShared(ws, s) {
+  const offPeople = collabOnPeople(s, () => fileWsSharedStatus(ws));
+  const offReset = typeof collabOnReset === 'function' ? collabOnReset(s, reset => fileWsSharedReset(ws, s, reset)) : () => {};
+  return () => { offPeople(); offReset(); };
+}
+// The connection came back to a server whose copy of the file is not the
+// one this page held (its saved history was lost): the page now shows the
+// server's text. If this page's text differed (typing that never reached
+// it, or the file changed on disk meanwhile), the person decides.
+function fileWsSharedReset(ws, s, reset) {
+  if (fileWs !== ws || ws.collab !== s) return;
+  fileWsBanner(ws, 'The connection came back to a fresh copy of this file, and the text here was replaced by it. Your text from just before differs.', [
+    ['Put my version back', () => { collabRestore(s, reset.before); fileWsBanner(ws, null); toast('your version is back · ' + modKey('Z') + ' undoes it'); }],
+    ['Copy my version', () => { navigator.clipboard?.writeText(reset.before).then(() => toast('your version is on the clipboard'), () => errToast('could not copy')); }],
+    ['Keep this', () => { s.lastReset = null; fileWsBanner(ws, null); }],
+  ]);
+}
 function fileWsLeaveShared(ws) {
   if (!ws || !ws.collab) return;
   if (ws.collabUnsub) { try { ws.collabUnsub(); } catch {} ws.collabUnsub = null; }
@@ -520,7 +540,7 @@ function fileWsWireCode(ws) {
     $('fwSave').disabled = false;
     $('fwSave').title = 'Shared: the disk follows as you type. Save writes it right now · Ctrl+S';
     $('fwSave').onclick = () => fileWsSharedSave(ws);
-    ws.collabUnsub = collabOnPeople(ws.collab, () => fileWsSharedStatus(ws));
+    ws.collabUnsub = fileWsWatchShared(ws, ws.collab);
     fileWsSharedStatus(ws);
     return;
   }

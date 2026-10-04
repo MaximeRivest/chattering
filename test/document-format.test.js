@@ -32,7 +32,7 @@ async function harness(t) {
     projectMetaFor: () => ({ cwd: root }), projectGitRepositories: async () => [root],
     recentProjectFileActivity: () => null,
     // Shared documents and people: not exercised here.
-    collab: { has: () => false, setText: () => false }, usersLib: { ownerOf: () => ({ id: 'owner' }) }, roster: {},
+    collab: { has: () => false, setText: () => false }, collabDiskWritten: () => {}, usersLib: { ownerOf: () => ({ id: 'owner' }) }, roster: {},
   });
   vm.runInContext(source, ctx);
   // Revision naming is unrelated to saving formats; never start background model calls.

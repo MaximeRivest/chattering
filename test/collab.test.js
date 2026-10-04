@@ -17,8 +17,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 const until = async (fn, ms = 5000) => { const t = Date.now(); while (!fn()) { if (Date.now() - t > ms) throw new Error('timeout'); await sleep(15); } };
 
 // A tiny y-websocket client: the same message shapes the browser provider sends.
-function client(url, { name = 'x' } = {}) {
-  const ydoc = new Y.Doc();
+function client(url, { name = 'x', ydoc = new Y.Doc() } = {}) {
   const awareness = new awarenessProtocol.Awareness(ydoc);
   const ws = new WebSocket(url);
   ws.binaryType = 'arraybuffer';
@@ -34,13 +33,53 @@ function client(url, { name = 'x' } = {}) {
       if (encoding.length(enc) > 1) send(enc);
     } else if (type === 1) awarenessProtocol.applyAwarenessUpdate(awareness, decoding.readVarUint8Array(dec), ws);
   };
+  let closeCode = null;
+  ws.addEventListener('close', ev => { closeCode = ev.code; });
   const ready = new Promise((res, rej) => {
     ws.onopen = () => { const enc = encoding.createEncoder(); encoding.writeVarUint(enc, 0); syncProtocol.writeSyncStep1(enc, ydoc); send(enc); res(); };
     ws.onerror = () => rej(new Error('ws error'));
   });
-  ydoc.on('update', (update, origin) => { if (origin === ws) return; const enc = encoding.createEncoder(); encoding.writeVarUint(enc, 0); syncProtocol.writeUpdate(enc, update); send(enc); });
+  const onUpdate = (update, origin) => { if (origin === ws) return; const enc = encoding.createEncoder(); encoding.writeVarUint(enc, 0); syncProtocol.writeUpdate(enc, update); send(enc); };
+  ydoc.on('update', onUpdate);
   awareness.on('update', ({ added, updated, removed }) => { const enc = encoding.createEncoder(); encoding.writeVarUint(enc, 1); encoding.writeVarUint8Array(enc, awarenessProtocol.encodeAwarenessUpdate(awareness, added.concat(updated, removed))); send(enc); });
-  return { ydoc, awareness, ws, ready, text: () => ydoc.getText('content').toString(), synced: () => synced, close: () => { ws.close(); awareness.destroy(); ydoc.destroy(); } };
+  return { ydoc, awareness, ws, ready, text: () => ydoc.getText('content').toString(), synced: () => synced, closeCode: () => closeCode,
+    // The connection drops; the page keeps its copy (what y-websocket does).
+    drop: () => { ydoc.off('update', onUpdate); ws.close(); awareness.destroy(); },
+    close: () => { ws.close(); awareness.destroy(); ydoc.destroy(); } };
+}
+
+// A page as collab-client.js makes it: it speaks lineages with the very
+// handlers the browser uses, and keeps its Y.Doc and lineage across
+// reconnects, as the provider does.
+const lineageClient = require('../collab-client.js');
+function page(base, room, { user = 'u_a', ydoc = new Y.Doc(), state = { lineage: '' }, resets = [] } = {}) {
+  const ws = new WebSocket(base + '/' + room + '?u=' + user + '&lineage=' + encodeURIComponent(state.lineage));
+  ws.binaryType = 'arraybuffer';
+  const send = bytes => { if (ws.readyState === 1) ws.send(bytes); };
+  const handlers = lineageClient.collabLineageHandlers(Y, ydoc, { state, sendBytes: send, onReset: r => resets.push(r) });
+  let synced = false;
+  ws.onmessage = ev => {
+    const bytes = new Uint8Array(ev.data);
+    const dec = decoding.createDecoder(bytes);
+    const type = decoding.readVarUint(dec);
+    if (type === 0) {
+      const enc = encoding.createEncoder(); encoding.writeVarUint(enc, 0);
+      const sub = syncProtocol.readSyncMessage(dec, enc, ydoc, ws);
+      if (sub === syncProtocol.messageYjsSyncStep2) synced = true;
+      if (encoding.length(enc) > 1) send(encoding.toUint8Array(enc));
+    } else if (handlers[type]) handlers[type](bytes, dec.pos);
+  };
+  const onUpdate = (update, origin) => { if (origin === ws) return; const enc = encoding.createEncoder(); encoding.writeVarUint(enc, 0); syncProtocol.writeUpdate(enc, update); send(encoding.toUint8Array(enc)); };
+  ydoc.on('update', onUpdate);
+  const ready = new Promise((res, rej) => {
+    ws.onopen = () => { const enc = encoding.createEncoder(); encoding.writeVarUint(enc, 0); syncProtocol.writeSyncStep1(enc, ydoc); send(encoding.toUint8Array(enc)); res(); };
+    ws.onerror = () => rej(new Error('ws error'));
+  });
+  const ytext = ydoc.getText('content');
+  return { ydoc, state, resets, ready, ytext, text: () => ytext.toString(), synced: () => synced,
+    drop: () => { ydoc.off('update', onUpdate); ws.close(); },
+    // Back on the same copy, as the provider reconnects.
+    again: (to = base) => page(to, room, { user, ydoc, state, resets }) };
 }
 
 async function boot(t, opts = {}) {
@@ -51,11 +90,14 @@ async function boot(t, opts = {}) {
     const conn = acceptWebSocket(req, socket, head);
     if (!conn) return;
     const user = { id: u.searchParams.get('u') || 'u_a', name: u.searchParams.get('u') || 'A', glyph: 'A', color: '#000000' };
-    collab.join(conn, u.pathname.slice(1), { user, canWrite: u.searchParams.get('ro') !== '1', initialText: opts.initialText || '' });
+    const lineage = u.searchParams.has('lineage') ? u.searchParams.get('lineage') : undefined;
+    const initialText = typeof opts.initialText === 'function' ? opts.initialText() : opts.initialText || '';
+    collab.join(conn, decodeURIComponent(u.pathname.slice(1)), { user, canWrite: u.searchParams.get('ro') !== '1', initialText, lineage });
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
-  t.after(() => { collab.closeAll(); server.close(); });
-  return { collab, url: 'ws://127.0.0.1:' + server.address().port };
+  const stop = () => { collab.closeAll(); server.closeAllConnections?.(); server.close(); };
+  t.after(stop);
+  return { collab, server, stop, url: 'ws://127.0.0.1:' + server.address().port };
 }
 
 test('textDiff finds the one replace between two texts', () => {
@@ -234,4 +276,163 @@ test('compose boxes survive a restart through the persisted update', async t => 
   await sleep(700);
   assert.equal(fs.readdirSync(dir).length, 0, 'an empty box leaves no file');
   second.closeAll();
+});
+
+// ---- one copy of a document, whatever the connection does ----
+// The bug these guard: a page keeps its copy of a shared document across a
+// dropped connection. The server dropped a file's document when its last
+// viewer left (or lost it in a restart) and rebuilt it from the disk text:
+// the same text inserted a second time, by someone else. The page's resync
+// merged its copy into the new one, and the whole file appeared twice, then
+// was saved that way.
+
+const NOTEBOOK = '# Notebook\n\n```python\nprint(1)\n```\n';
+
+test('a page that comes back after the server forgot the file adopts the server copy: the text is not repeated', async t => {
+  const { collab, url } = await boot(t, { initialText: NOTEBOOK });
+  const name = 'file:/tmp/nb.md';
+  const a = page(url, encodeURIComponent(name));
+  await a.ready; await until(() => a.synced());
+  assert.equal(a.text(), NOTEBOOK);
+  const first = a.state.lineage;
+  assert.ok(first, 'the page learned the lineage');
+  a.drop();
+  await until(() => !collab.has(name)); // last viewer gone, no saved history (no persistDir)
+  // Someone else opens the file first and types into the new copy.
+  const b = page(url, encodeURIComponent(name), { user: 'u_b' });
+  await b.ready; await until(() => b.synced());
+  b.ytext.insert(b.text().length, 'b was here\n');
+  await until(() => collab.text(name).endsWith('b was here\n'));
+  // The first page comes back with its old copy.
+  const a2 = a.again();
+  await a2.ready; await until(() => a2.synced());
+  await until(() => a2.text() === b.text());
+  assert.equal(a.resets.length, 1, 'its copy was replaced, not merged');
+  assert.notEqual(a.state.lineage, first);
+  assert.equal(collab.text(name), NOTEBOOK + 'b was here\n');
+  // Both type on; one text everywhere.
+  a2.ytext.insert(0, 'A ');
+  b.ytext.insert(b.text().length, 'end\n');
+  await until(() => a2.text() === b.text() && collab.text(name) === a2.text() && a2.text().endsWith('end\n') && a2.text().startsWith('A '));
+  assert.equal(collab.text(name), 'A ' + NOTEBOOK + 'b was here\nend\n');
+  a2.drop(); b.drop();
+});
+
+test('a restart keeps the history: a page comes back and merges, typing done while offline included, nothing repeated', async t => {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'collab-')));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const name = 'file:/tmp/restart.md';
+  let disk = NOTEBOOK;
+  const one = await boot(t, { persistDir: dir, initialText: () => disk });
+  one.collab.on('change', ev => { disk = ev.text; one.collab.markSaved(ev.name, ev.text); });
+  const a = page(one.url, encodeURIComponent(name));
+  await a.ready; await until(() => a.synced());
+  a.ytext.insert(a.text().length, 'saved line\n');
+  await until(() => disk.endsWith('saved line\n'));
+  a.drop();
+  a.ytext.insert(0, 'offline ');           // typed while the server was away
+  one.stop();                              // the restart
+  const two = await boot(t, { persistDir: dir, initialText: () => disk });
+  const a2 = a.again(two.url);
+  await a2.ready; await until(() => a2.synced());
+  await until(() => two.collab.text(name) === 'offline ' + NOTEBOOK + 'saved line\n');
+  assert.equal(a.resets.length, 0, 'same history: an ordinary resync');
+  assert.equal(a2.text(), 'offline ' + NOTEBOOK + 'saved line\n');
+  a2.drop();
+});
+
+test('a file changed on disk while nobody had it open: one edit on the same history', async t => {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'collab-')));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const name = 'file:/tmp/changed.md';
+  let disk = 'title\n\nbody\n';
+  const one = await boot(t, { persistDir: dir, initialText: () => disk });
+  const a = page(one.url, encodeURIComponent(name));
+  await a.ready; await until(() => a.synced());
+  a.drop();
+  await until(() => !one.collab.has(name));
+  disk = 'TITLE\n\nbody\nmore from an agent\n';   // an agent, git, another editor
+  one.stop();
+  const two = await boot(t, { persistDir: dir, initialText: () => disk });
+  const a2 = a.again(two.url);
+  await a2.ready; await until(() => a2.synced());
+  await until(() => a2.text() === disk);
+  assert.equal(two.collab.text(name), disk);
+  assert.equal(a.resets.length, 0);
+  a2.drop();
+});
+
+test('typing saved but not yet written when the server stopped is kept, not undone by the older disk', async t => {
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'collab-')));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const first = createCollab({ ...yjs, persistDir: dir });
+  first.open('file:/tmp/k.md', { initialText: 'abc' });
+  first.setText('file:/tmp/k.md', 'abcd'); // stands for a person's typing the disk has not got
+  first.flushAll();
+  first.closeAll();
+  const second = createCollab({ ...yjs, persistDir: dir });
+  second.open('file:/tmp/k.md', { initialText: 'abc' }); // the disk is as it was
+  assert.equal(second.text('file:/tmp/k.md'), 'abcd');
+  second.closeAll();
+});
+
+test('a page that does not speak lineages and holds another copy is turned away; the text is not repeated', async t => {
+  const { collab, url } = await boot(t, { initialText: NOTEBOOK });
+  const name = 'file:/tmp/old.md';
+  const ydoc = new Y.Doc();
+  const a = client(url + '/' + encodeURIComponent(name), { ydoc });
+  await a.ready; await until(() => a.synced());
+  a.drop();
+  await until(() => !collab.has(name));
+  const back = client(url + '/' + encodeURIComponent(name), { ydoc });
+  await back.ready;
+  await until(() => back.closeCode() !== null);
+  assert.equal(back.closeCode(), 4409);
+  back.close();
+  await until(() => !collab.has(name));
+  // A page with an empty copy (the shared-link page builds one per visit) is welcome.
+  const fresh = client(url + '/' + encodeURIComponent(name));
+  await fresh.ready; await until(() => fresh.synced());
+  assert.equal(fresh.text(), NOTEBOOK);
+  assert.equal(collab.text(name), NOTEBOOK);
+  fresh.close();
+});
+
+test('the last keystrokes before the last page leaves still reach the disk', async t => {
+  const { collab, url } = await boot(t, { initialText: 'draft' });
+  const changes = [];
+  collab.on('change', ev => changes.push(ev.text));
+  const a = client(url + '/file:/tmp/last.md');
+  await a.ready; await until(() => a.synced());
+  a.ydoc.getText('content').insert(5, '!');
+  await until(() => collab.text('file:/tmp/last.md') === 'draft!');
+  a.close(); // well within the 400 ms quiet time
+  await until(() => !collab.has('file:/tmp/last.md'));
+  assert.deepEqual(changes, ['draft!']);
+});
+
+test('a disk read that shows no outside change leaves the typing alone', async t => {
+  const { collab, url } = await boot(t, { initialText: 'abc' });
+  const a = client(url + '/file:/tmp/same.md');
+  await a.ready; await until(() => a.synced());
+  a.ydoc.getText('content').insert(3, 'd');
+  await until(() => collab.text('file:/tmp/same.md') === 'abcd');
+  assert.equal(collab.fromDisk('file:/tmp/same.md', 'abc'), false);
+  assert.equal(collab.text('file:/tmp/same.md'), 'abcd');
+  a.close();
+});
+
+test('the page writes and reads the lineage messages exactly as lib0 does', () => {
+  const { collabReader, collabWriteMessage } = lineageClient;
+  const id = 'é-lineage-' + 'x'.repeat(200);
+  const blob = new Uint8Array(300).map((_, i) => i * 7);
+  const enc = encoding.createEncoder();
+  encoding.writeVarUint(enc, 102); encoding.writeVarString(enc, id); encoding.writeVarUint8Array(enc, blob);
+  assert.deepEqual(collabWriteMessage(102, [id, blob]), encoding.toUint8Array(enc));
+  const bytes = encoding.toUint8Array(enc);
+  const dec = decoding.createDecoder(bytes); decoding.readVarUint(dec);
+  const r = collabReader(bytes, dec.pos);
+  assert.equal(r.string(), id);
+  assert.deepEqual(r.bytes(), blob);
+  assert.throws(() => collabReader(new Uint8Array([200]), 0).uint(), /too short/);
 });

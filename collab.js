@@ -10,11 +10,26 @@
 //   file:<absolute path>        a file open in the live editor
 // Never the transcript: that is Pi's append-only log with one writer.
 //
-// Persistence: compose and draft documents are saved as Yjs updates under
-// the cache dir so a restart keeps what was typed. Files are not: the
-// disk is their truth; the host writes the text to disk through its own
-// save path (history, ledger) and pushes disk changes back as minimal
-// edits so remote cursors survive an agent's write.
+// Persistence: every document is saved as its Yjs state under the cache
+// dir. For compose and draft boxes that is what keeps the text over a
+// restart. For files the disk stays the truth (the host writes the text
+// through its own save path: history, ledger) and the saved state keeps
+// the document's *history*: browsers hold a copy of the document, and
+// after a dropped connection or a restart they resync that copy into
+// whatever the server has. A copy rebuilt from the disk text is a second,
+// unrelated insertion of the same text, and merging the two repeats the
+// whole file. So the server reloads the same history (and brings it up to
+// the disk with one minimal edit if the file changed meanwhile).
+//
+// Lineage: each history has an id. A browser that speaks it (collab-client
+// .js) learns the id on joining and names it when it comes back. If the
+// history it holds is not this one (the saved state was lost, or swept
+// after a month unused), the server does not merge: it hands the browser
+// its current copy (MSG_RESET), the browser replaces its own with it in
+// one step and answers (MSG_RESET_DONE), and only then do they sync. A
+// browser that does not speak it (an open tab from before this, the
+// shared-link page) is let in only if it holds nothing this history lacks;
+// otherwise it is closed with 4409 rather than allowed to repeat the text.
 //
 // The disk side of a file has two directions and they must not echo:
 //   markSaved(name, text)  the host wrote `text` to disk for this document
@@ -30,7 +45,19 @@ const crypto = require('crypto');
 const { EventEmitter } = require('events');
 
 const MSG_SYNC = 0, MSG_AWARENESS = 1, MSG_AUTH = 2, MSG_QUERY_AWARENESS = 3;
+// Ours, beside y-protocols' four (collab-client.js speaks them too):
+//   LINEAGE     server → browser: lineage id
+//   RESET       server → browser: lineage id, the whole current state
+//   RESET_DONE  browser → server: lineage id, its state vector after adopting
+const MSG_LINEAGE = 100, MSG_RESET = 101, MSG_RESET_DONE = 102;
+const CLOSE_STALE = 4409; // a copy from another history, from a browser that cannot be told
 const TEXT_KEY = 'content';
+// A saved state: 'CHY1', then a varuint length and JSON { lineage, diskText },
+// then the Yjs update. Older saves are a bare update (compose and drafts).
+const STATE_MAGIC = Buffer.from('CHY1');
+// A file's saved history unused this long is swept; opening the file then
+// starts a new lineage (a browser still holding the old one is reset).
+const FILE_STATE_KEEP_MS = 30 * 24 * 3600 * 1000;
 
 // The smallest edit that turns `from` into `to`: common prefix, common
 // suffix, one replace. Enough for an agent's write or a disk reload; Yjs
@@ -45,31 +72,76 @@ function textDiff(from, to) {
   return { index: start, remove: endFrom - start, insert: to.slice(start, endTo) };
 }
 
-function createCollab({ Y, syncProtocol, awarenessProtocol, encoding, decoding, persistDir = null, log = () => {} }) {
+function createCollab({ Y, syncProtocol, awarenessProtocol, encoding, decoding, persistDir = null, log = () => {}, fileStateKeepMs = FILE_STATE_KEEP_MS }) {
   const docs = new Map(); // name → Doc
+  const turnedAwayAt = new Map(); // name → when an old page was last turned away (log once a minute)
   const events = new EventEmitter();
   const kindOf = name => String(name).split(':')[0];
-  const persistable = name => ['compose', 'draft'].includes(kindOf(name));
-  const persistFile = name => persistDir ? path.join(persistDir, crypto.createHash('sha256').update(name).digest('hex').slice(0, 24) + '.yjs') : null;
+  const isFile = name => kindOf(name) === 'file';
+  const persistFile = name => {
+    if (!persistDir) return null;
+    const base = crypto.createHash('sha256').update(name).digest('hex').slice(0, 24) + '.yjs';
+    return isFile(name) ? path.join(persistDir, 'files', base) : path.join(persistDir, base);
+  };
+  const newLineage = () => crypto.randomBytes(9).toString('base64url');
+
+  // Saved file histories nobody opened for a month go: the disk is the
+  // file's truth, the history only spares browsers a reset.
+  if (persistDir) {
+    try {
+      const dir = path.join(persistDir, 'files'), cutoff = Date.now() - fileStateKeepMs;
+      for (const f of fs.readdirSync(dir)) {
+        const full = path.join(dir, f);
+        try { if (fs.statSync(full).mtimeMs < cutoff) fs.unlinkSync(full); } catch {}
+      }
+    } catch {}
+  }
 
   function load(name) {
     const file = persistFile(name);
-    if (!file || !persistable(name)) return null;
-    try { return fs.readFileSync(file); } catch { return null; }
-  }
-  function scheduleSave(d) {
-    if (!persistable(d.name) || !persistDir) return;
-    clearTimeout(d.saveTimer);
-    d.saveTimer = setTimeout(() => {
+    if (!file) return null;
+    let buf;
+    try { buf = fs.readFileSync(file); } catch { return null; }
+    if (buf.length > 4 && buf.subarray(0, 4).equals(STATE_MAGIC)) {
       try {
-        fs.mkdirSync(persistDir, { recursive: true });
-        const text = d.ydoc.getText(TEXT_KEY).toString();
-        const file = persistFile(d.name);
-        if (!text) { try { fs.unlinkSync(file); } catch {} return; }
-        fs.writeFileSync(file, Buffer.from(Y.encodeStateAsUpdate(d.ydoc)));
-      } catch (e) { log('[collab] save ' + d.name + ': ' + e.message); }
-    }, 500);
+        const dec = decoding.createDecoder(new Uint8Array(buf.buffer, buf.byteOffset + 4, buf.length - 4));
+        const meta = JSON.parse(decoding.readVarString(dec));
+        return { lineage: typeof meta.lineage === 'string' && meta.lineage ? meta.lineage : null, diskText: typeof meta.diskText === 'string' ? meta.diskText : null, update: decoding.readTailAsUint8Array(dec) };
+      } catch (e) { log('[collab] saved state for ' + name + ' unreadable: ' + e.message); return null; }
+    }
+    return { lineage: null, diskText: null, update: new Uint8Array(buf) }; // a bare update (before lineages)
+  }
+  // Written whole, through a temporary file: a crash mid-write leaves the
+  // previous state, never half of one.
+  function saveNow(d) {
+    clearTimeout(d.saveTimer); d.saveTimer = null;
+    const file = persistFile(d.name);
+    if (!file || d.destroyed) return;
+    try {
+      // An emptied compose box leaves nothing behind; an empty file keeps its history.
+      if (!isFile(d.name) && !d.ydoc.getText(TEXT_KEY).length) { try { fs.unlinkSync(file); } catch {} return; }
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const enc = encoding.createEncoder();
+      encoding.writeVarString(enc, JSON.stringify({ lineage: d.lineage, diskText: isFile(d.name) ? d.diskText : undefined }));
+      const tmp = file + '.' + process.pid + '.tmp';
+      fs.writeFileSync(tmp, Buffer.concat([STATE_MAGIC, Buffer.from(encoding.toUint8Array(enc)), Buffer.from(Y.encodeStateAsUpdate(d.ydoc))]));
+      fs.renameSync(tmp, file);
+    } catch (e) { log('[collab] save ' + d.name + ': ' + e.message); }
+  }
+  // Files save less eagerly while people type (a notebook with pictures is
+  // megabytes); what matters is that the history on disk is never older
+  // than the text on disk, and the 'change' that writes the text saves the
+  // history first (see emitChange).
+  function scheduleSave(d) {
+    if (!persistDir || d.destroyed) return;
+    clearTimeout(d.saveTimer);
+    d.saveTimer = setTimeout(() => saveNow(d), isFile(d.name) ? 2000 : 500);
     if (d.saveTimer.unref) d.saveTimer.unref();
+  }
+  function emitChange(d) {
+    clearTimeout(d.quietTimer); d.quietTimer = null;
+    if (isFile(d.name)) saveNow(d);
+    events.emit('change', { name: d.name, text: d.ydoc.getText(TEXT_KEY).toString(), version: d.version, contributors: contributorsOf(d) });
   }
 
   function send(conn, bytes) {
@@ -79,17 +151,36 @@ function createCollab({ Y, syncProtocol, awarenessProtocol, encoding, decoding, 
     for (const c of d.conns.keys()) if (c !== except) send(c, bytes);
   }
 
-  function open(name, { initialText = '' } = {}) {
+  // `initialText` is the file's text on disk when a file document opens
+  // (compose and draft boxes: what to start with if nothing was saved).
+  // Absent, a saved file history opens as saved, without a disk check.
+  function open(name, { initialText } = {}) {
     let d = docs.get(name);
     if (d) return d;
-    const ydoc = new Y.Doc({ gc: true });
+    // A saved history is used whole or not at all: a file's must say which
+    // disk text it matches, and one that does not apply cleanly is dropped
+    // for a fresh document (never half-applied).
+    let stored = load(name);
+    if (stored && isFile(name) && stored.diskText == null) stored = null;
+    let ydoc = new Y.Doc({ gc: true });
+    if (stored) {
+      try { Y.applyUpdate(ydoc, stored.update); }
+      catch (e) { log('[collab] saved state for ' + name + ' unreadable, starting a new lineage: ' + e.message); ydoc.destroy(); ydoc = new Y.Doc({ gc: true }); stored = null; }
+    }
     const awareness = new awarenessProtocol.Awareness(ydoc);
     awareness.setLocalState(null);
-    d = { name, ydoc, awareness, conns: new Map(), contributors: new Map(), saveTimer: null, quietTimer: null, version: 0, applyingHost: false, diskText: null, savedShas: [] };
+    d = { name, ydoc, awareness, conns: new Map(), contributors: new Map(), saveTimer: null, quietTimer: null, version: 0, diskText: null, savedShas: [], lineage: stored?.lineage || newLineage(), destroyed: false };
     docs.set(name, d);
-    const stored = load(name);
-    if (stored) { try { Y.applyUpdate(ydoc, new Uint8Array(stored)); } catch (e) { log('[collab] stored update for ' + name + ' unreadable: ' + e.message); } }
-    else if (initialText) { ydoc.getText(TEXT_KEY).insert(0, initialText); d.diskText = initialText; }
+    if (stored) {
+      // The file changed on disk while nobody had it open: one edit on top
+      // of the same history (typing saved but not yet written is kept).
+      if (isFile(name)) { d.diskText = stored.diskText; if (typeof initialText === 'string') reconcileDisk(d, initialText); }
+    } else {
+      // A new history. Whatever a browser still holds from an older one is
+      // never merged into it (join, MSG_RESET).
+      if (initialText) ydoc.getText(TEXT_KEY).insert(0, initialText);
+      if (isFile(name)) d.diskText = String(initialText ?? '');
+    }
     ydoc.on('update', (update, origin) => {
       d.version++;
       const enc = encoding.createEncoder();
@@ -99,9 +190,10 @@ function createCollab({ Y, syncProtocol, awarenessProtocol, encoding, decoding, 
       scheduleSave(d);
       if (origin !== 'host') {
         clearTimeout(d.quietTimer);
-        d.quietTimer = setTimeout(() => events.emit('change', { name, text: ydoc.getText(TEXT_KEY).toString(), version: d.version, contributors: contributorsOf(d) }), 400);
+        d.quietTimer = setTimeout(() => emitChange(d), 400);
       }
     });
+    if (isFile(name) || ydoc.getText(TEXT_KEY).length) scheduleSave(d); // the lineage is on disk soon
     // Who typed what: counted from the text deltas, per transaction origin
     // (the connection that sent the update, which knows its person).
     ydoc.getText(TEXT_KEY).observe((event, tx) => {
@@ -139,9 +231,14 @@ function createCollab({ Y, syncProtocol, awarenessProtocol, encoding, decoding, 
   // colour at their cursor are the server's, whatever their page says, and
   // they may speak only for the cursors they introduced, never another
   // person's. `budget.take(bytes)` false closes the connection.
-  function join(conn, name, { user, canWrite = true, initialText = '', pinUser = false, budget = null }) {
+  // `lineage` is what the browser says it holds: undefined when it does not
+  // speak lineages, '' when it holds nothing yet, else the id it learned.
+  function join(conn, name, { user, canWrite = true, initialText = undefined, pinUser = false, budget = null, lineage = undefined }) {
     const d = open(name, { initialText });
-    const member = { user, canWrite, controlled: new Set(), pinUser };
+    const speaks = typeof lineage === 'string';
+    // vetted: what it holds may be merged. resetting: it holds another
+    // history and is adopting ours; nothing it sends is applied until then.
+    const member = { user, canWrite, controlled: new Set(), pinUser, speaks, vetted: speaks && lineage === d.lineage, resetting: false };
     d.conns.set(conn, member);
     conn.on('message', (data, binary) => {
       if (!binary) return;
@@ -153,11 +250,16 @@ function createCollab({ Y, syncProtocol, awarenessProtocol, encoding, decoding, 
     // A connection that drops mid-way is ordinary here; note it and let
     // 'close' do the leaving. Without a listener the emitter would throw.
     conn.on('error', e => log('[collab] ' + name + ' dropped: ' + (e && e.code || e && e.message || e)));
-    // Step 1 of sync, then everyone's awareness so cursors show at once.
-    const enc = encoding.createEncoder();
-    encoding.writeVarUint(enc, MSG_SYNC);
-    syncProtocol.writeSyncStep1(enc, d.ydoc);
-    send(conn, encoding.toUint8Array(enc));
+    if (speaks) {
+      const enc = encoding.createEncoder();
+      encoding.writeVarUint(enc, MSG_LINEAGE);
+      encoding.writeVarString(enc, d.lineage);
+      send(conn, encoding.toUint8Array(enc));
+    }
+    // Step 1 of sync (or, for a copy of another history, ours to adopt),
+    // then everyone's awareness so cursors show at once.
+    if (speaks && lineage && lineage !== d.lineage) startReset(d, conn, member);
+    else sendStep1(d, conn);
     const states = d.awareness.getStates();
     if (states.size) {
       const aw = encoding.createEncoder();
@@ -168,17 +270,70 @@ function createCollab({ Y, syncProtocol, awarenessProtocol, encoding, decoding, 
     events.emit('join', { name, user, people: peopleOf(d) });
     return d;
   }
+  function sendStep1(d, conn) {
+    const enc = encoding.createEncoder();
+    encoding.writeVarUint(enc, MSG_SYNC);
+    syncProtocol.writeSyncStep1(enc, d.ydoc);
+    send(conn, encoding.toUint8Array(enc));
+  }
+  function startReset(d, conn, member) {
+    member.resetting = true;
+    member.vetted = false;
+    const enc = encoding.createEncoder();
+    encoding.writeVarUint(enc, MSG_RESET);
+    encoding.writeVarString(enc, d.lineage);
+    encoding.writeVarUint8Array(enc, Y.encodeStateAsUpdate(d.ydoc));
+    send(conn, encoding.toUint8Array(enc));
+  }
+  // Does a browser that has not named this lineage hold anything this
+  // history lacks? Its first sync message says: a state vector (step 1) or
+  // an update (step 2, update) with a clock past ours for some client.
+  function holdsUnknown(d, bytes) {
+    const dec = decoding.createDecoder(bytes);
+    decoding.readVarUint(dec); // MSG_SYNC
+    const sub = decoding.readVarUint(dec);
+    const payload = decoding.readVarUint8Array(dec);
+    const theirs = sub === syncProtocol.messageYjsSyncStep1 ? Y.decodeStateVector(payload) : Y.decodeStateVector(Y.encodeStateVectorFromUpdate(payload));
+    const ours = Y.decodeStateVector(Y.encodeStateVector(d.ydoc));
+    for (const [client, clock] of theirs) if (clock > (ours.get(client) || 0)) return true;
+    return false;
+  }
 
   function handle(d, conn, member, bytes) {
     const dec = decoding.createDecoder(bytes);
     const enc = encoding.createEncoder();
     const type = decoding.readVarUint(dec);
     if (type === MSG_SYNC) {
+      if (member.resetting) return; // its copy is another history: nothing from it until it adopted ours
+      if (!member.vetted) {
+        if (holdsUnknown(d, bytes)) {
+          if (member.speaks) { startReset(d, conn, member); return; }
+          // An old page's provider retries every few seconds until reloaded: say it once a minute.
+          if (!(turnedAwayAt.get(d.name) > Date.now() - 60000)) { turnedAwayAt.set(d.name, Date.now()); log('[collab] ' + d.name + ': a page holding another copy of this document was turned away (it needs a reload)'); }
+          try { conn.close(CLOSE_STALE, 'stale copy: reload the page'); } catch {}
+          return;
+        }
+        member.vetted = true;
+      }
       encoding.writeVarUint(enc, MSG_SYNC);
       const sub = decoding.peekVarUint(dec);
       if (!member.canWrite && sub !== syncProtocol.messageYjsSyncStep1) return; // a spectator only asks
       syncProtocol.readSyncMessage(dec, enc, d.ydoc, conn);
       if (encoding.length(enc) > 1) send(conn, encoding.toUint8Array(enc));
+    } else if (type === MSG_RESET_DONE) {
+      // The browser replaced its copy with ours. Now an ordinary sync: what
+      // it lacks (step 2 against its state vector), then what we lack
+      // (step 1: the old history's items arrive deleted, plus anything
+      // typed since the reset).
+      const lineage = decoding.readVarString(dec);
+      const sv = decoding.readVarUint8Array(dec);
+      if (!member.resetting || lineage !== d.lineage) return;
+      member.resetting = false;
+      member.vetted = true;
+      encoding.writeVarUint(enc, MSG_SYNC);
+      syncProtocol.writeSyncStep2(enc, d.ydoc, sv);
+      send(conn, encoding.toUint8Array(enc));
+      sendStep1(d, conn);
     } else if (type === MSG_AWARENESS) {
       let update = decoding.readVarUint8Array(dec);
       if (member.pinUser) { update = pinAwareness(d, conn, member, update); if (!update) return; }
@@ -228,14 +383,15 @@ function createCollab({ Y, syncProtocol, awarenessProtocol, encoding, decoding, 
     d.conns.delete(conn);
     if (member.controlled.size) awarenessProtocol.removeAwarenessStates(d.awareness, [...member.controlled], null);
     events.emit('leave', { name: d.name, user: member.user, people: peopleOf(d) });
-    // Files are dropped when nobody looks at them: the disk is their truth.
-    if (!d.conns.size && !persistable(d.name)) close(d.name);
+    // Files leave memory when nobody looks at them (their history is saved,
+    // and the disk is their truth); compose and draft boxes stay.
+    if (!d.conns.size && isFile(d.name)) close(d.name);
   }
 
   function text(name) { const d = docs.get(name); return d ? d.ydoc.getText(TEXT_KEY).toString() : null; }
   // The host changes the text (send clears a compose box; an agent wrote the
   // file): one minimal edit, so other people's cursors stay where they were.
-  function setText(name, next, { initialText = '' } = {}) {
+  function setText(name, next, { initialText } = {}) {
     const d = open(name, { initialText });
     const yt = d.ydoc.getText(TEXT_KEY);
     const diff = textDiff(yt.toString(), String(next ?? ''));
@@ -250,11 +406,31 @@ function createCollab({ Y, syncProtocol, awarenessProtocol, encoding, decoding, 
   // recognized; several may be in flight, hence a list, not one value.
   function markSaved(name, text) {
     const d = docs.get(name);
-    if (!d) return;
     text = String(text ?? '');
+    if (!d) return markSavedClosed(name, text);
     d.diskText = text;
     d.savedShas.push(shaOf(text));
     if (d.savedShas.length > SAVED_SHAS_KEPT) d.savedShas.splice(0, d.savedShas.length - SAVED_SHAS_KEPT);
+    scheduleSave(d); // the saved history names the disk text it matches
+  }
+  // The write finished after the document left memory (its last viewer
+  // closed within a moment of the last keystroke): the text came from this
+  // history, whose saved state already holds it (emitChange saves first),
+  // so the saved history now matches this disk text. Without this, the
+  // next open would measure outside changes from an older disk text and
+  // could place them wrongly.
+  function markSavedClosed(name, text) {
+    if (!isFile(name)) return;
+    const stored = load(name);
+    if (!stored || stored.diskText === text) return;
+    const file = persistFile(name);
+    try {
+      const doc = new Y.Doc({ gc: true });
+      Y.applyUpdate(doc, stored.update);
+      if (doc.getText(TEXT_KEY).toString() !== text) { doc.destroy(); return; } // not this history's text: leave it to the next open
+      saveNow({ name, ydoc: doc, lineage: stored.lineage || newLineage(), diskText: text, destroyed: false, saveTimer: null });
+      doc.destroy();
+    } catch (e) { log('[collab] note saved text for ' + name + ': ' + e.message); try { fs.unlinkSync(file); } catch {} }
   }
   function applyEdit(d, yt, edit) {
     d.ydoc.transact(() => { if (edit.remove) yt.delete(edit.index, edit.remove); if (edit.insert) yt.insert(edit.index, edit.insert); }, 'host');
@@ -265,22 +441,30 @@ function createCollab({ Y, syncProtocol, awarenessProtocol, encoding, decoding, 
     if (!d) return false;
     next = String(next ?? '');
     if (d.savedShas.includes(shaOf(next))) return false; // our own write, back through the watcher
+    return reconcileDisk(d, next);
+  }
+  // Bring the shared text up to the disk's `next`: only what changed on
+  // disk since the last disk text known (d.diskText), placed around what
+  // people typed since. A disk that did not change leaves the typing alone.
+  function reconcileDisk(d, next) {
     const yt = d.ydoc.getText(TEXT_KEY);
     const live = yt.toString();
-    if (next === live) { d.diskText = next; return false; }
-    const base = d.diskText == null ? live : d.diskText;
+    const before = d.diskText;
+    d.diskText = next;
+    if (before !== next) scheduleSave(d);
+    if (next === live) return false;
+    const base = before == null ? live : before;
     const outside = textDiff(base, next);   // what changed on disk since we last knew it
+    if (!outside) return false;             // nothing did: the difference is typing not yet written
     const typed = base === live ? null : textDiff(base, live); // what people typed since then
     let edit = outside;
-    if (!outside) edit = textDiff(live, next);
-    else if (typed) {
+    if (typed) {
       const outsideEnd = outside.index + outside.remove, typedEnd = typed.index + typed.remove;
       if (outsideEnd <= typed.index) edit = outside; // before the typing: same place
       else if (outside.index >= typedEnd) edit = { ...outside, index: outside.index + typed.insert.length - typed.remove }; // after it: shifted
       else edit = textDiff(live, next); // the same region: the disk's rule, its text wins there
     }
     if (edit) applyEdit(d, yt, edit);
-    d.diskText = next;
     return !!edit;
   }
   function clear(name) {
@@ -291,22 +475,33 @@ function createCollab({ Y, syncProtocol, awarenessProtocol, encoding, decoding, 
     d.contributors.clear();
     return out;
   }
+  // Typing not yet written goes to the disk ('change') and the history is
+  // saved before the document leaves memory: closing the last tab within
+  // a moment of the last keystroke must not lose it.
+  function flush(d) {
+    if (d.quietTimer) emitChange(d);
+    if (d.saveTimer || isFile(d.name)) saveNow(d);
+  }
   function close(name) {
     const d = docs.get(name);
     if (!d) return;
+    flush(d);
+    d.destroyed = true;
     clearTimeout(d.saveTimer); clearTimeout(d.quietTimer);
     for (const c of d.conns.keys()) { try { c.close(1001, 'document closed'); } catch {} }
     d.awareness.destroy();
     d.ydoc.destroy();
     docs.delete(name);
   }
+  // Before the process stops: everything written, nothing closed.
+  function flushAll() { for (const d of docs.values()) { try { flush(d); } catch (e) { log('[collab] flush ' + d.name + ': ' + e.message); } } }
   function people(name) { const d = docs.get(name); return d ? peopleOf(d) : []; }
   function contributors(name) { const d = docs.get(name); return d ? contributorsOf(d) : []; }
   function stats() { return { docs: [...docs.values()].map(d => ({ name: d.name, people: d.conns.size, chars: d.ydoc.getText(TEXT_KEY).length })) }; }
   function has(name) { return docs.has(name); }
   function closeAll() { for (const name of [...docs.keys()]) close(name); }
 
-  return { open, join, text, setText, markSaved, fromDisk, clear, close, closeAll, people, contributors, stats, has, on: events.on.bind(events), off: events.off.bind(events), textDiff, TEXT_KEY };
+  return { open, join, text, setText, markSaved, fromDisk, clear, close, closeAll, flushAll, lineageOf: name => docs.get(name)?.lineage || null, people, contributors, stats, has, on: events.on.bind(events), off: events.off.bind(events), textDiff, TEXT_KEY };
 }
 
-module.exports = { createCollab, textDiff };
+module.exports = { createCollab, textDiff, MSG_LINEAGE, MSG_RESET, MSG_RESET_DONE, CLOSE_STALE };

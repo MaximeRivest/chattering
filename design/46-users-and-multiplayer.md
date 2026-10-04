@@ -551,6 +551,46 @@ cannot be reached (old server, a proxy without upgrades), the editor falls
 back to the single-player lock-and-save path unchanged. Spectators
 (read-only sharing) see the text and cursors and cannot type.
 
+### One copy of a shared file across reconnects (2026-10-04)
+The rule above, "created from disk… dropped when the last leaves",
+repeated whole notebooks. A page keeps its copy of the document across a
+dropped connection (y-websocket does, to resync typing done offline). The
+server dropped the file's document when its last viewer left (a Wi-Fi
+blip, a laptop asleep) or lost it in a restart, and rebuilt it from the
+disk text: the same text inserted again by a new author. The page's resync
+merged its copy into that one, every character appeared twice, and the
+quiet save wrote it to disk. Notebooks were hit most: kept open in the
+side list, they stay joined for hours.
+
+Now (collab.js):
+- **A file's history is saved** under the cache (`collab/files/`) with the
+  disk text it matches, and reopened instead of rebuilt; a disk change made
+  while nobody had the file open becomes one edit on top. Reconnecting
+  after a blip or a restart is then an ordinary resync, offline typing
+  included. The history is saved before the 400 ms save writes the text,
+  so the saved history is never older than the disk; the server notes the
+  written text the moment the write lands (before history and ledger), in
+  the saved history if the document left memory meanwhile. A history
+  unused for 30 days is swept.
+- **Lineages, the safety net.** Each history has an id; the page learns it
+  and names it when it reconnects. A page holding another history (the
+  saved one was lost or swept) is not merged: the server sends its copy,
+  the page replaces its own in one transaction (the editor and its binding
+  stay; the old items reach the server only as deletions) and only then do
+  they sync. If the page's text differed, a banner offers "Put my version
+  back" (one undoable edit) or a copy. A page that does not speak lineages
+  (a tab from before) is admitted only if it holds nothing the server
+  lacks, else closed with 4409 until reloaded.
+- Typing within 400 ms of the last viewer leaving, or of a stop, now
+  reaches the disk.
+
+Trade-offs: the cache holds a copy of each recently edited file's text and
+history (deleted files too, until swept); a large notebook's history is
+written whole at each pause in typing; the composer has no banner (a reset
+there replaces the box's text silently, and needs a lost saved history);
+an open tab from before this change cannot edit shared files until it is
+reloaded, which the restart toast already asks for.
+
 ### Protocol and dependencies
 `wsserver.js` is a small server-side WebSocket implementation (masked
 client frames, fragmentation, ping/pong, close, size limits; no

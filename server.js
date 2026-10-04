@@ -13412,6 +13412,17 @@ async function fileReadResponse(pathValue, key = '', reviewId = '') {
   return { path: abs, text, sha: sha256Hex(text), historyWarning };
 }
 
+// The shared copy of a file follows the disk, told the moment the write
+// lands (before the history and ledger, which take their time: the
+// watcher's echo arrives meanwhile, and the last viewer may leave). A save
+// that came from the shared text itself is only remembered, so the echo is
+// not taken for an outside change; collab.markSaved records it in the saved
+// history even if the document has left memory since.
+function collabDiskWritten(abs, text, fromCollab) {
+  const name = 'file:' + abs;
+  if (fromCollab) collab.markSaved(name, text);
+  else if (collab.has(name)) collab.fromDisk(name, text);
+}
 async function fileSaveResponse(body, user = null) {
   const { path: p, baseSha, text } = body;
   if (typeof text !== 'string') throw new Error('missing text');
@@ -13427,6 +13438,7 @@ async function fileSaveResponse(body, user = null) {
   let historyWarning = observeFileHistory(abs, { text: oldText, state: oldState, source: 'before editor save' });
   const archiveFrom = fileArchive?.latestId(abs);
   await writeFileAtomic(abs, text);
+  collabDiskWritten(abs, text, body.fromCollab);
   historyWarning = observeFileHistory(abs, { text, actor: body.actor === 'ai' ? 'agent' : 'human', source: 'editor save' }) || historyWarning;
   const archiveTo = historyWarning ? null : fileArchive?.latestId(abs);
   if (oldText !== text) {
@@ -13439,10 +13451,6 @@ async function fileSaveResponse(body, user = null) {
       recentFilesTouch(abs, { project: String(body.project || ''), kind: actor === 'human' ? 'saved' : 'edited', actor });
     }
   }
-  // The shared copy, if anyone has this file open, follows the disk. A save
-  // that came from the shared text itself is only remembered, so the
-  // watcher's echo of it is not mistaken for an outside change.
-  if (collab.has('file:' + abs)) { if (body.fromCollab) collab.markSaved('file:' + abs, text); else collab.fromDisk('file:' + abs, text); }
   return { ok: true, path: abs, sha: sha256Hex(text), historyWarning };
 }
 
@@ -13581,6 +13589,7 @@ async function docSaveResponse(body, user = null) {
     historyWarning = observeFileHistory(abs, { text: oldText, source: 'before Markdown save' });
     const archiveFrom = fileArchive?.latestId(abs);
     await writeFileAtomic(abs, text);
+    collabDiskWritten(abs, text, body.fromCollab);
     historyWarning = observeFileHistory(abs, { text, actor: body.actor === 'ai' || body.actor === 'external-agent' ? 'agent' : body.actor === 'runtime' ? 'runtime' : 'human', source: 'Markdown save' }) || historyWarning;
     const delta = docLineDelta(oldText, text);
     await recordDocEdit({
@@ -13602,11 +13611,7 @@ async function docSaveResponse(body, user = null) {
       const actor = body.actor === 'ai' || body.actor === 'external-agent' ? 'agent' : 'human';
       recentFilesTouch(abs, { project: String(body.project || ''), kind: actor === 'human' ? 'saved' : 'edited', actor });
     }
-  }
-  // The shared copy, if anyone has this file open, follows the disk. A save
-  // that came from the shared text itself is only remembered (the disk now
-  // holds it), so the watcher's echo of it is not taken for an outside change.
-  if (collab.has('file:' + abs)) { if (body.fromCollab) collab.markSaved('file:' + abs, text); else collab.fromDisk('file:' + abs, text); }
+  } else collabDiskWritten(abs, text, body.fromCollab); // unchanged: the disk holds this text all the same
   return { ok: true, path: abs, sha: sha256Hex(text), changed: oldText !== text, historyWarning };
 }
 
@@ -20686,6 +20691,9 @@ let shuttingDown = false;
 async function shutdownGracefully() {
   if (shuttingDown) return;
   shuttingDown = true;
+  // Shared documents: typing not yet on disk is written, histories saved.
+  try { collab.flushAll(); } catch {}
+  const sharedSaves = Promise.race([Promise.allSettled([...collabSaving]), sleep(3000)]);
   // Programs run live go on in their holder; the next start attaches again.
   try { if (liveTerminalsLib) liveTerminalsLib.detachAll(); } catch {}
   try { anywhere.stop(); } catch {}
@@ -20716,6 +20724,7 @@ async function shutdownGracefully() {
   } catch {}
   try { stopAllEngineSessions(); } catch {}
   saveAgentRunsNow();
+  await sharedSaves;
   clearTimeout(hardExit);
   process.exit(0);
 }
@@ -20802,7 +20811,10 @@ async function collabUpgrade(req, socket, head) {
   } catch (e) { return refuseUpgrade(socket, 400, 'Bad Request'); }
   const conn = acceptWebSocket(req, socket, head);
   if (!conn) return;
-  collab.join(conn, name, { user: usersLib.publicUser(identity.user), canWrite, initialText });
+  // The page names the history of the copy it holds (collab-client.js);
+  // absent for a page that does not speak lineages.
+  const lineage = u.searchParams.has('lineage') ? String(u.searchParams.get('lineage') || '').slice(0, 64) : undefined;
+  collab.join(conn, name, { user: usersLib.publicUser(identity.user), canWrite, initialText, lineage });
 }
 // A shared file lands on disk through the ordinary save path (history,
 // ledger, activity) shortly after people stop typing; the ledger row names
@@ -20814,9 +20826,13 @@ collab.on('change', ev => {
   const last = (ev.contributors || []).sort((a, b) => (b.at || 0) - (a.at || 0))[0] || null;
   const who = last ? { id: last.id, name: last.name } : null;
   const body = { path: abs, text: ev.text, actor: 'human', input: 'keyboard', fromCollab: true };
-  (DOCUMENT_EXT.test(abs) ? docSaveResponse(body, who) : fileSaveResponse(body, who))
-    .catch(e => console.error('[collab] save ' + abs + ': ' + e.message));
+  const saving = (DOCUMENT_EXT.test(abs) ? docSaveResponse(body, who) : fileSaveResponse(body, who))
+    .catch(e => console.error('[collab] save ' + abs + ': ' + e.message))
+    .finally(() => collabSaving.delete(saving));
+  collabSaving.add(saving);
 });
+// Saves of shared files in flight: a stop waits for them (shutdownGracefully).
+const collabSaving = new Set();
 // ---------- shared links (design/92, shares.js) ----------
 // "Anyone with the link can view / edit" one document, served from this
 // computer on the preview address (never the app's), through one gate.

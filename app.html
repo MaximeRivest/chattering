@@ -7949,7 +7949,7 @@ function wireDocumentChrome(st, text) {
   }
   if (shared && ws) {
     ws.wasShared = true;
-    ws.collabUnsub = collabOnPeople(shared, () => fileWsSharedStatus(ws));
+    ws.collabUnsub = fileWsWatchShared(ws, shared);
     $('docSave').disabled = false;
     $('docSave').title = 'Shared: the disk follows as you type. Save writes it right now · Ctrl+S';
     fileWsSharedStatus(ws);

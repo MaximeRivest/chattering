@@ -37,6 +37,66 @@ if (typeof window !== 'undefined') window.addEventListener('chattering:identity'
   }
 });
 
+/* Lineages (collab.js): the server's copy of a document has a history id.
+   The page learns it on joining and names it in the address when the
+   provider reconnects (provider.params is read on every connect). If the
+   server holds another history (its saved one was lost), it does not merge
+   this page's copy into its own, which would repeat the whole text; it
+   sends its copy instead, and the page replaces its own with it in one
+   step: the old text deleted and the server's inserted in a single
+   transaction, so the editor and its binding stay, and the old items reach
+   the server only as deletions. Typing the server never got is not merged
+   blindly: it is offered back (collabOnReset).
+
+   The bundle does not export lib0's codec, so these few messages are
+   encoded here: varuint (LEB128), strings and byte arrays with a varuint
+   length, exactly as lib0 writes them (the test checks against lib0). */
+const COLLAB_MSG_LINEAGE = 100, COLLAB_MSG_RESET = 101, COLLAB_MSG_RESET_DONE = 102;
+const COLLAB_RESET_ORIGIN = { collabReset: true };
+function collabReader(bytes, pos = 0) {
+  const r = {
+    uint() { let n = 0, mult = 1; for (;;) { const b = bytes[pos++]; if (b === undefined) throw new Error('message too short'); n += (b & 127) * mult; if (b < 128) return n; mult *= 128; if (mult > 2 ** 53) throw new Error('number too large'); } },
+    bytes() { const len = r.uint(); if (pos + len > bytes.length) throw new Error('message too short'); const out = bytes.subarray(pos, pos + len); pos += len; return out; },
+    string() { return new TextDecoder().decode(r.bytes()); },
+  };
+  return r;
+}
+function collabWriteMessage(type, parts) {
+  const out = [];
+  const uint = n => { while (n > 127) { out.push((n & 127) | 128); n = Math.floor(n / 128); } out.push(n); };
+  const bytes = b => { uint(b.length); for (const x of b) out.push(x); };
+  uint(type);
+  for (const p of parts) bytes(typeof p === 'string' ? new TextEncoder().encode(p) : p);
+  return new Uint8Array(out);
+}
+// Replace the copy in `ydoc` with the server's `update`, in one transaction.
+// Returns the text before and after.
+function collabAdoptCopy(Y, ydoc, update) {
+  const ytext = ydoc.getText('content');
+  const before = ytext.toString();
+  ydoc.transact(() => {
+    if (ytext.length) ytext.delete(0, ytext.length);
+    Y.applyUpdate(ydoc, update);
+  }, COLLAB_RESET_ORIGIN);
+  return { before, after: ytext.toString() };
+}
+// The two server messages, for a y-websocket provider (or the tests' own
+// client). `state` gets the lineage; `sendBytes` sends the answer;
+// `onReset({ before, after })` is told when a copy was replaced.
+function collabLineageHandlers(Y, ydoc, { state, sendBytes, onReset }) {
+  return {
+    [COLLAB_MSG_LINEAGE](bytes, pos) { state.lineage = collabReader(bytes, pos).string(); },
+    [COLLAB_MSG_RESET](bytes, pos) {
+      const r = collabReader(bytes, pos);
+      const lineage = r.string(), update = r.bytes();
+      const out = collabAdoptCopy(Y, ydoc, update);
+      state.lineage = lineage;
+      sendBytes(collabWriteMessage(COLLAB_MSG_RESET_DONE, [lineage, Y.encodeStateVector(ydoc)]));
+      if (onReset) onReset(out);
+    },
+  };
+}
+
 function collabWsUrl(name) {
   return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/collab' + (name ? '/' + encodeURIComponent(name) : '');
 }
@@ -58,8 +118,26 @@ async function collabJoin(name, { timeoutMs = 5000 } = {}) {
   // The provider joins <server>/<room>: the server is the collab route,
   // the room is the document name. No cross-tab channel: to the server two
   // tabs are two presences, and the server is always the authority.
-  const provider = new collab.WebsocketProvider(collabWsUrl('').replace(/\/$/, ''), encodeURIComponent(name), ydoc, { connect: false, disableBc: true, maxBackoffTime: 5000 });
-  s = { name, ydoc, ytext: ydoc.getText('content'), provider, awareness: provider.awareness, refs: 1, people: [], listeners: new Set(), synced: false };
+  // lineage '' says "I speak lineages and hold nothing yet".
+  const provider = new collab.WebsocketProvider(collabWsUrl('').replace(/\/$/, ''), encodeURIComponent(name), ydoc, { connect: false, disableBc: true, maxBackoffTime: 5000, params: { lineage: '' } });
+  s = { name, ydoc, ytext: ydoc.getText('content'), provider, awareness: provider.awareness, refs: 1, people: [], listeners: new Set(), resetListeners: new Set(), undoManagers: new Set(), lastReset: null, synced: false };
+  const lineage = { set lineage(id) { provider.params = { ...provider.params, lineage: id }; }, get lineage() { return provider.params.lineage; } };
+  const handlers = collabLineageHandlers(collab.Y, ydoc, {
+    state: lineage,
+    sendBytes: bytes => { const ws = provider.ws; if (ws && ws.readyState === 1) ws.send(bytes); },
+    onReset: out => {
+      // The old copy's undo steps point at text that is gone.
+      for (const um of s.undoManagers) { try { um.clear(); } catch {} }
+      if (out.before === out.after) return;
+      s.lastReset = { ...out, at: Date.now() };
+      for (const fn of s.resetListeners) { try { fn(s.lastReset); } catch {} }
+    },
+  });
+  // y-websocket hands a handler its decoder after the message type.
+  for (const [type, fn] of Object.entries(handlers)) provider.messageHandlers[type] = (encoder, decoder) => fn(decoder.arr, decoder.pos);
+  // A server that turns this page away for holding another copy (it never
+  // does to a page that speaks lineages; a safety net): stop, do not loop.
+  provider.on('connection-close', ev => { if (ev && ev.code === 4409) provider.shouldConnect = false; });
   s.awareness.setLocalStateField('user', collabMe());
   s.ready = new Promise((resolve, reject) => {
     const t = setTimeout(() => { if (!s.synced) { reject(new Error('the shared document did not answer')); collabLeave(s, true); } }, timeoutMs);
@@ -87,6 +165,16 @@ function collabLeave(s, force = false) {
   try { s.ydoc.destroy(); } catch {}
 }
 function collabOnPeople(s, fn) { s.listeners.add(fn); fn(s.people); return () => s.listeners.delete(fn); }
+/* The server's copy replaced this page's (see Lineages) and the text
+   differs: `fn({ before, after })`, at once for a replacement not yet
+   handled. collabRestore puts `before` back as one edit by this person. */
+function collabOnReset(s, fn) { s.resetListeners.add(fn); if (s.lastReset) fn(s.lastReset); return () => s.resetListeners.delete(fn); }
+function collabRestore(s, text) {
+  const d = collabTextDiff(s.ytext.toString(), text);
+  s.lastReset = null;
+  if (!d) return;
+  s.ydoc.transact(() => { if (d.remove) s.ytext.delete(d.index, d.remove); if (d.insert) s.ytext.insert(d.index, d.insert); });
+}
 
 /* The CodeMirror side: keep local awareness and everybody else's real
    cursors, but do not draw this person's other devices as collaborators.
@@ -102,7 +190,10 @@ function collabEditorExtension(s) {
       return typeof value === 'function' ? value.bind(target) : value;
     },
   });
-  return [collab.yCollab(s.ytext, s.editorAwareness)];
+  // Our own undo manager, so a replaced copy can clear its steps.
+  const undoManager = new collab.Y.UndoManager(s.ytext);
+  s.undoManagers.add(undoManager);
+  return [collab.yCollab(s.ytext, s.editorAwareness, { undoManager })];
 }
 
 /* The textarea side. Local input becomes one minimal replace on the shared
@@ -218,4 +309,4 @@ function collabPeopleHtml(people, { verb = 'is also writing here' } = {}) {
   return `<span class="collab-people">${people.map(p => `<span class="user-bubble" style="--who:${esc(p.color || '#888')}" title="${esc(p.name || '')}">${esc(p.glyph || '?')}</span>`).join('')}<span class="collab-people-label">${esc(label)}</span></span>`;
 }
 
-if (typeof module !== 'undefined' && module.exports) module.exports = { collabTextDiff, collabPeopleHtml };
+if (typeof module !== 'undefined' && module.exports) module.exports = { collabTextDiff, collabPeopleHtml, collabReader, collabWriteMessage, collabAdoptCopy, collabLineageHandlers, COLLAB_MSG_LINEAGE, COLLAB_MSG_RESET, COLLAB_MSG_RESET_DONE };
