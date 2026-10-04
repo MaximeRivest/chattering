@@ -64,14 +64,20 @@
     const children = new Map(), roots = [];
     const nodes = [...rows.keys()].sort((a, b) => order.get(a) - order.get(b));
     // A corrupt cycle must not hide the conversation: any node whose chain
-    // loops back is treated as a root.
+    // loops back is treated as a root. A node already placed has a chain
+    // without a loop (placing later nodes only ever cuts chains), so the
+    // walk stops there: in file order a parent is placed before its child,
+    // which makes this linear. Walking every chain to its root was
+    // quadratic, ~70 ms for a 2,000-message conversation on a fast machine.
+    const placed = new Set();
     for (const id of nodes) {
       let p = nodeParent(id);
       if (p) {
         const seen = new Set([id]);
-        for (let n = p; n; n = nodeParent(n)) { if (seen.has(n)) { p = null; break; } seen.add(n); }
+        for (let n = p; n && !placed.has(n); n = nodeParent(n)) { if (seen.has(n)) { p = null; break; } seen.add(n); }
       }
       up.set(id, p);
+      placed.add(id);
       if (p) { if (!children.has(p)) children.set(p, []); children.get(p).push(id); }
       else roots.push(id);
     }

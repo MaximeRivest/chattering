@@ -85,7 +85,14 @@ test('one head: side-by-side answers, instant moves, versions, shared head, phon
   await size(1500, 1000);
   await command('Page.navigate', { url: base + '/?token=' + token + '#' + encodeURIComponent(key) });
   await until(`typeof current !== 'undefined' && current && current.key === ${JSON.stringify(key)} && document.querySelector('.rd-answers')`, 'the conversation with its answer group');
-  const text = () => evaluate(`document.getElementById('conversationTranscript').innerText`);
+  // The reading path, all of it: answers far from the screen are not laid
+  // out (content-visibility, design/95) and innerText leaves them out, so the
+  // whole transcript is laid out for this read.
+  const text = () => evaluate(`(() => {
+    let st = document.getElementById('test-cv-all');
+    if (!st) { st = document.createElement('style'); st.id = 'test-cv-all'; st.textContent = '#conversationTranscript .msg { content-visibility: visible !important; }'; document.head.appendChild(st); }
+    return document.getElementById('conversationTranscript').innerText;
+  })()`);
 
   // The newest path by default: the GPT answer, its reworded follow-up.
   let body = await text();
@@ -178,8 +185,11 @@ test('one head: side-by-side answers, instant moves, versions, shared head, phon
   // question is saved, the head follows it onto the new path.
   await evaluate(`open(${JSON.stringify(key)}, 'bottom')`);
   const continueA0 = `document.querySelector(${JSON.stringify(`[data-reader-continue-at*='"id":"a0"']`)})`;
-  await until(`viewKind === 'conversation' && ${continueA0}`, 'the conversation again');
-  // The message menu's "continue here" on the opening answer.
+  await until(`viewKind === 'conversation' && document.querySelector('.msg[data-eid="a0"] .msg-more-actions')`, 'the conversation again');
+  // The message menu's "continue here" on the opening answer (the menu's
+  // items are drawn when it opens, design/95).
+  await evaluate(`document.querySelector('.msg[data-eid="a0"] .msg-more-actions').open = true; 1`);
+  await until(continueA0, 'the opened menu');
   await evaluate(`${continueA0}.click(); 1`);
   await until(`document.getElementById('readerDestination')`, 'continue here');
   const startedAt = Date.now();

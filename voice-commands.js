@@ -482,7 +482,9 @@ function voiceFocus() {
   if (!f) return null;
   if (f.el && f.el.isConnected) return f.el;
   const root = voiceTranscript();
-  const el = root && f.ref ? root.querySelector(f.ref) : null;
+  let el = root && f.ref ? root.querySelector(f.ref) : null;
+  // A step inside a box drawn closed is built on demand (design/95).
+  if (!el && root && f.el && f.el.dataset.eid && typeof fillGroupsWithEntry === 'function' && fillGroupsWithEntry(root, f.el.dataset.eid)) el = root.querySelector(f.ref);
   if (!el) { voice.focus = null; return null; }
   f.el = el;
   el.classList.add('voice-focus');
@@ -578,6 +580,11 @@ function voiceCollectControls() {
     // the files they touched. Folding is "fold"; links in the text are not
     // the item's buttons.
     // Steps: the files they touched, inside the box and in the list under it (design/88).
+    // A closed menu or box has its items drawn when it opens (design/95): the
+    // highlighted one's are drawn now, to be offered.
+    const lazyMenu = focus.querySelector(':scope > .msg-actions .msg-more-actions[data-lazy-menu]');
+    if (lazyMenu && typeof fillMessageMenu === 'function') fillMessageMenu(lazyMenu);
+    if (focus.matches('.toolgroup[data-lazy]') && typeof fillLazyGroup === 'function') fillLazyGroup(focus);
     const own = focus.classList.contains('toolgroup') ? [...focus.querySelectorAll('[data-file-diff]'), ...(focus.nextElementSibling?.matches('.sc-strip') ? focus.nextElementSibling.querySelectorAll('.sc-row') : [])] : focus.querySelectorAll(':scope > .msg-actions ' + VOICE_CONTROL_SEL.split(', ').join(', :scope > .msg-actions ') + ', :scope > .unfold');
     for (const el of own) {
       const menu = el.closest('details:not([open])');

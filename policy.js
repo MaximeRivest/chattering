@@ -67,6 +67,7 @@ const ROUTES = {
   // ---- conversations: object checked in the handler or declared here ----
   '/api/sessions': 'guest',
   '/api/session': 'guest',
+  '/api/session/parts': 'guest', // the same conversation, checked in the handler
   '/api/tree': 'guest',
   '/api/search': 'guest',
   '/api/search/semantic': 'guest',

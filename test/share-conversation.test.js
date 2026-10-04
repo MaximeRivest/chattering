@@ -130,7 +130,8 @@ test('a conversation shared by link: the owner makes it, a visitor reads it in C
   // ---- a visitor of the live link ----
   const v = await tab();
   await v.go(linkOf(live));
-  await v.waitFor(`location.pathname.endsWith('/view') && document.querySelectorAll('#conversationTranscript .msg').length >= 3`, 'the conversation in the viewer');
+  // The question, the answer, and the box of steps between them (drawn as its line, design/95).
+  await v.waitFor(`location.pathname.endsWith('/view') && document.querySelectorAll('#conversationTranscript .msg').length >= 2 && document.querySelector('#conversationTranscript .toolgroup')`, 'the conversation in the viewer');
   await v.waitFor(`document.getElementById('viewerBar')`, 'the bar');
   const page = JSON.parse(await v.evaluate(`JSON.stringify({
     text: document.getElementById('conversationTranscript').textContent,
@@ -152,6 +153,12 @@ test('a conversation shared by link: the owner makes it, a visitor reads it in C
   assert.equal(page.hash, '#shared', 'the page knows it by "shared", not its file');
   // The step with the secret, opened: the value is hidden; nothing ran.
   await v.evaluate(`document.querySelector('#conversationTranscript .tool-group > summary, #conversationTranscript [data-gkey] summary, #conversationTranscript .steps-fold summary, #conversationTranscript button.steps-toggle')?.click(); 1`);
+  // Its output is drawn when the step opens: open it, and its result, so the
+  // text below is really on the page when nothing is found to have run.
+  await v.waitFor(`document.querySelector('#conversationTranscript .toolgroup .msg.tool')`, 'the steps of the box');
+  await v.evaluate(`document.querySelector('#conversationTranscript .toolgroup .msg.tool').open = true; document.querySelector('#conversationTranscript .toolgroup .resfold').open = true; 1`);
+  await v.waitFor(`document.querySelector('#conversationTranscript .toolgroup .resfold .tool-out').textContent.includes('[hidden: looks like a secret]')`, 'the step output, its secret hidden');
+  assert.match(await v.evaluate(`document.querySelector('#conversationTranscript .toolgroup .resfold .tool-out').textContent`), /<img src=x onerror=/, 'markup in it is shown as text');
   const raw = await (await fetch(pv + '/s/' + live.id + '/api/session', { headers: { Cookie: await cookieOf(v) } })).text();
   assert.doesNotMatch(raw, /AZzFGinAfB6/, 'the secret never leaves');
   assert.match(JSON.parse(raw).messages.find(m => m.role === 'toolresult').text, /GODADDY_API_KEY="\[hidden: looks like a secret\]"/);
@@ -178,7 +185,7 @@ test('a conversation shared by link: the owner makes it, a visitor reads it in C
   // ---- a visitor of the snapshot: as it was ----
   const w = await tab();
   await w.go(linkOf(snap));
-  await w.waitFor(`location.pathname.endsWith('/view') && document.querySelectorAll('#conversationTranscript .msg').length >= 3 && document.getElementById('viewerBar')`, 'the snapshot');
+  await w.waitFor(`location.pathname.endsWith('/view') && document.querySelectorAll('#conversationTranscript .msg').length >= 2 && document.querySelector('#conversationTranscript .toolgroup') && document.getElementById('viewerBar')`, 'the snapshot');
   assert.doesNotMatch(await w.evaluate(`document.getElementById('conversationTranscript').textContent`), /LIVE ANSWER/);
   assert.match(await w.evaluate(`document.getElementById('viewerBar').textContent`), /A copy from/);
   // The owner updates the copy: a new visit shows the new messages.

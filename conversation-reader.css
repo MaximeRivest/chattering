@@ -176,3 +176,21 @@
 :root[data-theme-mode="binary"] .plain-on .step-say.typing::after { animation: none; }
 :root[data-theme-mode="binary"] .plain-on .ls-b[data-step]::before, :root[data-theme-mode="binary"] .toolgroup.plain-on > [data-step]::before { background: var(--text); }
 :root[data-theme-mode="binary"] .plain-on .step-cmd { border: 1px solid var(--text); background: transparent; }
+
+/* design/95: the browser lays out and paints only the answers near the
+   screen; the others keep a size estimated from their length (--cis, set by
+   msgBlock), then the size they really had once seen. Answers are most of a
+   transcript's weight. Left out: a person's messages (their actions hang
+   below the box, which this would clip; there are few of them), boxes of
+   steps (drawn as one line until opened), and an answer whose menu is open
+   (.cv-off, app.html), whose menu would be clipped the same way. The estimate
+   stays under the height that folds a long message (125vh), so a skipped
+   answer is never folded for its guess. Browsers without the remembered
+   size ("auto", Chromium 98) keep laying out everything, as before. */
+@supports (content-visibility: auto) and (contain-intrinsic-size: auto 1px) {
+  #conversationTranscript > .rd-block > .msg.assistant:not(.cv-off) {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 600px auto min(100vh, calc(var(--cis, 160) * var(--cis-k, 1) * 1px));
+  }
+  @media (max-width: 700px) { #conversationTranscript { --cis-k: 1.9; } }
+}

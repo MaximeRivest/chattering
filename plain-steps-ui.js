@@ -83,7 +83,10 @@
     if (g._plain) return g._plain;
     const key = g.dataset.msgKey;
     if (!key || !g.dataset.gkey) return null;
-    const steps = [...new Set([...g.querySelectorAll(':scope > [data-step]')].map(el => el.dataset.step))];
+    // A closed box is drawn without its rows (conversation-reader.js,
+    // design/95): it names its steps instead, in the same order.
+    const steps = g.hasAttribute('data-lazy') ? String(g.dataset.steps || '').split(' ').filter(Boolean)
+      : [...new Set([...g.querySelectorAll(':scope > [data-step]')].map(el => el.dataset.step))];
     const ready = steps.filter(isCall);
     if (!ready.length) return null;
     const settled = !g.hasAttribute('data-open-end') || !running(key);
@@ -494,5 +497,15 @@
     if (g && g._plain && on()) paint(g);
   }
 
-  window.PlainSteps = { apply, live, rows, onEvent, _state: { phrases, drafts, sums, jobs, asked, failedUntil, typed, noPhrase } };
+  /** One saved box drawn or built since apply(): its line, its rows, asking for what is missing. */
+  function refresh(g) {
+    if (!g || g.dataset.liveWork !== undefined || !g.dataset.gkey) return;
+    if (!on()) { unpaint(g); return; }
+    paint(g);
+    const i = info(g);
+    if (i && missing(i)) observe(g);
+    wake();
+  }
+
+  window.PlainSteps = { apply, live, rows, onEvent, refresh, built: refresh, _state: { phrases, drafts, sums, jobs, asked, failedUntil, typed, noPhrase } };
 })();

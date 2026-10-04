@@ -324,6 +324,18 @@
     document.body.classList.remove('file-side-open');
   }
   window.addEventListener('resize', () => { if (floating && floatWant) placeFloat(floatWant); });
+  // The phone's bar comes and goes with the layout, which the browser reports
+  // after the window's resize event: the float is placed again when the bar
+  // changes (before that frame is painted). It used to be fitted again only
+  // by whatever redrew the page next.
+  if (typeof ResizeObserver !== 'undefined') {
+    const watchBar = () => {
+      const bar = document.getElementById('phoneBar');
+      if (!bar) return;
+      new ResizeObserver(() => { if (floating && floatWant) placeFloat(floatWant); }).observe(bar);
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', watchBar); else watchBar();
+  }
   function ensurePane() {
     if (pane) return pane;
     pane = document.createElement('aside');

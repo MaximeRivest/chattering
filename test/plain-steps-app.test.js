@@ -127,6 +127,10 @@ test('browser: work steps in plain words above their commands; live steps one at
   await command('Page.navigate', { url: base + '/?token=' + token });
   await until(`typeof open === 'function' && typeof settingsOf === 'function' && settingsOf().plainSteps`);
   await evaluate(`open(${JSON.stringify(key)})`);
+  // A closed box is drawn as its line (design/95): its sentence is there at
+  // once; its rows, with theirs, when it opens.
+  await until(`document.querySelector('.toolgroup .tg-detail.tg-plain')`, 'the box line in plain words after reload');
+  await evaluate(`document.querySelector('.toolgroup').open = true`);
   await until(`document.querySelector('.toolgroup .tg-detail.tg-plain') && document.querySelectorAll('.toolgroup .step-say').length === 2 && [...document.querySelectorAll('.toolgroup .step-say')].every(s => s.textContent.length > 20)`, 'plain after reload');
   assert.equal(calls().length, 3);
 

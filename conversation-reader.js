@@ -19,6 +19,83 @@ function rememberConversationDraft() {
   if (key) readerDrafts.set(key, ta.value);
 }
 
+// ---- what the page holds of each conversation (design/95) ----------------
+// A copy stays after the reader moves on, so coming back costs one small
+// request (what changed since) instead of the whole conversation. Few are
+// kept, fewer on a device with little memory: the one on screen always.
+const SNAPSHOT_KEEP = (() => {
+  const mem = typeof navigator !== 'undefined' && navigator.deviceMemory;
+  return !mem ? 4 : mem <= 2 ? 2 : mem <= 4 ? 4 : 8;
+})();
+const SNAPSHOT_MESSAGES = SNAPSHOT_KEEP * 3000;
+function rememberSnapshot(d) {
+  if (!d || !d.key) return;
+  readerSessions.delete(d.key);
+  readerSessions.set(d.key, d);
+  const shown = typeof current !== 'undefined' && current ? current.key : null;
+  let total = 0;
+  for (const s of readerSessions.values()) total += (s.messages || []).length;
+  for (const [key, s] of readerSessions) {
+    if (readerSessions.size <= SNAPSHOT_KEEP && total <= SNAPSHOT_MESSAGES) break;
+    if (key === shown || key === d.key) continue;
+    readerSessions.delete(key);
+    total -= (s.messages || []).length;
+  }
+}
+// The conversation as the server has it now. A lean copy (steps without
+// their words, session-payload.js); when this page holds an earlier copy,
+// only what follows it. A server that answers without `token` (a shared
+// link's viewer) sends the whole conversation, which is used as it is.
+async function fetchSnapshot(key, base = readerSessions.get(key)) {
+  const usable = !!(base && base.key === key && typeof base.token === 'string' && Array.isArray(base.messages) && Array.isArray(base.entryParents));
+  const res = await fetch('/api/session?id=' + encodeURIComponent(key) + '&lean=1' + (usable ? '&known=' + encodeURIComponent(base.token) : ''));
+  const next = await res.json();
+  if (!next || next.error || !next.delta) return next;
+  const { base: was, from, epFrom } = next.delta;
+  // What the server continued is not what this page holds (it was replaced
+  // meanwhile): ask for the whole.
+  if (!usable || was !== base.token || base.messages.length !== from || base.entryParents.length !== epFrom) return fetchSnapshot(key, null);
+  next.messages = from && !next.messages.length ? base.messages : base.messages.concat(next.messages);
+  next.entryParents = epFrom && !next.entryParents.length ? base.entryParents : base.entryParents.concat(next.entryParents);
+  delete next.delta;
+  return next;
+}
+// The words of steps a lean copy left out, asked for together: every box
+// opened in the same moment ("open everything", a search landing) is one
+// request. Each part names its step, so words never land on another one.
+const partBatches = new Map(); // snapshot → { want: Set, waiters: [] }
+function loadParts(d, indices) {
+  const want = (indices || []).filter(i => d && d.messages[i] && d.messages[i].cut);
+  if (!want.length) return Promise.resolve(true);
+  let batch = partBatches.get(d);
+  if (!batch) {
+    batch = { want: new Set(), waiters: [] };
+    partBatches.set(d, batch);
+    queueMicrotask(() => { partBatches.delete(d); sendParts(d, batch); });
+  }
+  for (const i of want) batch.want.add(i);
+  return new Promise(resolve => batch.waiters.push(resolve));
+}
+async function sendParts(d, batch) {
+  const all = [...batch.want].sort((a, b) => a - b);
+  let ok = true;
+  for (let at = 0; at < all.length; at += 400) {
+    const slice = all.slice(at, at + 400);
+    try {
+      const res = await fetch('/api/session/parts?id=' + encodeURIComponent(d.key) + '&i=' + slice.join(','));
+      const out = await res.json();
+      if (!res.ok || !Array.isArray(out.parts)) { ok = false; continue; }
+      for (const p of out.parts) {
+        const m = d.messages[p.i];
+        if (!m || !m.cut || m.role !== p.role || (m.eid ?? null) !== p.eid || (m.id ?? null) !== p.id || (m.tid ?? null) !== p.tid) { ok = false; continue; }
+        m.text = p.text; m.paths = p.paths; delete m.cut;
+      }
+      if (slice.some(i => d.messages[i] && d.messages[i].cut)) ok = false;
+    } catch { ok = false; }
+  }
+  for (const resolve of batch.waiters) resolve(ok);
+}
+
 function readerState(key) {
   if (!readerStates.has(key)) {
     let saved = {};
@@ -298,18 +375,102 @@ function blockSig(b, T) {
   if (b.type === 'versions') return 'v:' + b.at + ':' + b.index + '/' + b.versions.length;
   return 'p:' + b.at + ':' + b.index + '/' + b.options.length;
 }
-function blockHtml(d, T, b, q, exact) {
-  if (b.type === 'nodes') return transcriptFragmentHtml(d, rowsFor(T, b.ids), { q, exact });
-  if (b.type === 'answers') return answersHtml(d, T, b);
-  if (b.type === 'versions') return versionsHtml(b);
-  return pathsHtml(b);
+// A block of plain turns is drawn as pieces, each after a marker comment
+// (<!--p-->): comments are not elements, so no style or sibling selector
+// sees them, and a block drawn again finds each piece's elements between two
+// markers (patchPieces). Other blocks are drawn whole.
+const PIECE_MARK = '<!--p-->';
+const joinPieces = pieces => pieces.map(p => PIECE_MARK + p).join('');
+function renderBlock(d, T, b, q, exact) {
+  if (b.type === 'nodes') { const pieces = transcriptFragmentPieces(d, rowsFor(T, b.ids), { q, exact }); return { html: joinPieces(pieces), pieces }; }
+  if (b.type === 'answers') return { html: answersHtml(d, T, b), pieces: null };
+  if (b.type === 'versions') return { html: versionsHtml(b), pieces: null };
+  return { html: pathsHtml(b), pieces: null };
 }
+function blockHtml(d, T, b, q, exact) { return renderBlock(d, T, b, q, exact).html; }
 function wrapBlock(sig, html) { return `<div class="rd-block" data-rd="${esc(sig)}">${html}</div>`; }
+// The pieces each block was drawn from, kept on its element (the first draw
+// is one innerHTML: they are attached after it, in block order).
+function attachBlockPieces(host, list) {
+  if (!host || !list) return;
+  const blocks = host.querySelectorAll(':scope > .rd-block');
+  list.forEach((pieces, i) => { if (blocks[i] && pieces) blocks[i]._pieces = pieces; });
+}
+// Draw a block again from its new pieces: an unchanged piece keeps its
+// elements (and what happened to them: a box a person opened, a long
+// message unfolded, the changed-files list, a delegation card); a changed
+// one is replaced; new ones are appended. Returns the new top-level elements.
+function patchPieces(el, pieces) {
+  const old = el._pieces || null;
+  const marks = [];
+  for (const n of el.childNodes) if (n.nodeType === 8 && n.data === 'p') marks.push(n);
+  const make = html => { const t = document.createElement('template'); t.innerHTML = html; return t.content; };
+  const added = [];
+  if (!old || marks.length !== old.length) { // not what was drawn: draw it whole
+    const frag = make(joinPieces(pieces));
+    added.push(...frag.children);
+    el.replaceChildren(frag);
+    el._pieces = pieces;
+    return added;
+  }
+  const n = Math.min(old.length, pieces.length);
+  for (let j = 0; j < n; j++) {
+    if (old[j] === pieces[j]) continue;
+    const end = marks[j + 1] || null;
+    while (marks[j].nextSibling && marks[j].nextSibling !== end) marks[j].nextSibling.remove();
+    const frag = make(pieces[j]);
+    added.push(...frag.children);
+    el.insertBefore(frag, end);
+  }
+  if (pieces.length < old.length) {
+    const from = marks[n];
+    while (from.nextSibling) from.nextSibling.remove();
+    from.remove();
+  } else if (pieces.length > old.length) {
+    const frag = make(joinPieces(pieces.slice(n)));
+    added.push(...frag.children);
+    el.appendChild(frag);
+  }
+  el._pieces = pieces;
+  return added;
+}
+// Bring the transcript's blocks to layout L, block by block: the same block
+// stays, a block of plain turns is patched piece by piece, anything else is
+// replaced. Returns the top-level elements that are new.
+function patchTranscriptBlocks(host, d, T, L) {
+  const wanted = L.blocks.map(b => ({ b, sig: blockSig(b, T) }));
+  const existing = [...host.querySelectorAll(':scope > .rd-block')];
+  const tail = host.querySelector(':scope > .rd-unlinked');
+  const added = [];
+  const fresh = ({ b, sig }) => {
+    const r = renderBlock(d, T, b, '', null);
+    const t = document.createElement('template');
+    t.innerHTML = wrapBlock(sig, r.html);
+    const el = t.content.firstElementChild;
+    el._pieces = r.pieces;
+    added.push(el);
+    return el;
+  };
+  for (let j = 0; j < Math.max(wanted.length, existing.length); j++) {
+    const want = wanted[j], have = existing[j];
+    if (!want) { have.remove(); continue; }
+    if (!have) { host.insertBefore(fresh(want), tail); continue; }
+    if (have.dataset.rd === want.sig) continue;
+    if (want.b.type === 'nodes' && have.dataset.rd.startsWith('n:')) {
+      added.push(...patchPieces(have, transcriptFragmentPieces(d, rowsFor(T, want.b.ids), {})));
+      have.dataset.rd = want.sig;
+      continue;
+    }
+    have.replaceWith(fresh(want));
+  }
+  return added;
+}
 
 // The transcript for the head: blocks in reading order. Search and exact
 // links move the head so the entry they name is on the path.
 async function prepareConversationReading(d, scroll) {
-  readerSessions.set(d.key, d);
+  rememberSnapshot(d);
+  lazyGroups.clear(); // the transcript is drawn whole: every box is named again
   adoptServerReading(d);
   settleFollow(d);
   applyPendingFollow(d);
@@ -321,11 +482,12 @@ async function prepareConversationReading(d, scroll) {
   }
   const L = CT.layout(T, layoutState(d));
   const q = typeof scroll === 'string' && scroll.startsWith('hit:') ? transcriptQuery : '';
-  const html = L.blocks.map(b => wrapBlock(blockSig(b, T), blockHtml(d, T, b, q, entry))).join('');
+  const drawn = L.blocks.map(b => ({ sig: blockSig(b, T), ...renderBlock(d, T, b, q, entry) }));
+  const html = drawn.map(r => wrapBlock(r.sig, r.html)).join('');
   const unlinked = d.messages.filter(m => !m.eid || !T.rows.has(m.eid));
-  const unlinkedHtml = unlinked.length ? `<details class="rd-unlinked" data-flow-anchor="unlinked"${entry && unlinked.some(m => m.eid === entry) ? ' open' : ''}><summary>${unlinked.length} messages without a recorded path</summary>${transcriptFragmentHtml(d, unlinked, { exact: entry })}</details>` : '';
+  const unlinkedHtml = unlinked.length ? `<details class="rd-unlinked" data-flow-anchor="unlinked" data-sig="${esc(unlinked.map(m => m.eid || m.ts).join(','))}"${entry && unlinked.some(m => m.eid === entry) ? ' open' : ''}><summary>${unlinked.length} messages without a recorded path</summary>${transcriptFragmentHtml(d, unlinked, { exact: entry })}</details>` : '';
   const origin = forkOriginHtml(d);
-  renderedLayout = { key: d.key, data: d, layout: L };
+  renderedLayout = { key: d.key, data: d, layout: L, pieces: drawn.map(r => r.pieces) };
   return { html: origin + html + unlinkedHtml, trace: computeTrace(d) };
 }
 let renderedLayout = null;
@@ -353,15 +515,7 @@ async function rerenderReading(anchor) {
   const T = treeFor(d);
   const L = CT.layout(T, layoutState(d));
   renderedLayout = { key: d.key, data: d, layout: L };
-  const wanted = L.blocks.map(b => ({ b, sig: blockSig(b, T) }));
-  const existing = [...host.querySelectorAll(':scope > .rd-block')];
-  let i = 0;
-  while (i < wanted.length && i < existing.length && existing[i].dataset.rd === wanted[i].sig) i++;
-  for (const node of existing.slice(i)) node.remove();
-  const tpl = document.createElement('template');
-  tpl.innerHTML = wanted.slice(i).map(({ b, sig }) => wrapBlock(sig, blockHtml(d, T, b, '', null))).join('');
-  // Blocks end where the unlinked-messages fold (if any) begins.
-  host.insertBefore(tpl.content, host.querySelector(':scope > .rd-unlinked'));
+  for (const el of patchTranscriptBlocks(host, d, T, L)) openLazyGroups(el);
   $('liveReplies') && ($('liveReplies').dataset.readingLeaf = L.head || 'live');
   if (typeof wireTranscript === 'function') wireTranscript();
   else wireConversationReader();
@@ -373,6 +527,67 @@ async function rerenderReading(anchor) {
   if (typeof renderRunCards === 'function') renderRunCards();
   if (typeof ctxMeterCache !== 'undefined') { ctxMeterCache.delete(d.key); if (typeof refreshCtxMeter === 'function') refreshCtxMeter(d); }
   if (window.Artifacts) Artifacts.onHeadChange();
+}
+
+// A newer copy of the conversation on screen (a live update, a revisit that
+// found more), drawn into what is there (design/95): the blocks are patched
+// piece by piece, so only the end of a growing conversation is drawn again,
+// and the reader keeps their place, their selection and every open box.
+// False when the screen is not one this can patch: the caller draws it whole.
+async function patchConversation(d, scroll) {
+  const host = $('conversationTranscript');
+  if (!host || !host.classList.contains('transcript') || viewKind !== 'conversation' || !renderedLayout || renderedLayout.key !== d.key || current !== d) return false;
+  // Only what the reader drew (a prompt echoed before its conversation
+  // existed, say, is not): anything else is drawn whole.
+  for (const el of host.children) if (!el.matches('.rd-block, .rd-unlinked, .rd-origin')) return false;
+  const atTail = scroll === 'bottom' || (scroll !== 'preserve' && readerAtTail());
+  const keep = atTail ? null : rememberReaderAnchor();
+  rememberSnapshot(d);
+  adoptServerReading(d);
+  settleFollow(d);
+  applyPendingFollow(d);
+  const handoff = captureLiveReplyHandoff(d);
+  const T = treeFor(d);
+  const L = CT.layout(T, layoutState(d));
+  renderedLayout = { key: d.key, data: d, layout: L };
+  const added = patchTranscriptBlocks(host, d, T, L);
+  // Messages without a recorded path (rare): their fold is drawn again when
+  // they changed.
+  const unlinked = d.messages.filter(m => !m.eid || !T.rows.has(m.eid));
+  const oldUnlinked = host.querySelector(':scope > .rd-unlinked');
+  const unlinkedSig = unlinked.map(m => m.eid || m.ts).join(',');
+  if ((oldUnlinked?.dataset.sig || '') !== unlinkedSig || (!oldUnlinked && unlinked.length)) {
+    const wasOpen = !!oldUnlinked?.open;
+    oldUnlinked?.remove();
+    if (unlinked.length) {
+      host.insertAdjacentHTML('beforeend', `<details class="rd-unlinked" data-flow-anchor="unlinked" data-sig="${esc(unlinkedSig)}"${wasOpen ? ' open' : ''}><summary>${unlinked.length} messages without a recorded path</summary>${transcriptFragmentHtml(d, unlinked, {})}</details>`);
+      added.push(host.lastElementChild);
+    }
+  }
+  restoreLiveReplyHandoff(handoff);
+  $('liveReplies') && ($('liveReplies').dataset.readingLeaf = L.head || 'live');
+  for (const el of added) { openLazyGroups(el); wireTranscriptIn(el); }
+  for (const el of added) {
+    for (const g of qsaIn(el, '.toolgroup[data-gkey]')) if (window.PlainSteps && PlainSteps.refresh) PlainSteps.refresh(g);
+    if (window.StepChanges) StepChanges.hydrateAll(el);
+  }
+  if (typeof delegationUI !== 'undefined') delegationUI.attachCards(host);
+  if (typeof ensureNotebookCards === 'function') ensureNotebookCards(d.key);
+  wireReaderExtras();
+  const dest = $('readerDestination'), fresh = readerDestinationHtml(d);
+  if (dest) { if (fresh) dest.outerHTML = fresh; else dest.remove(); }
+  else if (fresh && $('composerDock')) $('composerDock').insertAdjacentHTML('afterbegin', fresh);
+  wireDestination();
+  convHead(d);
+  wireHead();
+  if (typeof renderRunCards === 'function') renderRunCards();
+  if (window.Artifacts) Artifacts.onConversation(d);
+  if (window.Made) Made.onConversation(d);
+  if (atTail) {
+    appScroll($('view'), $('view').scrollHeight);
+    maintainReaderLanding(() => { $('view').scrollTop = $('view').scrollHeight; });
+  } else restoreReaderAnchor(keep);
+  return true;
 }
 
 // ---- the composer's line about where the next message goes ---------------
@@ -538,11 +753,20 @@ function trackViewWidth(view) {
 function wireConversationReader() {
   const view = $('view'), key = current.key;
   trackViewWidth(view);
+  watchLazyOpens(view);
   if (typeof ensureNotebookCards === 'function') ensureNotebookCards(key);
   if (window.PlainSteps) PlainSteps.apply(view);
   if (window.StepChanges) StepChanges.hydrateAll(view);
-  view.querySelectorAll('[data-step-review]').forEach(b => b.onclick = () => { const d = parseChoiceToken(b.dataset.stepReview, 'review button'); if (d) openStepReview(d); });
-  view.querySelectorAll('[data-answer-version]').forEach(button => button.onclick = () => {
+  wireReaderControls(view);
+  for (const id of ['agentRun', 'agentSend']) if ($(id)) $(id).disabled = false;
+  wireReaderExtras();
+}
+// The transcript's own controls under root (the whole view, or what a live
+// update or an opened box added): each element is wired once per drawing.
+function wireReaderControls(root) {
+  const key = current.key;
+  qsaIn(root, '[data-step-review]').forEach(b => b.onclick = () => { const d = parseChoiceToken(b.dataset.stepReview, 'review button'); if (d) openStepReview(d); });
+  qsaIn(root, '[data-answer-version]').forEach(button => button.onclick = () => {
     const box = button.closest('[data-rewrite-choice]'), choice = button.dataset.answerVersion;
     answerRewriteChoices.set(box.dataset.rewriteChoice, choice);
     box.querySelectorAll('[data-answer-pane]').forEach(pane => { pane.hidden = pane.dataset.answerPane !== choice; });
@@ -550,11 +774,10 @@ function wireConversationReader() {
     reverse?.closest('.msg')?.focus({ preventScroll: true });
     reverse?.focus({ preventScroll: true });
   });
-  for (const id of ['agentRun', 'agentSend']) if ($(id)) $(id).disabled = false;
   // Steppers and path lists: one move of the head.
-  view.querySelectorAll('[data-rd-go]').forEach(b => b.onclick = () => { if (b.dataset.rdGo) moveReading(key, b.dataset.rdGo, { anchor: b.dataset.at }); });
+  qsaIn(root, '[data-rd-go]').forEach(b => b.onclick = () => { if (b.dataset.rdGo) moveReading(key, b.dataset.rdGo, { anchor: b.dataset.at }); });
   // Cards: a click anywhere that is not a control, a link or a selection.
-  view.querySelectorAll('.rd-card').forEach(card => {
+  qsaIn(root, '.rd-card').forEach(card => {
     card.onclick = e => {
       if (e.target.closest('button, a, summary, input, select, textarea, [contenteditable], .rd-card-body details[open] > :not(summary)')) {
         if (!e.target.closest('[data-rd-pick]')) return;
@@ -564,7 +787,7 @@ function wireConversationReader() {
       pickCard(card);
     };
   });
-  view.querySelectorAll('[data-rd-ver]').forEach(b => b.onclick = e => {
+  qsaIn(root, '[data-rd-ver]').forEach(b => b.onclick = e => {
     e.stopPropagation();
     const card = b.closest('.rd-card'), g = groupOf(card), col = g && g.columns[Number(card.dataset.colIndex)];
     if (!col) return;
@@ -573,14 +796,14 @@ function wireConversationReader() {
     // Any version change is a choice: the conversation continues from it.
     moveReading(key, v.start, { anchor: g.question, cols: { [g.question + '|' + col.key]: v.start } });
   });
-  view.querySelectorAll('[data-rd-regen]').forEach(b => b.onclick = e => { e.stopPropagation(); regenerateColumn(b); });
-  view.querySelectorAll('[data-rd-layout]').forEach(b => b.onclick = () => {
+  qsaIn(root, '[data-rd-regen]').forEach(b => b.onclick = e => { e.stopPropagation(); regenerateColumn(b); });
+  qsaIn(root, '[data-rd-layout]').forEach(b => b.onclick = () => {
     localStorage.setItem('chattering.cards.layout', b.dataset.rdLayout);
     const section = b.closest('.rd-answers');
     rerenderReading(section?.dataset.question || null);
   });
-  view.querySelectorAll('[data-rd-merge]').forEach(b => b.onclick = () => openConversationMerge(key, b.closest('.rd-answers').dataset.question));
-  view.querySelectorAll('[data-rd-both]').forEach(b => b.onclick = async () => {
+  qsaIn(root, '[data-rd-merge]').forEach(b => b.onclick = () => openConversationMerge(key, b.closest('.rd-answers').dataset.question));
+  qsaIn(root, '[data-rd-both]').forEach(b => b.onclick = async () => {
     const question = b.closest('.rd-answers').dataset.question;
     b.disabled = true;
     try {
@@ -594,7 +817,7 @@ function wireConversationReader() {
   });
   // One-at-a-time cards: the card a swipe settles on is the one you read,
   // so it is the one the conversation continues from.
-  view.querySelectorAll('.rd-answers[data-layout="one"] .rd-cards').forEach(strip => {
+  qsaIn(root, '.rd-answers[data-layout="one"] .rd-cards').forEach(strip => {
     const selected = strip.querySelector('.rd-card[aria-current="true"]');
     if (selected && !strip.dataset.placed) {
       strip.dataset.placed = '1';
@@ -616,7 +839,7 @@ function wireConversationReader() {
     }, { passive: true });
   });
   // Message menus: continue from an exact point, or copy into a new conversation.
-  view.querySelectorAll('[data-reader-continue-at]').forEach(b => b.onclick = () => {
+  qsaIn(root, '[data-reader-continue-at]').forEach(b => b.onclick = () => {
     const choice = parseChoiceToken(b.dataset.readerContinueAt, 'continue button');
     if (!choice) return;
     moveReading(choice.key, choice.id, { exact: true, anchor: null }).then(() => {
@@ -624,15 +847,18 @@ function wireConversationReader() {
       $('agentText')?.focus({ preventScroll: true });
     });
   });
-  view.querySelectorAll('[data-reader-fork-at]').forEach(b => b.onclick = () => {
+  qsaIn(root, '[data-reader-fork-at]').forEach(b => b.onclick = () => {
     const choice = parseChoiceToken(b.dataset.readerForkAt, 'fork button');
     if (choice) forkFrom(choice.key, { id: choice.id }, b);
   });
-  view.querySelectorAll('[data-reader-entry]').forEach(b => b.onclick = () => open(key, 'entry:' + b.dataset.readerEntry));
-  view.querySelectorAll('[data-reader-origin]').forEach(b => b.onclick = () => {
+  qsaIn(root, '[data-reader-entry]').forEach(b => b.onclick = () => open(key, 'entry:' + b.dataset.readerEntry));
+  qsaIn(root, '[data-reader-origin]').forEach(b => b.onclick = () => {
     const origin = parseChoiceToken(b.dataset.readerOrigin, 'fork origin');
     if (origin) open(origin.key, origin.entryId ? 'entry:' + origin.entryId : 'bottom');
   });
+}
+function wireReaderExtras() {
+  const view = $('view');
   wireDestination();
   renderLiveInGroups();
   // Store element-relative reading positions, not fragile document pixels.
@@ -842,6 +1068,13 @@ function rememberConversationPosition() {
   saveReaderState(current.key);
 }
 
+// Scrolls the app makes itself (landing, following a growing end) are
+// marked, so what reacts to the reader's scrolling can tell them apart.
+function appScroll(view, top) {
+  view.scrollTop = top;
+  view._appTop = view.scrollTop;
+}
+function appScrolledTo(view, top) { return view._appTop !== undefined && Math.abs(top - view._appTop) < 2; }
 let readerLandingCleanup = null;
 function stopReaderLanding() {
   readerLandingCleanup?.(); readerLandingCleanup = null;
@@ -870,6 +1103,7 @@ function maintainReaderLanding(apply) {
     if (!transcript.isConnected || current?.key !== key || activeRel !== key || viewKind !== 'conversation' || conversationLoadSeq !== seq) return cancel();
     if (movedWithoutResize()) return cancel();
     apply();
+    view._appTop = view.scrollTop;
     lastTop = view.scrollTop; lastHeight = view.scrollHeight; lastClient = view.clientHeight;
   });
   observer.observe(view);
@@ -897,8 +1131,25 @@ function stepsBoxKey(d, work) {
   const first = work[0];
   return (first.eid || first.ts) + '#' + (places.get(first._source) ?? 0);
 }
-function transcriptFragmentHtml(d, messages, { after = new Map(), before = new Map(), replacements = new Map(), skip = new Set(), q = '', exact = null } = {}) {
-  const indexes = new Map(d.messages.map((m, i) => [m, i]));
+// Each message's place in its snapshot, once per snapshot (a fragment is
+// drawn per block, and a live conversation is drawn again on each update).
+const messagePlaces = new WeakMap();
+function messageIndexes(d) {
+  let map = messagePlaces.get(d.messages);
+  if (!map) { map = new Map(d.messages.map((m, i) => [m, i])); messagePlaces.set(d.messages, map); }
+  return map;
+}
+// Boxes of steps are drawn as their line only; what is inside is built when
+// the box opens (design/95). Two thirds of a long transcript's elements sat
+// in boxes nobody opened. Opening happens in place (fillLazyGroup), from
+// what the fragment knew when it drew the line.
+const lazyGroups = new Map(); // conversation + '|' + box name → { d, key, work, q, exact }
+function transcriptFragmentHtml(d, messages, opts) { return transcriptFragmentPieces(d, messages, opts).join(''); }
+// The fragment as its top-level pieces, in order (a message, a box of steps,
+// its list of changed files…): a block drawn again compares them one by one
+// and keeps the elements of every piece that did not change.
+function transcriptFragmentPieces(d, messages, { after = new Map(), before = new Map(), replacements = new Map(), skip = new Set(), q = '', exact = null } = {}) {
+  const indexes = messageIndexes(d);
   const pairs = ConversationFlow.rewritePairs(messages);
   for (const [id, rewrite] of pairs) if (id === exact || rewrite.eid === exact || skip.has(id) || replacements.has(id)) pairs.delete(id);
   const pairedIds = new Set([...pairs.values()].map(m => m.eid));
@@ -909,7 +1160,7 @@ function transcriptFragmentHtml(d, messages, { after = new Map(), before = new M
     else if (m.role === 'toolresult') {
       const call = m.tid && calls.get(m.tid);
       m._merged = !!call && m.eid !== exact;
-      if (call) { call._result = m; calls.delete(m.tid); }
+      if (call) { call._result = m; call._resultIndex = indexes.get(m._source); calls.delete(m.tid); }
     }
   }
   const out = [];
@@ -942,9 +1193,15 @@ function transcriptFragmentHtml(d, messages, { after = new Map(), before = new M
     }
     const tally = [...names].map(([n, count]) => n + (count > 1 ? ' ×' + count : '')).join(' · ');
     const key = stepsBoxKey(d, work);
-    const opened = stepsFoldOpen(d.key, key);
     const count = [...names.values()].reduce((a, b) => a + b, 0);
-    out.push(`<details class="toolgroup" data-msg-key="${esc(d.key)}" data-gkey="${esc(key)}"${end ? ' data-open-end' : ''}${opened ? ' open' : ''}><summary><span class="tg-label"><span class="tg-count">${count} ${count === 1 ? 'step' : 'steps'}</span><span class="tg-detail" title="${esc(tally)}">${esc(tally)}</span></span></summary>${work.map(m => msgBlock(m, hl, m.eid === exact, q, indexes.get(m._source), d.key)).join('')}</details>`);
+    // The steps the box holds, as their rows would name them (plain-steps-ui.js
+    // describes a closed box from this).
+    const steps = [...new Set(work.map(m => m.role === 'thinking' && m.eid ? 'k:' + m.eid : m.role === 'tool' && m.id ? 't:' + m.id : null).filter(Boolean))];
+    lazyGroups.set(d.key + '|' + key, { d, key: d.key, work, q, exact });
+    // Drawn closed whatever its state: the string stays the same when a person
+    // folds or opens it, so a live update keeps the element. Boxes open on
+    // this screen open after insertion (openLazyGroups).
+    out.push(`<details class="toolgroup" data-lazy data-msg-key="${esc(d.key)}" data-gkey="${esc(key)}" data-steps="${esc(steps.join(' '))}"${end ? ' data-open-end' : ''}><summary><span class="tg-label"><span class="tg-count">${count} ${count === 1 ? 'step' : 'steps'}</span><span class="tg-detail" title="${esc(tally)}">${esc(tally)}</span></span></summary></details>`);
     const reviewCalls = [...new Set(work.filter(m => m.role === 'tool' && m.id).map(m => m.id))];
     if (reviewCalls.length) {
       turn.groups++; turn.steps += reviewCalls.length;
@@ -1000,7 +1257,105 @@ function transcriptFragmentHtml(d, messages, { after = new Map(), before = new M
   }
   flush(true);
   endTurn();
-  return out.join('');
+  return out;
+}
+
+// ---- boxes of steps, built when they open ------------------------------------
+const qsaIn = (root, sel) => root ? [...(root.matches && root.matches(sel) ? [root] : []), ...root.querySelectorAll(sel)] : [];
+function highlighter(q) {
+  return q ? text => esc(text).replace(termRegex(q), match => `<mark>${match}</mark>`) : esc;
+}
+function fillLazyGroup(g) {
+  if (!g || !g.hasAttribute('data-lazy')) return;
+  g.removeAttribute('data-lazy');
+  const spec = lazyGroups.get(g.dataset.msgKey + '|' + g.dataset.gkey);
+  if (!spec) {
+    g.insertAdjacentHTML('beforeend', '<div class="tg-gone">These steps are no longer in the copy on screen. <button type="button" data-tg-reload>Show the conversation again</button></div>');
+    g.querySelector('[data-tg-reload]').onclick = () => open(g.dataset.msgKey || activeRel, 'preserve');
+    return;
+  }
+  const hl = highlighter(spec.q), indexes = messageIndexes(spec.d);
+  g.insertAdjacentHTML('beforeend', spec.work.map(m => msgBlock(m, hl, m.eid === spec.exact, spec.q, indexes.get(m._source), spec.key)).join(''));
+  wireTranscriptIn(g);
+  if (window.PlainSteps && PlainSteps.built) PlainSteps.built(g);
+  if (window.StepChanges) StepChanges.paint(g, spec.key);
+}
+// The inside of one step (its arguments, its output, a thought), drawn when
+// it opens. A lean copy fetches the words first.
+function fillLazyBody(det) {
+  const body = det && det.querySelector(':scope > [data-body]');
+  if (!body || body.dataset.loading) return;
+  const key = det.closest('[data-msg-key]')?.dataset.msgKey || activeRel;
+  const d = key === current?.key ? current : readerSessions.get(key);
+  const i = Number(body.dataset.body), m = d && d.messages[i];
+  if (!m) { body.removeAttribute('data-body'); body.textContent = 'This step is no longer in the copy on screen. Open the conversation again to read it.'; return; }
+  if (m.cut) {
+    body.dataset.loading = '1';
+    body.textContent = 'loading…';
+    loadParts(d, [i]).then(() => {
+      delete body.dataset.loading;
+      if (!body.isConnected) return;
+      if (!m.cut) return fillLazyBody(det);
+      body.textContent = 'This step could not be loaded. Fold it and open it again to retry.';
+    });
+    return;
+  }
+  const hl = highlighter(body.dataset.q || '');
+  const kind = body.dataset.kind;
+  body.innerHTML = kind === 'think' ? hl(m.text) : toolTextHtml(m.text, m.paths, hl) + (kind === 'result' ? messageMediaHtml(m.images, key) : '');
+  body.removeAttribute('data-body');
+  wireTranscriptIn(body);
+}
+// Every opener (a click, the keyboard, voice, "open everything", a search
+// landing, the browser's find) changes `open`; the observer runs before the
+// next paint, so a box never shows empty.
+let lazyObserver = null;
+function watchLazyOpens(view) {
+  if (lazyObserver || !view || typeof MutationObserver === 'undefined') return;
+  lazyObserver = new MutationObserver(records => {
+    for (const r of records) {
+      const el = r.target;
+      if (!el.open) continue;
+      if (el.hasAttribute('data-lazy')) fillLazyGroup(el);
+      else if (el.hasAttribute('data-lazy-menu')) fillMessageMenu(el);
+      else fillLazyBody(el);
+    }
+  });
+  lazyObserver.observe(view, { attributes: true, attributeFilter: ['open'], subtree: true });
+}
+// Build the closed boxes under root that hold message i of the conversation
+// on screen (or the call a result belongs to, or another part of its
+// entry): a landing on that message needs its element. True when one was built.
+function fillGroupsHolding(root, d, i) {
+  const target = d && d.messages[i];
+  if (!target) return false;
+  return fillGroupsWhere(root, (m, place) => place === i || (target.eid && m.eid === target.eid) || (target.tid && m.role === 'tool' && m.id === target.tid), d.key);
+}
+// Build the closed boxes under root holding a message that matches: anything
+// that looks for a step's element (a return from a file, the tree, voice,
+// another person's place) calls this first. True when one was built.
+function fillGroupsWhere(root, match, key = null) {
+  let built = false;
+  for (const g of qsaIn(root || $('view'), 'details.toolgroup[data-lazy]')) {
+    if (key && g.dataset.msgKey !== key) continue;
+    const spec = lazyGroups.get(g.dataset.msgKey + '|' + g.dataset.gkey);
+    if (!spec) continue;
+    const places = messageIndexes(spec.d);
+    if (spec.work.some(m => match(m._source || m, places.get(m._source)))) { fillLazyGroup(g); built = true; }
+  }
+  return built;
+}
+const fillGroupsWithEntry = (root, eid) => eid != null && fillGroupsWhere(root, m => m.eid === eid);
+// After insertion: boxes this screen has open open again, and a box holding
+// the entry a link or a search names is built so the entry can be found.
+function openLazyGroups(root) {
+  for (const g of qsaIn(root, 'details.toolgroup[data-lazy]')) {
+    const key = g.dataset.msgKey, spec = lazyGroups.get(key + '|' + g.dataset.gkey);
+    const want = stepsFoldOpen(key, g.dataset.gkey);
+    if (want || (spec && spec.exact != null && spec.work.some(m => m.eid === spec.exact))) fillLazyGroup(g);
+    if (want && !g.open) g.open = true;
+  }
+  for (const det of qsaIn(root, 'details[open]')) if (det.querySelector(':scope > [data-body]')) fillLazyBody(det);
 }
 
 
@@ -1221,7 +1576,7 @@ function captureLiveReplyHandoff(d) {
 
 function restoreLiveReplyHandoff(handoff) {
   if (!handoff) return;
-  $('liveReplies').replaceWith(handoff.host);
+  if ($('liveReplies') !== handoff.host) $('liveReplies').replaceWith(handoff.host);
   for (const { el, eid } of handoff.adopted) {
     const saved = $('conversationTranscript').querySelector(`.msg.assistant[data-eid="${CSS.escape(eid)}"]`);
     if (!saved) continue;

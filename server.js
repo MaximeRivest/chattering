@@ -54,6 +54,8 @@ const fanoutMerge = require('./fanoutmerge.js');
 const usageLib = require('./usageanalytics.js');
 const programsLib = require('./programs.js');
 const responseSpeed = require('./responsespeed.js');
+const sessionPayloadLib = require('./session-payload.js');
+const sessionHasher = sessionPayloadLib.createHasher();
 const agentReadLib = require('./agentread.js');
 const { createModelHealth } = require('./modelhealth.js');
 const delegationLib = require('./delegation.js');
@@ -17587,7 +17589,22 @@ async function handleRequest(req, res) {
       data.attachedContext = conversationContextOf(key);
       data.reading = readingFor(key, identity);
       data.speedCalibration = usersLib.canManageUsers(identity) ? speedCalibrationOfMessages(data.messages) : {};
-      json(res, 200, data);
+      // lean=1: steps without their words (sent by /api/session/parts when a
+      // box opens); known=<token>: only what follows the copy the reader has
+      // (session-payload.js, design/95). Without either, the whole as before.
+      json(res, 200, sessionPayloadLib.sessionPayload(data, {
+        key, version: (data.mtimeMs || 0) + ':' + (data.size || 0) + ':' + (data.v || 0),
+        lean: u.searchParams.get('lean') === '1', known: u.searchParams.get('known'), hasher: sessionHasher,
+      }));
+    } else if (u.pathname === '/api/session/parts' && req.method === 'GET') {
+      // The words of steps a lean copy left out, by their place in the copy.
+      const key = u.searchParams.get('id');
+      if (!key || !index[key]) return json(res, 404, { error: 'not found' });
+      if (!keyVisible(identity, key)) return json(res, 403, { error: 'This is not shared with you.' });
+      const wanted = String(u.searchParams.get('i') || '').split(',').filter(Boolean).map(Number);
+      if (!wanted.length || wanted.length > sessionPayloadLib.PARTS_MAX) return json(res, 400, { error: 'name 1 to ' + sessionPayloadLib.PARTS_MAX + ' steps' });
+      const data = JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8'));
+      json(res, 200, { parts: sessionPayloadLib.partsOf(data.messages || [], wanted) });
     } else if (u.pathname === '/api/steps/plain' && req.method === 'POST') {
       // Work steps in plain words (plain-steps.js). The page names the groups
       // on its screen by their step ids; what the model reads is taken from

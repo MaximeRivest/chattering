@@ -2638,6 +2638,7 @@ function setRouteKind(kind) {
   // The file workspace (files mode) owns an editor too: leaving it saves
   // the draft and destroys the editor. Re-entering rebuilds from scratch.
   if (kind !== 'file' && kind !== 'files-project' && !besideFile && typeof fileWs !== 'undefined' && fileWs) closeFileWorkspace();
+  const fromConversation = viewKind === 'conversation';
   viewKind = kind;
   timelineControls?.setActive(kind === 'home');
   queueMicrotask(() => delegationUI.visibilityChanged());
@@ -2649,11 +2650,16 @@ function setRouteKind(kind) {
   // mid-document (worst on the phone: head and TOC land off-screen).
   // Views that manage their own position (transcript bottom, anchors)
   // scroll after render and are unaffected.
+  // One conversation to another: the one on screen stays where it is, faded,
+  // until the next replaces it and lands (renderConv sets the position in
+  // every case). Scrolling it to its top first made the browser lay out the
+  // whole page being left, up to seconds on a slow phone (design/95).
   const viewEl = $('view');
-  if (viewEl) viewEl.scrollTop = 0;
+  if (viewEl && !(kind === 'conversation' && fromConversation && $('conversationTranscript'))) viewEl.scrollTop = 0;
   window.scrollTo(0, 0);
   if (kind !== 'conversation' && $('matchHud')) $('matchHud').remove();
   document.body.classList.toggle('home', kind === 'home');
+  if (kind === 'home' && homeTimelineStale) render();
   // A draft (a conversation before its first message) uses the conversation
   // header layout; body.draft hides what needs a started session.
   document.body.classList.toggle('conv', kind === 'conversation' || kind === 'draft');
@@ -5038,14 +5044,46 @@ function showTranscriptReloadButton() {
   b.onclick = () => refreshTranscript();
   host.appendChild(b);
 }
+// The conversation on screen grew (design/95): fetch what follows the copy
+// on screen and patch it in. One at a time, and the next waits at least
+// three times what the last one cost here: a slow phone spends at most about
+// a quarter of its time following an agent, a fast one follows it within a
+// fifth of a second. E-ink waits longer: each redraw flashes its screen.
+// Before, every update fetched and drew the whole conversation, 48 times in
+// 15 s for an agent writing; a weak device was frozen most of that time.
+const liveRefresh = { running: null, again: false, timer: 0, last: 0, cost: 0 };
 function refreshTranscript() {
   const key = activeRel;
-  if (!key) return;
-  // A failed reload (network blip) must leave a way back: the button stays.
-  return open(key, 'bottom').catch(err => {
+  if (!key) return Promise.resolve();
+  if (liveRefresh.running) { liveRefresh.again = true; return liveRefresh.running; }
+  clearTimeout(liveRefresh.timer);
+  const wait = liveRefresh.last + Math.min(4000, Math.max(isEink() ? 1500 : 200, liveRefresh.cost * 3)) - Date.now();
+  if (wait > 0) { liveRefresh.timer = setTimeout(refreshTranscript, wait); return Promise.resolve(); }
+  liveRefresh.running = runTranscriptRefresh(key).finally(() => {
+    liveRefresh.running = null;
+    liveRefresh.last = Date.now();
+    if (liveRefresh.again) { liveRefresh.again = false; refreshTranscript(); }
+  });
+  return liveRefresh.running;
+}
+async function runTranscriptRefresh(key) {
+  const held = current && current.key === key && viewKind === 'conversation' ? current : null;
+  const seq = conversationLoadSeq, asked = Date.now();
+  try {
+    if (!held) return await open(key, 'bottom');
+    const next = await fetchSnapshot(key, held);
+    if (seq !== conversationLoadSeq || activeRel !== key || current !== held) return;
+    if (!next || next.error) return await open(key, 'bottom');
+    // What drawing it in cost here: its own work, the layout it forces
+    // included; not whatever else the page did before the next frame.
+    const t0 = performance.now();
+    await showNewerConversation(next, 'bottom', asked);
+    liveRefresh.cost = performance.now() - t0;
+  } catch (err) {
+    // A failed reload (network blip) must leave a way back: the button stays.
     console.error('transcript reload failed', err);
     if (activeRel === key) showTranscriptReloadButton();
-  });
+  }
 }
 function reconcileTranscript(entry, { force = false } = {}) {
   if (viewKind !== 'conversation' || !current || !activeRel || current.key !== activeRel) return false;
@@ -5693,9 +5731,15 @@ function render() {
   renderQueued = true;
   requestAnimationFrame(renderNow);
 }
+// The timeline is hidden on every screen but home (body:not(.home) #left):
+// drawn there it only cost time, ~60 ms on each move between conversations,
+// four times that on a slow phone (design/95). It is drawn on the way home.
+var homeTimelineStale = false; // var: setRouteKind may read it while the page script still starts
 function renderNow() {
   renderQueued = false;
   if (tab !== 'conv') return;
+  if (!document.body.classList.contains('home')) { homeTimelineStale = true; updateActiveBtn(); return; }
+  homeTimelineStale = false;
   const t0 = performance.now();
   updateActiveBtn();
   $('count').textContent = shown.length + ' conversations';
@@ -6421,6 +6465,8 @@ async function returnToConversationFile(key, pathValue, ts, callId, routeHash = 
     if (!view || current?.key !== key || activeRel !== key || viewKind !== 'conversation' || conversationLoadSeq !== seq) return;
     const attr = saved && !saved.change ? 'transcriptPath' : 'fileDiff';
     const selector = attr === 'fileDiff' ? '[data-file-diff]' : '[data-transcript-path]';
+    // The step that changed the file may sit in a closed box (design/95).
+    if (callId || ts) fillGroupsWhere($('conversationTranscript'), m => (callId && (m.id === callId || m.tid === callId)) || (!callId && ts && m.ts === ts), key);
     let buttons = [...view.querySelectorAll(selector)].filter(button =>
       (!pathValue || button.dataset[attr] === pathValue) &&
       (!callId || button.dataset.fileCall === callId));
@@ -9603,6 +9649,12 @@ function openFileActionMenu(ctx, x, y) {
 // below. Measured on open; `toggle` does not bubble, hence capture.
 document.addEventListener('toggle', e => {
   const d = e.target;
+  // A menu reaches outside its message: while one is open, the message is
+  // laid out and painted whole, not clipped (conversation-reader.css).
+  if (d instanceof HTMLElement && d.matches('.msg-more-actions, .msg-speed')) {
+    const msg = d.closest('.msg');
+    if (msg) msg.classList.toggle('cv-off', !!msg.querySelector('.msg-more-actions[open], .msg-speed[open]'));
+  }
   if (!(d instanceof HTMLElement) || !d.classList.contains('msg-more-actions')) return;
   if (!d.open) { d.classList.remove('opens-down'); return; }
   const menu = d.querySelector(':scope > div');
@@ -9721,6 +9773,35 @@ function messageBodyHtml(text, q = '', copyIndex = -1) {
     `<button type="button" class="msg-show-all" data-msg-index="${copyIndex}" title="Only the opening of this very long message is shown, so the conversation stays quick to open">` +
     `… show the whole message · ${countLines(s).toLocaleString()} lines · ${fmtTextSize(s.length)}${s.length > LONG_MESSAGE_MARKDOWN_MAX ? ' · as plain text' : ''} (${fmtTextSize(rest)} more)</button>`;
 }
+// A message's Markdown is drawn once per page and kept with the message: a
+// conversation drawn again (a live update, a move of the head) reuses it.
+// Search marks (q) are drawn fresh. mdRender reads nothing but its text.
+const messageBodies = new WeakMap(); // message → { text, index, html, words }
+function messageMemo(m) {
+  const src = m._source || m;
+  let hit = messageBodies.get(src);
+  if (!hit || hit.text !== m.text) { hit = { text: m.text }; messageBodies.set(src, hit); }
+  return hit;
+}
+function messageBodyMemo(m, q, copyIndex) {
+  if (q) return messageBodyHtml(m.text, q, copyIndex);
+  const hit = messageMemo(m);
+  if (hit.html === undefined || hit.index !== copyIndex) { hit.html = messageBodyHtml(m.text, '', copyIndex); hit.index = copyIndex; }
+  return hit.html;
+}
+function messageHeightGuess(m) {
+  const hit = messageMemo(m);
+  if (hit.guess === undefined) {
+    const text = String(m.text || '');
+    hit.guess = Math.round(70 + 22 * (countLines(text) * 0.6 + text.length / 95));
+  }
+  return hit.guess;
+}
+function messageWords(m) {
+  const hit = messageMemo(m);
+  if (hit.words === undefined) hit.words = m.text.length > LONG_MESSAGE_CHARS ? countWords(m.text) : m.text.split(/\s+/).length;
+  return hit.words;
+}
 function showWholeMessage(btn) {
   const message = readerMessage(btn);
   const md = btn.closest('.md');
@@ -9740,6 +9821,34 @@ function showWholeMessage(btn) {
   if (msg) { msg.classList.remove('folded', 'can-fold'); msg.querySelector(':scope > .unfold')?.remove(); }
 }
 
+// The inside of a step: drawn now only when it is shown open and its words
+// are here; else a placeholder that conversation-reader.js fillLazyBody
+// fills when the step opens (design/95). A step with no place in a snapshot
+// (copyIndex -1: a live or foreign row) is always drawn now.
+function stepBodyHtml(cls, kind, m, index, open, q, html) {
+  if (index < 0 || (open && !m.cut)) return `<div class="${cls}">${m.cut ? '' : html()}</div>`;
+  return `<div class="${cls}" data-body="${index}" data-kind="${kind}"${q ? ` data-q="${esc(q)}"` : ''}></div>`;
+}
+// The items of a message's "more…" menu (msgBlock draws the menu closed).
+function messageMenuItemsHtml(m, copyIndex, messageKey) {
+  return (
+      (copyIndex >= 0 && !ConversationFlow.transport(m) && !(((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) === 'codex' && m.role !== 'user') ? `<button type="button" class="msg-edit" data-msg-index="${copyIndex}" title="${['pi', 'pi-remote'].includes((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) ? 'Edit this message on a new path' : 'Edit the original message'}">edit</button>` : '') +
+      (copyIndex >= 0 && !ConversationFlow.transport(m) && m.role === 'assistant' && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) !== 'codex' ? `<button type="button" class="msg-regenerate" data-msg-index="${copyIndex}" title="Create another answer from the node before this reply">regenerate</button>` : '') +
+      (copyIndex >= 0 && !ConversationFlow.transport(m) && m.eid && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) === 'codex' ? `<button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="A new Codex conversation through this turn">fork</button>` : '') +
+      (copyIndex >= 0 && !ConversationFlow.transport(m) && m.eid && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) !== 'codex' ? `<button type="button" data-reader-continue-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Use this conversation context. Files on disk are not rewound.">continue here</button><button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Copy the conversation through this message into a separate conversation">fork</button>` : '') +
+      (copyIndex >= 0 && m.role === 'user' ? `<button type="button" class="msg-snippet" data-msg-index="${copyIndex}" title="Save this message as a snippet you can insert later">snippet</button>` : ''));
+}
+function fillMessageMenu(menu) {
+  if (!menu || !menu.hasAttribute('data-lazy-menu')) return;
+  menu.removeAttribute('data-lazy-menu');
+  const msg = menu.closest('.msg');
+  const key = msg?.dataset.msgKey || activeRel, i = Number(msg?.dataset.i);
+  const d = key === current?.key ? current : readerSessions.get(key);
+  const m = d && Number.isInteger(i) ? d.messages[i] : null;
+  if (!m) return;
+  menu.insertAdjacentHTML('beforeend', `<div>${messageMenuItemsHtml(m, i, key)}</div>`);
+  wireTranscriptIn(menu);
+}
 function msgBlock(m, hl, keepOpen = false, q = '', copyIndex = -1, messageKey = activeRel, versionSwitch = null) {
   // data-i: the message's index in the cached array — the anchor a search
   // hit lands on (renderConv scroll 'hit:N').
@@ -9766,7 +9875,7 @@ function msgBlock(m, hl, keepOpen = false, q = '', copyIndex = -1, messageKey = 
     const anchor = m.ts ? ` data-ts="${esc(m.ts)}"` : '';
     // data-step / .step-tech: plain-steps-ui.js puts a plain phrase here.
     const step = m.eid ? ` data-step="k:${esc(m.eid)}"` : '';
-    return `<details class="msg thinking"${anchor}${idxAttr}${step}${keepOpen ? ' open' : ''}><summary>◌ <span class="step-tech">thinking · ${m.text.length} chars</span></summary><div class="think-body">${hl(m.text)}</div></details>`;
+    return `<details class="msg thinking"${anchor}${idxAttr}${step}${keepOpen ? ' open' : ''}><summary>◌ <span class="step-tech">thinking · ${m.cut ? m.cut.n : m.text.length} chars</span></summary>${stepBodyHtml('think-body', 'think', m, copyIndex, keepOpen, q, () => hl(m.text))}</details>`;
   }
   const label = m.role === 'tool' ? `<span class="tname">${esc(m.name || '?')}</span>`
     : m.role === 'toolresult' ? 'result' : m.role;
@@ -9781,9 +9890,9 @@ function msgBlock(m, hl, keepOpen = false, q = '', copyIndex = -1, messageKey = 
   // ✓/✗; other tools fold their args and carry a nested result fold.
   if (m.role === 'toolresult') {
     if (m._merged) return '';           // rides inside its call's fold
-    const lines = m.text ? m.text.split('\n').length : 0;
+    const lines = m.cut ? m.cut.lines : m.text ? m.text.split('\n').length : 0;
     const imageLabel = m.images && m.images.length ? ` · ${m.images.length} image${m.images.length > 1 ? 's' : ''}` : '';
-    return `<details class="msg toolresult"${idxAttr}${keepOpen ? ' open' : ''}><summary>↳ result${lines ? ` · ${lines} line${lines > 1 ? 's' : ''}` : ''}${imageLabel}</summary><div class="tool-out">${toolTextHtml(m.text, m.paths, hl)}${messageMediaHtml(m.images, messageKey)}</div></details>`;
+    return `<details class="msg toolresult"${idxAttr}${keepOpen ? ' open' : ''}><summary>↳ result${lines ? ` · ${lines} line${lines > 1 ? 's' : ''}` : ''}${imageLabel}</summary>${stepBodyHtml('tool-out', 'result', m, copyIndex, keepOpen, q, () => toolTextHtml(m.text, m.paths, hl) + messageMediaHtml(m.images, messageKey))}</details>`;
   }
   if (m.role === 'tool') {
     const toolAnchor = (m.ts ? ` data-ts="${esc(m.ts)}"` : '') + (m.id ? ` data-step="t:${esc(m.id)}"` : '');
@@ -9794,39 +9903,40 @@ function msgBlock(m, hl, keepOpen = false, q = '', copyIndex = -1, messageKey = 
       const own = m.id && window.StepChanges ? ` data-sc-calls="${esc(m.id)}"` : '';
       return `<div class="msg tool toolline"${toolAnchor}${idxAttr}>✎ <button class="msg-file-inline" data-file-diff="${esc(m.path)}" data-file-ts="${esc(m.ts || '')}" data-file-anchor="${esc(m.ts || '')}" data-file-call="${esc(m.id || '')}"${own} title="Read this step’s change">${esc(shortFilePath(m.path))}</button>${own ? StepChanges.countSlot(messageKey, m.id, m.path) : ''} ${mark}</div>`;
     }
-    const hint = String(m.text || '').replace(/\s+/g, ' ').trim().slice(0, 60);
-    const first = res ? String(res.text || '').trim().split('\n').find(x => x.trim()) || '' : '';
-    const resLines = res && res.text ? String(res.text).split('\n').length : 0;
+    // A lean copy (design/95) carries these lines without the words: the
+    // server computes them with the same expressions (session-payload.js).
+    const hint = m.cut ? m.cut.head : String(m.text || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    const first = res ? res.cut ? res.cut.head : String(res.text || '').trim().split('\n').find(x => x.trim()) || '' : '';
+    const resLines = res ? res.cut ? res.cut.lines : res.text ? String(res.text).split('\n').length : 0 : 0;
     const resImages = res && res.images ? res.images.length : 0;
     const resFold = res
-      ? `<details class="resfold"><summary>↳ result${resLines ? ` · ${resLines} line${resLines > 1 ? 's' : ''}` : ''}${resImages ? ` · ${resImages} image${resImages > 1 ? 's' : ''}` : ''}</summary><div class="tool-out">${toolTextHtml(res.text, res.paths, hl)}${messageMediaHtml(res.images, messageKey)}</div></details>`
+      ? `<details class="resfold"><summary>↳ result${resLines ? ` · ${resLines} line${resLines > 1 ? 's' : ''}` : ''}${resImages ? ` · ${resImages} image${resImages > 1 ? 's' : ''}` : ''}</summary>${stepBodyHtml('tool-out', 'result', res, m._resultIndex ?? -1, false, q, () => toolTextHtml(res.text, res.paths, hl) + messageMediaHtml(res.images, messageKey))}</details>`
       : '';
     const structuredPath = m.path && !isFileWriteTool(m) ? ` · ${transcriptPathButton(m.path, shortFilePath(m.path))}` : '';
     // The files this step changed (a redirect, a script, anything): seen in
     // its saved snapshots, or read from the command without them (design/88).
     const writeLinks = m.id && window.StepChanges ? StepChanges.chipsHtml(messageKey, m.id)
       : (m.writes || []).map(p => ` <button class="msg-file" data-file-diff="${esc(p)}" data-file-ts="${esc(m.ts || '')}" data-file-anchor="${esc(m.ts || '')}" data-file-call="${esc(m.id || '')}" title="Open this file change\n${esc(p)}">▤ ${esc(shortFilePath(p))}</button>`).join('');
-    return `<details class="msg tool"${toolAnchor}${idxAttr}${keepOpen ? ' open' : ''}><summary>⚙ <span class="step-tech"><span class="tname">${esc(m.name || '?')}</span>${hint ? ' · ' + esc(hint) : ''}${first ? ` <span class="res-first">→ ${esc(first.slice(0, 60))}</span>` : ''}</span>${structuredPath}${fileLink}${writeLinks}</summary><div class="tool-out">${toolTextHtml(m.text, m.paths, hl)}</div>${resFold}</details>`;
+    return `<details class="msg tool"${toolAnchor}${idxAttr}${keepOpen ? ' open' : ''}><summary>⚙ <span class="step-tech"><span class="tname">${esc(m.name || '?')}</span>${hint ? ' · ' + esc(hint) : ''}${first ? ` <span class="res-first">→ ${esc(first.slice(0, 60))}</span>` : ''}</span>${structuredPath}${fileLink}${writeLinks}</summary>${stepBodyHtml('tool-out', 'call', m, copyIndex, keepOpen, q, () => toolTextHtml(m.text, m.paths, hl))}${resFold}</details>`;
   }
   if (m.role === 'user' || m.role === 'assistant') {
     const anchor = m.ts ? ` data-ts="${esc(m.ts)}"` : '';
     const full = (m.origin === 'delegation' ? '<div class="role" title="The parent conversation wrote this brief. No person typed it."><span>↰ brief from the parent conversation</span></div>' : '') +
-      `<div class="md">${messageBodyHtml(m.text, q, copyIndex)}</div>${messageMediaHtml(m.images, messageKey)}`;
+      `<div class="md">${messageBodyMemo(m, q, copyIndex)}</div>${messageMediaHtml(m.images, messageKey)}`;
     const actions = `<div class="msg-actions" aria-label="Message actions">` +
       (m.role === 'assistant' ? speedLabelHtml(m) : '') +
       `<button type="button" class="msg-copy" data-msg-index="${copyIndex}" title="Copy the message Markdown">copy</button>` +
       `<button type="button" class="msg-read" data-msg-index="${copyIndex}" title="Read this message aloud">read</button>` +
       (versionSwitch ? `<button type="button" data-answer-version="${versionSwitch}" title="${versionSwitch === 'original' ? 'Show the original answer' : 'Show the simpler version'}">${versionSwitch === 'original' ? 'original' : 'simpler'}</button>` : '') +
       (copyIndex >= 0 && m.role === 'assistant' && m.eid && !ConversationFlow.transport(m) && ['pi', 'pi-remote'].includes((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) ? `<button type="button" class="msg-notebook-make" title="Write this answer as a self-standing notebook in the project (documents/notebooks). One model call; nothing runs.">notebook</button>` : '') +
-      (copyIndex >= 0 && !ConversationFlow.transport(m) ? `<details class="msg-more-actions"><summary aria-label="More message actions">more…</summary><div>` : '') +
-      (copyIndex >= 0 && !ConversationFlow.transport(m) && !(((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) === 'codex' && m.role !== 'user') ? `<button type="button" class="msg-edit" data-msg-index="${copyIndex}" title="${['pi', 'pi-remote'].includes((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) ? 'Edit this message on a new path' : 'Edit the original message'}">edit</button>` : '') +
-      (copyIndex >= 0 && !ConversationFlow.transport(m) && m.role === 'assistant' && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) !== 'codex' ? `<button type="button" class="msg-regenerate" data-msg-index="${copyIndex}" title="Create another answer from the node before this reply">regenerate</button>` : '') +
-      (copyIndex >= 0 && !ConversationFlow.transport(m) && m.eid && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) === 'codex' ? `<button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="A new Codex conversation through this turn">fork</button>` : '') +
-      (copyIndex >= 0 && !ConversationFlow.transport(m) && m.eid && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) !== 'codex' ? `<button type="button" data-reader-continue-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Use this conversation context. Files on disk are not rewound.">continue here</button><button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Copy the conversation through this message into a separate conversation">fork</button>` : '') +
-      (copyIndex >= 0 && m.role === 'user' ? `<button type="button" class="msg-snippet" data-msg-index="${copyIndex}" title="Save this message as a snippet you can insert later">snippet</button>` : '') +
-      (copyIndex >= 0 && !ConversationFlow.transport(m) ? `</div></details>` : '') + `</div>`;
-    const words = m.text.length > LONG_MESSAGE_CHARS ? countWords(m.text) : m.text.split(/\s+/).length;
-    return `<div class="msg ${m.role}${keepOpen ? '' : ' can-fold'}" tabindex="0" data-words="${words}"${anchor}${idxAttr}>${role}${full}${actions}</div>`;
+      // The menu's items are drawn when it opens (fillMessageMenu): a third
+      // of a long transcript's elements were these hidden menus (design/95).
+      (copyIndex >= 0 && !ConversationFlow.transport(m) ? `<details class="msg-more-actions" data-lazy-menu><summary aria-label="More message actions">more…</summary></details>` : '') + `</div>`;
+    const words = messageWords(m);
+    // The height an answer is guessed to have before the browser lays it out
+    // (conversation-reader.css, design/95): its lines at ~95 characters each.
+    const guess = m.role === 'assistant' ? ` style="--cis:${messageHeightGuess(m)}"` : '';
+    return `<div class="msg ${m.role}${keepOpen ? '' : ' can-fold'}" tabindex="0" data-words="${words}"${guess}${anchor}${idxAttr}>${role}${full}${actions}</div>`;
   }
   return `<div class="msg ${m.role}"${idxAttr}>${role}${hl(m.text)}</div>`;
 }
@@ -9940,8 +10050,8 @@ function wireCodeCopyButtons(root = $('conversationTranscript')) {
 // Every bash fence in a reply gets a ▶ run button: the block executes in
 // the conversation's cwd on this machine, and the output lands in a capped
 // box under it — "you tell me to run it, I press run".
-function wireRunButtons() {
-  for (const pre of $('view').querySelectorAll('pre.md-code[data-lang]')) {
+function wireRunButtons(root = $('view')) {
+  for (const pre of qsaIn(root, 'pre.md-code[data-lang]')) {
     if (!/^(bash|sh|shell|zsh)$/i.test(pre.dataset.lang || '')) continue;
     if (pre.querySelector('.md-run')) continue;
     const btn = document.createElement('button');
@@ -9980,17 +10090,47 @@ function wireRunButtons() {
 // Fold rule: a chat message folds only when it stands taller than ~125%
 // of the viewport — the same on every device. The fold keeps one page
 // visible; the quiet unfold link sits bottom-right like the file footer.
-function foldLongMessages() {
+// A message taller than a screen and a quarter shows its first screen and
+// "show more". Its height is known only once laid out, and an answer far
+// from the screen is not laid out any more (content-visibility, design/95):
+// it is measured when the browser lays it out, in a ResizeObserver, which
+// runs before that frame is painted, so a fold never flashes open. Without
+// that skipping (an older browser), everything is measured at once, as before.
+const transcriptSkipsLayout = typeof CSS !== 'undefined' && CSS.supports && CSS.supports('content-visibility', 'auto') && CSS.supports('contain-intrinsic-size', 'auto 1px');
+// Whether checkVisibility can say "not laid out" (Chromium 121): a browser
+// reads only the options it knows, so the getter runs only there.
+const canSeeSkipped = (() => {
+  let known = false;
+  try { document.documentElement.checkVisibility?.({ get contentVisibilityAuto() { known = true; return false; } }); } catch {}
+  return known;
+})();
+let foldWatch = null;
+function foldLongMessages(root = $('view')) {
+  const items = qsaIn(root, '.msg.can-fold');
+  if (!items.length) return;
+  if (!transcriptSkipsLayout || typeof ResizeObserver === 'undefined') return foldMeasured(items, false);
+  if (!foldWatch) foldWatch = new ResizeObserver(entries => foldMeasured(entries.map(e => e.target).filter(el => el.isConnected && el.classList.contains('can-fold')), true));
+  for (const el of items) foldWatch.observe(el);
+}
+function foldMeasured(list, watched) {
   const limit = window.innerHeight * 1.25;
   // Read pass first, write pass second: interleaving reads (scrollHeight)
   // with class writes forces one full reflow per message — seconds of
   // main-thread block on a long transcript.
-  const items = [...$('view').querySelectorAll('.msg.can-fold')]
-    .map(el => ({ el, h: el.scrollHeight, det: el.closest('details') }));
-  for (const { el, h, det } of items) {
-    el.classList.remove('can-fold');
-    if (det && !det.open) continue;      // hidden branch folds measure 0
-    if (h <= limit) continue;
+  const items = list.map(el => {
+    const inner = el.firstElementChild;
+    // true: laid out · false: skipped (its height is a guess) · null: cannot tell
+    const laidOut = !watched ? true : canSeeSkipped && inner ? inner.checkVisibility({ contentVisibilityAuto: true }) : null;
+    return { el, laidOut, h: laidOut === false ? 0 : el.scrollHeight, det: el.closest('details') };
+  });
+  const done = el => { el.classList.remove('can-fold'); foldWatch?.unobserve(el); };
+  for (const { el, laidOut, h, det } of items) {
+    if (det && !det.open) { done(el); continue; } // hidden branch folds measure 0
+    if (laidOut === false) continue;               // measured when it is laid out
+    // A guess is never taller than a screen (conversation-reader.css): over
+    // the limit is a real height. Under it, only a real one settles it.
+    if (h <= limit) { if (laidOut) done(el); continue; }
+    done(el);
     el.classList.add('folded');
     const btn = document.createElement('button');
     btn.className = 'unfold';
@@ -10089,6 +10229,11 @@ const chromeAutoHideOn = () =>
 $('view').addEventListener('scroll', () => {
   if (!chromeAutoHideOn()) return;
   const top = $('view').scrollTop;
+  // The app moved the page itself (it follows a conversation's new end,
+  // design/95): not the reader asking for more room. Counted, it hid the
+  // chrome, which came straight back (nobody asked to keep it hidden): two
+  // whole-page layouts per live update, most of a slow phone's time then.
+  if (appScrolledTo($('view'), top)) { chromeScrollLast = top; chromeUpAcc = chromeDownAcc = 0; return; }
   if (top < CHROME_TOP) {
     setChromeMin(false, false);
     chromeScrollLast = top;
@@ -13392,20 +13537,34 @@ function wireAgentComposer() {
   renderAgentThumbs();
 }
 
+// The handlers of elements under root: code, long messages, files, pictures.
+function wireTranscriptElements(root) {
+  wireCodeCopyButtons(root);
+  foldLongMessages(root);
+  wireRunButtons(root);
+  qsaIn(root, '[data-file-diff]').forEach(b => b.onclick = e => handleFileControlClick(e, b));
+  qsaIn(root, '[data-media-src]').forEach(b => b.onclick = e => {
+    e.stopPropagation(); e.preventDefault();
+    openMediaLightbox(b.dataset.mediaSrc, b.title || 'image');
+  });
+  qsaIn(root, '[data-transcript-path]').forEach(b => b.onclick = e => handleFileControlClick(e, b));
+  wireTranscriptPathCandidates(root, activeRel);
+}
+// What a live update or an opened box added (design/95): the same wiring as
+// wireTranscript, for those elements only. A long conversation has
+// thousands of them; wiring the whole view again on every update was a
+// cost a slow phone paid several times a second.
+function wireTranscriptIn(root) {
+  if (!root || !current) return;
+  wireReaderControls(root);
+  wireTranscriptElements(root);
+  wireToolGroups(root, { keep: true });
+}
 // Everything inside the transcript that needs handlers. Safe to run again
 // after a partial re-render (moving the head patches blocks in place).
 function wireTranscript() {
   wireConversationReader();
-  wireCodeCopyButtons();
-  foldLongMessages();
-  wireRunButtons();
-  $('view').querySelectorAll('[data-file-diff]').forEach(b => b.onclick = e => handleFileControlClick(e, b));
-  $('view').querySelectorAll('[data-media-src]').forEach(b => b.onclick = e => {
-    e.stopPropagation(); e.preventDefault();
-    openMediaLightbox(b.dataset.mediaSrc, b.title || 'image');
-  });
-  $('view').querySelectorAll('[data-transcript-path]').forEach(b => b.onclick = e => handleFileControlClick(e, b));
-  wireTranscriptPathCandidates($('view'), activeRel);
+  wireTranscriptElements($('view'));
   wireToolGroups($('view'));
   if (typeof delegationUI !== 'undefined') delegationUI.attachCards($('conversationTranscript'));
   if (window.Artifacts) Artifacts.wire($('conversationTranscript'));
@@ -13449,6 +13608,9 @@ async function renderConv(scroll) {
     `<div id="liveReplies" class="transcript" data-conversation-key="${esc(d.key)}"></div><div id="runCards"></div><div class="parallel-stage" id="parallelStage" hidden></div>` +
     readerDestinationHtml(d) + agentComposerHtml(d);
   restoreLiveReplyHandoff(liveHandoff);
+  attachBlockPieces($('conversationTranscript'), renderedLayout && renderedLayout.data === d ? renderedLayout.pieces : null);
+  watchLazyOpens($('view'));
+  openLazyGroups($('conversationTranscript'));
   $('liveReplies').dataset.readingLeaf = headOf(d) || 'live';
   if ($('readerDestination') && $('composerDock')) $('composerDock').prepend($('readerDestination'));
   mountDelegationView();
@@ -13527,6 +13689,7 @@ async function renderConv(scroll) {
     }
     else if (scroll === 'compare' || (typeof scroll === 'string' && /^(compare|flow):/.test(scroll))) {
       const wanted = scroll.includes(':') ? scroll.slice(scroll.indexOf(':') + 1) : '';
+      if (wanted) fillGroupsWithEntry($('conversationTranscript'), wanted);
       const target = wanted ? $('view').querySelector(`[data-flow-anchor="${CSS.escape(wanted)}"], [data-eid="${CSS.escape(wanted)}"]`) : [...$('view').querySelectorAll('.rd-answers')].at(-1);
       if (target) target.scrollIntoView({ block: 'start' });
     }
@@ -13567,6 +13730,9 @@ async function renderConv(scroll) {
 // drawn inside another has no element of its own: a tool result lives in its
 // call, a reasoning block with the rest of its entry. Land on the holder.
 function transcriptMessageElement(view, i) {
+  // A message inside a closed box of steps has no element until the box is
+  // built (design/95): build the box that holds it.
+  fillGroupsHolding($('conversationTranscript'), current, Number(i));
   const at = n => view.querySelector(`#conversationTranscript [data-msg-key="${CSS.escape(current.key)}"][data-i="${CSS.escape(String(n))}"]`);
   const own = at(i);
   if (own) return own;
@@ -13587,7 +13753,9 @@ function revealTranscriptHit(view, scroll) {
     : typeof scroll === 'string' && scroll.startsWith('card:')
     ? view.querySelector(`#conversationTranscript .dg-card[data-dg-eid="${CSS.escape(scroll.slice(5))}"]`) : null;
   if (!hit) return null;
-  for (let el = hit; el; el = el.parentElement) if (el.tagName === 'DETAILS') el.open = true;
+  // Opened here and filled now (not when the opening is observed): the
+  // landing looks for the match inside right after (design/95).
+  for (let el = hit; el; el = el.parentElement) if (el.tagName === 'DETAILS') { el.open = true; fillLazyBody(el); }
   const more = hit.querySelector('button.more');
   if (more && !hit.querySelector('.trunc mark')) more.click();
   return hit;
@@ -13614,19 +13782,22 @@ const toolGroupOpen = new Map(); // conversation + box name → open on this scr
 //    the click, before any paint, instead of in the async toggle event.
 // 2. A stuck line is marked (.stuck) so it can carry a shadow.
 let toolGroupStick = null;
-function wireToolGroups(view) {
+function wireToolGroups(view, { keep = false } = {}) {
   if (!toolGroupStick && view) {
     toolGroupStick = new IntersectionObserver(entries => {
       for (const en of entries) {
         const stuck = en.intersectionRatio < 1 && en.rootBounds && en.boundingClientRect.top <= en.rootBounds.top + 1;
         en.target.classList.toggle('stuck', stuck);
       }
-    }, { root: view, threshold: [1], rootMargin: '-1px 0px 0px 0px' });
+    }, { root: $('view'), threshold: [1], rootMargin: '-1px 0px 0px 0px' });
   }
-  toolGroupStick.disconnect(); // the previous render's lines are gone
-  for (const g of view.querySelectorAll('.toolgroup')) {
+  if (!keep) toolGroupStick.disconnect(); // the previous render's lines are gone
+  for (const g of qsaIn(view, '.toolgroup')) {
     const summary = g.querySelector(':scope > summary');
-    if (summary) toolGroupStick.observe(summary);
+    // Only an open box's line can stick: a closed one is watched from when it
+    // opens. Watching all of them (hundreds) cost a slow phone half a second
+    // of intersection checks per quarter minute of a live conversation.
+    if (summary && g.open) toolGroupStick.observe(summary);
     if (g.dataset.tgWired) continue;
     g.dataset.tgWired = '1';
     // Live boxes keep their own memory (renderLiveReplyLedger).
@@ -13634,7 +13805,12 @@ function wireToolGroups(view) {
     const key = () => g.dataset.msgKey || activeRel;
     // Any open or close is what this screen shows now; only a person's
     // click below is kept for next time.
-    if (gkey) g.addEventListener('toggle', () => stepsFoldSeen(key(), gkey, g.open));
+    g.addEventListener('toggle', () => {
+      if (gkey) stepsFoldSeen(key(), gkey, g.open);
+      if (!summary) return;
+      if (g.open) toolGroupStick.observe(summary);
+      else { toolGroupStick.unobserve(summary); summary.classList.remove('stuck'); }
+    });
     if (!summary) continue;
     summary.title = 'Fold or show these steps · the line stays at the top while you read them';
     summary.addEventListener('click', e => {
@@ -13645,7 +13821,7 @@ function wireToolGroups(view) {
       // A real click or Enter, not a script's (voice keeps its own, see voice-commands.js).
       if (gkey && e.isTrusted) stepsFoldChosen(key(), gkey, g.open);
       const delta = summary.getBoundingClientRect().top - before;
-      if (Math.abs(delta) > 1) view.scrollTop += delta;
+      if (Math.abs(delta) > 1) $('view').scrollTop += delta;
     });
   }
 }
@@ -14107,7 +14283,7 @@ function renderRunCards() {
   renderLiveReplies();
   updateLiveStrip(runs);
   renderParallelStage();
-  if ((cards.length || runs.length || parallelLedgersFor(activeRel).length) && pinned) v.scrollTop = v.scrollHeight;
+  if ((cards.length || runs.length || parallelLedgersFor(activeRel).length) && pinned) appScroll(v, v.scrollHeight);
 }
 
 function delegatedLiveFor(key) {
@@ -14257,11 +14433,28 @@ async function open(rel, scroll, routeHash = null, { fromList = false } = {}) {
   // loads (after a moment, so a quick load does not flicker), and it takes
   // no clicks meant for the next. Only the newest load lifts it.
   const viewEl = $('view');
-  if (navigating && viewEl) viewEl.classList.add('view-loading');
+  // Back to a conversation this page still holds, unchanged since (the list
+  // is kept current by the server's events): it is drawn at once, and asked
+  // about after (design/95). Else only what the page lacks is fetched.
+  const held = readerSessions.get(rel), listed = sessions.find(s => s.key === rel);
+  const reuse = navigating && held && held.token && listed && !transcriptNewer(listed, held)
+    && Number(listed.mtimeMs) === Number(held.mtimeMs);
   let next;
-  try { next = await (await fetch('/api/session?id=' + encodeURIComponent(rel))).json(); }
-  finally { if (seq === conversationLoadSeq && viewEl) viewEl.classList.remove('view-loading'); }
+  if (reuse) next = held;
+  else {
+    if (navigating && viewEl) viewEl.classList.add('view-loading');
+    try { next = await fetchSnapshot(rel); }
+    finally { if (seq === conversationLoadSeq && viewEl) viewEl.classList.remove('view-loading'); }
+  }
   if (seq !== conversationLoadSeq || rel !== activeRel) return;
+  // A link or a search lands inside a step: its words come first, so the
+  // entry is drawn open, marked, where the landing looks for it.
+  if (!next.error && typeof scroll === 'string' && /^(entry|hit):/.test(scroll)) {
+    const eid = scroll.startsWith('entry:') ? scroll.slice(6) : next.messages[Number(scroll.slice(4))]?.eid;
+    const want = eid == null ? [] : next.messages.map((m, i) => (m.eid === eid && m.cut ? i : -1)).filter(i => i >= 0);
+    if (want.length) await loadParts(next, want);
+    if (seq !== conversationLoadSeq || rel !== activeRel) return;
+  }
   // The user picked models after this fetch left: keep the local pick.
   if ((modelTouchAt.get(rel) || 0) > fetchStart && current && current.key === rel
       && Array.isArray(current.selectedModels) && current.selectedModels.length)
@@ -14282,6 +14475,44 @@ async function open(rel, scroll, routeHash = null, { fromList = false } = {}) {
   // Ordinary switches land at the tail. Restoring a reading position is an
   // explicit file/history return, never inferred from an unchanged mtime.
   await renderConv(scroll);
+  if (reuse) revalidateConversation(rel, seq);
+}
+
+// A conversation drawn from the copy this page held: what the server says
+// now. Nothing new and nothing about the screen changed (the usual answer,
+// a few hundred bytes): nothing happens; new messages are patched in; any
+// other difference draws it again where the reader is.
+async function revalidateConversation(key, seq) {
+  const held = current, asked = Date.now();
+  let next;
+  try { next = await fetchSnapshot(key, held); } catch { return; }
+  if (!next || next.error || seq !== conversationLoadSeq || current !== held || activeRel !== key) return;
+  if (next.token === held.token && conversationShell(next) === conversationShell(held)
+    && JSON.stringify(next.reading || null) === JSON.stringify(held.reading || null)
+    && JSON.stringify(next.participants || []) === JSON.stringify(held.participants || [])) {
+    rememberSnapshot(held);
+    return;
+  }
+  await showNewerConversation(next, readerAtTail() ? 'bottom' : 'preserve', asked);
+}
+// What a newer copy cannot change in place: the composer (who may act, a
+// mirror, a terminal program, Codex) and the controls drawn from those.
+function conversationShell(d) {
+  try { return JSON.stringify([d.canAct, !!d.mirror, d.source, d.draft || null, d.importCopyOf || null, d.liveTerminal || null, d.selectedModels || null, d.attachedContext || null, d.codexPrefs || null]) + agentComposerHtml(d); }
+  catch { return Math.random().toString(); }
+}
+// A newer copy of the conversation on screen. Patched in when only its
+// messages grew; drawn again when the composer would change.
+async function showNewerConversation(next, scroll, asked) {
+  const prev = current;
+  if (!prev || next.key !== prev.key) return;
+  // The person picked models after this copy was asked for: their pick stays.
+  if ((modelTouchAt.get(next.key) || 0) > asked && Array.isArray(prev.selectedModels) && prev.selectedModels.length) next.selectedModels = prev.selectedModels;
+  if (!(window._ctxTouched && prev.key === next.key)) window._agentContext = Array.isArray(next.attachedContext) ? next.attachedContext.slice() : [];
+  const patchable = conversationShell(next) === conversationShell(prev) && $('conversationTranscript')?.classList.contains('transcript') && (next.messages || []).length > 0;
+  current = next;
+  learnSpeedCalibration(next.speedCalibration);
+  if (!patchable || !(await patchConversation(next, scroll))) await renderConv(scroll);
 }
 
 // ---- distillation ----
@@ -14759,7 +14990,7 @@ async function showTree(key, opts = {}) {
   // the file's last entry.
   let snapshot = current?.key === key ? current : readerSessions.get(key);
   if (!snapshot) {
-    try { snapshot = await (await fetch('/api/session?id=' + encodeURIComponent(key))).json(); if (snapshot && !snapshot.error) { adoptServerReading(snapshot); readerSessions.set(key, snapshot); } else snapshot = null; } catch { snapshot = null; }
+    try { snapshot = await fetchSnapshot(key); if (snapshot && !snapshot.error) { adoptServerReading(snapshot); rememberSnapshot(snapshot); } else snapshot = null; } catch { snapshot = null; }
     if (activeRel !== key || viewKind !== 'tree') return;
   }
   if (snapshot && snapshot.entryParents) {
@@ -14903,6 +15134,7 @@ async function readTreeNode(key, n) {
   const id = n.messageId || n.id;
   await moveReading(key, id, { anchor: null });
   if (current?.key === key) {
+    fillGroupsWithEntry($('conversationTranscript'), id);
     const el = $('view').querySelector(`[data-eid="${CSS.escape(id)}"]`);
     if (el) el.scrollIntoView({ block: 'start' });
   }
@@ -15088,6 +15320,7 @@ async function editFrom(key, n, btn) {
     const message = current.messages.find(m => m.role === 'user' && (ids.has(m.eid) || m.ts === n.jumpTs));
     if (!message) throw Error('The original question is unavailable. Reload the tree.');
     await open(key, 'entry:' + message.eid);
+    fillMessageMenu($('view').querySelector(`[data-eid="${CSS.escape(message.eid)}"] .msg-more-actions`));
     const edit = $('view').querySelector(`[data-eid="${CSS.escape(message.eid)}"] .msg-edit`);
     if (edit) await openTranscriptEditor(edit);
   } catch (error) { errToast(error.message); }
