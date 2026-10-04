@@ -255,6 +255,10 @@ app frame (relay origin) ── iframe ──▶ previews.<relay>/a/<cap>/…
   account is `https://acme-v02.api.letsencrypt.org/acme/acct/3809097526`,
   to add once DNS moves, design/86). Domain lock, privacy and auto-renew
   are on. DNSSEC deliberately off until the DNS host is decided.
+- **Previews' name** (2026-10-04): `previews.encrypted-link-to-your-devices.rockfrog.ai`,
+  A and AAAA to the same addresses, DNS only (never proxied), at Cloudflare,
+  where rockfrog.ai's DNS now lives (the CAA above covers it, one level up);
+  its certificate from Let's Encrypt through Caddy, like the relay's.
 - **Exposed**: TCP 80, 443 (Caddy), 3478 and 5349 (coturn), UDP 443, 3478,
   49152–65535 (coturn relaying), 41641 (Tailscale). Nothing else answers.
 - **Checked from outside**: Let's Encrypt certificate; HSTS and the
