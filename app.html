@@ -2613,8 +2613,13 @@ function setRouteKind(kind) {
   // (Guarded: a route set while the page script is still starting comes
   // before the counter exists.)
   if (kind !== 'conversation') { try { conversationLoadSeq++; } catch {} }
+  // A file placed beside a conversation (design/83) stays through a move to
+  // a conversation: the panel it sits in decides (it follows its conversation).
+  // It also stays for a new conversation started beside it (Pair.newConversation).
+  const besideFile = (kind === 'conversation' || (kind === 'draft' && window.Pair && Pair.intoDraft()))
+    && typeof fileWs !== 'undefined' && fileWs && fileWs.placement === 'beside';
   // The artifact panel belongs to its conversation (design/67).
-  if (kind !== 'conversation' && window.Artifacts) Artifacts.onLeaveConversation();
+  if (kind !== 'conversation' && !besideFile && window.Artifacts) Artifacts.onLeaveConversation();
   // Capture before the route resets scroll or replaces the conversation DOM.
   rememberConversationPosition();
   navRememberScroll();
@@ -2628,9 +2633,7 @@ function setRouteKind(kind) {
   // Leaving a document flushes its pending autosave and destroys the editor,
   // or parks it when the side list keeps it (a notebook run here, design/68).
   // The file workspace does the same when it swaps one document for another.
-  // A file placed beside a conversation (design/83) stays through a move to
-  // a conversation: the panel it sits in decides (it follows its conversation).
-  const besideFile = kind === 'conversation' && typeof fileWs !== 'undefined' && fileWs && fileWs.placement === 'beside';
+  // A file beside a conversation stays (besideFile, above).
   if (kind !== 'file' && kind !== 'files-project' && !besideFile && typeof docState !== 'undefined' && docState) leaveDocument();
   // The file workspace (files mode) owns an editor too: leaving it saves
   // the draft and destroys the editor. Re-entering rebuilds from scratch.

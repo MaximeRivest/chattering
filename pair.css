@@ -82,3 +82,22 @@ body.pair-swap #artifactPane .pair-grip { display: block; position: absolute; ri
 /* E-ink: no shadow, solid lines. */
 :root[data-theme-mode="binary"] #pairPill { box-shadow: none; border: 2px solid var(--text); background: var(--bg); }
 :root[data-theme-mode="binary"] body.pair-swap #artifactPane { border-right: 2px solid var(--text); }
+
+/* ---- which conversation: the file's pairing, named in the panel's head ---- */
+.art-tools .art-pair { display: inline-flex; align-items: center; gap: 4px; max-width: 220px; padding: 0 8px; }
+.art-tools .art-pair[hidden] { display: none; }
+.art-pair .art-pair-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.art-pair .art-pair-glyph { color: var(--text-dim); }
+@container (max-width: 560px) { .art-tools .art-pair { max-width: 160px; } }
+.mpick.pair-picker .mp-top { padding: 10px; border-bottom: 1px solid var(--border); }
+.mpick.pair-picker .mp-filter { min-width: 0; }
+.mpick.pair-picker .mp-list { min-height: 0; padding: 4px 0; }
+.mpick.pair-picker .pp-sec { padding: 8px 12px 2px; font-size: var(--fs-micro); color: var(--text-dim); text-transform: uppercase; letter-spacing: .04em; }
+.mpick.pair-picker .pp-loading { text-transform: none; letter-spacing: 0; }
+.mpick.pair-picker .mp-row { flex: 0 0 auto; flex-direction: column; align-items: stretch; gap: 2px; padding: 7px 12px; line-height: 1.35; }
+.mpick.pair-picker .mp-row b { white-space: normal; overflow-wrap: anywhere; }
+.mpick.pair-picker .mp-row small { font-size: var(--fs-micro); color: var(--text-dim); }
+.mpick.pair-picker .mp-row.on b::before { content: '✓ '; color: var(--accent); }
+.mpick.pair-picker .mp-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.mpick.pair-picker .mp-create { border-top: 1px solid var(--border); margin-top: 4px; color: var(--accent); }
+@media (max-width: 700px) { .mpick.pair-picker { width: auto; max-width: 100%; max-height: 72dvh; } }

@@ -50,6 +50,33 @@ Differences from the study, and why:
   "☷ conversation" and steps the panel aside; a pill with the file's name
   (top right) brings it back; Android's back button steps it aside too.
 
+## Which conversation (2026-10-04)
+
+Maxime: "I want to be able to change the conversation that I put beside /
+pair to my notebook." The panel's head names the conversation the file is
+with (`☷ <title> ▾`, `pair.js` `paintPairButton`); it opens a picker:
+
+- **Worked on this file** (the file ledger, newest first), **Open** (the
+  side list), **Recent in <project>**; typing searches every conversation.
+  The one beside it now is marked.
+- Picking one keeps the file, its editor and the tilt; only the
+  conversation in the main column changes (`Pair.switchConversation`,
+  `Artifacts.rekey`). An ask box open over the file follows it. The ask
+  box's "details" uses the same path when the file is already beside a
+  conversation.
+- **+ New conversation about <file>**: the new-conversation page takes the
+  main column, the file stays beside it and is attached as context; when
+  the first message goes, the conversation it becomes keeps the file beside
+  it (`Pair.carryInto`, from `sendDraft`). Its folder: the paired
+  conversation's when the file is inside it, else the project holding the
+  file, else the file's folder.
+
+Trade-offs: the conversation left behind **keeps its own memory** of the
+file (the rule above: a conversation reopens what was beside it until ✕),
+so going back to it shows the file beside it again. A Markdown artifact
+being edited becomes a plain file when re-paired: its version picker belongs
+to the conversation that made it.
+
 ## What exists (read in the code, 2026-09-29)
 
 **The artifact panel** (`artifacts.js`, `artifacts.css`, design/67) is

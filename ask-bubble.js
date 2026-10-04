@@ -429,7 +429,8 @@ async function askBubbleLoadTarget(b) {
   const options = [];
   const seen = new Set();
   // Side by side with a conversation (design/83): that one, on screen.
-  const beside = ws.placement === 'beside' && ws.besideKey ? ws.besideKey : null;
+  // (Not a new conversation still being written: nothing can take an ask yet.)
+  const beside = ws.placement === 'beside' && ws.besideKey && !ws.besideKey.startsWith('draft:') ? ws.besideKey : null;
   if (beside) {
     const c = (info.candidates || []).find(x => x.key === beside);
     const s = typeof sessions !== 'undefined' ? sessions.find(x => x.key === beside) : null;

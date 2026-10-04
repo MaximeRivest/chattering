@@ -341,6 +341,7 @@
           <button type="button" data-art-act="newer" aria-label="Newer version">›</button>
         </span>
         <span class="art-tools">
+          <button type="button" class="art-pair" data-art-act="pair" hidden aria-haspopup="dialog" aria-expanded="false"></button>
           <button type="button" data-art-act="publish" hidden title="Put this version on the web at its own address: a frozen copy, signed by this computer (design/92)">Publish</button>
           <button type="button" data-art-act="ask" title="Ask about this artifact in the message box">Ask</button>
           <button type="button" data-art-act="reload" title="Reload" aria-label="Reload">↻</button>
@@ -359,6 +360,7 @@
       if (act === 'close') closePanel();
       else if (act === 'list') backToList();
       else if (act === 'tilt') { if (window.Pair) Pair.toggle(); }
+      else if (act === 'pair') { if (window.Pair) Pair.pickConversation(e.target.closest('[data-art-act]')); }
       else if (act === 'page') toPage();
       else if (act === 'reload') render(true);
       else if (act === 'float') setFloating(!floating);
@@ -439,6 +441,22 @@
   function remember(key, spec) {
     if (!key || !spec) return;
     try { localStorage.setItem(stateKey(key), JSON.stringify(spec)); } catch {}
+  }
+  // The file beside is paired with another conversation (design/83, "which
+  // conversation"): the panel now belongs to `key`, the editor stays as it
+  // is. A document artifact being edited becomes a plain file: its versions
+  // belong to the conversation that made it. The conversation left keeps
+  // its own memory, like any conversation left with something beside it.
+  function rekey(key) {
+    if (!state || !key) return;
+    const file = state.kind === 'document' ? state.path : state.editing;
+    if (!file) return;
+    state = state.kind === 'document'
+      ? { ...state, key, fromList: null }
+      : { kind: 'document', key, path: file, title: String(file).split(/[\\/]/).pop(), project: null, fromList: null, version: null, resolved: null };
+    if (!/^draft:/.test(key)) remember(key, savedSpec(state));
+    applyMode();
+    render(false);
   }
   function savedSpec(spec) {
     if (spec.kind === 'files') return { path: spec.path, title: spec.title, type: spec.type };
@@ -726,7 +744,7 @@
 
   const shortPath = p => typeof shortFilePath === 'function' ? shortFilePath(p) : String(p || '').replace(/^\/home\/[^/]+/, '~');
 
-  window.Artifacts = { wire, openPanel, closePanel, hideFor, remember, onConversation, onHeadChange, onLeaveConversation, previewOrigin, hostContext, codePage, setFloating, state: () => state, floating: () => floating };
+  window.Artifacts = { wire, openPanel, closePanel, hideFor, remember, rekey, onConversation, onHeadChange, onLeaveConversation, previewOrigin, hostContext, codePage, setFloating, state: () => state, floating: () => floating };
 })();
 
 /* ---- the artifact library (design/67) --------------------------------------

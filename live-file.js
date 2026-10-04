@@ -251,7 +251,8 @@ function fileWsToPage(ws) {
   ws.frame.remove();
   ws.placement = 'page';
   ws.besideKey = null;
-  if (key) ws.back = key;
+  // Beside a new conversation not sent yet, ← goes back to that draft.
+  if (key) ws.back = key.startsWith('draft:') ? 'new=' + key.slice(6) : key;
   if (key && typeof Artifacts !== 'undefined') { try { localStorage.removeItem('chattering.artifact.v1:' + key); } catch {} }
   setRoute('file', fileWsHash(ws), { project: ws.project || (typeof scopeFileProject === 'function' ? scopeFileProject(ws) : undefined) });
   $('view').replaceChildren(ws.frame);

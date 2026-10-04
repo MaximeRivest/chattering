@@ -139,6 +139,45 @@ test('the pair: beside, not in place; one editor that moves; both ways; one side
   await until(`document.querySelector('#view [data-transcript-path]')`, 'the conversation beside the file did not draw');
   assert.match(await ev(`(() => { openFileActionMenu(fileControlContext(document.querySelector('#view [data-transcript-path]')), 10, 10); const t = [...document.querySelectorAll('.file-action-menu [role=menuitem]')].map(b => b.textContent); closeFileActionMenu(); return t.join('|'); })()`), /Open the file beside\|Open the file full page/);
 
+  // ---- which conversation: the head names it; another one takes its place, the file stays ----
+  const OTHER = 'pi:fixture/media.jsonl';
+  await until(`(() => { const b = document.querySelector('#artifactPane [data-art-act="pair"]'); return b && !b.hidden && b.getClientRects().length > 0; })()`, 'the head does not say which conversation the file is with');
+  assert.match(await ev(`document.querySelector('#artifactPane [data-art-act="pair"]').textContent`), /Tidy the notes|conversation/);
+  await ev(`(window.__editor = docState.editor, true)`);
+  const swapped = await ev(`document.body.classList.contains('pair-swap')`);
+  await ev(`document.querySelector('#artifactPane [data-art-act="pair"]').click()`);
+  await until(`document.querySelector('.pair-picker [data-pair-key=${JSON.stringify(KEY)}].on')`, 'the picker does not mark the conversation beside the file');
+  await until(`!document.querySelector('.pair-picker .pp-loading')`, 'the file\'s own conversations did not load');
+  assert.match(await ev(`document.querySelector('.pair-picker').textContent`), /Worked on this file/);
+  await b.screenshot('pair-picker.png');
+  await ev(`(() => { const i = document.querySelector('.pair-picker .mp-filter'); i.value = (sessions.find(s => s.key === ${JSON.stringify(OTHER)}).title || '').slice(0, 12); i.dispatchEvent(new Event('input')); })()`);
+  await until(`document.querySelector('.pair-picker [data-pair-key=${JSON.stringify(OTHER)}]')`, 'the search does not find the other conversation');
+  await ev(`document.querySelector('.pair-picker [data-pair-key=${JSON.stringify(OTHER)}]').click()`);
+  await until(`viewKind === 'conversation' && activeRel === ${JSON.stringify(OTHER)} && fileWs && fileWs.besideKey === ${JSON.stringify(OTHER)} && Artifacts.state()?.key === ${JSON.stringify(OTHER)}`, 'the other conversation did not come beside the file');
+  assert.equal(await ev(`docState.editor === window.__editor && fileWs.placement === 'beside' && !!document.querySelector('#artifactPane .art-body > .live-file-view')`), true, 'the same editor, still beside');
+  assert.equal(await ev(`document.body.classList.contains('pair-swap')`), swapped, 'the tilt is kept');
+  assert.equal(await ev(`!document.querySelector('.pair-picker')`), true);
+  // The ask box goes to the conversation now beside the file.
+  await ev(`fileWsToggleAsk(true)`);
+  await until(`askBox && askBox.info && document.querySelector('.ask-target').value === ${JSON.stringify(OTHER)}`, 'the ask box still goes to the conversation before');
+  await ev(`askBubbleClose()`);
+
+  // ---- a new conversation about the file: the draft page beside it, the file attached ----
+  await ev(`document.querySelector('#artifactPane [data-art-act="pair"]').click()`);
+  await until(`document.querySelector('.pair-picker [data-pair-new]')`);
+  await ev(`document.querySelector('.pair-picker [data-pair-new]').click()`);
+  await until(`viewKind === 'draft' && fileWs && fileWs.placement === 'beside' && fileWs.besideKey === activeRel && Artifacts.state()?.key === activeRel`, 'the file did not stay beside the new conversation');
+  assert.equal(await ev(`docState.editor === window.__editor`), true, 'the same editor, beside the draft');
+  assert.equal(await ev(`attachedContext().some(c => c.type === 'file' && c.path === ${JSON.stringify(note)})`), true, 'the file rides along as context');
+  assert.match(await ev(`document.querySelector('#artifactPane [data-art-act="pair"]').textContent`), /new conversation/);
+  await b.screenshot('pair-draft.png');
+  assert.equal(await ev(`localStorage.getItem('chattering.artifact.v1:' + activeRel)`), null, 'a draft leaves no memory of its own');
+  // Sent, the draft becomes a conversation that keeps the file beside it.
+  await ev(`(() => { const d = loadDraft(activeRel.slice(6)); return !!(d && d.beside && d.beside.path === ${JSON.stringify(note)}); })()`).then(ok => assert.equal(ok, true, 'the draft remembers the file'));
+  await ev(`Pair.carryInto(${JSON.stringify(KEY)}, { path: ${JSON.stringify(note)} })`);
+  await ev(`open(${JSON.stringify(KEY)}, 'bottom')`);
+  await until(`viewKind === 'conversation' && activeRel === ${JSON.stringify(KEY)} && fileWs && fileWs.besideKey === ${JSON.stringify(KEY)} && docState.editor === window.__editor`, 'the conversation did not keep the file beside it');
+
   // ---- a narrow window: one side at a time, the other one tap away ----
   await b.size(900, 800);
   await until(`Pair.overlay() && !document.body.classList.contains('pair-swap')`, 'narrow: still side by side');

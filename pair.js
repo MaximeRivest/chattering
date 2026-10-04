@@ -62,6 +62,7 @@
     body().classList.toggle('pair-talk-hidden', on && over && !shownOverlay);
     paintPill(on && overlay() && !shownOverlay);
     paintTiltButton();
+    paintPairButton();
     // Every editor and chart measures again; the ask box follows its line.
     window.dispatchEvent(new Event('resize'));
   }
@@ -199,6 +200,8 @@
     if (!key) { if (typeof toast === 'function') toast('No conversation has worked on this file yet. ' + modKey('K') + ' asks for a change.'); return false; }
     if (typeof fileWs === 'undefined' || fileWs !== ws) return false;
     if (ws.placement === 'beside' && ws.besideKey === key) { focusConversation(); return true; }
+    // Already beside another conversation: the pairing changes, nothing moves.
+    if (ws.placement === 'beside' && besideFile() === ws) return switchConversation(key);
     // The editor leaves the page but stays alive; the route change below does
     // not close it (setRouteKind keeps a file placed beside).
     ws.placement = 'beside';
@@ -265,6 +268,200 @@
       || body().classList.contains('pair-talk-hidden') !== (on && over && !shownOverlay)) apply();
     else paintTiltButton();
   });
+  // A new page (a conversation, a draft) beside the file: its name in the head.
+  window.addEventListener('chattering:route', () => queueMicrotask(paintPairButton));
+
+  // ---- which conversation: the file stays, the conversation beside it changes ----
+
+  const isDraft = key => typeof key === 'string' && key.startsWith('draft:');
+  const sessionOf = key => (typeof sessions !== 'undefined' && Array.isArray(sessions) ? sessions.find(s => s && s.key === key) : null) || null;
+  const titleOf = key => isDraft(key) ? 'new conversation' : (() => { const s = sessionOf(key); return String((s && (s.title || s.timelineTitle)) || 'conversation').replace(/\s+/g, ' ').trim(); })();
+  /** The file beside, editable, docked: the only case where the pairing can change. */
+  function besideFile() {
+    const st = typeof Artifacts !== 'undefined' ? Artifacts.state() : null;
+    const ws = typeof fileWs !== 'undefined' ? fileWs : null;
+    if (!st || Artifacts.floating() || !ws || ws.placement !== 'beside') return null;
+    const file = st.kind === 'document' ? st.path : st.editing;
+    return file && file === ws.path ? ws : null;
+  }
+
+  // The head says which conversation the file is with, and is the way to change it.
+  function paintPairButton() {
+    const b = pane()?.querySelector('[data-art-act="pair"]');
+    if (!b) return;
+    const ws = besideFile();
+    b.hidden = !ws;
+    if (!ws) return;
+    const title = titleOf(ws.besideKey);
+    b.innerHTML = '<span class="art-pair-glyph" aria-hidden="true">☷</span><span class="art-pair-name"></span><span aria-hidden="true">▾</span>';
+    b.querySelector('.art-pair-name').textContent = title;
+    b.title = 'This file is beside “' + title + '”. Choose another conversation, or start a new one about this file';
+    b.setAttribute('aria-label', 'Conversation beside this file: ' + title + '. Change it');
+  }
+
+  /**
+   * Put another conversation beside the file on screen. The file keeps its
+   * place, its editor, its tilt; the conversation in the main column is
+   * replaced, as if it had been opened from the list.
+   */
+  async function switchConversation(key) {
+    const ws = besideFile();
+    if (!ws || !key) return false;
+    if (key === ws.besideKey && typeof activeRel !== 'undefined' && activeRel === key) { focusConversation(); return true; }
+    ws.besideKey = key;
+    ws.back = key;
+    Artifacts.rekey(key);
+    await open(key, 'bottom');
+    if (fileWs !== ws) return false;
+    liveFilePlaced(ws);
+    // An ask box open over the file now goes to this conversation.
+    if (typeof askBox !== 'undefined' && askBox && askBox.ws === ws && typeof askBubbleLoadTarget === 'function') askBubbleLoadTarget(askBox);
+    paintPairButton();
+    return true;
+  }
+
+  // Where a new conversation about the file runs: the paired conversation's
+  // folder when the file is inside it (an area keeps its scope), else the
+  // project holding the file, else the file's own folder.
+  function folderFor(ws) {
+    const inside = dir => !!dir && (ws.path === dir || ws.path.startsWith(String(dir).replace(/\/+$/, '') + '/'));
+    const conv = sessionOf(ws.besideKey);
+    if (conv && inside(conv.cwd)) return conv.cwd;
+    const rows = typeof sidebarProjectRows === 'function' ? sidebarProjectRows() : [];
+    const project = rows.filter(r => inside(r.cwd)).sort((a, b) => b.cwd.length - a.cwd.length)[0];
+    if (project) return project.cwd;
+    if (conv && conv.cwd) return conv.cwd;
+    return ws.path.replace(/[\\/][^\\/]*$/, '') || '';
+  }
+
+  // A new conversation beside the file: the draft page takes the main column,
+  // the file stays, and the file rides along as context. When the first
+  // message goes, the new conversation keeps the file beside it (carryInto).
+  let draftCarry = false;
+  const intoDraft = () => draftCarry;
+  function newConversation() {
+    const ws = besideFile();
+    if (!ws || typeof newDraft !== 'function' || typeof showDraft !== 'function') return false;
+    const d = { ...newDraft(), folder: folderFor(ws), context: [{ type: 'file', path: ws.path }], beside: { path: ws.path, project: ws.project || null } };
+    saveDraft(d);
+    // showDraft sets the route before its first wait: the flag covers exactly that.
+    draftCarry = true;
+    try { showDraft(d.id); }
+    finally { draftCarry = false; }
+    if (fileWs !== ws || typeof activeRel === 'undefined' || !isDraft(activeRel)) return false;
+    ws.besideKey = activeRel;
+    Artifacts.rekey(activeRel);
+    liveFilePlaced(ws);
+    paintPairButton();
+    return true;
+  }
+  /** A draft started beside a file was sent: the conversation it became keeps the file. */
+  function carryInto(key, spec) {
+    if (!key || !spec || !spec.path || typeof Artifacts === 'undefined') return;
+    const ws = besideFile();
+    if (ws && ws.path === spec.path) { ws.besideKey = key; ws.back = key; Artifacts.rekey(key); }
+    else Artifacts.remember(key, { kind: 'document', path: spec.path, project: spec.project || null });
+  }
+
+  // The choice: conversations that worked on the file, those open in the
+  // side list, the project's recent ones; a search reaches all of them.
+  let pickerClose = null;
+  async function pickConversation(anchor) {
+    if (pickerClose) { pickerClose(true); return; }
+    const ws = besideFile();
+    if (!ws || !anchor) return;
+    document.querySelectorAll('.mpick').forEach(el => el.remove());
+    const pop = document.createElement('div');
+    pop.className = 'mpick pair-picker';
+    pop.setAttribute('role', 'dialog');
+    pop.setAttribute('aria-label', 'Conversation beside ' + baseName(ws.path));
+    pop.innerHTML = '<div class="mp-top"><input type="search" class="mp-filter" aria-label="Find a conversation" placeholder="Find a conversation" autocomplete="off" spellcheck="false"></div><div class="mp-list"></div>';
+    document.body.appendChild(pop);
+    anchor.setAttribute('aria-expanded', 'true');
+    const input = pop.querySelector('input'), list = pop.querySelector('.mp-list');
+    const close = (focus = false) => {
+      pop.remove(); anchor.setAttribute('aria-expanded', 'false'); pickerClose = null;
+      document.removeEventListener('click', outside, true); window.removeEventListener('chattering:route', onRoute); window.removeEventListener('resize', position);
+      if (focus && anchor.isConnected) anchor.focus({ preventScroll: true });
+    };
+    const outside = e => { if (!pop.contains(e.target) && !anchor.contains(e.target)) close(); };
+    const onRoute = () => close();
+    const position = () => {
+      if (!pop.isConnected) return;
+      if (window.matchMedia('(max-width: 700px)').matches) { for (const p of ['width', 'max-height', 'left', 'top']) pop.style.removeProperty(p); return; }
+      const r = anchor.getBoundingClientRect();
+      pop.style.width = Math.min(400, innerWidth - 16) + 'px';
+      pop.style.maxHeight = Math.max(160, Math.min(520, innerHeight - r.bottom - 14)) + 'px';
+      pop.style.left = Math.max(8, Math.min(r.right - pop.offsetWidth, innerWidth - pop.offsetWidth - 8)) + 'px';
+      pop.style.top = (r.bottom + 6) + 'px';
+    };
+    pickerClose = close;
+
+    const usable = s => s && s.key && !s.mirror && !s.hiddenFanout && !isDraft(s.key);
+    const recency = s => Date.parse(s.lastTs || s.firstTs || '') || 0;
+    const byRecency = arr => arr.slice().sort((a, b) => recency(b) - recency(a));
+    const all = () => (typeof sessions !== 'undefined' && Array.isArray(sessions) ? sessions : []).filter(usable);
+    const paired = sessionOf(ws.besideKey);
+    const project = paired && typeof projectOf === 'function' ? projectOf(paired) : (ws.project || '');
+    let worked = null; // keys, newest first; null while loading
+    const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const when = s => { const t = recency(s); return t && typeof ago === 'function' ? ago(Date.now() - t) + ' ago' : ''; };
+    const row = s => {
+      const on = s.key === ws.besideKey;
+      const where = typeof projectOf === 'function' ? projectOf(s) : '';
+      const meta = [where && where !== (typeof LOOSE_PROJECT !== 'undefined' ? LOOSE_PROJECT : '') ? where : '', when(s), on ? 'beside it now' : ''].filter(Boolean).join(' · ');
+      return `<button type="button" class="mp-row${on ? ' on' : ''}" data-pair-key="${esc(s.key)}" aria-pressed="${on}"><b>${esc(titleOf(s.key))}</b>${meta ? `<small>${esc(meta)}</small>` : ''}</button>`;
+    };
+    const paint = () => {
+      if (!pop.isConnected) return;
+      const q = input.value.trim().toLocaleLowerCase();
+      const shown = new Set();
+      const section = (label, items, max) => {
+        const rows = items.filter(s => !shown.has(s.key)).slice(0, max);
+        rows.forEach(s => shown.add(s.key));
+        return rows.length ? `<div class="pp-sec">${esc(label)}</div>` + rows.map(row).join('') : '';
+      };
+      let html = '';
+      if (q) {
+        const hits = byRecency(all().filter(s => `${titleOf(s.key)} ${typeof projectOf === 'function' ? projectOf(s) : ''}`.toLocaleLowerCase().includes(q)));
+        html = section('Matching', hits, 40) || '<div class="mp-empty">No conversation matches.</div>';
+      } else {
+        const workedRows = (worked || []).map(sessionOf).filter(usable);
+        const listed = typeof listedSessions === 'function' ? byRecency(listedSessions().filter(usable)) : [];
+        html = section('Worked on this file', workedRows, 6)
+          + (worked ? '' : '<div class="pp-sec pp-loading">Looking for conversations that worked on it…</div>')
+          + section('Open', listed, 8)
+          + (project ? section('Recent in ' + project, byRecency(all().filter(s => typeof projectOf === 'function' && projectOf(s) === project)), 6) : '');
+        // The one beside it now is always in the list, marked.
+        if (paired && usable(paired) && !shown.has(paired.key)) html = row(paired) + html;
+      }
+      list.innerHTML = html + `<button type="button" class="mp-row mp-create" data-pair-new title="A new conversation with this file attached as context; the file stays beside it"><b>+ New conversation about ${esc(baseName(ws.path))}</b></button>`;
+      list.querySelectorAll('[data-pair-key]').forEach(b => b.onclick = () => { const key = b.dataset.pairKey; close(); switchConversation(key); });
+      list.querySelector('[data-pair-new]').onclick = () => { close(); newConversation(); };
+      position();
+    };
+    input.oninput = paint;
+    pop.onkeydown = e => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(true); return; }
+      const buttons = [...list.querySelectorAll('button')];
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault(); e.stopPropagation();
+        const i = buttons.indexOf(document.activeElement);
+        buttons[(i + (e.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus();
+      } else if (e.key === 'Enter' && e.target === input) { e.preventDefault(); (buttons.find(b => !b.classList.contains('on') && b.dataset.pairKey) || buttons[0])?.click(); }
+    };
+    paint();
+    input.focus();
+    document.addEventListener('click', outside, true);
+    window.addEventListener('chattering:route', onRoute);
+    window.addEventListener('resize', position);
+    // The file's own history: who wrote in it, newest first.
+    try {
+      const out = await (await fetch('/api/files/touched?' + new URLSearchParams({ path: ws.path }))).json();
+      worked = [...new Set((out.sessions || []).map(sn => sn.convKey).filter(Boolean))];
+    } catch { worked = []; }
+    if (pickerClose === close) paint();
+  }
 
   /** Android's back button: a panel over the conversation steps aside first. */
   function back() {
@@ -277,5 +474,6 @@
     tilt, setTilt, toggle, apply, opened, closed, overlay,
     openFile, openChange, withConversation, focusConversation, showsConversation, conversationFor,
     mountDocument, release, released, back,
+    pickConversation, switchConversation, newConversation, carryInto, intoDraft,
   };
 })();

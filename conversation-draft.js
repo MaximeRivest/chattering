@@ -439,6 +439,8 @@ async function sendDraft(btn) {
       const key = await LiveTerminal.startNew(d.harness || 'pi', d.folder || '', prompt, text => { if (state) state.textContent = text; });
       deleteDraft(d.id);
       draftState = null;
+      // Started beside a file: the conversation keeps it there.
+      if (d.beside && window.Pair) Pair.carryInto(key, d.beside);
       await open(key, 'bottom');
     } catch (e) { errToast(e.message); if (state) state.textContent = 'not started'; }
     finally { window._draftSendBusy = false; }
@@ -480,6 +482,7 @@ async function sendDraft(btn) {
     }
     window._sendPendingKey = out.runError ? null : out.key;
     window._sendPendingAt = Date.now();
+    if (d.beside && window.Pair) Pair.carryInto(out.key, d.beside);
     await open(out.key, 'bottom');
     // Your words on screen at once, as for every later send. The run has
     // only just begun writing the session, so the transcript just loaded
