@@ -6,19 +6,27 @@
    that frame makes arrives here and is handed to the shell, which carries
    it through the encrypted tunnel to the home and streams the answer back.
    This worker keeps no data of its own: the shell's files, cached so the
-   page opens without the network, and nothing else. */
+   page opens without the network, and nothing else.
+
+   The same file is the worker of the preview address, previews.<relay>
+   (design/67): artifacts run there, a site apart from the app's. On that
+   site every request goes to the carrier (carrier.html, a hidden page the
+   shell holds), which hands it to the shell, which carries it through the
+   tunnel to the computer's preview server. It never shows the shell. */
 'use strict';
-const VERSION = 'anywhere-11';
-const SHELL_CACHE = 'anywhere-shell-' + VERSION;
-const SHELL_FILES = ['/_anywhere/shell.html', '/_anywhere/shell.css', '/_anywhere/shell.js', '/_anywhere/protocol.js', '/_anywhere/client.js',
-  '/_anywhere/inside.js', '/_anywhere/manifest.webmanifest', '/_anywhere/mark.svg', '/_anywhere/favicon.svg', '/_anywhere/icon-192.png', '/_anywhere/apple-touch-icon.png'];
+const VERSION = 'anywhere-12';
+const PREVIEW = location.hostname.startsWith('previews.');
+const SHELL_CACHE = (PREVIEW ? 'anywhere-carrier-' : 'anywhere-shell-') + VERSION;
+const SHELL_FILES = PREVIEW ? ['/_anywhere/carrier.html', '/_anywhere/carrier.js']
+  : ['/_anywhere/shell.html', '/_anywhere/shell.css', '/_anywhere/shell.js', '/_anywhere/protocol.js', '/_anywhere/client.js',
+    '/_anywhere/inside.js', '/_anywhere/manifest.webmanifest', '/_anywhere/mark.svg', '/_anywhere/favicon.svg', '/_anywhere/icon-192.png', '/_anywhere/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(SHELL_CACHE).then(c => c.addAll(SHELL_FILES)).catch(() => {}).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
   e.waitUntil((async () => {
-    for (const k of await caches.keys()) if (k.startsWith('anywhere-shell-') && k !== SHELL_CACHE) await caches.delete(k);
+    for (const k of await caches.keys()) if (/^anywhere-(shell|carrier)-/.test(k) && k !== SHELL_CACHE) await caches.delete(k);
     await self.clients.claim();
   })());
 });
@@ -28,6 +36,8 @@ self.addEventListener('fetch', e => {
   if (url.origin !== location.origin) return;
   if (url.pathname === '/sw.js' || url.pathname === '/healthz') return;
   if (url.pathname.startsWith('/_anywhere/')) return e.respondWith(shellFile(e.request));
+  // The preview address: everything else is the computer's.
+  if (PREVIEW) return e.respondWith(throughTunnel(e));
   // A page opened by the person (a link, the home-screen icon, a reload):
   // always the shell, which then opens the app at this address.
   if (e.request.mode === 'navigate' && e.request.destination === 'document') return e.respondWith(shellFile(new Request('/_anywhere/shell.html')));
@@ -45,8 +55,13 @@ async function shellFile(req) {
 
 // Which shell carries the request: every top-level page of this site is
 // one, all connected to the same computer. The one in front first.
+// On the preview address: a carrier, the one in the tab on screen first.
 async function pickShell() {
   const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  if (PREVIEW) {
+    const carriers = all.filter(c => new URL(c.url).pathname === '/_anywhere/carrier.html');
+    return carriers.find(c => c.visibilityState === 'visible') || carriers[0] || null;
+  }
   const tops = all.filter(c => c.frameType === 'top-level');
   return tops.find(c => c.focused) || tops.find(c => c.visibilityState === 'visible') || tops[0] || null;
 }
@@ -55,11 +70,17 @@ const NOT_CONNECTED = `<!doctype html><meta charset="utf-8"><meta name="viewport
 <body style="font:16px/1.5 system-ui,sans-serif;background:#101412;color:#dce3dd;display:grid;place-items:center;min-height:90vh;margin:0">
 <p>Not connected to your computer. <a style="color:#7dd492" href="/">Open Chattering</a></p>`;
 
+// A preview with no Chattering open to carry it (a tab left behind).
+const PREVIEW_NOT_CONNECTED = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<body style="font:15px/1.5 system-ui,sans-serif;color:#888;padding:1em;margin:0"><p>This preview needs Chattering open on this device, connected to your computer.</p>`;
+
 async function throughTunnel(e) {
   const req = e.request;
+  // Previews are read-only on the computer: a form that posts gets a plain answer.
+  if (PREVIEW && req.method !== 'GET' && req.method !== 'HEAD') return new Response('Previews are read-only.', { status: 405, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
   if (req.mode === 'navigate' && req.method !== 'GET' && req.method !== 'HEAD') return new Response('Forms that leave the page are not carried to your computer.', { status: 405 });
   const shell = await pickShell();
-  if (!shell) return new Response(NOT_CONNECTED, { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+  if (!shell) return new Response(PREVIEW ? PREVIEW_NOT_CONNECTED : NOT_CONNECTED, { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
   const url = new URL(req.url);
   const headers = {};
   req.headers.forEach((v, k) => { headers[k] = v; });
@@ -97,7 +118,7 @@ async function throughTunnel(e) {
       } else if (m.type === 'chunk') { queue.push(new Uint8Array(m.bytes)); wake(); }
       else if (m.type === 'end') { ended = true; wake(); }
       else if (m.type === 'error') {
-        if (!answered) { answered = true; resolve(req.mode === 'navigate' ? new Response(NOT_CONNECTED, { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } }) : Response.error()); }
+        if (!answered) { answered = true; resolve(req.mode === 'navigate' ? new Response(PREVIEW ? PREVIEW_NOT_CONNECTED : NOT_CONNECTED, { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } }) : Response.error()); }
         else { failed = new TypeError(m.message || 'the connection to your computer broke'); wake(); }
       }
     };

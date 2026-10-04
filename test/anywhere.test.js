@@ -73,12 +73,27 @@ function fetchThrough(tunnel, req) {
   });
 }
 
-async function world(t, { turn = false } = {}) {
+// Stands in for the preview server: says who asked and what.
+function fakePreviews() {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    seen.push({ url: req.url, method: req.method, headers: req.headers });
+    if (req.url === '/a/cap.sig/live/go') { res.writeHead(302, { Location: '/api/sessions' }); return res.end(); }
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': "frame-ancestors 'self'" });
+    res.end('<!doctype html><p>PREVIEW ' + req.url + '</p>');
+  });
+  return { server, seen };
+}
+
+async function world(t, { turn = false, previews = true } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'anywhere-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const app = fakeChattering();
   const appPort = await listen(app.server);
   t.after(() => app.server.close());
+  const pv = fakePreviews();
+  const previewPort = await listen(pv.server);
+  t.after(() => pv.server.close());
   const relay = createRelay({ env: turn ? { TURN_SECRET: 's3cret', TURN_URLS: 'turn:127.0.0.1:3478' } : {} });
   const relayPort = await listen(relay.server);
   t.after(() => relay.close());
@@ -91,6 +106,7 @@ async function world(t, { turn = false } = {}) {
     relayUrl: () => relayUrl,
     homeName: () => 'lambda',
     localTarget: () => ({ host: '127.0.0.1', port: appPort }),
+    previewTarget: previews ? () => ({ host: '127.0.0.1', port: previewPort }) : null,
     issueCredential: (userId, label) => { const id = 'c' + (++n), secret = 'secret-' + n; creds.set(id, { userId, secret, label }); return { secret, credentialId: id }; },
     credentialAlive: (userId, id) => creds.has(id) && creds.get(id).userId === userId,
     revokeCredential: (userId, id) => creds.delete(id),
@@ -105,8 +121,112 @@ async function world(t, { turn = false } = {}) {
     tunnels.push(tunnel);
     return tunnel;
   };
-  return { dir, app, relay, relayUrl, home, creds, phone, changes };
+  return { dir, app, pv, relay, relayUrl, home, creds, phone, changes };
 }
+
+// A request the home refuses: the stream ends with its reason, nothing answers.
+function refusedThrough(tunnel, req) {
+  return new Promise((resolve, reject) => {
+    tunnel.request(req, { onHead: h => reject(new Error('answered ' + h.status)), onChunk() {}, onEnd: () => reject(new Error('ended')), onError: e => resolve(e.message) });
+  });
+}
+
+test('previews: their own server, read-only, no credential, only what a preview may ask', { skip, timeout: 60000 }, async t => {
+  const w = await world(t);
+  const pairing = await w.home.pair('u1');
+  const link = P.readPairingLink(new URL(pairing.url).hash);
+  await until(() => w.home.status().relayState === 'ready', 'registered');
+  const tunnel = await w.phone({ homeId: link.homeId, device: await newDevice(), pairing: { id: link.id, secret: link.secret } });
+  assert.deepEqual(tunnel.can, ['preview'], 'the home says it carries previews');
+
+  // An artifact's file: from the preview server, as nobody.
+  const page = await fetchThrough(tunnel, { method: 'GET', path: '/a/cap.sig/live/index.html?x=1', kind: 'preview',
+    headers: { Accept: 'text/html', Cookie: 'stolen=1', Authorization: 'Bearer forged', Origin: 'https://evil.example', 'X-Forwarded-For': '1.2.3.4' } });
+  assert.equal(page.status, 200);
+  assert.match(page.body.toString(), /PREVIEW \/a\/cap\.sig\/live\/index\.html\?x=1/);
+  assert.equal(page.headers['content-security-policy'], "frame-ancestors 'self'", 'its policy reaches the phone');
+  const got = w.pv.seen.at(-1);
+  assert.equal(got.headers.authorization, undefined, 'no credential goes to the preview server');
+  assert.equal(got.headers.cookie, undefined);
+  assert.equal(got.headers.origin, undefined);
+  assert.equal(got.headers['x-forwarded-for'], 'anywhere');
+  assert.equal(got.headers.accept, 'text/html');
+  for (const p of ['/_c/proxy.html?host=https%3A%2F%2Fr.example', '/_c/kit.js', '/a/cap.sig/0123abcd/pic.png']) assert.equal((await fetchThrough(tunnel, { method: 'GET', path: p, kind: 'preview' })).status, 200, p);
+  assert.equal((await fetchThrough(tunnel, { method: 'HEAD', path: '/_c/kit.js', kind: 'preview' })).status, 200);
+  // A redirect out of what a preview may ask is not followed.
+  const away = await fetchThrough(tunnel, { method: 'GET', path: '/a/cap.sig/live/go', kind: 'preview', redirect: 'follow' });
+  assert.equal(away.status, 302);
+  assert.equal(away.headers.location, '/api/sessions');
+
+  // Nothing else: not the app, not shared links, not writes, not unknown kinds.
+  const appBefore = w.app.seen.length, pvBefore = w.pv.seen.length;
+  for (const p of ['/who', '/api/sessions', '/s/abc/', '/_c/share/viewer.js', '/a/nocap/live/', '//evil/a/cap.sig/live/'])
+    assert.match(await refusedThrough(tunnel, { method: 'GET', path: p, kind: 'preview' }), /preview may ask|bad path/, p);
+  assert.match(await refusedThrough(tunnel, { method: 'POST', path: '/a/cap.sig/live/x', kind: 'preview', body: Buffer.from('x') }), /preview may ask/);
+  const raw = await new Promise(resolve => { const s = tunnel._open('http', { error: e => resolve(e.message) }); tunnel.mux.send(P.T.REQ, s.id, { m: 'GET', p: '/who', h: {}, k: 'admin' }); });
+  assert.match(raw, /unknown kind/);
+  assert.equal(w.app.seen.length, appBefore, 'the app saw none of it');
+  assert.equal(w.pv.seen.length, pvBefore, 'the preview server saw none of it');
+  // The app itself is unchanged: as the person.
+  assert.equal(JSON.parse((await fetchThrough(tunnel, { method: 'GET', path: '/who' })).body).auth, 'Bearer secret-1');
+});
+
+test('previews: a home without a preview server says so, and is asked nothing', { skip, timeout: 60000 }, async t => {
+  const w = await world(t, { previews: false });
+  const pairing = await w.home.pair('u1');
+  const link = P.readPairingLink(new URL(pairing.url).hash);
+  await until(() => w.home.status().relayState === 'ready', 'registered');
+  const tunnel = await w.phone({ homeId: link.homeId, device: await newDevice(), pairing: { id: link.id, secret: link.secret } });
+  assert.deepEqual(tunnel.can, []);
+  assert.throws(() => tunnel.request({ method: 'GET', path: '/_c/kit.js', kind: 'preview' }, { onHead() {}, onChunk() {}, onEnd() {} }), /does not carry previews/);
+  // Sent anyway (an older phone page cannot, but a forged one could): refused.
+  const raw = await new Promise(resolve => { const s = tunnel._open('http', { error: e => resolve(e.message) }); tunnel.mux.send(P.T.REQ, s.id, { m: 'GET', p: '/_c/kit.js', h: {}, k: 'preview' }); });
+  assert.match(raw, /preview may ask/);
+  assert.equal(w.pv.seen.length, 0);
+});
+
+test('the relay on its preview address: the carrier and its worker, nothing else', { skip, timeout: 30000 }, async t => {
+  const relay = createRelay({ env: {}, noCache: true });
+  const port = await listen(relay.server);
+  t.after(() => relay.close());
+  const get = (host, p, opts = {}) => new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, path: p, method: opts.method || 'GET', headers: { Host: host, ...(opts.headers || {}) } }, res => {
+      const parts = []; res.on('data', c => parts.push(c)); res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(parts).toString() }));
+    });
+    req.on('error', reject); req.end();
+  });
+  const R = 'relay.example', V = 'previews.relay.example';
+  assert.equal(P.previewOrigin('https://' + R), 'https://' + V);
+  assert.equal(P.previewOrigin('http://127.0.0.1:' + port), null, 'no preview address for a bare IP');
+
+  const sw = await get(V, '/sw.js');
+  assert.equal(sw.status, 200);
+  assert.equal(sw.headers['service-worker-allowed'], '/');
+  assert.match(sw.body, /PREVIEW = location\.hostname\.startsWith\('previews\.'\)/, 'the same worker, which knows its site');
+  const carrier = await get(V, '/_anywhere/carrier.html');
+  assert.equal(carrier.status, 200);
+  assert.match(carrier.headers['content-security-policy'], /frame-ancestors relay\.example(;|$)/, 'only the relay\'s own page may hold it');
+  assert.match(carrier.headers['content-security-policy'], /script-src 'self'/);
+  assert.equal((await get(V, '/_anywhere/carrier.js')).status, 200);
+  // Never the shell or its files, never an artifact, never a write or a socket.
+  for (const p of ['/', '/a/cap.sig/live/', '/_anywhere/shell.html', '/_anywhere/shell.js', '/.well-known/assetlinks.json', '/_c/kit.js']) {
+    const r = await get(V, p);
+    assert.equal(r.status, 404, p);
+    assert.doesNotMatch(r.body, /shell\.js|<script/, p);
+    assert.equal(r.headers['cache-control'], 'no-store');
+  }
+  assert.equal((await get(V, '/sw.js', { method: 'POST' })).status, 405);
+  const up = await new Promise(resolve => {
+    const req = http.request({ host: '127.0.0.1', port, path: '/signal', headers: { Host: V, Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==' } });
+    req.on('response', r => resolve(r.statusCode)); req.on('upgrade', () => resolve(101)); req.on('error', () => resolve('error')); req.end();
+  });
+  assert.equal(up, 404, 'no introductions on the preview address');
+  // The relay's own name: the shell may frame the preview address; the carrier is not there.
+  const shell = await get(R, '/');
+  assert.match(shell.headers['content-security-policy'], /frame-src 'self' previews\.relay\.example;/);
+  assert.equal((await get(R, '/_anywhere/carrier.html')).status, 404);
+  assert.equal((await get(R, '/sw.js')).status, 200);
+});
 
 test('the handshake, the frames, the pairing link', { skip }, async () => {
   const mux = [];

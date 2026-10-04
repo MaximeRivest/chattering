@@ -48,6 +48,9 @@ in {
     services.caddy = {
       enable = true;
       # No access log: Caddy writes none unless a `log` directive asks.
+      # previews.<domain>: the previews' own site on a phone (design/67); it
+      # needs A and AAAA records of its own.
+      virtualHosts.${cfg.domain}.serverAliases = [ "previews.${cfg.domain}" ];
       virtualHosts.${cfg.domain}.extraConfig = ''
         encode zstd gzip
         reverse_proxy 127.0.0.1:${toString cfg.port}

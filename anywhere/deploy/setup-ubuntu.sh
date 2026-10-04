@@ -225,7 +225,7 @@ if [ -n "$SITE_DOMAIN" ]; then
 		protocols h1 h2
 	}"
   CADDY_SITES="
-http://$DOMAIN {
+http://$DOMAIN, http://previews.$DOMAIN {
 	redir https://{host}{uri} 308
 }
 
@@ -266,7 +266,11 @@ $CADDY_GLOBAL
 	}
 }
 
-$DOMAIN {
+# previews.$DOMAIN: what agents make runs there on a phone, a site apart
+# from the app's (design/67); the relay serves only its carrier, and
+# everything else of it comes from the person's computer, through the tunnel.
+# Its own A and AAAA records must point here before Caddy can get its certificate.
+$DOMAIN, previews.$DOMAIN {
 	encode zstd gzip
 	header -Server
 	# No "log" directive: Caddy writes no access log.

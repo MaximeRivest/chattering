@@ -16,9 +16,14 @@
     if (!configLoad) configLoad = fetch('/api/artifacts/config').then(r => r.json()).then(c => (config = c)).catch(e => { configLoad = null; throw e; });
     return configLoad;
   }
+  // On a device paired through the relay (design/85), the shell around this
+  // page carries previews from an address of their own, previews.<relay>.
+  const carried = () => window.__anywherePreview || null;
   // The preview address for an artifact, from where this page was opened:
-  // its own site on this computer, the tailnet's preview port, the LAN's.
+  // its own site on this computer, the tailnet's preview port, the LAN's,
+  // or the relay's preview address.
   function previewOrigin(site) {
+    if (carried()) return carried().origin;
     const c = config || { port: 7435, tlsPort: 7445, tailnetPort: 8443, base: '' };
     if (c.base) return c.base.replace('{id}', site);
     const h = location.hostname;
@@ -26,6 +31,20 @@
     if (location.protocol === 'https:' && /\.ts\.net$/i.test(h)) return `https://${h}:${c.tailnetPort}`;
     if (location.protocol === 'https:') return `https://${h}:${c.tlsPort}`;
     return `http://${h}:${c.port}`;
+  }
+  // A frame's page, once the preview address can answer: at once, except
+  // through the relay, where the shell first starts what carries it (until
+  // then the relay would get the address, which names the conversation and
+  // the folder). If it cannot, the frame says why in plain words.
+  function loadPreview(frame, url) {
+    const a = carried();
+    if (!a) { frame.src = url; return; }
+    a.ready().then(() => { frame.src = url; }, e => {
+      const text = (e && e.message) || 'This preview could not open here.';
+      if (frame.isConnected) { const note = document.createElement('p'); note.className = 'art-note'; note.textContent = text; frame.replaceWith(note); return; }
+      frame.setAttribute('sandbox', '');
+      frame.srcdoc = `<!doctype html><meta charset="utf-8"><meta name="color-scheme" content="light dark"><body style="font:14px/1.5 system-ui,sans-serif;color:#888;padding:12px;margin:0">${escHtml(text)}</body>`;
+    });
   }
   const siteOf = text => { let h = 0x811c9dc5; for (const ch of String(text)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 0x01000193) >>> 0; } return 'w' + h.toString(16).padStart(8, '0'); };
   const escHtml = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -144,7 +163,7 @@
     frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-pointer-lock');
     frame.setAttribute('allow', 'fullscreen; clipboard-write');
     frame.referrerPolicy = 'no-referrer';
-    frame.src = `${origin}/_c/proxy.html?host=${encodeURIComponent(location.origin)}`;
+    loadPreview(frame, `${origin}/_c/proxy.html?host=${encodeURIComponent(location.origin)}`);
     bridge(frame, { origin, html, displayMode, onSize, onFullscreen, dims, toolInput, toolName });
     return frame;
   }
@@ -633,7 +652,7 @@
       frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals allow-pointer-lock');
       frame.setAttribute('allow', 'fullscreen; clipboard-write; autoplay');
       frame.referrerPolicy = 'no-referrer';
-      frame.src = fileUrl;
+      loadPreview(frame, fileUrl);
       paneBridge = bridge(frame, { origin, displayMode: 'fullscreen', dims: () => ({ width: body.clientWidth, height: body.clientHeight }) });
       body.replaceChildren(frame);
     } else if (r.kind === 'pdf') {

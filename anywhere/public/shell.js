@@ -13,6 +13,8 @@
   'use strict';
   const P = window.AnywhereProtocol, C = window.AnywhereClient;
   const RELAY = location.origin;
+  // What agents make shows at its own address, previews.<this relay> (below).
+  const PREVIEW = P.previewOrigin(location.origin);
   const $ = id => document.getElementById(id);
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
@@ -373,6 +375,8 @@
     themeColor(c) { const m = document.querySelector('meta[name="theme-color"]'); if (m && c) m.content = c; },
     homes: () => homes.map(h => ({ id: h.homeId, name: h.name, active: h.homeId === active })),
     switchTo, openSheet,
+    // Where the app shows what agents make, and a promise that it can.
+    preview: PREVIEW ? { origin: PREVIEW, ready: () => previewReady() } : null,
   };
   // Android's back key (the app asks the page first): a sheet closes, else
   // the app inside decides, else history moves.
@@ -384,6 +388,58 @@
     return false;
   };
 
+  /* ---- previews (design/67): their own site, through the same tunnel ----
+     What agents make runs at previews.<this relay>, never at this site, so
+     its scripts cannot act as the person in the app. A hidden carrier page
+     there installs that site's worker and hands its requests here; they go
+     through the tunnel marked 'preview', and the computer answers them from
+     its preview server, with no credential. Made the first time the app
+     shows a preview, kept for the visit. */
+  let carrier = null, carrierUp = null;
+  const PREVIEW_HEADERS = new Set(['accept', 'accept-language', 'range', 'if-range', 'if-none-match', 'if-modified-since']);
+  function startCarrier() {
+    if (carrierUp) return carrierUp;
+    carrierUp = new Promise((resolve, reject) => {
+      const frame = document.createElement('iframe');
+      frame.className = 'carrier';
+      frame.title = 'previews';
+      frame.setAttribute('aria-hidden', 'true');
+      frame.tabIndex = -1;
+      frame.referrerPolicy = 'no-referrer';
+      const timer = setTimeout(() => done(new Error(`this ${DESKTOP ? 'browser' : 'device'} could not reach ${new URL(PREVIEW).host}`)), 20000);
+      const onMessage = e => {
+        if (e.source !== frame.contentWindow || e.origin !== PREVIEW) return;
+        const m = e.data;
+        if (!m || m.type !== 'anywhere-carrier') return;
+        if (m.ready && e.ports[0]) {
+          e.ports[0].onmessage = ev => { const d = ev.data; if (d && d.type === 'anywhere-fetch' && ev.ports[0]) onFetch(d, ev.ports[0], { preview: true }); };
+          done(null);
+        } else if (m.failed) done(new Error(String(m.failed).slice(0, 200)));
+      };
+      function done(err) {
+        clearTimeout(timer);
+        if (!err) return resolve();
+        removeEventListener('message', onMessage);
+        frame.remove();
+        if (carrier === frame) carrier = null;
+        carrierUp = null; // the next preview tries again
+        reject(err);
+      }
+      addEventListener('message', onMessage);
+      carrier = frame;
+      frame.src = PREVIEW + '/_anywhere/carrier.html';
+      document.body.appendChild(frame);
+    });
+    return carrierUp;
+  }
+  async function previewReady() {
+    if (!PREVIEW) throw new Error('Previews cannot open through this address.');
+    let t;
+    try { t = await ready(); } catch { throw new Error('Not connected to your computer.'); }
+    if (!(t.can || []).includes('preview')) throw new Error(`Chattering on ${(homeOf(active) || {}).name || 'your computer'} is too old to show previews here. Update it there.`);
+    try { await startCarrier(); } catch (e) { throw new Error('Previews could not start: ' + e.message + '.'); }
+  }
+
   /* ---- requests from the service worker ---- */
   const INSIDE = '<script src="/_anywhere/inside.js"></script>';
   const enc = new TextEncoder();
@@ -393,18 +449,25 @@
     const d = /<!doctype[^>]*>/i.exec(html);
     return d ? html.slice(0, d.index + d[0].length) + INSIDE + html.slice(d.index + d[0].length) : INSIDE + html;
   }
-  async function onFetch(m, port) {
+  // opts.preview: a request of the preview site, from its carrier: only
+  // what a preview may ask (the computer checks again), with only the
+  // headers a page needs, never cached here and never given inside.js.
+  async function onFetch(m, port, opts = {}) {
     const post = (msg, transfer) => { try { port.postMessage(msg, transfer || []); } catch {} };
+    const preview = !!opts.preview;
+    if (preview && (!['GET', 'HEAD'].includes(m.method) || !P.previewPath(String(m.path || '')))) return post({ type: 'error', message: 'not something a preview may ask' });
     let t;
     try { t = await ready(); } catch (e) { return post({ type: 'error', message: e.message }); }
-    const headers = { ...(m.headers || {}) };
+    if (preview && !(t.can || []).includes('preview')) return post({ type: 'error', message: 'your computer does not carry previews' });
+    const headers = {};
+    for (const [k, v] of Object.entries(m.headers || {})) if (!preview || PREVIEW_HEADERS.has(k.toLowerCase())) headers[k] = v;
     const own = Object.keys(headers).some(k => k.toLowerCase() === 'if-none-match');
-    const cacheable = m.method === 'GET' && !m.path.startsWith('/api/') && !Object.keys(headers).some(k => k.toLowerCase() === 'range');
+    const cacheable = !preview && m.method === 'GET' && !m.path.startsWith('/api/') && !Object.keys(headers).some(k => k.toLowerCase() === 'range');
     const cache = cacheable && self.caches ? await caches.open('anywhere-app-' + t.homeId).catch(() => null) : null;
     const url = new URL(m.path, location.origin).href;
     const cached = cache ? await cache.match(url).catch(() => null) : null;
     if (cached && !own && cached.headers.get('etag')) headers['if-none-match'] = cached.headers.get('etag');
-    const page = m.dest === 'iframe' || m.dest === 'document' || m.dest === 'frame';
+    const page = !preview && (m.dest === 'iframe' || m.dest === 'document' || m.dest === 'frame');
     let received = 0, credited = 0, skip = false, writer = null, keep = null, keepSize = 0, keepHeaders = null, html = null, done = false;
     const emit = bytes => {
       // The cache keeps the page as the computer sent it; the frame gets it
@@ -425,7 +488,8 @@
       post({ type: 'end' });
       if (keep && cache) cache.put(url, new Response(new Blob(keep), { status: 200, headers: keepHeaders })).catch(() => {});
     };
-    const req = t.request({ method: m.method, path: m.path, headers, body: m.body ? new Uint8Array(m.body) : null, redirect: m.redirect }, {
+    let req;
+    try { req = t.request({ method: m.method, path: m.path, headers, body: preview ? null : m.body ? new Uint8Array(m.body) : null, redirect: m.redirect, kind: preview ? 'preview' : undefined }, {
       onHead: head => {
         if (head.status === 304 && cached && !own) {
           // Unchanged since the last time: the copy on this phone.
@@ -461,7 +525,7 @@
       onChunk: b => { received += b.length; if (skip) return; if (writer) writer.write(b.slice()).catch(() => {}); else emit(b); },
       onEnd: () => { if (skip) return; if (writer) writer.close().catch(() => {}); else finish(); },
       onError: e => { if (!skip) post({ type: 'error', message: e.message }); },
-    });
+    }); } catch (e) { return post({ type: 'error', message: e.message }); }
     port.onmessage = ev => {
       const d = ev.data || {};
       if (d.type === 'pull') { const owe = received - credited; if (owe > 0) { credited += owe; req.consumed(owe); } }

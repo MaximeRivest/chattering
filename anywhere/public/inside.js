@@ -24,6 +24,11 @@
   // Bytes made in this frame's own world, so instanceof works for the app.
   const own = b => { const c = new Uint8Array(b.length); c.set(b); return c; };
 
+  /* ---- previews: their own address, carried by the shell ---- */
+  // The app (artifacts.js) shows what agents make at this address, once
+  // ready() says the shell can carry it (design/67).
+  try { if (host.preview) window.__anywherePreview = Object.freeze({ origin: String(host.preview.origin), ready: () => host.preview.ready() }); } catch {}
+
   /* ---- the app's service worker: not here ---- */
   try {
     if (navigator.serviceWorker) {

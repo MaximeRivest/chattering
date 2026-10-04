@@ -10,6 +10,14 @@
    own HTTP port, as the person who paired the phone, and the answer goes
    back the same way. WebSockets (collaboration, voice) likewise.
 
+   Previews (design/67) are the one exception: what agents make runs on the
+   phone at an address of its own (previews.<relay>), and its requests,
+   marked kind 'preview', go to this computer's preview server instead,
+   read-only, for an artifact's paths only, and carrying no credential: a
+   preview's signed capability is its only authority there, as on every
+   other door. So a page an agent wrote can never reach the app as the
+   person, even through the phone.
+
    What the phone carries is a credential of that person (users.js, kind
    invite, labelled "phone · anywhere"): the People panel lists it and can
    revoke it, and revoking cuts the phone at its next request. Requests are
@@ -78,6 +86,7 @@ function createAnywhereHome(opts) {
     enabled = () => true,                  // the owner's switch
     homeName = () => require('os').hostname(),
     localTarget,                           // () => { host, port }
+    previewTarget = null,                  // () => { host, port } of the preview server; null: none
     issueCredential,                       // (userId, label) → { secret, credentialId }
     credentialAlive,                       // (userId, credentialId) → bool
     revokeCredential = () => {},           // (userId, credentialId)
@@ -324,7 +333,8 @@ function createAnywhereHome(opts) {
     device.lastSeenAt = new Date().toISOString();
     save();
     const u = userOf(device.userId);
-    peer.mux.send(T.CTRL, 0, { t: 'welcome', device: device.id, user: u ? { id: u.id, name: u.name } : null, home: { name: homeName(), id: key.homeId } });
+    peer.mux.send(T.CTRL, 0, { t: 'welcome', device: device.id, user: u ? { id: u.id, name: u.name } : null, home: { name: homeName(), id: key.homeId },
+      can: previewTarget ? ['preview'] : [] });
     // How the phone is connected (direct or through the relay) comes from
     // the phone: node-datachannel's statistics call a relayed path "srflx".
     changed();
@@ -361,10 +371,30 @@ function createAnywhereHome(opts) {
     out['x-forwarded-proto'] = 'https';
     return out;
   }
+  // A preview's request: the phone's headers less anything about who it is,
+  // and none of the person's: no credential goes to the preview server.
+  function previewHeaders(headers, t) {
+    const out = {};
+    for (const [k, v] of Object.entries(headers || {})) {
+      const n = String(k).toLowerCase();
+      if (!isDroppedIn(n) && /^[a-z0-9!#$%&'*+.^_`|~-]+$/.test(n)) out[n] = String(v).replace(/[\r\n]/g, ' ');
+    }
+    out.host = t.host + ':' + t.port;
+    out['x-forwarded-for'] = 'anywhere';
+    out['x-forwarded-proto'] = 'https';
+    return out;
+  }
   function startRequest(peer, id, req) {
     const first = String(req.p || '/');
     if (!first.startsWith('/') || first.startsWith('//')) { peer.mux.send(T.ABORT, id, { why: 'bad path' }); return; }
-    const headers = forwardHeaders(peer, req.h);
+    // Which server answers: the app, as the person; or the preview server,
+    // as nobody, for what a preview may ask and nothing else.
+    const preview = req.k === 'preview';
+    if (req.k != null && !preview) { peer.mux.send(T.ABORT, id, { why: 'unknown kind of request' }); return; }
+    const pt = preview && previewTarget ? previewTarget() : null;
+    if (preview && (!pt || !['GET', 'HEAD'].includes(String(req.m || 'GET').toUpperCase()) || req.b || !P.previewPath(first))) { peer.mux.send(T.ABORT, id, { why: 'not something a preview may ask' }); return; }
+    const target = () => pt || localTarget();
+    const headers = preview ? previewHeaders(req.h, pt) : forwardHeaders(peer, req.h);
     headers['accept-encoding'] = 'gzip';
     let res = null, out = null, allowance = P.WINDOW, ended = false;
     const s = {
@@ -379,7 +409,7 @@ function createAnywhereHome(opts) {
     // fetch() follows redirects by itself (redirect: 'follow'); a page
     // navigation gets them to follow in the browser.
     const send = (method, p, hops, withBody) => {
-      const t = localTarget();
+      const t = target();
       const h = { ...headers };
       if (!withBody) { delete h['content-type']; }
       out = http.request({ host: t.host, port: t.port, method, path: p, headers: h });
@@ -387,7 +417,7 @@ function createAnywhereHome(opts) {
       out.on('error', failed);
       out.on('response', r => {
         const loc = r.headers.location ? String(r.headers.location).replace(/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?/i, '') : '';
-        if (req.r === 'follow' && [301, 302, 303, 307, 308].includes(r.statusCode) && loc.startsWith('/') && !loc.startsWith('//') && hops < 5 && !(req.b && r.statusCode >= 307)) {
+        if (req.r === 'follow' && [301, 302, 303, 307, 308].includes(r.statusCode) && loc.startsWith('/') && !loc.startsWith('//') && hops < 5 && !(req.b && r.statusCode >= 307) && (!preview || P.previewPath(loc))) {
           r.resume();
           const keep = r.statusCode >= 307 || method === 'HEAD';
           return send(keep ? method : 'GET', loc, hops + 1, false);

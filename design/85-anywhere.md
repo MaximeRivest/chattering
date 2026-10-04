@@ -158,16 +158,81 @@ the 1 MB app.
 - **iOS home-screen apps keep their own storage.** The shell asks first;
   whether iOS keeps the code in the address when adding to the home screen
   is untested on a real iPhone. Safari itself works either way.
-- **Not carried yet**: artifact previews (their own origin, port 7435 or the
-  tailnet's 8443) and forms that navigate away (`POST` pages). Pages, scripts,
-  pictures, downloads, the event stream and WebSockets are (the tests cover
-  the app, the event stream and live collaboration; voice and PDFs use the
-  same paths, untested).
+- **Not carried yet**: forms that navigate away (`POST` pages). Pages,
+  scripts, pictures, downloads, the event stream, WebSockets and artifact
+  previews are (the tests cover the app, the event stream, live
+  collaboration and previews; voice and PDFs use the same paths, untested).
+  Previews were missing until 2026-10-04 (see "Previews").
 - **Tailscale stays**: the tailnet door, the public door and LAN links keep
   working as before; Anywhere is another door, not a replacement.
 - **Not tested on real phones and networks yet**: the tests cover a
   phone-sized Chromium on one machine and a real coturn on loopback. A week
   on real phones, mobile data included, is the next step.
+
+## Previews (2026-10-04)
+
+What agents make (web pages, slides, widgets) never runs on the app's
+origin (design/67): on this computer it is `<artifact>.localhost:7435`, on
+the tailnet port 8443. Through the relay the app computed
+`https://<relay>:7445`, which nothing carried: the shell's service worker
+answers for its own origin only, so the request went to the relay, which
+has nothing on that port, and every artifact frame stayed empty.
+
+Now a preview has an address of its own on the phone,
+`https://previews.<relay>`, carried by the same tunnel:
+
+```
+app frame (relay origin) ── iframe ──▶ previews.<relay>/a/<cap>/…
+                                          │ its service worker (sw.js, preview mode)
+                                          ▼
+ shell ◀── MessagePort ── carrier.html (previews.<relay>, hidden, held by the shell)
+   │  only GET/HEAD, only /a/<cap>/…, /_c/proxy.html, /_c/kit.js; few headers
+   ▼
+ tunnel, request kind 'preview' ──▶ home: the preview server (7435), no credential
+```
+
+- **The carrier** (`public/carrier.html`, `carrier.js`) is the one page of
+  the preview site the relay serves (with the same `sw.js`, which reads its
+  own host). The shell makes it the first time the app shows a preview and
+  keeps it for the visit; it installs the preview site's worker and hands
+  each request it gets to the shell over a `MessagePort`. Answers stream
+  from the shell to the worker directly.
+- **Nothing reaches the relay before the worker can answer.** `inside.js`
+  gives the app `__anywherePreview` (`origin`, `ready()`); `artifacts.js`
+  sets a frame's address only once `ready()` resolves, so the relay never
+  sees an artifact's address (its capability names the conversation and the
+  folder). The test asserts the relay was asked for the carrier only.
+- **Least authority.** Any page of the preview site can do what the carrier
+  does (they share an origin), so the carrier gets nothing more than a
+  preview may ask anyway. The shell sends only reads of preview paths, with
+  an allowlist of headers; the home, which does not trust the shell for this,
+  holds to the same list (`protocol.previewPath`), goes only to the preview
+  server, sends **no credential** (the capability is the authority, as on
+  every door, and is re-checked against the person's access), and refuses
+  any other kind. A home that has no preview server says `can: []` in its
+  welcome and the phone asks it nothing.
+- **Isolation, stated.** One preview origin for all artifacts (like the
+  tailnet's), the same *site* as the relay's page. As on the tailnet, a
+  different name on one site; here nothing at the relay's origin uses
+  cookies (the tunnel is the authority), so a preview page has nothing to
+  send along.
+- **Framing.** The preview server's `frame-ancestors` and the sandbox proxy's
+  host check include the relay's origin while Anywhere is on; the shell's
+  policy allows `frame-src previews.<relay>`; the carrier may be framed by the
+  relay's page only.
+- **The Android app** serves `sw.js` and the carrier for `previews.<relay>`
+  from its own files too (`AnywhereShell.kt`), so the relay cannot replace
+  code that sees preview content there either.
+- **DNS**: `previews.<relay>` needs its own A and AAAA records; Caddy gets its
+  certificate like the relay's (setup-ubuntu.sh, nixos.nix). Without them
+  the panel says previews could not start, in words.
+- **When it cannot**: the frame becomes a line in the panel (not connected,
+  an older computer, the preview address unreachable), never a blank.
+- Tests: `test/anywhere.test.js` (the home's routing and refusals, the
+  relay's preview address), `test/anywhere-previews-browser.test.js` (a
+  phone-sized Chromium, a real relay at `relay.localhost` and
+  `previews.relay.localhost`, a real Chattering: a web page with a picture
+  and storage, a widget through the sandbox proxy).
 
 ## Where it runs (Level 1, 2026-09-30)
 
@@ -210,7 +275,8 @@ the 1 MB app.
 
 `anywhere/protocol.js` (frames, multiplexer, handshake, pairing link),
 `anywhere/client.js` (the phone's connection, shared with the tests),
-`anywhere/relay.js`, `anywhere/public/` (shell, service worker, inside.js),
+`anywhere/relay.js`, `anywhere/public/` (shell, service worker, inside.js,
+the previews' carrier),
 `anywhere/deploy/` (NixOS module, systemd unit, coturn config),
 `anywhere-home.js` (the home), `anywhere-ui.js`/`.css` (settings → machines),
 `vendor/qrcode-generator/` (MIT). Server: `/api/anywhere*` (policy.js),

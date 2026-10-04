@@ -51,7 +51,11 @@ built yet) removes this point entirely.
   often force this). Reading conversations moves little data: a busy person
   uses tens of MB a day. 20 TB covers thousands of people. Video through the
   relay is what would cost; `maxBps` caps each session.
-- **A name:** `encrypted-link-to-your-devices.rockfrog.ai`, pointing at the server (A and AAAA).
+- **Two names:** `encrypted-link-to-your-devices.rockfrog.ai`, pointing at the server (A and AAAA),
+  and `previews.encrypted-link-to-your-devices.rockfrog.ai` (A and AAAA, the same addresses):
+  what agents make runs there on a phone, a site apart from the app's (design/85, "Previews").
+  The relay serves only a small carrier page there; everything else of it comes from the
+  person's computer, through the tunnel.
 
 ## Deploy (Ubuntu: what runs at encrypted-link-to-your-devices.rockfrog.ai)
 

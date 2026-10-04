@@ -544,7 +544,9 @@ function normalizeAnywhere(raw) {
   let relay = '';
   try {
     const u = new URL(String(src.relay || '').trim());
-    const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(u.hostname);
+    // This computer: localhost and its subdomains (RFC 6761: browsers and
+    // this system resolve *.localhost to loopback), 127.0.0.1, ::1.
+    const local = /^((?:[a-z0-9-]+\.)*localhost|127\.0\.0\.1|\[::1\])$/.test(u.hostname);
     if ((u.protocol === 'https:' || (u.protocol === 'http:' && local)) && !u.username && !u.password) relay = (u.origin + u.pathname).replace(/\/+$/, '');
   } catch {}
   return { relay, off: src.off === true };

@@ -1379,6 +1379,9 @@ function previewAncestors() {
   for (const ip of lanAddresses()) { out.add(`http://${ip}:${PORT}`); out.add(`https://${ip}:${TLS_PORT}`); }
   for (const name of new Set([os.hostname(), HOST_NAME].filter(Boolean))) { out.add(`http://${name}:${PORT}`); out.add(`https://${name}:${TLS_PORT}`); }
   if (PUBLIC_URL) { try { out.add(new URL(PUBLIC_URL).origin); } catch {} }
+  // The app on a phone paired through the relay (design/85) is the relay's
+  // site; its previews come through the tunnel from previews.<relay>.
+  if (!(appSettings.anywhere && appSettings.anywhere.off)) { try { out.add(new URL((appSettings.anywhere && appSettings.anywhere.relay) || anywhereLib.DEFAULT_RELAY).origin); } catch {} }
   return [...out];
 }
 function identityOfUserId(id) {
@@ -6269,6 +6272,8 @@ const anywhere = anywhereLib.createAnywhereHome({
   enabled: () => !(appSettings.anywhere && appSettings.anywhere.off),
   homeName: () => HOST_NAME,
   localTarget: () => ({ host: !HOST || HOST === '0.0.0.0' || HOST === '::' || isLoopback(HOST) ? '127.0.0.1' : HOST, port: PORT }),
+  // Previews reach the phone at their own address and come here (design/67).
+  previewTarget: () => ({ host: !HOST || HOST === '0.0.0.0' || HOST === '::' || isLoopback(HOST) ? '127.0.0.1' : HOST, port: PREVIEW_PORT }),
   issueCredential: (userId, label) => {
     const { secret, credential } = usersLib.issueCredential(roster, userId, { kind: 'invite', label });
     saveRoster();

@@ -26,7 +26,8 @@
 
   const VERSION = 1;
   const T = {
-    REQ: 1,        // phone → home  JSON { m, p, h, b }: method, path, headers, has a body
+    REQ: 1,        // phone → home  JSON { m, p, h, b, k }: method, path, headers, has a body,
+                   //               kind ('preview': for the preview origin, below; else the app)
     REQ_BODY: 2,   // phone → home  bytes
     REQ_END: 3,    // phone → home  (empty)
     RES: 4,        // home → phone  JSON { s, h }: status, headers
@@ -248,6 +249,33 @@
     return { homeId: parts[0], id: parts[1], secret: parts[2], name: (q.get('n') || '').slice(0, 60), ...(e > 0 ? { expires: e * 1000 } : {}) };
   }
 
+  // Previews (design/67): what agents make runs on an address that is not
+  // the app's, so its scripts cannot act as the person inside Chattering.
+  // Through the relay that address is previews.<relay's name>, a site of its
+  // own on the phone, carried through the same tunnel to the home's preview
+  // server. Null for a relay reached by a bare IP address (no name to put
+  // a label in front of): previews are not offered there.
+  const PREVIEW_LABEL = 'previews';
+  function previewOrigin(relayOrigin) {
+    let u;
+    try { u = new URL(String(relayOrigin)); } catch { return null; }
+    if (!/^https?:$/.test(u.protocol) || /^[\d.]+$|:/.test(u.hostname) || u.hostname.startsWith(PREVIEW_LABEL + '.')) return null;
+    return u.protocol + '//' + PREVIEW_LABEL + '.' + u.host;
+  }
+  // The relay's own name for a preview address (previews.<relay> → <relay>),
+  // or null when the address is not one.
+  function relayHostOfPreview(host) {
+    const h = String(host || '').toLowerCase();
+    return h.startsWith(PREVIEW_LABEL + '.') && h.length > PREVIEW_LABEL.length + 1 ? h.slice(PREVIEW_LABEL.length + 1) : null;
+  }
+  // The only paths a preview request may ask for: an artifact's files (its
+  // signed capability first), the MCP Apps sandbox proxy, and the kit every
+  // view loads. Nothing else of the preview server (shared links have their
+  // own doors) and nothing of the app. The home holds to this whatever the
+  // phone sends.
+  const PREVIEW_PATH = /^\/(a\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\/[^?#]*|_c\/(kit\.js|proxy\.html))(\?[^#]*)?$/;
+  const previewPath = p => typeof p === 'string' && p.length < 8192 && PREVIEW_PATH.test(p);
+
   // A few plain words for a device, from its browser's description.
   function deviceLabel(ua) {
     ua = String(ua || '');
@@ -282,5 +310,6 @@
   return { VERSION, T, pathFromStats, MORE, HEADER, FRAME, MAX_CHUNK, WINDOW, HIGH_WATER, LOW_WATER,
     toBytes, frame, parse, text, json, u32, readU32, Mux,
     ECDSA, SIGN, subtle, random, b64u, unb64u, sha256, homeIdOf, importPublic, sign, verify, hmac, sameBytes,
-    fingerprint, transcript, pairingLink, readPairingLink, deviceLabel };
+    fingerprint, transcript, pairingLink, readPairingLink, deviceLabel,
+    PREVIEW_LABEL, previewOrigin, relayHostOfPreview, previewPath };
 });

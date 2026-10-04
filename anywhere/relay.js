@@ -6,7 +6,9 @@
 
    What it does:
    - serves the phone's page (public/: a few small files, the same for
-     everyone, cacheable, readable in this repository);
+     everyone, cacheable, readable in this repository), and on
+     previews.<its name> the two files that carry previews there (the
+     carrier and its service worker; design/67);
    - introduces a phone to a home: homes keep a WebSocket open here, a phone
      asks for one by its id, and the two exchange WebRTC offers, answers and
      network candidates through it;
@@ -134,6 +136,35 @@ function createRelay(opts = {}) {
     try { serveInner(req, res); }
     catch { try { if (!res.headersSent) res.writeHead(400, { 'Content-Type': 'text/plain' }); res.end('bad request\n'); } catch {} }
   }
+  // The preview address (previews.<this relay>): what agents make runs
+  // there on the phone, a site apart from the app's. Here it has two files:
+  // the carrier (a hidden page the phone's shell holds, which hands every
+  // request of that site to the shell, for the tunnel) and the service
+  // worker that sends them to it. Nothing else: never the shell, never an
+  // artifact (those come from the person's computer, through the tunnel).
+  const CARRIER = new Set(['/_anywhere/carrier.html', '/_anywhere/carrier.js']);
+  function servePreviewSite(req, res, u, relayHost) {
+    if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET, HEAD', ...SECURITY }); return res.end(); }
+    const name = u.pathname === '/sw.js' ? '/_anywhere/sw.js' : CARRIER.has(u.pathname) ? u.pathname : null;
+    const f = name && asset(name);
+    if (!f) {
+      // A preview the phone opened before its worker could answer: said
+      // plainly, and kept nowhere.
+      res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'", ...SECURITY });
+      return res.end('<!doctype html><meta charset=utf-8><body style="font:15px/1.5 system-ui,sans-serif;padding:1em;color:#888">This preview is not connected to your computer. Close it and open it again.</body>');
+    }
+    const headers = { 'Content-Type': f.type, ETag: f.etag, 'Cache-Control': 'no-cache', Vary: 'Accept-Encoding', ...SECURITY };
+    if (name === '/_anywhere/sw.js') headers['Service-Worker-Allowed'] = '/';
+    // Only the relay's own page may hold the carrier.
+    if (name === '/_anywhere/carrier.html') headers['Content-Security-Policy'] = `default-src 'none'; script-src 'self'; frame-ancestors ${relayHost}; base-uri 'none'; form-action 'none'`;
+    if (req.headers['if-none-match'] === f.etag) { res.writeHead(304, headers); return res.end(); }
+    const gzip = f.gz && /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''));
+    if (gzip) headers['Content-Encoding'] = 'gzip';
+    res.writeHead(200, headers);
+    res.end(req.method === 'HEAD' ? undefined : gzip ? f.gz : f.body);
+  }
+  // The name a request asked for (Caddy passes it on as it came).
+  const hostOf = req => String(req.headers.host || '').toLowerCase().replace(/[^a-z0-9.:[\]-]/g, '');
   function serveInner(req, res) {
     const u = pathOf(req.url);
     if (!u) { res.writeHead(400, { 'Content-Type': 'text/plain' }); return res.end('bad request\n'); }
@@ -149,6 +180,9 @@ function createRelay(opts = {}) {
       res.writeHead(404, { 'Content-Type': 'text/plain', ...SECURITY }); return res.end('not found\n');
     }
     if (site.enabled && site.http(req, res, u)) return;
+    // After shared links: a name under their domain may well start "previews.".
+    const previewOf = P.relayHostOfPreview(hostOf(req));
+    if (previewOf && u.pathname !== '/healthz') return servePreviewSite(req, res, u, previewOf);
     if (u.pathname === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); return res.end('ok\n'); }
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET, HEAD' }); return res.end(); }
     let name = u.pathname;
@@ -157,6 +191,8 @@ function createRelay(opts = {}) {
     // Android's check that the Chattering app (signed with Rockfrog's release
     // key) may open this site's links: the pairing code then opens the app.
     else if (name === '/.well-known/assetlinks.json') name = '/_anywhere/assetlinks.json';
+    // The carrier belongs to the preview address only.
+    else if (CARRIER.has(name)) name = '/_anywhere/missing';
     else if (!name.startsWith('/_anywhere/')) {
       // A page inside the shell asked before the service worker took over:
       // never the shell inside itself.
@@ -167,7 +203,8 @@ function createRelay(opts = {}) {
     if (!f) { res.writeHead(404, { 'Content-Type': 'text/plain', ...SECURITY }); return res.end('not found\n'); }
     const headers = { 'Content-Type': f.type, ETag: f.etag, 'Cache-Control': name === '/_anywhere/sw.js' || name === '/_anywhere/shell.html' ? 'no-cache' : 'public, max-age=300', Vary: 'Accept-Encoding', ...SECURITY };
     if (name === '/_anywhere/sw.js') headers['Service-Worker-Allowed'] = '/';
-    if (name === '/_anywhere/shell.html') headers['Content-Security-Policy'] = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' wss: ws:; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+    // Its frames: the app (this site) and the previews' carrier.
+    if (name === '/_anywhere/shell.html') headers['Content-Security-Policy'] = `default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' wss: ws:; frame-src 'self' ${P.PREVIEW_LABEL}.${hostOf(req)}; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`;
     if (req.headers['if-none-match'] === f.etag) { res.writeHead(304, headers); return res.end(); }
     const gzip = f.gz && /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''));
     if (gzip) headers['Content-Encoding'] = 'gzip';
@@ -195,6 +232,7 @@ function createRelay(opts = {}) {
   function onUpgradeInner(req, socket, head) {
     const u = pathOf(req.url);
     if (u && site.upgrade(req, socket, head, u, acceptWebSocket, refuseUpgrade)) return;
+    if (P.relayHostOfPreview(hostOf(req))) return refuseUpgrade(socket, 404, 'Not Found');
     if (!u || u.pathname !== '/signal') return refuseUpgrade(socket, 404, 'Not Found');
     const addr = addressOf(req);
     if ((perAddress.get(addr) || 0) >= LIMITS.perAddress) return refuseUpgrade(socket, 429, 'Too Many Requests');

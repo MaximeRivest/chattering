@@ -24,6 +24,11 @@ import java.io.ByteArrayInputStream
  * The same routing as anywhere/relay.js: /sw.js → the worker; /_anywhere/<file>
  * → the shell's files; any other page → the shell (the app's routes are
  * the phone's too).
+ *
+ * Previews (design/67) have their own site, previews.<relay>: there only
+ * the worker and the carrier (carrier.html, carrier.js) come from here;
+ * every other request of that site goes through the carrier and the tunnel
+ * to the person's computer, never to the network, and never the shell.
  */
 class AnywhereShell(private val context: Context) {
     companion object {
@@ -36,8 +41,12 @@ class AnywhereShell(private val context: Context) {
             "webmanifest" to "application/manifest+json", "json" to "application/json",
             "png" to "image/png", "svg" to "image/svg+xml",
         )
-        private const val SHELL_CSP = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; " +
-            "connect-src 'self' wss: ws:; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+        private const val PREVIEW_LABEL = "previews."
+        private val CARRIER = setOf("carrier.html", "carrier.js")
+        private fun shellCsp(host: String) = "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; " +
+            "connect-src 'self' wss: ws:; frame-src 'self' $PREVIEW_LABEL$host; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+        private fun carrierCsp(relayHost: String) =
+            "default-src 'none'; script-src 'self'; frame-ancestors $relayHost; base-uri 'none'; form-action 'none'"
     }
 
     private val prefs = context.getSharedPreferences("chattering", Context.MODE_PRIVATE)
@@ -53,6 +62,14 @@ class AnywhereShell(private val context: Context) {
     }
 
     fun isRelay(uri: Uri?): Boolean = uri != null && uri.scheme == "https" && uri.host != null && uri.host in relays()
+
+    /** The relay a preview address belongs to (previews.<relay> → <relay>), or null. */
+    private fun relayOfPreview(uri: Uri?): String? {
+        if (uri == null || uri.scheme != "https") return null
+        val host = uri.host ?: return null
+        if (!host.startsWith(PREVIEW_LABEL)) return null
+        return host.removePrefix(PREVIEW_LABEL).takeIf { it in relays() }
+    }
 
     /** A pairing link: …/#pair=… (a scanned code), or …/pair/<code> (handed
      *  over by the browser's "Use the Android app" button, as an intent URL,
@@ -87,6 +104,8 @@ class AnywhereShell(private val context: Context) {
 
     fun intercept(request: WebResourceRequest?): WebResourceResponse? {
         val uri = request?.url ?: return null
+        val previewOf = relayOfPreview(uri)
+        if (previewOf != null) return interceptPreview(uri, previewOf)
         if (!isRelay(uri)) return null
         val path = uri.path ?: "/"
         val name = when {
@@ -97,13 +116,13 @@ class AnywhereShell(private val context: Context) {
             request.isForMainFrame -> "shell.html"
             else -> return oneMoment()
         }
-        if (!NAME.matches(name)) return notFound()
+        // The carrier is the preview address's alone.
+        if (!NAME.matches(name) || name in CARRIER) return notFound()
         val bytes = try {
             context.assets.open("anywhere/$name").use { it.readBytes() }
         } catch (_: Exception) {
             return notFound()
         }
-        val ext = name.substringAfterLast('.')
         val headers = mutableMapOf(
             "Cache-Control" to "no-cache",
             "X-Content-Type-Options" to "nosniff",
@@ -111,8 +130,39 @@ class AnywhereShell(private val context: Context) {
             "Cross-Origin-Opener-Policy" to "same-origin",
         )
         if (name == "sw.js") headers["Service-Worker-Allowed"] = "/"
-        if (name == "shell.html") headers["Content-Security-Policy"] = SHELL_CSP
-        val type = TYPES[ext] ?: "application/octet-stream"
+        if (name == "shell.html") headers["Content-Security-Policy"] = shellCsp(uri.host!!)
+        return asset(name, bytes, headers)
+    }
+
+    /** previews.<relay>: the worker and the carrier from this app; any other
+     *  address there reached here only because the worker was not ready,
+     *  and gets a plain line, never the network. */
+    private fun interceptPreview(uri: Uri, relayHost: String): WebResourceResponse {
+        val path = uri.path ?: "/"
+        val name = when {
+            path == "/sw.js" -> "sw.js"
+            path.startsWith("/_anywhere/") && path.removePrefix("/_anywhere/") in CARRIER -> path.removePrefix("/_anywhere/")
+            else -> return WebResourceResponse("text/html", "utf-8", 404, "Not Found",
+                mapOf("Cache-Control" to "no-store", "Content-Security-Policy" to "default-src 'none'; style-src 'unsafe-inline'"),
+                ByteArrayInputStream("<!doctype html><meta charset=utf-8><body style=\"font:15px/1.5 system-ui,sans-serif;padding:1em;color:#888\">This preview is not connected to your computer. Close it and open it again.".toByteArray()))
+        }
+        val bytes = try {
+            context.assets.open("anywhere/$name").use { it.readBytes() }
+        } catch (_: Exception) {
+            return notFound()
+        }
+        val headers = mutableMapOf(
+            "Cache-Control" to "no-cache",
+            "X-Content-Type-Options" to "nosniff",
+            "Referrer-Policy" to "no-referrer",
+        )
+        if (name == "sw.js") headers["Service-Worker-Allowed"] = "/"
+        if (name == "carrier.html") headers["Content-Security-Policy"] = carrierCsp(relayHost)
+        return asset(name, bytes, headers)
+    }
+
+    private fun asset(name: String, bytes: ByteArray, headers: Map<String, String>): WebResourceResponse {
+        val type = TYPES[name.substringAfterLast('.')] ?: "application/octet-stream"
         val text = type.startsWith("text/") || type.endsWith("json") || type.endsWith("xml")
         return WebResourceResponse(type, if (text) "utf-8" else null, 200, "OK", headers, ByteArrayInputStream(bytes))
     }

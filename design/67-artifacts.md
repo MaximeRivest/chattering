@@ -162,6 +162,7 @@ publishing step we can add later on top of files.
   |---|---|---|
   | this computer | `http://<artifact>.localhost:7435` | one site per artifact (Chrome and Firefox resolve `*.localhost` to this machine) |
   | Tailscale (`lambda.tail….ts.net`) | `https://lambda.tail….ts.net:8443` (Serve port 8443 → 7435) | **one** preview site shared by all artifacts; a different port only |
+  | a device through the relay (design/85) | `https://previews.<relay>` (carried through the tunnel to 7435) | **one** preview origin shared by all artifacts; the same site as the relay's page, a different name |
   | future public domain | `https://<artifact>.<user>.<preview-domain>` | one site per artifact, separate registrable domain (the Claude/OpenAI standard) |
 
   A setting holds the preview base; nothing else changes when a public

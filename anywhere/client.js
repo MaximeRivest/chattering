@@ -119,7 +119,10 @@
             homeHello = { key: await P.importPublic(key), nonce: String(m.nonce || ''), name: String(m.name || '').slice(0, 60) };
           } else if (m.t === 'proof') proof = m;
           else if (m.t === 'welcome') {
-            const tunnel = new Tunnel(pc, dc, mux, { homeId: opts.homeId, home: m.home || { name: homeHello && homeHello.name }, user: m.user || null, device: m.device || null });
+            // can: what this home carries besides the app ('preview'); an
+            // older home says nothing and is asked for nothing more.
+            const tunnel = new Tunnel(pc, dc, mux, { homeId: opts.homeId, home: m.home || { name: homeHello && homeHello.name }, user: m.user || null, device: m.device || null,
+              can: Array.isArray(m.can) ? m.can.map(String) : [] });
             mux.onMessage = (t, s, b) => tunnel._frame(t, s, b);
             return finish(null, tunnel);
           } else if (m.t === 'refused') return finish(fail('refused', m.message || 'your computer refused this phone', { why: m.why || 'refused' }));
@@ -211,14 +214,16 @@
       return s;
     }
     _end(id) { this.streams.delete(id); this.mux.drop(id); }
-    /* request({ method, path, headers, body }, { onHead({status, headers}),
+    /* request({ method, path, headers, body, kind }, { onHead({status, headers}),
        onChunk(bytes), onEnd(), onError(err) }) → { cancel(), consumed(n) }.
        consumed(n) tells the home n bytes of the body were taken, so it may
-       send more (the window, protocol.WINDOW). */
+       send more (the window, protocol.WINDOW). kind 'preview': for the
+       home's preview server (only when this.can has it), else the app. */
     request(req, h) {
+      if (req.kind === 'preview' && !(this.can || []).includes('preview')) throw new Error('your computer does not carry previews (update Chattering there)');
       const s = this._open('http', { head: h.onHead, chunk: h.onChunk, end: h.onEnd, error: h.onError || (() => {}) });
       const body = req.body ? P.toBytes(req.body) : null;
-      this.mux.send(T.REQ, s.id, { m: req.method || 'GET', p: req.path, h: req.headers || {}, b: !!(body && body.length), r: req.redirect === 'follow' ? 'follow' : undefined });
+      this.mux.send(T.REQ, s.id, { m: req.method || 'GET', p: req.path, h: req.headers || {}, b: !!(body && body.length), r: req.redirect === 'follow' ? 'follow' : undefined, k: req.kind === 'preview' ? 'preview' : undefined });
       if (body && body.length) {
         for (let at = 0; at < body.length; at += 256 * 1024) this.mux.send(T.REQ_BODY, s.id, body.subarray(at, at + 256 * 1024));
         this.mux.send(T.REQ_END, s.id, null);
