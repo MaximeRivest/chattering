@@ -7,6 +7,19 @@ cd "$(dirname "$0")"
 REPO="$(pwd)"
 PORT="${CHATTERING_PORT:-7433}"
 
+# Validate Node and optional limits before any installation or systemd calls.
+NODE_BIN="$(command -v node || true)"
+NODE_MAJOR="$("${NODE_BIN:-false}" -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)"
+if [ "${NODE_MAJOR}" -lt 22 ]; then
+  echo "Node 22 or newer is required (found: ${NODE_BIN:-none})." >&2
+  echo "Install with nvm:" >&2
+  echo "  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash" >&2
+  echo "  source ~/.nvm/nvm.sh && nvm install 22" >&2
+  echo "Then re-run ./setup.sh" >&2
+  exit 1
+fi
+"$NODE_BIN" "$REPO/scripts/systemd-unit.js" --check
+
 # --- 1. systemd user manager -------------------------------------------------
 if ! systemctl --user show-environment >/dev/null 2>&1; then
   if grep -qi microsoft /proc/version 2>/dev/null; then
@@ -18,18 +31,6 @@ if ! systemctl --user show-environment >/dev/null 2>&1; then
   else
     echo "The systemd user manager is not available. Log in as a normal user session." >&2
   fi
-  exit 1
-fi
-
-# --- 2. Node 22+ -------------------------------------------------------------
-NODE_BIN="$(command -v node || true)"
-NODE_MAJOR="$("${NODE_BIN:-false}" -e 'console.log(process.versions.node.split(".")[0])' 2>/dev/null || echo 0)"
-if [ "${NODE_MAJOR}" -lt 22 ]; then
-  echo "Node 22 or newer is required (found: ${NODE_BIN:-none})." >&2
-  echo "Install with nvm:" >&2
-  echo "  curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash" >&2
-  echo "  source ~/.nvm/nvm.sh && nvm install 22" >&2
-  echo "Then re-run ./setup.sh" >&2
   exit 1
 fi
 
@@ -119,20 +120,9 @@ if grep -qi microsoft /proc/version 2>/dev/null; then
   command -v paplay >/dev/null 2>&1 \
     || echo "note: 'paplay' is missing — sound extensions need: sudo apt install pulseaudio-utils"
 fi
-cat > "$UNIT_DIR/chattering.service" <<EOF
-[Unit]
-Description=Chattering (by Rockfrog) — the workspace server
-
-[Service]
-ExecStart=$NODE_BIN $REPO/server.js
-Environment=PORT=$PORT
-Environment=PATH=$HOME/.local/bin:$NODE_DIR:/usr/local/bin:/usr/bin:/bin$WIN_PATH
-$DISPLAY_LINES
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-EOF
+UNIT_CONTENT="$("$NODE_BIN" "$REPO/scripts/systemd-unit.js" \
+  "$NODE_BIN" "$REPO" "$PORT" "$HOME" "$NODE_DIR" "$WIN_PATH" "$DISPLAY_LINES")"
+printf '%s\n' "$UNIT_CONTENT" > "$UNIT_DIR/chattering.service"
 systemctl --user daemon-reload
 systemctl --user enable --now chattering
 # Keep the user manager (and this service) alive without an open shell.
