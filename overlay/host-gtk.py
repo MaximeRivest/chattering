@@ -82,6 +82,7 @@ class Host:
         s.set_allow_file_access_from_file_urls(True)
         s.set_enable_back_forward_navigation_gestures(False)
         s.set_javascript_can_access_clipboard(False)
+        self.whole_frames(s)
         view.connect("context-menu", lambda *_: True)  # no "Reload" or "Inspect" menu
         view.connect("decide-policy", self.policy)
         view.load_uri(PAGE)
@@ -89,6 +90,25 @@ class Host:
         win.connect("realize", lambda *_: self.set_rects([]))
         self.win, self.view = win, view
         self.watch_color_scheme()
+
+    # Every frame redraws the whole layer. With damage tracking (on by
+    # default since WebKitGTK 2.50) WebKit tells the desktop only the parts
+    # it thinks changed, and the place where an element was just removed
+    # is not among them: a note gone from beside the frog stayed on the
+    # screen, cut off at the frog's box (the part redrawn), and blinked as
+    # the desktop's buffers took turns (seen 5 runs in 5; 0 in 4 without).
+    # The cost is small: measured over a sleeping frog on a 5120x1440
+    # screen, the same CPU and about 4 points more GPU busy time; and a
+    # page with nothing moving draws no frames at all.
+    @staticmethod
+    def whole_frames(settings):
+        if not hasattr(WebKit.Settings, "get_all_features"):
+            return  # before 2.42: no damage tracking to turn off
+        features = WebKit.Settings.get_all_features()
+        for i in range(features.get_length()):
+            f = features.get(i)
+            if f.get_identifier() == "PropagateDamagingInformation":
+                settings.set_feature_enabled(f, False)
 
     def policy(self, view, decision, kind):
         # The page never navigates away (a link, a drop): it stays the page.

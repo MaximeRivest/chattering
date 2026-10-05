@@ -162,10 +162,19 @@
   const spot = () => !!(S && S.mode === 'spot');
   let awake = false, sleepT = 0, dragging = null, ignoreClick = false;
   POSES.forEach(p => { const i = new Image(); i.src = 'frog/' + p + '.webp'; });
-  const pose = p => { if (img) img.src = 'frog/' + p + '.webp'; };
+  // Asleep a while, it holds still: any animation, even a slow breath,
+  // has the screen-sized layer draw every frame (a quarter of a laptop
+  // core and a sixth of its GPU, measured), for as long as it sleeps.
+  const SETTLE_MS = 20000;
+  let settleT = 0;
+  function unsettle() { clearTimeout(settleT); if (frog) frog.classList.remove('settled'); }
+  const pose = p => { if (img) img.src = 'frog/' + p + '.webp'; if (p !== 'sleep') unsettle(); };
+  // Only an awake frog blinks: a blink ends on the standing pose, and a
+  // sleeping frog that blinked stood there with its z's, eyes open.
+  const canBlink = () => (mode === 'idle' || mode === 'menu') && awake;
   function blinkLoop() {
     clearTimeout(blinkT);
-    blinkT = setTimeout(() => { if (mode === 'idle' || mode === 'menu') { pose('blink'); setTimeout(() => (mode === 'idle' || mode === 'menu') && pose('idle'), 140); } blinkLoop(); }, 1800 + Math.random() * 3200);
+    blinkT = setTimeout(() => { if (canBlink()) { pose('blink'); setTimeout(() => canBlink() && pose('idle'), 140); } blinkLoop(); }, 1800 + Math.random() * 3200);
   }
   function sparkles(n) {
     if (root.classList.contains('still') || !frog) return;
@@ -190,6 +199,8 @@
     clearTimeout(sleepT); awake = false;
     frog.classList.remove('awake', 'busy', 'cheer', 'shake'); frog.classList.add('asleep');
     pose('sleep');
+    clearTimeout(settleT);
+    settleT = setTimeout(() => { if (frog && !awake && frog.classList.contains('asleep')) frog.classList.add('settled'); }, SETTLE_MS);
   }
   function wakeUp(m) {
     if (!frog) return;
@@ -227,6 +238,7 @@
       root.appendChild(frog);
     }
     placeFrog();
+    unsettle();
     frog.classList.remove('leave', 'busy', 'cheer', 'shake', 'asleep', 'awake'); void frog.offsetWidth; frog.classList.add('enter');
     mode = 'idle'; awake = !spot();
     if (spot() && m.asleep !== false && !m.open) { goSleep(); }

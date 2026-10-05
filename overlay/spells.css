@@ -27,6 +27,11 @@ body { font: var(--fs-body)/1.45 var(--font); color: var(--text); -webkit-user-s
 .zzz i { position: absolute; left: 0; bottom: 0; font: 600 11px/1 var(--font-mono); font-style: normal; color: var(--text-dim); opacity: 0; animation: zzz 3.6s ease-out infinite; }
 .zzz i:nth-child(2) { animation-delay: 1.2s; font-size: 9px; } .zzz i:nth-child(3) { animation-delay: 2.4s; font-size: 8px; }
 @keyframes zzz { 0% { transform: translate(0, 0); opacity: 0; } 15% { opacity: .9; } 100% { transform: translate(12px, -34px); opacity: 0; } }
+/* Asleep a while (or with motion off): still, its z's where they float. */
+.frog.settled .fbody { animation: none; }
+.frog.settled .zzz i, .still .frog.asleep .zzz i { animation: none; opacity: .8; transform: translate(3px, -6px); }
+.frog.settled .zzz i:nth-child(2), .still .frog.asleep .zzz i:nth-child(2) { opacity: .55; transform: translate(8px, -17px); }
+.frog.settled .zzz i:nth-child(3), .still .frog.asleep .zzz i:nth-child(3) { opacity: .3; transform: translate(12px, -27px); }
 .ctx { width: 250px; padding: 6px; }
 .ctx .item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 10px; border: 0; background: none; color: var(--text); font: inherit; text-align: left; border-radius: var(--r); cursor: pointer; }
 .ctx .item:hover, .ctx .item:focus-visible { background: var(--surface-2); outline: none; }

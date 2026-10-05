@@ -58,7 +58,13 @@ async function browser(t) {
   await send('Page.addScriptToEvaluateOnNewDocument', { source: 'window.__out = []; window.spellsHost = m => window.__out.push(m);' });
   await send('Page.navigate', { url: PAGE });
   await until(`window.Spells && window.__out.some(m => m.type === 'ready')`, 'the page ready');
-  return { ev, until, key, click, drag, rightClick, shot, errors, out: async type => ev(`window.__out.filter(m => m.type === ${JSON.stringify(type)})`) };
+  // Let the page's timers run `ms` ahead at once (its own clock, not ours).
+  const virtualTime = async ms => {
+    const done = new Promise(r => { const prev = ws.onmessage; ws.onmessage = m => { prev(m); if (JSON.parse(m.data).method === 'Emulation.virtualTimeBudgetExpired') { ws.onmessage = prev; r(); } }; });
+    await send('Emulation.setVirtualTimePolicy', { policy: 'advance', budget: ms });
+    await done;
+  };
+  return { ev, until, key, click, drag, rightClick, shot, virtualTime, errors, out: async type => ev(`window.__out.filter(m => m.type === ${JSON.stringify(type)})`) };
 }
 
 const SPELLS = [
@@ -227,6 +233,30 @@ test('in its spot: asleep, woken by a selection, dragged, resized, and its right
   await b.until(`document.querySelector('.panel.ctx')`, 'its menu again');
   await b.click('.ctx [data-k="snooze"]');
   await b.until(`window.__out.some(m => m.type === 'snooze' && m.minutes === 60)`, 'a rest');
+  assert.deepEqual(b.errors, []);
+});
+
+test('asleep, it never blinks itself awake, and after a while it holds still', { timeout: 60000 }, async t => {
+  const b = await browser(t);
+  await b.ev(`Spells.receive(${JSON.stringify(show({ mode: 'spot', asleep: true, home: { x: 1180, y: 680 }, screen: { w: 1280, h: 800 }, words: 0, app: '' }))})`);
+  await b.until(`document.querySelector('.frog.asleep')`, 'asleep');
+  // Every pose it takes from here on (a blink ends on the standing pose:
+  // the frog stood, eyes open, with its z's).
+  await b.ev(`window.__poses = []; new MutationObserver(() => window.__poses.push(document.querySelector('.frog img').src.split('/').pop())).observe(document.querySelector('.frog img'), { attributes: true, attributeFilter: ['src'] })`);
+  const fbody = `getComputedStyle(document.querySelector('.frog .fbody')).animationName`;
+  assert.equal(await b.ev(fbody), 'breatheSlow', 'it breathes as it falls asleep');
+  // Long enough for many blinks and for it to settle, in the page's time.
+  await b.virtualTime(25000);
+  assert.deepEqual(await b.ev(`window.__poses`), [], 'no blink while asleep');
+  assert.equal(await b.ev(`document.querySelector('.frog').classList.contains('settled')`), true, 'settled');
+  assert.equal(await b.ev(fbody), 'none', 'nothing moves: the layer draws no frames');
+  assert.equal(await b.ev(`[...document.querySelectorAll('.zzz i')].every(i => getComputedStyle(i).animationName === 'none' && +getComputedStyle(i).opacity > 0)`), true, 'its z\u2019s stay, still');
+  // A selection wakes it: alive again, and it blinks.
+  await b.ev(`Spells.receive(${JSON.stringify(JSON.stringify({ type: 'wake', words: 3, app: 'Mail' }))})`);
+  assert.equal(await b.ev(`document.querySelector('.frog').classList.contains('settled')`), false, 'woken');
+  assert.notEqual(await b.ev(fbody), 'none');
+  await b.virtualTime(6000);
+  assert.ok((await b.ev(`window.__poses`)).includes('blink.webp'), 'awake, it blinks');
   assert.deepEqual(b.errors, []);
 });
 
