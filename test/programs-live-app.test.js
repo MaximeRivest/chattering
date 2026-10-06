@@ -96,7 +96,7 @@ test('browser: AI programs, live — running now, the text as it is written, lan
   go(1);
   const res = await retitle;
   assert.equal(res.status, 200, await res.text());
-  await until(`document.querySelector('.pg-tr.open[data-run]') && !document.querySelector('.pg-live-tr')`, async () => 'the finished example replaces the live call: ' + JSON.stringify(await evaluate('Programs.liveInfo()')));
+  await until(`document.querySelector('.pg-tr.open[data-run] .pg-pair') && !document.querySelector('.pg-live-tr')`, async () => 'the finished example replaces the live call: ' + JSON.stringify(await evaluate('Programs.liveInfo()')));
   assert.match(await text('.pg-tr.open[data-run] .pg-pair'), /File viewer fixture check/);
   assert.match(await text('.pg-tr.open[data-run] .pg-ask'), /Is .*File viewer fixture check.* right/);
   assert.equal(await evaluate(`document.querySelectorAll('.pg-live').length`), 0, 'nothing running');

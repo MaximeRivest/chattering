@@ -6,6 +6,7 @@ require('./win-hide.js'); // first: on Windows nothing this starts opens a windo
 require('./module-stamps.js'); // second: when each source file was loaded, for "restart to use it" (design/82)
 
 const fs = require('fs');
+const titlePublication = require('./title-publication').createTitlePublication({ namesAllowed: () => backgroundAllowed('names') });
 const fsp = fs.promises;
 const path = require('path');
 const http = require('http');
@@ -740,7 +741,12 @@ async function writeFileAtomic(p, data, { sync = false } = {}) {
 function saveIndexSoon() {
   clearTimeout(saveIndexSoon.t);
   saveIndexSoon.t = setTimeout(() => {
-    writeFileAtomic(INDEX_FILE, JSON.stringify(index)).catch(() => {});
+    titlePublication.serialize(INDEX_FILE, () => {
+      // Capture latest derived state inside the queue; no await before replacement.
+      const tmp = INDEX_FILE + '.tmp-' + crypto.randomUUID();
+      try { fs.writeFileSync(tmp, JSON.stringify(index)); fs.renameSync(tmp, INDEX_FILE); }
+      finally { try { fs.unlinkSync(tmp); } catch {} }
+    }).catch(e => console.error('index save:', e.message));
   }, 500);
 }
 
@@ -1763,9 +1769,20 @@ async function indexFile(source, relPath, stat) {
     };
     // Its cached copy first, then the listing: a conversation that is listed
     // can always be read (a retitle right after indexing read nothing).
-    await writeFileAtomic(cachePathFor(key), JSON.stringify({ key, relPath, ...entry, messages, entryParents }));
-    index[key] = entry;
-    indexRevision++;
+    await titlePublication.serialize(cachePathFor(key), () => {
+      // Reconcile only this key's current durable override at the final index boundary.
+      const saved = titleJsonSync(TIMELINE_TITLES_FILE)[key];
+      if (saved) timelineTitles[key] = saved;
+      if (saved?.manual) { entry.title = saved.fullTitle || fullTitle; entry.timelineTitle = saved.title; }
+      else if (saved?.hash === titleHash) entry.timelineTitle = saved.title;
+      entry.notePath = index[key]?.notePath || entry.notePath;
+      entry.notedAt = index[key]?.notedAt || entry.notedAt;
+      const tmp = cachePathFor(key) + '.tmp-' + crypto.randomUUID();
+      try {
+        fs.writeFileSync(tmp, JSON.stringify({ key, relPath, ...entry, messages, entryParents }));
+        fs.renameSync(tmp, cachePathFor(key)); index[key] = entry; indexRevision++;
+      } finally { try { fs.unlinkSync(tmp); } catch {} }
+    });
     scheduleProjectFoldRefresh(meta.cwd);
     // Local transcript tools have explicit paths and completion results.
     // Remote-only paths must never be offered as local files.
@@ -4474,18 +4491,83 @@ fs.mkdirSync(EPICS_DIR, { recursive: true });
 fs.mkdirSync(EPIC_INPUTS_DIR, { recursive: true });
 
 // Epics keep a stable group of conversations and a generated cross-session timeline.
-let epics = {};
-try { epics = JSON.parse(fs.readFileSync(EPICS_FILE, 'utf8')); } catch {}
-function saveEpics() {
-  fs.writeFile(EPICS_FILE, JSON.stringify(epics), () => {});
-}
+let epics = Object.create(null);
+try { epics = titleJsonSync(EPICS_FILE); } catch (e) { console.error('epic registry:', e.message); }
 const epicPathFor = id => path.join(EPICS_DIR, id + '.md');
 const epicInputsPathFor = id => path.join(EPIC_INPUTS_DIR, id + '.json');
 
-let timelineTitles = {};
-try { timelineTitles = JSON.parse(fs.readFileSync(TIMELINE_TITLES_FILE, 'utf8')); } catch {}
-function saveTimelineTitles() {
-  fs.writeFile(TIMELINE_TITLES_FILE, JSON.stringify(timelineTitles), () => {});
+let timelineTitles = Object.create(null);
+try { timelineTitles = titleJsonSync(TIMELINE_TITLES_FILE); } catch (e) { console.error('timeline registry:', e.message); }
+function validateTitleRegistry(file, value) {
+  const object = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+  if (!object(value)) throw new Error('invalid title registry');
+  const kind = file === EPICS_FILE ? 'epic' : file === TIMELINE_TITLES_FILE ? 'timeline'
+    : file === path.join(NOTES_DIR, 'project-titles.json') ? 'project' : null;
+  // Other callers read structured project manifests, not title registries.
+  if (!kind) return value;
+  for (const [key, record] of Object.entries(value)) {
+    const invalid = () => { throw new Error('invalid ' + kind + ' title record: ' + key); };
+    if (!object(record) || typeof record.title !== 'string') invalid();
+    const optional = (field, check) => { if (Object.hasOwn(record, field) && !check(record[field])) invalid(); };
+    const string = v => typeof v === 'string', number = v => typeof v === 'number' && Number.isFinite(v);
+    if (kind === 'timeline') {
+      optional('hash', string); optional('fullTitle', string); optional('manual', v => typeof v === 'boolean');
+      optional('aiCall', v => string(v) && v.length > 0);
+      if (record.manual === true && (!string(record.fullTitle) || !record.fullTitle.trim())) invalid();
+      if (Object.hasOwn(record, 'aiCall') && record.manual !== true) invalid();
+    } else if (kind === 'project') {
+      optional('manual', v => typeof v === 'boolean'); optional('at', number);
+    } else {
+      // Epic readers dereference sessionIds directly: missing is not an empty group.
+      if (record.id !== key || !Array.isArray(record.sessionIds) || !record.sessionIds.every(v => string(v) && v.length > 0)) invalid();
+      optional('abstract', string); optional('notePath', string);
+      for (const field of ['firstTs', 'lastTs']) optional(field, v => v === null || string(v));
+      for (const field of ['createdAt', 'updatedAt']) optional(field, number);
+    }
+  }
+  return Object.assign(Object.create(null), value);
+}
+function parseTitleJson(file, raw) {
+  // Only a missing destination is empty; an empty/corrupt persisted file fails closed.
+  return validateTitleRegistry(file, raw === null ? {} : JSON.parse(raw));
+}
+function titleJsonSync(file) {
+  try { return parseTitleJson(file, fs.readFileSync(file, 'utf8')); }
+  catch (e) { if (e.code === 'ENOENT') return validateTitleRegistry(file, {}); throw e; }
+}
+function titleOwner(file, map, key) { return { live: map[key] || null, disk: titleJsonSync(file)[key] || null }; }
+function titleIdentity(identity) {
+  if (!identity?.user) return identity;
+  const user = usersLib.findUser(roster, identity.user.id);
+  if (!user || user.disabled) return null;
+  return wallsFor({ ...identity, user, tier: identity.tier === 'console' ? 'console' : user.role });
+}
+function titleCanAct(target) { return canDo(titleIdentity(currentIdentity() || ownerIdentity()), 'act', target); }
+function openingTitleInputs(data) {
+  const users = data.messages.filter(m => m.role === 'user' && String(m.text || '').trim());
+  const real = users.filter(m => !isBootstrapMessage(m.text));
+  return { opening_user_messages: (real.length ? real : users).slice(0, 4).map(m => String(m.text).slice(0, 2000)) };
+}
+function titleSourceRevision(key) {
+  const file = absPathForKey(key);
+  try { return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); }
+  catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+}
+function conversationTitleRead(key, opening = false) {
+  const e = index[key], owner = titleOwner(TIMELINE_TITLES_FILE, timelineTitles, key);
+  const revision = e ? titleSourceRevision(key) : null;
+  return { exists: !!e && revision !== null && titleCanAct(targetOf(key)), owner, manual: !!(owner.live?.manual || owner.disk?.manual), source: !e ? null : {
+    revision, inputs: opening ? openingTitleInputs(JSON.parse(fs.readFileSync(cachePathFor(key), 'utf8')))
+      : { hash: e.timelineTitleHash, request: String(e.title || '') },
+  } };
+}
+function patchTitleJson(ticket, file, key, record, after) {
+  return titlePublication.write(ticket, file, raw => {
+    const data = parseTitleJson(file, raw);
+    // Literal project names such as __proto__ must be own JSON keys, not setters.
+    Object.defineProperty(data, key, { value: record, enumerable: true, configurable: true, writable: true });
+    return JSON.stringify(validateTitleRegistry(file, data));
+  }, after);
 }
 
 // ---------- project folds ----------
@@ -5237,60 +5319,76 @@ function areaMetaFor(project, rel) {
 // The big human-facing headline on the project panel. It is durable human/AI
 // intent, so it lives in ~/notes next to the created-project registry.
 const PROJECT_TITLES_FILE = path.join(NOTES_DIR, 'project-titles.json');
-let projectTitles = {}; // canonical project name -> { title, manual, at }
-try { projectTitles = JSON.parse(fs.readFileSync(PROJECT_TITLES_FILE, 'utf8')); } catch { projectTitles = {}; }
-function saveProjectTitles() {
-  fs.mkdirSync(NOTES_DIR, { recursive: true });
-  fs.writeFileSync(PROJECT_TITLES_FILE, JSON.stringify(projectTitles, null, 2) + '\n');
+let projectTitles = Object.create(null); // canonical project name -> { title, manual, at }
+try { projectTitles = titleJsonSync(PROJECT_TITLES_FILE); } catch (e) { console.error('project title registry:', e.message); }
+function projectTitleInputs(project) {
+  const meta = projectMetaFor(project); if (!meta) return null;
+  const o = titleJsonSync(projectMemoryPaths(project).manifest).overview || {};
+  return { folder_name: project, path: meta.cwd || '', identity: o.identity || '', overview: o.summary || '',
+    recent_conversation_titles: [...meta.entries].sort((a, b) => Date.parse(b.entry.lastTs || '') - Date.parse(a.entry.lastTs || ''))
+      .slice(0, 12).map(({ entry }) => entry.title || entry.timelineTitle || '').filter(Boolean) };
 }
-
-function setProjectTitle(project, rawTitle, manual = true) {
+function projectTitleRead(project) {
+  const source = projectTitleInputs(project), owner = titleOwner(PROJECT_TITLES_FILE, projectTitles, project);
+  return { exists: !!source && titleCanAct({ project }) && (projectMetaFor(project)?.entries || []).every(({ key }) => titleCanAct(targetOf(key))), source, owner, manual: !!(owner.live || owner.disk) };
+}
+async function setProjectTitle(project, rawTitle, manual = true, ticket = null) {
   const title = String(rawTitle || '').replace(/\s+/g, ' ').trim().slice(0, 120);
   if (!title) throw new Error('empty title');
-  projectTitles[project] = { title, manual, at: Date.now() };
-  saveProjectTitles();
-  broadcast({ type: 'project-title', project, title, manual });
-  return { project, title, manual };
+  const own = !ticket;
+  ticket ||= titlePublication.begin({ target: 'project:' + project, read: () => projectTitleRead(project) });
+  try {
+    await titlePublication.awaitCurrent(ticket, () => fsp.mkdir(NOTES_DIR, { recursive: true }));
+    const record = { title, manual, at: Date.now() };
+    await patchTitleJson(ticket, PROJECT_TITLES_FILE, project, record, () => {
+      projectTitles[project] = record; broadcast({ type: 'project-title', project, title, manual });
+    });
+    return { project, title, manual };
+  } finally { if (own) titlePublication.finish(ticket); }
 }
 
 // Retitle one project on demand, from its memory overview and recent work.
 async function retitleProject(project, manual = true) {
-  const meta = projectMetaFor(project);
-  if (!meta) throw new Error('project not found');
-  const memory = await projectMemoryInfo(project, meta).catch(() => null);
-  const o = (memory && memory.overview) || {};
-  const recent = [...meta.entries]
-    .sort((a, b) => Date.parse(b.entry.lastTs || '') - Date.parse(a.entry.lastTs || ''))
-    .slice(0, 12)
-    .map(({ entry }) => entry.title || entry.timelineTitle || '')
-    .filter(Boolean);
-  const { outputs } = await aiProgram('project_title', {
-    folder_name: project, path: meta.cwd || '', identity: o.identity || '', overview: o.summary || '', recent_conversation_titles: recent,
-  }, { caller: { project } });
-  return setProjectTitle(project, outputs.title, manual);
+  const ticket = titlePublication.begin({ target: 'project:' + project, automatic: !manual, read: () => projectTitleRead(project) });
+  try {
+    titlePublication.check(ticket);
+    const { outputs } = await titlePublication.awaitCurrent(ticket, () => aiProgram('project_title', projectTitleInputs(project),
+      { automatic: !manual, background: manual ? undefined : 'names', caller: { project, conversations: (projectMetaFor(project)?.entries || []).map(e => e.key) } }));
+    return await setProjectTitle(project, outputs.title, manual, ticket);
+  } finally { titlePublication.finish(ticket); }
 }
 
 // Epic titles: an epic is a recursive project, so it renames the same way.
-function setEpicTitle(id, rawTitle) {
-  const epic = epics[id];
-  if (!epic) throw new Error('unknown epic');
+function epicTitleInputs(id) {
+  const epic = epics[id]; if (!epic) return null;
+  return { folder_name: epic.title || 'epic', path: '', identity: '', overview: epic.abstract || '',
+    recent_conversation_titles: (epic.sessionIds || []).map(k => index[k]?.title || index[k]?.timelineTitle || '').filter(Boolean).slice(0, 20) };
+}
+function epicTitleRead(id) {
+  const source = epicTitleInputs(id);
+  const live = epics[id], disk = titleJsonSync(EPICS_FILE)[id];
+  return { exists: !!source && !!disk && titleIdentity(currentIdentity() || ownerIdentity()) !== null && ((live.sessionIds || []).length ? live.sessionIds.every(key => titleCanAct(targetOf(key))) : titleCanAct({})), source: { inputs: source, sessionIds: live?.sessionIds, diskInputs: disk && { title: disk.title, abstract: disk.abstract, sessionIds: disk.sessionIds } }, manual: false, owner: { live: live?.title || null, disk: disk?.title || null } };
+}
+async function setEpicTitle(id, rawTitle, ticket = null) {
   const title = String(rawTitle || '').replace(/\s+/g, ' ').trim().slice(0, 120);
   if (!title) throw new Error('empty title');
-  epic.title = title;
-  saveEpics();
-  return { id, title };
+  const own = !ticket;
+  ticket ||= titlePublication.begin({ target: 'epic:' + id, read: () => epicTitleRead(id) });
+  try {
+    await titlePublication.write(ticket, EPICS_FILE, raw => {
+      const latest = parseTitleJson(EPICS_FILE, raw); if (!Object.hasOwn(latest, id)) throw new Error('unknown epic');
+      latest[id].title = title; return JSON.stringify(validateTitleRegistry(EPICS_FILE, latest));
+    }, () => { epics[id].title = title; });
+    return { id, title };
+  } finally { if (own) titlePublication.finish(ticket); }
 }
-
 async function retitleEpic(id) {
-  const epic = epics[id];
-  if (!epic) throw new Error('unknown epic');
-  const { outputs } = await aiProgram('project_title', {
-    folder_name: epic.title || 'epic', path: '', identity: '', overview: epic.abstract || '',
-    recent_conversation_titles: (epic.sessionIds || [])
-      .map(k => (index[k] && (index[k].title || index[k].timelineTitle)) || '')
-      .filter(Boolean).slice(0, 20),
-  }, { caller: { epic: id } });
-  return setEpicTitle(id, outputs.title);
+  const ticket = titlePublication.begin({ target: 'epic:' + id, read: () => epicTitleRead(id) });
+  try {
+    titlePublication.check(ticket);
+    const { outputs } = await titlePublication.awaitCurrent(ticket, () => aiProgram('project_title', epicTitleInputs(id), { automatic: false, caller: { epic: id, conversations: epics[id]?.sessionIds || [] } }));
+    return await setEpicTitle(id, outputs.title, ticket);
+  } finally { titlePublication.finish(ticket); }
 }
 
 // Auto title: a titleless project names itself the first time its panel opens.
@@ -7354,7 +7452,9 @@ let timelineTitleRunning = false;
 let timelineTitleAgain = false;
 function scheduleTimelineTitles(delayMs = 5000) {
   clearTimeout(scheduleTimelineTitles.t);
-  scheduleTimelineTitles.t = setTimeout(refreshTimelineTitles, Math.max(1000, delayMs));
+  scheduleTimelineTitles.t = setTimeout(() => {
+    refreshTimelineTitles().catch(e => console.error('timeline title refresh failed:', e.message));
+  }, Math.max(1000, delayMs));
 }
 
 function mapTimelineLimit(items, limit, fn) {
@@ -7373,50 +7473,64 @@ async function refreshTimelineTitles() {
   // Without names, the timeline keeps the local short title (timelineTitle()).
   if (!backgroundAllowed('names')) return;
   if (timelineTitleRunning) { timelineTitleAgain = true; return; }
-  const pending = Object.entries(index).filter(([key, e]) => {
-    const saved = timelineTitles[key];
-    if (saved && saved.manual) return false; // never overwrite a user-owned title
-    return !saved || saved.hash !== e.timelineTitleHash;
-  });
-  if (!pending.length) return;
   timelineTitleRunning = true;
   try {
+    // A corrupt shared registry blocks the refresh, before any inference or write.
+    const registry = titleJsonSync(TIMELINE_TITLES_FILE);
+    const pending = Object.keys(index).filter(key => {
+      const saved = registry[key] || timelineTitles[key];
+      if (saved?.manual || timelineTitles[key]?.manual) return false;
+      return !saved || saved.hash !== index[key].timelineTitleHash;
+    });
     const batches = [];
     for (let i = 0; i < pending.length; i += 60) batches.push(pending.slice(i, i + 60));
     await mapTimelineLimit(batches, 3, async batch => {
-      const input = batch.map(([, e], id) => ({ id, request: String(e.title || '') }));
+      const tickets = [], ready = [];
       try {
-        const { outputs } = await aiProgram('timeline_labels', { conversations: input }, { automatic: true, background: 'names' });
-        const result = (outputs.labels || []).map(x => ({ id: x.id, title: x.label }));
-        const updates = [];
-        for (const item of result) {
-          const pair = batch[Number(item.id)];
-          if (!pair) continue;
-          const [key, oldEntry] = pair;
-          if (!index[key] || index[key].timelineTitleHash !== oldEntry.timelineTitleHash) continue;
-          const title = timelineTitle(item.title).slice(0, 10);
-          timelineTitles[key] = { hash: oldEntry.timelineTitleHash, title };
-          index[key].timelineTitle = title;
+        for (const key of batch) {
           try {
-            const file = cachePathFor(key);
-            const data = JSON.parse(await fsp.readFile(file, 'utf8'));
-            data.timelineTitle = title;
-            data.timelineTitleHash = oldEntry.timelineTitleHash;
-            await fsp.writeFile(file, JSON.stringify(data));
-          } catch {}
-          updates.push({ key, title });
+            // Queued batches retain keys only. Capture the prompt/hash from the
+            // very same current snapshot that begins this worker's ticket.
+            let snapshot;
+            const ticket = titlePublication.begin({ target: 'conversation:' + key, automatic: true, read: () => {
+              const current = conversationTitleRead(key); snapshot ||= current; return current;
+            } });
+            tickets.push(ticket); // even a subsequent check failure must finish it
+            titlePublication.check(ticket);
+            ready.push({ key, ticket, hash: snapshot.source.inputs.hash, request: snapshot.source.inputs.request });
+          } catch (e) {
+            if (e.code !== 'TITLE_PUBLICATION_STALE') console.error('title selection:', key, e.message);
+          }
         }
-        if (updates.length) broadcast({ type: 'timeline-titles', titles: updates });
-        saveTimelineTitles();
-        saveIndexSoon();
+        if (!ready.length) return;
+        const input = ready.map(({ request }, id) => ({ id, request }));
+        const { outputs } = await aiProgram('timeline_labels', { conversations: input }, { automatic: true, background: 'names' });
+        for (const item of outputs.labels || []) {
+          if (!Number.isInteger(item.id) || item.id < 0 || item.id >= ready.length) continue;
+          const { key, ticket, hash } = ready[item.id];
+          try {
+            titlePublication.check(ticket);
+            const title = timelineTitle(item.label).slice(0, 10), record = { hash, title };
+            await patchTitleJson(ticket, TIMELINE_TITLES_FILE, key, record, () => {
+              timelineTitles[key] = record; index[key].timelineTitle = title; saveIndexSoon();
+              broadcast({ type: 'timeline-titles', titles: [{ key, title }] });
+            });
+            await titlePublication.write(ticket, cachePathFor(key), raw => {
+              if (!raw) throw new Error('missing conversation cache');
+              const data = JSON.parse(raw); data.timelineTitle = title; data.timelineTitleHash = hash; return JSON.stringify(data);
+            });
+          } catch (e) { if (e.code !== 'TITLE_PUBLICATION_STALE') console.error('title publication:', key, e.message); }
+        }
       } catch (e) {
         console.error('timeline title batch failed:', e.message);
         const retryDelay = e.code === 'MODEL_CALLS_PAUSED'
           ? Math.max(1000, e.retryAt - Date.now() + 1000)
           : e.modelCallFailure ? 10 * 60 * 1000 : 0;
         if (retryDelay) scheduleTimelineTitles(retryDelay);
-      }
+      } finally { for (const ticket of tickets) titlePublication.finish(ticket); }
     });
+  } catch (e) {
+    console.error('timeline title refresh failed:', e.message);
   } finally {
     timelineTitleRunning = false;
     if (timelineTitleAgain) { timelineTitleAgain = false; scheduleTimelineTitles(); }
@@ -7427,24 +7541,34 @@ async function refreshTimelineTitles() {
 
 // Store a durable title override. It wins over re-indexing and the background labeler;
 // only another explicit override replaces it.
-async function applyTitleOverride(key, fullTitle, shortTitle, { aiCall = null } = {}) {
-  const entry = index[key];
-  // aiCall: the conversation_title call that wrote this title, so a person
-  // renaming it later is recorded as that call's correction.
-  timelineTitles[key] = { hash: entry.timelineTitleHash, title: shortTitle, fullTitle, manual: true, ...(aiCall ? { aiCall } : {}) };
-  entry.title = fullTitle;
-  entry.timelineTitle = shortTitle;
+async function applyTitleOverride(key, fullTitle, shortTitle, { aiCall = null, ticket = null, by = null } = {}) {
+  const own = !ticket;
+  ticket ||= titlePublication.begin({ target: 'conversation:' + key, read: () => conversationTitleRead(key) });
   try {
-    const file = cachePathFor(key);
-    const data = JSON.parse(await fsp.readFile(file, 'utf8'));
-    data.title = fullTitle;
-    data.timelineTitle = shortTitle;
-    await fsp.writeFile(file, JSON.stringify(data));
-  } catch {}
-  saveTimelineTitles();
-  saveIndexSoon();
-  broadcast({ type: 'timeline-titles', titles: [{ key, title: shortTitle, fullTitle, manual: true }] });
-  return { key, title: fullTitle, timelineTitle: shortTitle, manual: true };
+    titlePublication.check(ticket);
+    const record = { hash: index[key].timelineTitleHash, title: shortTitle, fullTitle, manual: true, ...(aiCall ? { aiCall } : {}) };
+    let had;
+    await titlePublication.write(ticket, TIMELINE_TITLES_FILE, raw => {
+      const latest = parseTitleJson(TIMELINE_TITLES_FILE, raw); had = latest[key];
+      Object.defineProperty(latest, key, { value: record, enumerable: true, configurable: true, writable: true });
+      return JSON.stringify(validateTitleRegistry(TIMELINE_TITLES_FILE, latest));
+    }, () => {
+      timelineTitles[key] = record; index[key].title = fullTitle; index[key].timelineTitle = shortTitle;
+      if (by && had?.aiCall && had.fullTitle !== fullTitle) {
+        try { const log = programLog(); log.refresh({ force: true }); log.rate({ call: had.aiCall, verdict: 'wrong', answer: fullTitle, origin: 'edit', by }); }
+        catch (e) { if (e.status !== 404) console.error('title correction not recorded:', e.message); }
+      }
+      saveIndexSoon(); broadcast({ type: 'timeline-titles', titles: [{ key, title: shortTitle, fullTitle, manual: true }] });
+    });
+    let cacheWarning;
+    try {
+      await titlePublication.write(ticket, cachePathFor(key), raw => {
+        if (!raw) throw new Error('missing conversation cache');
+        const data = JSON.parse(raw); data.title = fullTitle; data.timelineTitle = shortTitle; return JSON.stringify(data);
+      });
+    } catch (e) { cacheWarning = e.message; }
+    return { key, title: fullTitle, timelineTitle: shortTitle, manual: true, ...(cacheWarning ? { cacheWarning } : {}) };
+  } finally { if (own) titlePublication.finish(ticket); }
 }
 
 async function setConversationTitle(key, rawTitle, { by = null } = {}) {
@@ -7454,15 +7578,7 @@ async function setConversationTitle(key, rawTitle, { by = null } = {}) {
   // A person renaming a title the conversation_title program wrote corrects
   // that call (the call log's origin "edit"): the new name is what it should
   // have said. Edits are noisier than reviews; the Programs pages say which.
-  const had = timelineTitles[key];
-  if (by && had && had.aiCall && had.fullTitle !== fullTitle) {
-    try {
-      const log = programLog();
-      log.refresh({ force: true });
-      log.rate({ call: had.aiCall, verdict: 'wrong', answer: fullTitle, origin: 'edit', by });
-    } catch (e) { if (e.status !== 404) console.error('title correction not recorded:', e.message); }
-  }
-  return applyTitleOverride(key, fullTitle, timelineTitle(fullTitle));
+  return applyTitleOverride(key, fullTitle, timelineTitle(fullTitle), { by });
 }
 
 // Auto retitle: fire once, when a conversation crosses from fewer than two real
@@ -7503,16 +7619,17 @@ function maybeAutoRetitle(key, prev, entry) {
 // Retitle one conversation on demand, from its first real (non-bootstrap) user messages.
 async function retitleConversation(key, options = {}) {
   if (!index[key]) throw new Error('unknown conversation');
-  const data = JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8'));
-  const users = data.messages.filter(m => m.role === 'user' && String(m.text || '').trim());
-  const real = users.filter(m => !isBootstrapMessage(m.text));
-  const chosen = (real.length ? real : users).slice(0, 4).map(m => String(m.text).slice(0, 2000));
-  if (!chosen.length) throw new Error('no user messages to title from');
-  const { outputs, callId } = await aiProgram('conversation_title', { opening_user_messages: chosen }, { ...options, caller: { conversation: key } });
-  const fullTitle = String(outputs.title || '').replace(/\s+/g, ' ').trim().slice(0, 200);
-  if (!fullTitle) throw new Error('the model returned no title');
-  const shortTitle = timelineTitle(String(outputs.label || outputs.title)).slice(0, 10);
-  return applyTitleOverride(key, fullTitle, shortTitle, { aiCall: callId });
+  const ticket = titlePublication.begin({ target: 'conversation:' + key, automatic: options.automatic === true, read: () => conversationTitleRead(key, true) });
+  try {
+    const data = await titlePublication.awaitCurrent(ticket, async () => JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8')));
+    const inputs = openingTitleInputs(data);
+    if (!inputs.opening_user_messages.length) throw new Error('no user messages to title from');
+    const { outputs, callId } = await titlePublication.awaitCurrent(ticket, () => aiProgram('conversation_title', inputs,
+      { ...options, automatic: options.automatic === true, background: options.automatic ? 'names' : undefined, caller: { conversation: key } }));
+    const fullTitle = String(outputs.title || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    if (!fullTitle) throw new Error('the model returned no title');
+    return await applyTitleOverride(key, fullTitle, timelineTitle(String(outputs.label || outputs.title)).slice(0, 10), { aiCall: callId, ticket });
+  } finally { titlePublication.finish(ticket); }
 }
 
 // Every message, numbered, nothing dropped. Tool results stay (already capped at 4k).
@@ -8648,6 +8765,14 @@ async function buildEpic(ids, epicId = null, focus = '', assignedId = null, emit
   emit({ text: 'Reading selected conversations…', done: 0, total: 0 });
   const sessionIds = [...new Set([...(old ? old.sessionIds : []), ...ids])].filter(id => index[id]);
   if (sessionIds.length < 2) throw new Error('select at least two conversations');
+  const id = (old && old.id) || assignedId || crypto.randomUUID();
+  const ticket = titlePublication.begin({ target: 'epic:' + id, read: () => ({
+    exists: (!old || !!epics[id]) && sessionIds.every(key => index[key] && titleCanAct(targetOf(key))), manual: false,
+    source: { focus, sessions: sessionIds.map(key => [key, index[key]?.title, titleSourceRevision(key)]) },
+    owner: { live: epics[id]?.title || null, disk: titleJsonSync(EPICS_FILE)[id]?.title || null },
+  }) });
+  try {
+  titlePublication.check(ticket);
   const sessions = [];
   for (const key of sessionIds) {
     try { sessions.push(JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8'))); } catch {}
@@ -8677,7 +8802,7 @@ async function buildEpic(ids, epicId = null, focus = '', assignedId = null, emit
   const story = await buildEpicStory(evidenceInputs, focus || (old && old.title) || '', progress =>
     emit({ ...progress, done: sessions.length, total: sessions.length + 1 }));
   if (!Array.isArray(story.chapters) || !story.chapters.length) throw new Error('the epic narrative had no timeline');
-  const id = (old && old.id) || assignedId || crypto.randomUUID();
+  titlePublication.check(ticket);
   const now = Date.now();
   const epic = {
     id,
@@ -8691,12 +8816,12 @@ async function buildEpic(ids, epicId = null, focus = '', assignedId = null, emit
     notePath: epicPathFor(id),
   };
   const text = renderEpicMarkdown(epic, story, sessions);
-  await fsp.writeFile(epic.notePath, text);
-  await fsp.writeFile(epicInputsPathFor(id), JSON.stringify({ epicId: id, builtAt: now, inputs: evidenceInputs }));
-  epics[id] = epic;
-  saveEpics();
+  await titlePublication.write(ticket, epic.notePath, () => text);
+  await titlePublication.write(ticket, epicInputsPathFor(id), () => JSON.stringify({ epicId: id, builtAt: now, inputs: evidenceInputs }));
+  await patchTitleJson(ticket, EPICS_FILE, id, epic, () => { epics[id] = epic; });
   emit({ text: 'Epic saved.', done: sessions.length + 1, total: sessions.length + 1 });
   return { ...epic, text, sessions: sessions.map(s => ({ key: s.key, title: s.title, firstTs: s.firstTs, cwd: s.cwd })) };
+  } finally { titlePublication.finish(ticket); }
 }
 
 async function epicResponse(epic) {
@@ -13621,16 +13746,30 @@ function scheduleDocCommitTitle(root, hash, diffText) {
   // Without names, the commit keeps its plain "doc: file (+a −b)" subject.
   if (!backgroundAllowed('names')) return;
   setTimeout(async () => {
+    let ticket;
+    const gitSync = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
     try {
-      const { outputs } = await aiProgram('document_commit_title', { diff: clipped(diffText, 60000) }, { background: 'names', caller: { repository: root } });
-      const title = oneLine(outputs.title, '').slice(0, 60);
-      if (!title) return;
-      const head = (await gitText(root, ['rev-parse', 'HEAD'])).trim();
-      if (head !== hash) return;
-      await gitText(root, ['diff', '--cached', '--quiet']); // throws when something is staged
-      await gitText(root, ['commit', '--amend', '--no-verify', '-m', title]);
-      broadcast({ type: 'doc-commit-titled', root, was: hash });
-    } catch {}
+      if (!backgroundAllowed('names')) return;
+      ticket = titlePublication.begin({ target: 'document-commit:' + root, automatic: true, read: () => {
+        const head = gitSync(['rev-parse', 'HEAD']).trim();
+        const project = projectOfPath(root);
+        return { exists: head === hash && titleCanAct({ project, creator: projectCreatorOf(project) }), source: { head, diff: clipped(diffText, 60000) }, owner: gitSync(['log', '-1', '--format=%B']), manual: false };
+      } });
+      const { outputs } = await titlePublication.awaitCurrent(ticket, () => aiProgram('document_commit_title', { diff: clipped(diffText, 60000) },
+        { automatic: true, background: 'names', caller: { repository: root } }));
+      const title = oneLine(outputs.title, '').slice(0, 60); if (!title) return;
+      await titlePublication.serialize(root, async () => {
+        const head = await titlePublication.awaitCurrent(ticket, () => gitText(root, ['rev-parse', 'HEAD']));
+        if (head.trim() !== hash) return;
+        await titlePublication.awaitCurrent(ticket, () => gitText(root, ['diff', '--cached', '--quiet']));
+        // Synchronous final probe + amendment: no event-loop yield between authority and mutation.
+        // External Git writers do not honor this JS queue; this is NOT a repository-wide transaction.
+        titlePublication.boundary(ticket, 'document-amend:' + root, () => {
+          if (gitSync(['rev-parse', 'HEAD']).trim() !== hash) throw new Error('HEAD changed');
+          gitSync(['diff', '--cached', '--quiet']); gitSync(['commit', '--amend', '--no-verify', '-m', title]);
+        }, () => broadcast({ type: 'doc-commit-titled', root, was: hash }));
+      });
+    } catch {} finally { if (ticket) titlePublication.finish(ticket); }
   }, 50);
 }
 
@@ -13649,6 +13788,7 @@ async function docCommitResponse(body, user = null) {
   // Both by their real names: git answers the long one (Windows may hand
   // the file over by its short 8.3 name; macOS /var is /private/var).
   const rel = path.relative(root, await fsp.realpath(abs)).replace(/\\/g, '/');
+  return titlePublication.serialize(root, async () => {
   await gitText(root, ['add', '--', rel]);
   const staged = String(await gitText(root, ['diff', '--cached', '--numstat', '--', rel]).catch(() => '')).trim();
   if (!staged) return { ok: true, unchanged: true, path: abs, sha };
@@ -13664,6 +13804,7 @@ async function docCommitResponse(body, user = null) {
   ledgerRecordEditorSave(abs, { added: Number(addedRaw) || 0, removed: Number(removedRaw) || 0, chars: null, sha, commitHash: hash });
   scheduleDocCommitTitle(root, hash, diffText);
   return { ok: true, path: abs, hash, subject, sha };
+  });
 }
 
 // Create a new markdown document. Documents live in <projectRoot>/documents/
@@ -18462,7 +18603,7 @@ async function handleRequest(req, res) {
       try {
         const p = JSON.parse(body || '{}');
         if (!projectMetaFor(String(p.name || ''))) throw new Error('project not found');
-        json(res, 200, setProjectTitle(String(p.name), p.title));
+        json(res, 200, await setProjectTitle(String(p.name), p.title));
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/project/retitle' && req.method === 'POST') {
       let body = '';
@@ -18476,7 +18617,7 @@ async function handleRequest(req, res) {
       for await (const chunk of req) body += chunk;
       try {
         const p = JSON.parse(body || '{}');
-        json(res, 200, setEpicTitle(String(p.id || ''), p.title));
+        json(res, 200, await setEpicTitle(String(p.id || ''), p.title));
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/epic/retitle' && req.method === 'POST') {
       let body = '';
@@ -19412,7 +19553,9 @@ async function handleRequest(req, res) {
       const before = appSettings.backgroundAi || {};
       const next = { decidedAt: new Date().toISOString() };
       for (const kind of settingsLib.BACKGROUND_AI_KINDS) next[kind] = typeof p[kind] === 'boolean' ? p[kind] : before[kind] === true;
+      const namesWereAllowed = backgroundAllowed('names');
       appSettings = settingsLib.normalizeSettings({ ...appSettings, backgroundAi: next });
+      if (namesWereAllowed !== backgroundAllowed('names')) titlePublication.policyChanged();
       saveAppSettings();
       console.log('[settings] background AI: names ' + (next.names ? 'on' : 'off') + ', memory ' + (next.memory ? 'on' : 'off') + ' (by ' + identity.user.name + ')');
       // Newly allowed names: the waiting conversations get theirs now.
