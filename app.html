@@ -13094,30 +13094,113 @@ class AgentSpeechResampler {
   }
 }
 
+// The Android app's microphone, lent to the page (android/.../MicBridge.kt).
+// Through the encrypted link the app cannot send audio to the computer
+// itself (it has no address for it, only the tunnel this page holds), and
+// the WebView's own recording is not dependable (on the e-ink tablet its
+// audio graph never delivers a sample). So the app records and hands this
+// page 16 kHz PCM, which goes through the tunnel like a browser's recording.
+// One recording at a time: a new one ends the one before.
+const appMicrophone = (() => {
+  const bridge = () => (window.__anywhereInside && window.ChatteringMic && typeof window.ChatteringMic.start === 'function') ? window.ChatteringMic : null;
+  const open = new Map();   // session → its handlers
+  const bytesOf = b64 => { const s = atob(b64), out = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i); return out; };
+  window.chatteringMicEvent = e => {
+    const h = e && open.get(e.session);
+    if (!h) return;
+    if (e.type === 'pcm') { if (e.data) h.pcm(bytesOf(e.data)); }
+    else if (e.type === 'started') h.started();
+    else if (e.type === 'paused') h.paused();
+    else if (e.type === 'ended' || e.type === 'error') { open.delete(e.session); h.ended(e.type === 'error' ? e.message || 'the microphone failed' : ''); }
+  };
+  return {
+    available: () => !!bridge(),
+    // Resolves once the microphone is open, with stop(), which resolves once
+    // the last samples have arrived. paused/resumed: the app left the
+    // screen and came back; ended(error): it closed ('' after stop()).
+    open({ pcm, paused = () => {}, resumed = () => {}, ended = () => {} }) {
+      const b = bridge();
+      if (!b) return Promise.reject(new Error('the app has no microphone for this page'));
+      return new Promise((resolve, reject) => {
+        let opened = false, done;
+        const finished = new Promise(r => { done = r; });
+        const id = b.start();
+        const stop = () => { try { b.stop(id); } catch {} return Promise.race([finished, new Promise(r => setTimeout(r, 3000))]); };
+        open.set(id, {
+          pcm, paused,
+          started: () => { if (opened) return resumed(); opened = true; resolve(stop); },
+          ended: error => { done(); if (opened) ended(error); else reject(new Error(error || 'the microphone closed')); },
+        });
+      });
+    },
+  };
+})();
+
 function browserAgentSpeechAvailable() {
-  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia &&
+  return appMicrophone.available() || !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia &&
     (window.AudioContext || window.webkitAudioContext));
+}
+
+// The browser's microphone as 16 kHz PCM handed to take(); resolves with a
+// function that closes it.
+async function openBrowserMicrophone(take) {
+  // Create the audio context inside the tap event. Browsers can reject a
+  // context created only after the asynchronous permission dialog closes.
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const context = new AudioCtx();
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: {
+      channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+    } });
+    await context.resume();
+  } catch (error) {
+    try { await context.close(); } catch {}
+    throw error;
+  }
+  const source = context.createMediaStreamSource(stream);
+  const processor = context.createScriptProcessor(4096, 1, 1);
+  const mute = context.createGain();
+  mute.gain.value = 0;
+  const resampler = new AgentSpeechResampler(context.sampleRate);
+  processor.onaudioprocess = event => take(resampler.process(event.inputBuffer.getChannelData(0)));
+  source.connect(processor);
+  processor.connect(mute);
+  mute.connect(context.destination);
+  return async () => {
+    try { source.disconnect(); } catch {}
+    try { processor.disconnect(); } catch {}
+    try { mute.disconnect(); } catch {}
+    for (const track of stream.getTracks()) track.stop();
+    try { await context.close(); } catch {}
+  };
 }
 
 async function startBrowserAgentSpeech() {
   if (window._agentBrowserSpeech) return;
   try {
-    // Create the audio context inside the tap event. Browsers can reject a
-    // context created only after the asynchronous permission dialog closes.
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    const context = new AudioCtx();
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: {
-      channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false,
-    } });
-    await context.resume();
-    const source = context.createMediaStreamSource(stream);
-    const processor = context.createScriptProcessor(4096, 1, 1);
-    const mute = context.createGain();
-    mute.gain.value = 0;
-    const state = {
-      recording: true, stream, context, source, processor, mute,
-      chunks: [], pending: [], resampler: new AgentSpeechResampler(context.sampleRate), ws: null,
+    // recording: the person has not tapped stop; closed: no more audio
+    // (the app's microphone sends its last samples after the stop tap).
+    const state = { recording: true, closed: false, chunks: [], pending: [], ws: null, close: null };
+    const take = pcm => {
+      if (state.closed || !pcm.length) return;
+      state.chunks.push(pcm);
+      if (state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.send(pcm);
+      else if (state.pending.reduce((n, part) => n + part.length, 0) < 2 * 1024 * 1024) state.pending.push(pcm);
     };
+    state.close = appMicrophone.available()
+      ? await appMicrophone.open({
+        pcm: take,
+        // The app left the screen (no microphone in the background): what
+        // was said so far is transcribed.
+        paused: () => { if (state.recording) stopBrowserAgentSpeech(); },
+        ended: error => {
+          if (!error || !state.recording) return;
+          window.agentSpeechEvent({ type: 'notice', message: error });
+          stopBrowserAgentSpeech();
+        },
+      })
+      : await openBrowserMicrophone(take);
     window._agentBrowserSpeech = state;
     try {
       // Same origin: the server relays to the speech stage. A direct LAN
@@ -13145,17 +13228,6 @@ async function startBrowserAgentSpeech() {
         if (state.recording) window.agentSpeechEvent({ type: 'notice', message: 'Live preview is unavailable; recording continues.' });
       };
     } catch {}
-    processor.onaudioprocess = event => {
-      if (!state.recording) return;
-      const pcm = state.resampler.process(event.inputBuffer.getChannelData(0));
-      if (!pcm.length) return;
-      state.chunks.push(pcm);
-      if (state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.send(pcm);
-      else if (state.pending.reduce((n, part) => n + part.length, 0) < 2 * 1024 * 1024) state.pending.push(pcm);
-    };
-    source.connect(processor);
-    processor.connect(mute);
-    mute.connect(context.destination);
     window.agentSpeechEvent({ type: 'recording' });
   } catch (error) {
     window._agentBrowserSpeech = null;
@@ -13168,11 +13240,8 @@ async function stopBrowserAgentSpeech() {
   if (!state || !state.recording) return;
   state.recording = false;
   window.agentSpeechEvent({ type: 'transcribing' });
-  try { state.source.disconnect(); } catch {}
-  try { state.processor.disconnect(); } catch {}
-  try { state.mute.disconnect(); } catch {}
-  for (const track of state.stream.getTracks()) track.stop();
-  try { await state.context.close(); } catch {}
+  try { await state.close(); } catch {}
+  state.closed = true;
   try { if (state.ws) state.ws.close(1000, 'done'); } catch {}
   window._agentBrowserSpeech = null;
   const size = state.chunks.reduce((n, chunk) => n + chunk.length, 0);
@@ -13202,9 +13271,20 @@ async function stopBrowserAgentSpeech() {
 
 // One mic button and the text box it dictates into. The composer's by
 // default; the file's ask box passes its own (and its grow function).
+// The Android app's dictation (android/.../SpeechBridge.kt), or null. Not
+// through the encrypted link (inside.js marks the page): the app posts the
+// audio to the server's address, and a device paired through the relay has
+// none, only the tunnel this page holds. There the page transcribes itself,
+// with the app's microphone (appMicrophone), through the tunnel.
+function nativeSpeechBridge() {
+  const bridge = window.ChatteringSpeech;
+  if (window.__anywhereInside) return null;
+  return bridge && typeof bridge.toggle === 'function' ? bridge : null;
+}
+
 function wireAgentSpeech(ta, mic = $('agentMic'), grow = autoGrowCompose) {
-  const nativeSpeech = window.ChatteringSpeech;
-  const nativeAvailable = !!(nativeSpeech && typeof nativeSpeech.toggle === 'function');
+  const nativeSpeech = nativeSpeechBridge();
+  const nativeAvailable = !!nativeSpeech;
   if (!mic || (!nativeAvailable && !browserAgentSpeechAvailable())) return;
   // Both the browser and the Android app transcribe through this server's
   // speech service: without one, dictation cannot work, so no button.

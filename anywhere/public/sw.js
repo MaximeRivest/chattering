@@ -14,7 +14,7 @@
    shell holds), which hands it to the shell, which carries it through the
    tunnel to the computer's preview server. It never shows the shell. */
 'use strict';
-const VERSION = 'anywhere-12';
+const VERSION = 'anywhere-13';
 const PREVIEW = location.hostname.startsWith('previews.');
 const SHELL_CACHE = (PREVIEW ? 'anywhere-carrier-' : 'anywhere-shell-') + VERSION;
 const SHELL_FILES = PREVIEW ? ['/_anywhere/carrier.html', '/_anywhere/carrier.js']

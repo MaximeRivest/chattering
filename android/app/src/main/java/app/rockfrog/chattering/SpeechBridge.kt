@@ -3,7 +3,6 @@ package app.rockfrog.chattering
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
-import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.webkit.JavascriptInterface
@@ -112,34 +111,10 @@ class SpeechBridge(
         // AudioRecord. This keeps the last words spoken before the stop tap.
     }
 
-    @SuppressLint("MissingPermission")
     private fun openAudioRecord(): AudioRecord {
-        val rates = intArrayOf(TARGET_RATE, 48000, 44100)
-        val sources = intArrayOf(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
-            MediaRecorder.AudioSource.MIC,
-        )
-        for (rate in rates) {
-            val minimum = AudioRecord.getMinBufferSize(
-                rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-            if (minimum <= 0) continue
-            val bufferSize = maxOf(minimum, rate * 2)
-            for (source in sources) {
-                var candidate: AudioRecord? = null
-                try {
-                    candidate = AudioRecord(
-                        source, rate, AudioFormat.CHANNEL_IN_MONO,
-                        AudioFormat.ENCODING_PCM_16BIT, bufferSize * 2)
-                    if (candidate.state == AudioRecord.STATE_INITIALIZED) {
-                        captureRate = rate
-                        return candidate
-                    }
-                } catch (_: Exception) {
-                }
-                candidate?.release()
-            }
-        }
-        throw IllegalStateException("Microphone initialization failed")
+        val record = Microphone.open(intArrayOf(MediaRecorder.AudioSource.VOICE_RECOGNITION, MediaRecorder.AudioSource.MIC))
+        captureRate = record.sampleRate
+        return record
     }
 
     private fun openStream() {
@@ -303,10 +278,7 @@ class SpeechBridge(
         if (text != null) event.put("text", text)
         if (message != null) event.put("message", message)
         val quoted = JSONObject.quote(event.toString())
-        web.post {
-            web.evaluateJavascript(
-                "window.agentSpeechEvent&&window.agentSpeechEvent($quoted)", null)
-        }
+        PageCall.run(web, "w.agentSpeechEvent&&w.agentSpeechEvent($quoted)")
     }
 
     /** Chunk-stable boxcar downsampler copied from the proven IME path. */

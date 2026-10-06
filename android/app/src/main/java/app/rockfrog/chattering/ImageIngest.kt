@@ -59,12 +59,7 @@ object ImageIngest {
     fun inject(web: WebView, jpeg: ByteArray, name: String) {
         val b64 = Base64.encodeToString(jpeg, Base64.NO_WRAP)
         val quotedName = JSONObject.quote(name)
-        web.post {
-            web.evaluateJavascript(
-                "window.chatteringAcceptImage&&window.chatteringAcceptImage('image/jpeg','$b64',$quotedName)",
-                null
-            )
-        }
+        PageCall.run(web, "w.chatteringAcceptImage&&w.chatteringAcceptImage('image/jpeg','$b64',$quotedName)")
     }
 
     // Decodes at the largest power-of-two sample that keeps the longest

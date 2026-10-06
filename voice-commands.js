@@ -83,8 +83,11 @@ function voiceToggle() { return voiceSetOn(!voice.on); }
 
 // Inside the Android app, the app listens (android/.../ListenBridge.kt):
 // the page there is on http and gets no microphone. Same server channel,
-// same events, handed to voiceEvent.
-const voiceNative = () => (typeof window.ChatteringListen === 'object' && window.ChatteringListen) || null;
+// same events, handed to voiceEvent. Not through the encrypted link
+// (inside.js marks the page): the app reaches the server by its address, and
+// a device paired through the relay has none; there the page listens through
+// the tunnel it holds, with the app's microphone (voiceStart).
+const voiceNative = () => (!window.__anywhereInside && typeof window.ChatteringListen === 'object' && window.ChatteringListen) || null;
 window.voiceNativeEvent = e => {
   if (!e || typeof e !== 'object') return;
   if (e.type !== 'native') return voiceEvent(e);
@@ -104,6 +107,28 @@ async function voiceStart() {
     return;
   }
   if (voice.audio) return voiceConnect();
+  // In the Android app through the encrypted link: the app's microphone,
+  // this page's connection (app.html, appMicrophone).
+  if (typeof appMicrophone !== 'undefined' && appMicrophone.available()) {
+    voice.status = 'starting';
+    voicePaint();
+    try {
+      const stop = await appMicrophone.open({
+        pcm: pcm => { if (voice.ws && voice.ws.readyState === WebSocket.OPEN) voice.ws.send(pcm); },
+        paused: () => { voice.status = 'paused'; voice.error = 'paused while the app is in the background'; voicePaint(); },
+        resumed: () => { if (voice.status === 'paused') { voice.status = 'listening'; voice.error = ''; voicePaint(); } },
+        // Closed while still on: it failed, or dictation took the app's one
+        // microphone. Turning voice commands off and on opens it again.
+        ended: error => { if (!voice.on) return; voice.audio = null; voiceFail(error ? 'microphone: ' + error : 'dictation took the microphone; turn voice commands off and on to listen again'); },
+      });
+      if (!voice.on) { stop(); return; }
+      voice.audio = { stop };
+      voiceConnect();
+    } catch (e) {
+      voiceFail('microphone: ' + (e.message || e));
+    }
+    return;
+  }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     // Browsers give the microphone only to secure pages (https).
     if (!window.isSecureContext) {
@@ -175,7 +200,8 @@ function voiceStop() {
   if (voice.ws) { const ws = voice.ws; voice.ws = null; try { ws.send(JSON.stringify({ type: 'stop' })); } catch {} setTimeout(() => { try { ws.close(); } catch {} }, 1500); }
   const a = voice.audio;
   voice.audio = null;
-  if (a) {
+  if (a && a.stop) a.stop();
+  else if (a) {
     try { a.source.disconnect(); a.processor.disconnect(); a.mute.disconnect(); } catch {}
     a.stream.getTracks().forEach(t => t.stop());
     a.context.close().catch(() => {});

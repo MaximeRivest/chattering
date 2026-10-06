@@ -50,6 +50,7 @@ class MainActivity : AppCompatActivity() {
         private const val LISTEN_PERMISSION_REQUEST = 4110
         private const val FILE_CHOOSER_REQUEST = 4108
         private const val NOTIFY_PERMISSION_REQUEST = 4109
+        private const val MIC_PERMISSION_REQUEST = 4111
     }
 
     // Settings page toggle for reply notifications. On Android 13+ the
@@ -75,7 +76,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun tellPageNotify(on: Boolean) {
-        web.evaluateJavascript("window.nativeNotifyChanged&&window.nativeNotifyChanged($on)", null)
+        PageCall.run(web, "w.nativeNotifyChanged&&w.nativeNotifyChanged($on)")
     }
 
     // The pending <input type=file> callback. The WebView contract: answer
@@ -117,6 +118,7 @@ class MainActivity : AppCompatActivity() {
     private var mode = "anywhere"
     private lateinit var speech: SpeechBridge
     private lateinit var listen: ListenBridge
+    private lateinit var mic: MicBridge
     private lateinit var ink: InkOverlay
     private lateinit var setup: View
     private lateinit var error: TextView
@@ -180,6 +182,7 @@ class MainActivity : AppCompatActivity() {
         anywhere = AnywhereShell(this)
         speech = SpeechBridge(this, web)
         listen = ListenBridge(this, web)
+        mic = MicBridge(this, web)
         configureWebView()
         val saved = prefs.getString("server", "") ?: ""
         val link = intent?.data
@@ -205,7 +208,7 @@ class MainActivity : AppCompatActivity() {
         val key = intent?.getStringExtra(NotifyService.EXTRA_KEY) ?: return
         if (web.visibility != View.VISIBLE) return
         val encoded = Uri.encode(key)
-        web.evaluateJavascript("location.hash='#$encoded'", null)
+        PageCall.run(web, "w.location.hash='#$encoded'")
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -218,6 +221,7 @@ class MainActivity : AppCompatActivity() {
         NotifyService.appOnScreen = true
         if (::web.isInitialized) web.onResume()
         if (::listen.isInitialized) listen.onResume()
+        if (::mic.isInitialized) mic.onResume()
         // Coming back to a failed screen: the user may have fixed Wi-Fi or
         // Tailscale in the meantime, so try again without being asked.
         if (conn == Conn.FAILED) autoRetry()
@@ -226,8 +230,9 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         NotifyService.appOnScreen = false
         if (::listen.isInitialized) listen.onPause()
+        if (::mic.isInitialized) mic.onPause()
         if (::web.isInitialized) {
-            web.evaluateJavascript("document.querySelectorAll('video').forEach(v=>v.pause())", null)
+            PageCall.run(web, "w.document.querySelectorAll('video').forEach(v=>v.pause())")
             web.onPause()
         }
         super.onPause()
@@ -283,7 +288,7 @@ class MainActivity : AppCompatActivity() {
     private fun configureInk() {
         ink.listener = InkOverlay.Listener { packed, erase ->
             val safe = packed.replace("'", "")
-            web.evaluateJavascript("window.fileInkAcceptPacked&&window.fileInkAcceptPacked('$safe',$erase)", null)
+            PageCall.run(web, "w.fileInkAcceptPacked&&w.fileInkAcceptPacked('$safe',$erase)")
         }
     }
 
@@ -308,6 +313,7 @@ class MainActivity : AppCompatActivity() {
         web.addJavascriptInterface(InkBridge(), "ChatteringInk")
         web.addJavascriptInterface(speech, "ChatteringSpeech")
         web.addJavascriptInterface(listen, "ChatteringListen")
+        web.addJavascriptInterface(mic, "ChatteringMic")
         web.addJavascriptInterface(NotifyBridge(), "ChatteringNotify")
         web.addJavascriptInterface(AppBridge(), "ChatteringApp")
         web.setDownloadListener { url, userAgent, disposition, mime, _ ->
@@ -333,6 +339,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onHideCustomView() { hideFullscreenVideo() }
+
 
             override fun onShowFileChooser(
                 view: WebView?,
@@ -471,6 +478,10 @@ class MainActivity : AppCompatActivity() {
         requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), LISTEN_PERMISSION_REQUEST)
     }
 
+    fun requestMicPermission() {
+        requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), MIC_PERMISSION_REQUEST)
+    }
+
     fun requestSpeechPermission() {
         requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), SPEECH_PERMISSION_REQUEST)
     }
@@ -527,6 +538,8 @@ class MainActivity : AppCompatActivity() {
         } else if (requestCode == SPEECH_PERMISSION_REQUEST) {
             speech.onPermissionResult(
                 grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)
+        } else if (requestCode == MIC_PERMISSION_REQUEST) {
+            mic.onPermissionResult(grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)
         } else if (requestCode == NOTIFY_PERMISSION_REQUEST) {
             val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
             NotifyService.setEnabled(this, granted)
@@ -751,6 +764,7 @@ class MainActivity : AppCompatActivity() {
         hideFullscreenVideo()
         if (::speech.isInitialized) speech.destroy()
         if (::listen.isInitialized) listen.destroy()
+        if (::mic.isInitialized) mic.destroy()
         super.onDestroy()
     }
 

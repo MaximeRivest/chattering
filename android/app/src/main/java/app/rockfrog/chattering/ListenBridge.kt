@@ -3,7 +3,6 @@ package app.rockfrog.chattering
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.pm.PackageManager
-import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.webkit.JavascriptInterface
@@ -194,25 +193,10 @@ class ListenBridge(
         }
     }
 
-    @SuppressLint("MissingPermission")
-    private fun openAudioRecord(): AudioRecord {
-        // Plain microphone: the page asks for no noise suppression or gain
-        // either (they hurt recognition). VOICE_RECOGNITION as the fallback.
-        val sources = intArrayOf(MediaRecorder.AudioSource.MIC, MediaRecorder.AudioSource.VOICE_RECOGNITION)
-        for (rate in intArrayOf(TARGET_RATE, 48000, 44100)) {
-            val minimum = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-            if (minimum <= 0) continue
-            for (source in sources) {
-                var candidate: AudioRecord? = null
-                try {
-                    candidate = AudioRecord(source, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minimum, rate * 2) * 2)
-                    if (candidate.state == AudioRecord.STATE_INITIALIZED) return candidate
-                } catch (_: Exception) {}
-                candidate?.release()
-            }
-        }
-        throw IllegalStateException("the microphone could not be opened")
-    }
+    // Plain microphone: the page asks for no noise suppression or gain
+    // either (they hurt recognition). VOICE_RECOGNITION as the fallback.
+    private fun openAudioRecord(): AudioRecord =
+        Microphone.open(intArrayOf(MediaRecorder.AudioSource.MIC, MediaRecorder.AudioSource.VOICE_RECOGNITION))
 
     fun destroy() {
         wanted = false
@@ -224,7 +208,7 @@ class ListenBridge(
 
     private fun emitRaw(json: String) {
         val quoted = JSONObject.quote(json)
-        web.post { web.evaluateJavascript("window.voiceNativeEvent&&window.voiceNativeEvent(JSON.parse($quoted))", null) }
+        PageCall.run(web, "w.voiceNativeEvent&&w.voiceNativeEvent(JSON.parse($quoted))")
     }
 
     private fun emitNative(state: String, message: String?) {

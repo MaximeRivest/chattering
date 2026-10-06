@@ -33,10 +33,20 @@ test('a phone pairs in the browser and runs Chattering from the computer', { ski
   const relayUrl = 'http://127.0.0.1:' + relay.server.address().port;
   const port = await freePort(), tlsPort = await freePort(), previewPort = await freePort();
   registerConsole(port, 'install-tok');
+  // A speech service: what the phone's microphone records reaches it
+  // through the tunnel and the computer, and its words come back.
+  let heardBytes = 0;
+  const speech = require('node:http').createServer((req, res) => {
+    if (req.method !== 'POST' || req.url !== '/transcribe') { res.writeHead(404); return res.end(); }
+    req.on('data', b => { heardBytes += b.length; });
+    req.on('end', () => { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('hello through the link'); });
+  });
+  await new Promise(r => speech.listen(0, '127.0.0.1', r));
+  t.after(() => speech.close());
   let log = '';
   const child = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: String(tlsPort), CHATTERING_PREVIEW_PORT: String(previewPort), CHATTERING_NO_WATCH: '1', CHATTERING_NO_LEDGER: '1', CHATTERING_NO_SYNC: '1',
     CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
-    CHATTERING_HOST: '', CHATTERING_LAN: '', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: 'install-tok', CHATTERING_HOSTNAME: 'lambda' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    CHATTERING_HOST: '', CHATTERING_LAN: '', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: 'install-tok', CHATTERING_HOSTNAME: 'lambda', SPEECH_URL: 'http://127.0.0.1:' + speech.address().port }, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b);
   t.after(() => require('./helpers/cleanup.js').stopAndRemove(child, home));
   const base = 'http://127.0.0.1:' + port;
@@ -51,7 +61,9 @@ test('a phone pairs in the browser and runs Chattering from the computer', { ski
     // Chromium hides this machine's addresses behind mDNS names the
     // computer's WebRTC stack does not resolve; a phone on another network
     // meets it through STUN/TURN instead.
-    '--disable-features=WebRtcHideLocalIpsWithMdns', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    '--disable-features=WebRtcHideLocalIpsWithMdns',
+    // A microphone that plays a tone, granted without a prompt.
+    '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
   t.after(() => { try { browser.kill('SIGKILL'); } catch {} });
   const endpoint = await new Promise((resolve, reject) => {
     let out = ''; const timer = setTimeout(() => reject(Error(out)), 15000);
@@ -147,6 +159,54 @@ test('a phone pairs in the browser and runs Chattering from the computer', { ski
   await until(`${frame}.__sockGot > 0`, 'a message from the collaboration server');
   // The app's own service worker is not installed over the shell's.
   assert.equal(await evaluate(`navigator.serviceWorker.controller.scriptURL`), relayUrl + '/sw.js');
+
+  // The Android app calls the page's hooks (a picked picture, dictation)
+  // on the WebView's top window, which here is the shell: its script
+  // (PageCall.kt, read from the source) must land in the app's frame.
+  const pageCall = fs.readFileSync(path.join(root, 'android/app/src/main/java/app/rockfrog/chattering/PageCall.kt'), 'utf8');
+  const [open, close] = ['OPEN', 'CLOSE'].map(k => JSON.parse(pageCall.match(new RegExp(`const val ${k} = (".*")`))[1]));
+  assert.equal(await evaluate(open + `return w === document.getElementById('app').contentWindow` + close), true, 'the app call binds the app window');
+  await evaluate(open + `w.chatteringAcceptImage('image/png','iVBORw0KGgo=','picked.png')` + close);
+  assert.equal(await evaluate(`${frame}._agentImages.map(i => i.name).join()`), 'picked.png', 'a picture the app picked reaches the composer');
+  await evaluate(`${frame}._agentImages = []; 1`);
+  // The app's native dictation and listening post to the server's address,
+  // which a phone paired through the relay does not have: the page records
+  // itself there (getUserMedia, carried by the tunnel) even with the app's
+  // bridges present.
+  await evaluate(`${frame}.ChatteringSpeech = { toggle() {} }; ${frame}.ChatteringListen = { start() {}, stop() {} }; 1`);
+  assert.equal(await evaluate(`${frame}.eval('nativeSpeechBridge() === null && voiceNative() === null')`), true, 'the native bridges are not used through the link');
+  await evaluate(`delete ${frame}.ChatteringSpeech; delete ${frame}.ChatteringListen; 1`);
+  // Dictation from the app's frame: its microphone (the frame is allowed
+  // one), its audio to the computer through the tunnel, the words back.
+  await evaluate(`${frame}.eval('window.__speech = []; const was = window.agentSpeechEvent; window.agentSpeechEvent = e => { window.__speech.push(e); return was(e); }; startBrowserAgentSpeech(); 1')`);
+  await until(`${frame}.__speech.some(e => e.type === 'recording' || e.type === 'error')`, 'the microphone open');
+  assert.deepEqual(await evaluate(`${frame}.__speech.filter(e => e.type === 'error')`), [], 'no microphone error');
+  await sleep(1200);
+  await evaluate(`${frame}.eval('stopBrowserAgentSpeech(); 1')`);
+  await until(`${frame}.__speech.some(e => e.type === 'final' || e.type === 'error')`, 'the words back');
+  assert.deepEqual(await evaluate(`${frame}.__speech.filter(e => e.type === 'final' || e.type === 'error')`), [{ type: 'final', text: 'hello through the link' }]);
+  assert.ok(heardBytes > 16000, 'about a second of audio reached the speech service: ' + heardBytes + ' bytes');
+  // In the Android app the page records with the app's microphone
+  // (MicBridge.kt: the WebView's own recording delivers nothing on the e-ink
+  // tablet) and sends it through the tunnel; the samples the app sends after
+  // the stop tap belong to the recording.
+  const before = heardBytes;
+  await evaluate(`${frame}.eval(${JSON.stringify(`
+    const chunk = btoa(String.fromCharCode(...new Uint8Array(6400).map((_, i) => i & 255)));
+    window.__mic = { sent: 0, starts: 0, stops: 0 };
+    window.ChatteringMic = {
+      start() { const id = 41 + ++__mic.starts; setTimeout(() => { chatteringMicEvent({ session: id, type: 'started' }); __mic.timer = setInterval(() => { __mic.sent += 6400; chatteringMicEvent({ session: id, type: 'pcm', data: chunk }); }, 40); }, 20); return id; },
+      stop(id) { __mic.stops++; clearInterval(__mic.timer); setTimeout(() => { __mic.sent += 6400; chatteringMicEvent({ session: id, type: 'pcm', data: chunk }); chatteringMicEvent({ session: id, type: 'ended' }); }, 150); },
+    };
+    window.__speech = []; startBrowserAgentSpeech(); 1`)})`);
+  await until(`${frame}.__speech.some(e => e.type === 'recording' || e.type === 'error')`, 'the app microphone open');
+  await sleep(600);
+  await evaluate(`${frame}.eval('stopBrowserAgentSpeech(); 1')`);
+  await until(`${frame}.__speech.some(e => e.type === 'final' || e.type === 'error')`, 'the words back, from the app microphone');
+  assert.deepEqual(await evaluate(`${frame}.__speech.filter(e => e.type === 'final' || e.type === 'error')`), [{ type: 'final', text: 'hello through the link' }]);
+  assert.deepEqual(await evaluate(`({ starts: ${frame}.__mic.starts, stops: ${frame}.__mic.stops })`), { starts: 1, stops: 1 });
+  assert.equal(heardBytes - before, await evaluate(`${frame}.__mic.sent`), 'every sample the app sent, the last one too, reached the speech service');
+  await evaluate(`delete ${frame}.ChatteringMic; 1`);
 
   // Back later, as from the home-screen icon: no code, same phone.
   await send('Page.navigate', { url: relayUrl + '/' }, sid);

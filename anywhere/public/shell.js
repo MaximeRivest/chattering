@@ -339,7 +339,11 @@
   }
 
   // What the app's frame calls (inside.js): sockets and event streams.
+  // Also app(): the app's window, for the Android app, whose native parts
+  // (dictation, picked pictures, pen ink) call hooks of the app's page and
+  // would otherwise reach only this shell (android/.../PageCall.kt).
   window.__anywhere = {
+    app: () => { try { return frame && frame.contentWindow; } catch { return null; } },
     openSocket(path, protocols, h) {
       let link = null, closed = false;
       const queue = [];
