@@ -157,7 +157,15 @@ the 1 MB app.
   (it is that site). Changing the relay means pairing phones again.
 - **iOS home-screen apps keep their own storage.** The shell asks first;
   whether iOS keeps the code in the address when adding to the home screen
-  is untested on a real iPhone. Safari itself works either way.
+  is untested on a real iPhone, so it does not depend on it (2026-10-08):
+  choosing "On the home screen" also copies the code, and the icon, opened
+  without one, offers **Paste the code** (Safari confirms the paste with
+  its own button) instead of telling the person to scan, which from the
+  icon would open Safari again. The copied code stays on the clipboard
+  until something else is copied; it works once, for ten minutes. Safari
+  itself works either way. Checked in Chromium with an iPhone's user agent
+  and a home-screen icon's separate storage (anywhere-iphone-browser.test.js),
+  not yet on a real iPhone.
 - **Not carried yet**: forms that navigate away (`POST` pages). Pages,
   scripts, pictures, downloads, the event stream, WebSockets and artifact
   previews are (the tests cover the app, the event stream, live

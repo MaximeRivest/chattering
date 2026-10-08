@@ -77,12 +77,19 @@
   // code the browser left on the clipboard; anywhere, a box to paste a link.
   const DESKTOP = !APP && !IOS && !/Android/.test(navigator.userAgent);
   function showWelcome() {
+    const IOS_ICON = IOS && standalone();
     const how = APP
       ? `<button type="button" class="primary big" id="scanCode">Scan the pairing code</button>
          <div id="clipOffer"></div>
          <p class="hint">On your computer: Chattering → <b>Settings → Machines → Add a device</b> shows the code.</p>`
       : DESKTOP
         ? `<ol class="how"><li>On the computer running Chattering: <b>Settings → Machines → Add a device</b>.</li><li>Press <b>Use this browser</b> there if you are looking at it from here, or copy its link.</li><li>Paste the link below.</li></ol>`
+        // The home-screen icon on an iPhone: the Camera opens a code in
+        // Safari, not here, and Safari's storage is not this icon's. Safari
+        // copies the code (iosChoice); this icon pastes it.
+        : IOS_ICON
+        ? `<ol class="how"><li>On your computer, open Chattering → <b>Settings → Machines → Add a device</b>.</li><li>Scan the code with the Camera; in Safari choose <b>On the home screen</b> (that copies the code).</li><li>Come back to this icon and tap <b>Paste the code</b>.</li></ol>
+           <button type="button" class="primary big" id="pasteCode">Paste the code</button>`
         : `<ol class="how"><li>On your computer, open Chattering → <b>Settings → Machines</b>.</li><li>Press <b>Add a device</b>.</li><li>Scan the code with this device's camera.</li></ol>`;
     show(`${mark}<h1>Chattering, anywhere</h1>
       <p class="lead">Use Chattering on this ${DESKTOP ? 'computer' : 'device'}, from anywhere, straight from your own computer.</p>
@@ -109,6 +116,18 @@
     const pl = $('pasteLink'); if (pl) pl.oninput = () => pl.setCustomValidity('');
     const us = $('useServer'); if (us) us.onclick = () => window.ChatteringApp.useServerAddress();
     const sc = $('scanCode'); if (sc) sc.onclick = () => window.ChatteringApp.scanCode();
+    const pc = $('pasteCode'); if (pc) pc.onclick = async () => {
+      // Safari asks the person to confirm with its own Paste button; if
+      // the clipboard cannot be read, the field below takes the link.
+      let v = '';
+      try { v = await navigator.clipboard.readText(); } catch {}
+      const field = $('pasteLink');
+      if (!field) return;
+      field.value = String(v || '').trim();
+      field.setCustomValidity(''); // an earlier empty try would block the form
+      if (field.value) form.requestSubmit ? form.requestSubmit() : form.dispatchEvent(new Event('submit', { cancelable: true }));
+      else { field.focus(); field.setCustomValidity('Nothing was copied. Copy the link shown under the code on your computer, then paste it here.'); field.reportValidity(); }
+    };
     checkClipboard();
   }
   // A code the browser copied before the app was installed: offered here.
@@ -650,26 +669,39 @@
       // Copied at once, in step with the tap: the download dialog takes the
       // focus right after, and a page without focus may not write the
       // clipboard (the asynchronous way lost that race).
-      const link = P.pairingLink(location.origin, { ...code, expires: code.expires });
-      let copied = false;
-      try {
-        const ta = document.createElement('textarea');
-        ta.value = link; ta.setAttribute('readonly', ''); ta.style.cssText = 'position:fixed;top:-100px;opacity:0';
-        document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, link.length);
-        copied = document.execCommand('copy');
-        ta.remove();
-      } catch {}
-      if (!copied) { try { navigator.clipboard.writeText(link).catch(() => {}); } catch {} }
+      copyNow(P.pairingLink(location.origin, { ...code, expires: code.expires }));
       setTimeout(() => { const h = $('useApp'); if (h) h.textContent = 'Open the Android app'; }, 1500);
     };
   }
 
+  // Copied in step with the tap: a page that has just lost the focus (a
+  // download dialog, the share sheet) may not write the clipboard, so the
+  // synchronous way first. True when it was copied.
+  function copyNow(text) {
+    let copied = false;
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.setAttribute('readonly', ''); ta.style.cssText = 'position:fixed;top:-100px;opacity:0';
+      document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, text.length);
+      copied = document.execCommand('copy');
+      ta.remove();
+    } catch {}
+    if (!copied) { try { navigator.clipboard.writeText(text).then(() => {}, () => {}); copied = true; } catch {} }
+    return copied;
+  }
+
   // On an iPhone, a home-screen app keeps its own storage, apart from
   // Safari's: pairing in Safari would leave the icon unpaired. So first:
-  // where do you want it?
+  // where do you want it? The icon may open at the manifest's start page,
+  // without the code in the address, so the code is also copied for it to
+  // paste (showWelcome).
   function iosChoice(code) {
     showProblem(`Pair with <b>${esc(code.name || 'your computer')}</b>`, 'Where do you want Chattering on this iPhone?', [
-      ['On the home screen', 'homeScreen', true, () => showProblem('Add it to your home screen', 'Tap <b>Share</b> <span class="share-glyph" aria-hidden="true"></span> then <b>Add to Home Screen</b>. Open Chattering from its new icon: it finishes pairing there.', [['Use Safari instead', 'safari', false, () => pair(code)]], 'ios')],
+      ['On the home screen', 'homeScreen', true, () => {
+        const copied = copyNow(P.pairingLink(location.origin, { ...code, expires: code.expires }));
+        showProblem('Add it to your home screen', 'Tap <b>Share</b> <span class="share-glyph" aria-hidden="true"></span> then <b>Add to Home Screen</b>. Open Chattering from its new icon: it finishes pairing there.' +
+          (copied ? '<br><br>The code is copied too: if the icon asks for it, tap <b>Paste the code</b>.' : ''), [['Use Safari instead', 'safari', false, () => pair(code)]], 'ios');
+      }],
       ['Here in Safari', 'safari', false, () => pair(code)],
     ], 'ios');
   }
