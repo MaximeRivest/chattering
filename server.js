@@ -1287,7 +1287,8 @@ function receiverFor(identity) {
     // a guest waits until it is known to be theirs.
     key: k => all || (!!k && index[k] ? keyVisible(identity, k) : member),
     project: name => all || projectVisible(identity, name || null),
-    path: abs => {
+    // folders: projectFolders(), once for a whole list of paths.
+    path: (abs, folders) => {
       if (all) return true;
       if (typeof abs !== 'string' || !abs) return member;
       try { assertPathAccess(identity, path.resolve(expandHomePath(abs)), 'see'); return true; } catch { return false; }
@@ -4791,7 +4792,8 @@ function openFilesChanged() {
 // does not show through the files others keep in it. Same rule as the event.
 function openFilesFor(identity) {
   const receiver = receiverFor(identity);
-  return { rev: openFileState.rev, files: receiver.all ? openFileState.files : openFileState.files.filter(f => receiver.path(f.path)) };
+  const folders = receiver.all ? null : projectFolders();
+  return { rev: openFileState.rev, files: receiver.all ? openFileState.files : openFileState.files.filter(f => receiver.path(f.path, folders)) };
 }
 // { keep: [{path, project}] }, { close: [path] }, { restore: [{path, project, at}] }.
 // Paths are resolved as every file route resolves them; a path this person
@@ -6008,7 +6010,24 @@ async function joinRemoteProject({ link, name, folder }) {
 // the working folder of a conversation, whichever is the deepest prefix;
 // else the /Projects/<name> convention. Files outside every project are
 // judged by the household default.
-function projectOfPath(abs) {
+// Every folder a project or a conversation works in, each once, in the
+// order projectOfPath considers them (created projects first, then the
+// conversations; the first name for a folder is the one that counts), made
+// comparable once. A caller judging many paths in one go builds it once and
+// passes it: built per path, judging Lilly's 3,258 recent files against
+// 2,563 conversations held lambda's server for 75 s.
+function projectFolders() {
+  const seen = new Set(), out = [];
+  const add = (cwd, name) => {
+    if (!cwd || seen.has(cwd)) return;
+    seen.add(cwd);
+    out.push({ cwd, at: platform.comparablePath(cwd), name: name() });
+  };
+  for (const [name, rec] of Object.entries(createdProjects)) add(rec.cwd, () => canonicalProjectName(name));
+  for (const [key, e] of Object.entries(index)) add(e.cwd, () => projectNameOf(e.cwd, key));
+  return out;
+}
+function projectOfPath(abs, folders = projectFolders()) {
   const p = String(abs || '');
   let best = '', bestName = null;
   // The deepest project folder that contains the path (platform.isInside:
@@ -6020,8 +6039,8 @@ function projectOfPath(abs) {
   const m = p.match(/[\\/]Projects[\\/]([^\\/]+)/i);
   return m ? canonicalProjectName(m[1]) : null;
 }
-function assertPathAccess(identity, abs, right) {
-  const project = projectOfPath(abs);
+function assertPathAccess(identity, abs, right, folders) {
+  const project = projectOfPath(abs, folders);
   assertCan(identity, right, { project, creator: projectCreatorOf(project) }, project ? 'project ' + project : 'this file');
 }
 // Co-authors of a shared compose box: everyone who typed into it besides
@@ -19854,7 +19873,8 @@ async function handleRequest(req, res) {
       catch (e) { json(res, e.status || 500, { error: e.message }); }
     } else if (u.pathname === '/api/recent-files' && req.method === 'GET') {
       const receiver = receiverFor(identity);
-      json(res, 200, { files: receiver.all ? recentFileState.files : recentFileState.files.filter(f => (f.key ? receiver.key(f.key) : true) && receiver.path(f.path)) });
+      const folders = receiver.all ? null : projectFolders();
+      json(res, 200, { files: receiver.all ? recentFileState.files : recentFileState.files.filter(f => (f.key ? receiver.key(f.key) : true) && receiver.path(f.path, folders)) });
     } else if (u.pathname === '/api/recent-files' && req.method === 'POST') {
       // { path, project } records an open; { remove: path } forgets one.
       let body = '';

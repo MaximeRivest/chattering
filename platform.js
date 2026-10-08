@@ -93,6 +93,14 @@ function isInside(child, parent) {
   const rel = path.relative(sameCase(path.resolve(parent)), sameCase(path.resolve(child)));
   return rel === '' || (!!rel && !rel.startsWith('..' + path.sep) && rel !== '..' && !path.isAbsolute(rel));
 }
+// The same test for many pairs: each path made comparable once
+// (comparablePath), then a string comparison. For resolved paths it answers
+// as isInside does, without resolving both again for every pair.
+const comparablePath = p => sameCase(path.resolve(p));
+function isInsideComparable(child, parent) {
+  if (!child || !parent) return false;
+  return child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : parent + path.sep);
+}
 function samePath(a, b) {
   return !!a && !!b && sameCase(path.resolve(a)) === sameCase(path.resolve(b));
 }
@@ -274,6 +282,6 @@ module.exports = {
   renameSyncRetry, renameRetry, syncDirSync, gitNothingPaths, bashPath, audioPlayCommand, audioRecordCommand,
   PLATFORM, IS_WIN, IS_MAC, IS_LINUX, IS_WSL, hostKind,
   pathKey, pathEntries, withPath, findOnPath, isExecutable,
-  CASE_INSENSITIVE, isInside, samePath, realFolder, toPortable, fromPortable, isAbsolutePath,
+  CASE_INSENSITIVE, isInside, comparablePath, isInsideComparable, samePath, realFolder, toPortable, fromPortable, isAbsolutePath,
   appDirs, openCommand, functaiCallsDir,
 };

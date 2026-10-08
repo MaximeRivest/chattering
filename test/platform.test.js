@@ -18,6 +18,16 @@ test('containment: inside, the folder itself, not a sibling that shares a prefix
   if (P.CASE_INSENSITIVE) assert.equal(P.isInside(path.join(root.toUpperCase(), 'A'), root), true, 'letter case does not matter where the disk ignores it');
 });
 
+test('containment for many pairs: comparable paths answer as isInside does', () => {
+  const root = path.resolve(os.tmpdir(), 'proj'), top = path.parse(root).root;
+  const children = [path.join(root, 'a', 'b.txt'), root, root + 'x', path.dirname(root), path.join(root, '..', 'other'), path.join(root, '..', 'proj', 'c'), root + path.sep, path.join(root.toUpperCase(), 'A'), path.join(root, '..foo'), top, 'relative' + path.sep + 'x', ''];
+  const parents = [root, root + path.sep, top, path.dirname(root), path.join(root, 'a'), 'relative'];
+  for (const child of children) for (const parent of parents) {
+    const fast = P.isInsideComparable(child && P.comparablePath(child), P.comparablePath(parent));
+    assert.equal(fast, P.isInside(child, parent), `${child} in ${parent}`);
+  }
+});
+
 test('PATH: this system\'s name and separator, deduplicated', () => {
   const key = P.pathKey(process.env);
   const env = P.withPath({ [key]: 'x' }, ['/a', '/b', '/a']);
