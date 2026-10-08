@@ -27,6 +27,7 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.JavascriptInterface
+import android.webkit.PermissionRequest
 import android.webkit.ServiceWorkerClient
 import android.webkit.ServiceWorkerController
 import android.webkit.WebResourceResponse
@@ -51,6 +52,7 @@ class MainActivity : AppCompatActivity() {
         private const val FILE_CHOOSER_REQUEST = 4108
         private const val NOTIFY_PERMISSION_REQUEST = 4109
         private const val MIC_PERMISSION_REQUEST = 4111
+        private const val WEB_MIC_PERMISSION_REQUEST = 4112
     }
 
     // Settings page toggle for reply notifications. On Android 13+ the
@@ -82,6 +84,8 @@ class MainActivity : AppCompatActivity() {
     // The pending <input type=file> callback. The WebView contract: answer
     // exactly once, with null on cancel, or the page never opens a picker again.
     private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
+    // A page's own microphone request (getUserMedia) waiting for Android's answer.
+    private var pendingWebMic: PermissionRequest? = null
     // True when the input accepts only images: the picked files are then
     // decoded here (see ImageIngest) instead of being handed to the page.
     private var fileChooserWantsImages = false
@@ -340,6 +344,33 @@ class MainActivity : AppCompatActivity() {
 
             override fun onHideCustomView() { hideFullscreenVideo() }
 
+            // A page asking for the microphone itself (getUserMedia). The
+            // WebView denies every such request unless the app answers it,
+            // whatever Android's settings say: dictation and voice commands
+            // that record in the page said "Permission denied" with the
+            // microphone allowed. Only the microphone, and only for the page
+            // Chattering shows (the address it loaded: the server, or the
+            // relay's page and the app inside it), never for the other
+            // origins it frames (what agents make, at their own address).
+            override fun onPermissionRequest(request: PermissionRequest) {
+                runOnUiThread {
+                    val wantsMic = request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                    val others = request.resources.any { it != PermissionRequest.RESOURCE_AUDIO_CAPTURE }
+                    if (!wantsMic || others || !sameOrigin(request.origin, web.url)) { request.deny(); return@runOnUiThread }
+                    if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+                    } else {
+                        pendingWebMic?.deny()
+                        pendingWebMic = request
+                        requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), WEB_MIC_PERMISSION_REQUEST)
+                    }
+                }
+            }
+
+            override fun onPermissionRequestCanceled(request: PermissionRequest) {
+                if (pendingWebMic === request) pendingWebMic = null
+            }
+
 
             override fun onShowFileChooser(
                 view: WebView?,
@@ -540,11 +571,24 @@ class MainActivity : AppCompatActivity() {
                 grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)
         } else if (requestCode == MIC_PERMISSION_REQUEST) {
             mic.onPermissionResult(grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)
+        } else if (requestCode == WEB_MIC_PERMISSION_REQUEST) {
+            val request = pendingWebMic ?: return
+            pendingWebMic = null
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+            else request.deny()
         } else if (requestCode == NOTIFY_PERMISSION_REQUEST) {
             val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
             NotifyService.setEnabled(this, granted)
             tellPageNotify(granted)
         }
+    }
+
+    // Same scheme, host and port: the page asking is the page Chattering shows.
+    private fun sameOrigin(origin: Uri?, url: String?): Boolean {
+        if (origin == null || url.isNullOrEmpty()) return false
+        val top = Uri.parse(url)
+        fun port(u: Uri) = if (u.port != -1) u.port else if (u.scheme == "https") 443 else if (u.scheme == "http") 80 else -1
+        return origin.scheme.equals(top.scheme, true) && origin.host.equals(top.host, true) && port(origin) == port(top)
     }
 
     // Hand a URL to whatever app handles it (browser, mail, maps). Returns
