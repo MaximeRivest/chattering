@@ -8,6 +8,14 @@ else clicks fall through to the app below. It takes the keyboard only while
 the page asks (a panel is open); otherwise it never has the focus, so the
 app keeps its selection and the person keeps typing where they were.
 
+While it has the keyboard it has all of it: no app and no desktop shortcut
+gets a key. A page that kept the keys with no panel to show for them locked
+the person out until they logged out. So the keys are guarded here too, not
+only in the page: while they are held the page is asked every second whether
+a panel still needs them (no, or no answer: they go back); a page that
+crashes gives them back; and this process ends (which gives them back) when
+the helper is gone or its own main loop stops answering.
+
 The computer helper (hotkeys-device.js) drives it: JSON lines on stdin are
 messages for the page (`show` also names the screen); the page's messages
 come out on stdout as JSON lines. Nothing here reads or keeps the person's
@@ -21,6 +29,7 @@ import json
 import os
 import sys
 import threading
+import time
 
 import gi
 gi.require_version("Gtk", "4.0")
@@ -40,6 +49,11 @@ def out(msg):
     sys.stdout.flush()
 
 
+def say(why):
+    sys.stderr.write("spells host: " + why + "\n")
+    sys.stderr.flush()
+
+
 class Host:
     def __init__(self, app):
         self.app = app
@@ -55,6 +69,10 @@ class Host:
         self.unmap_timer = 0
         self.rects = []
         self.dragging = False
+        self.keys = False       # whether the layer holds the keyboard now
+        self.keys_timer = 0     # the watch over them, while held
+        self.asked_at = 0.0     # when the page was asked and has not answered (0: not waiting)
+        self.beat = time.monotonic()  # the main loop's last sign of life
 
     # ---- the window: a layer over one whole screen, see-through ----
     def build(self):
@@ -85,6 +103,7 @@ class Host:
         self.whole_frames(s)
         view.connect("context-menu", lambda *_: True)  # no "Reload" or "Inspect" menu
         view.connect("decide-policy", self.policy)
+        view.connect("web-process-terminated", self.page_died)
         view.load_uri(PAGE)
         win.set_child(view)
         win.connect("realize", lambda *_: self.set_rects([]))
@@ -139,12 +158,12 @@ class Host:
         mon = self.gdk_monitor(name)
         if self.visible and mon is self.monitor:
             return
+        self.release("shown again")
         if self.visible:
             self.win.set_visible(False)  # a layer moves to another screen by being mapped again
         self.monitor = mon
         if mon is not None:
             LayerShell.set_monitor(self.win, mon)
-        self.set_keyboard(False)
         self.win.present()
         self.visible = True
         self.set_rects([])
@@ -152,14 +171,17 @@ class Host:
     def hide(self):
         if not self.visible:
             return
-        self.set_keyboard(False)
+        self.release("hidden")
         self.set_rects([])
         if self.unmap_timer:
             GLib.source_remove(self.unmap_timer)
         self.unmap_timer = GLib.timeout_add_seconds(self.LINGER_S, self.unmap)
 
     def unmap(self):
+        if self.unmap_timer:
+            GLib.source_remove(self.unmap_timer)
         self.unmap_timer = 0
+        self.release("unmapped")
         if self.visible:
             self.win.set_visible(False)
             self.visible = False
@@ -174,10 +196,78 @@ class Host:
         region = cairo.Region([cairo.RectangleInt(int(r["x"]), int(r["y"]), max(1, int(r["w"])), max(1, int(r["h"]))) for r in rects])
         surface.set_input_region(region)
 
+    # ---- the keyboard ----
+    # True if it changed.
     def set_keyboard(self, on):
+        on = bool(on) and self.visible
+        if on == self.keys:
+            return False
+        self.keys = on
         LayerShell.set_keyboard_mode(self.win, LayerShell.KeyboardMode.EXCLUSIVE if on else LayerShell.KeyboardMode.NONE)
         if on:
             self.view.grab_focus()
+            self.asked_at = 0.0
+            if not self.keys_timer:
+                self.keys_timer = GLib.timeout_add(self.KEYS_CHECK_MS, self.check_keys)
+        elif self.keys_timer:
+            GLib.source_remove(self.keys_timer)
+            self.keys_timer = 0
+        return True
+
+    # Taken back here, not by the page: the helper and the page are told,
+    # as if the page had given them back. `unmap` goes further: a layer no
+    # longer on the screen has no keyboard in any desktop, whether or not
+    # the mode change reached it (a hung page may draw no frame to carry it).
+    def release(self, why, unmap=False):
+        if self.keys:
+            say("took the keyboard back: " + why)
+            self.set_keyboard(False)
+            out({"type": "keyboard", "on": False})
+            self.to_page({"type": "released"})
+        if unmap and self.visible:
+            self.set_rects([])
+            self.unmap()
+            out({"type": "hidden"})  # gone from the screen: the helper shows it again when needed
+
+    KEYS_CHECK_MS = 1000
+    KEYS_ANSWER_S = 4
+
+    # While the keys are held: does a panel still need them? Asked of the
+    # page itself, so a page that is stuck, gone or wrong cannot keep them.
+    def check_keys(self):
+        if not self.keys:
+            self.keys_timer = 0
+            return False
+        if self.asked_at:
+            if time.monotonic() - self.asked_at > self.KEYS_ANSWER_S:
+                self.release("the page did not answer for %d s" % self.KEYS_ANSWER_S, unmap=True)
+                return False
+            return True
+        self.asked_at = time.monotonic()
+        self.view.evaluate_javascript("!!(window.Spells && window.Spells.holdsKeys)", -1, None, None, None, self.keys_answered, None)
+        return True
+
+    def keys_answered(self, view, result, *_):
+        self.asked_at = 0.0
+        try:
+            holds = view.evaluate_javascript_finish(result).to_boolean()
+        except Exception as e:  # a page reloading, or gone
+            holds, why = False, "the page could not answer (%s)" % e
+        else:
+            why = "no panel needs it"
+        if self.keys and not holds:
+            self.release(why)
+
+    def page_died(self, view, reason):
+        say("the page stopped (%s)" % reason)
+        was_up = self.visible
+        self.release("the page stopped", unmap=True)  # says "hidden" if it was up
+        self.ready = False
+        self.queue = []
+        self.rects = []
+        if not was_up:
+            out({"type": "hidden"})  # the helper starts over: whatever was shown is gone
+        view.load_uri(PAGE)
 
     # ---- the desktop's light or dark (the freedesktop appearance portal) ----
     def watch_color_scheme(self):
@@ -251,7 +341,8 @@ class Host:
             self.set_rects(whole if self.dragging else self.rects)
             return
         elif t == "keyboard":
-            self.set_keyboard(bool(msg.get("on")))
+            if not self.set_keyboard(bool(msg.get("on"))):
+                return  # no change: the helper is not told twice
         elif t == "hidden":
             self.hide()
         out(msg)
@@ -274,9 +365,32 @@ def main():
     def read_stdin():
         for line in sys.stdin:
             GLib.idle_add(host.from_helper, line)
-        GLib.idle_add(app.quit)  # the helper went away
+        # The helper went away: nothing would ever tell this layer to give
+        # the keys back. Quit; and if the main loop cannot, end anyway.
+        GLib.idle_add(app.quit)
+        time.sleep(3)
+        os._exit(0)
 
+    # A main loop that stops while the keys are held can neither give them
+    # back nor be asked to: end the process, which gives them back (the
+    # helper starts a new one). Only while held: a stall with no keys harms
+    # no one.
+    STALL_S = 8
+
+    def heartbeat():
+        host.beat = time.monotonic()
+        return True
+
+    def watch_main_loop():
+        while True:
+            time.sleep(1)
+            if host.keys and time.monotonic() - host.beat > STALL_S:
+                say("main loop stalled %d s while holding the keyboard: exiting to give it back" % STALL_S)
+                os._exit(4)
+
+    GLib.timeout_add(500, heartbeat)
     threading.Thread(target=read_stdin, daemon=True).start()
+    threading.Thread(target=watch_main_loop, daemon=True).start()
     app.run([])
 
 

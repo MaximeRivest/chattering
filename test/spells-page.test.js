@@ -274,3 +274,60 @@ test('beside the text, its right-click makes "here" its home', { timeout: 60000 
   await b.until(`document.querySelector('.frog.asleep')`, 'it goes to sleep there', 4000);
   assert.deepEqual(b.errors, []);
 });
+
+// The frog takes the whole keyboard while a panel is open (the desktop gives
+// it to no one else: no app, no shortcut). A panel that went away without
+// giving the keys back left the person locked out of their computer until
+// they logged out (seen: an answer in review, the frog dragged). So: the keys
+// are held exactly while a panel shows, whatever opened or closed it.
+test('the keys are held only while a panel shows, whatever closes it', { timeout: 60000 }, async t => {
+  const b = await browser(t);
+  const holds = async () => { const k = await b.out('keyboard'); return k.length ? k[k.length - 1].on : false; };
+  const agree = async what => {
+    const panel = await b.ev(`!!document.querySelector('.panel')`);
+    assert.equal(await holds(), panel, what + ': keys held exactly while a panel shows');
+    assert.equal(await b.ev(`Spells.holdsKeys`), panel, what + ': the page tells the host the same');
+  };
+  const answer = JSON.stringify(JSON.stringify({ type: 'answer', kind: 'replace', label: 'Fix', before: 'i has went', text: 'I went', call: 'c1' }));
+
+  // An answer in review, then the frog dragged away from it.
+  await b.ev(`Spells.receive(${JSON.stringify(show())})`);
+  await b.until(`document.querySelector('.frog')`, 'the frog');
+  await sleep(600);
+  await b.click('.frog');
+  await b.until(`document.querySelector('.panel.menu')`, 'the menu');
+  await b.key('g', 'KeyG');
+  await b.ev(`Spells.receive(${answer})`);
+  await b.until(`document.querySelector('.panel.answer')`, 'the answer');
+  await agree('answer open');
+  const f = await b.ev(`(() => { const r = document.querySelector('.frog').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`);
+  await b.drag(f[0], f[1], 300, 500);
+  await b.until(`window.__out.some(m => m.type === 'moved')`, 'moved');
+  await agree('dragged with an answer in review');
+  assert.equal(await b.ev(`Spells.state.mode`), 'idle', 'no answer mode without its panel');
+
+  // The menu open, and the helper shows the frog again (a new selection).
+  await b.click('.frog');
+  await b.until(`document.querySelector('.panel.menu')`, 'the menu again');
+  await agree('menu open');
+  await b.ev(`Spells.receive(${JSON.stringify(show())})`);
+  await agree('shown again over an open menu');
+
+  // The host takes the keys back itself (its watchdog): the panel goes too,
+  // and the next panel asks again.
+  await b.ev(`Spells.receive(${JSON.stringify(JSON.stringify({ type: 'open' }))})`);
+  await b.until(`document.querySelector('.panel.menu')`, 'opened');
+  await b.ev(`Spells.receive(${JSON.stringify(JSON.stringify({ type: 'released' }))})`);
+  assert.equal(await b.ev(`!!document.querySelector('.panel')`), false, 'no panel left that cannot hear its keys');
+  assert.equal(await b.ev(`Spells.holdsKeys`), false);
+  await b.ev(`Spells.receive(${JSON.stringify(JSON.stringify({ type: 'open' }))})`);
+  await b.until(`document.querySelector('.panel.menu')`, 'opened after');
+  assert.equal(await holds(), true, 'it asks for the keys again');
+
+  // An answer that arrives while the frog is leaving opens nothing.
+  await b.key('g', 'KeyG');
+  await b.ev(`Spells.receive(${JSON.stringify(JSON.stringify({ type: 'hide' }))}); Spells.receive(${answer})`);
+  await sleep(500);
+  await agree('answer after hide');
+  assert.deepEqual(b.errors, []);
+});

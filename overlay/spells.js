@@ -17,6 +17,15 @@
 //        and, for the host only: rects [{x, y, w, h}] (where the pointer may
 //        land; elsewhere it falls through to the app below) and
 //        keyboard {on} (whether the page needs the keys).
+//   in, from the host only: released (it took the keys back itself).
+//
+// The keys: while the page has them the desktop gives them to no one else,
+// not an app, not a shortcut. A panel that went away still holding them
+// locked the person out of their computer (an answer in review, the frog
+// dragged: the panel closed, the keys stayed). So they are never asked for
+// or given back one by one: they are held exactly while a panel shows,
+// checked each time a panel opens or closes (syncKeys), and the host asks
+// the page (holdsKeys) and takes them back itself if it gets no answer.
 (function () {
   'use strict';
   const T = window.SpellsText;
@@ -85,6 +94,7 @@
   }
   let lastRects = '';
   function rectsChanged() {
+    syncKeys(); // anything changed on the page: the keys still follow the panel
     const rs = [];
     for (const el of [frog, panel, pill]) {
       if (!el || !el.isConnected || el.classList.contains('leave')) continue;
@@ -192,7 +202,7 @@
     fadeT = setTimeout(() => { if (mode === 'idle') hopAway(); }, ms);
   }
   // In its spot the frog never leaves: it goes back to sleep.
-  function rest() { if (spot()) { closePanel(); keyboard(false); mode = 'idle'; goSleep(); } else hopAway(); }
+  function rest() { if (spot()) { closePanel(); mode = 'idle'; goSleep(); } else hopAway(); }
   function sleepSoon(ms) { clearTimeout(sleepT); sleepT = setTimeout(() => { if (mode === 'idle') goSleep(); }, ms); } // waking cancels it
   function goSleep() {
     if (!frog) return;
@@ -213,15 +223,18 @@
   function hopAway() {
     if (mode === 'off') return;
     mode = 'off'; clearTimeout(fadeT); clearTimeout(blinkT); closePanel(); closePill();
-    keyboard(false);
     if (frog) {
       const f = frog; f.classList.add('leave');
       setTimeout(() => { f.remove(); if (frog === f) frog = null; rectsChanged(); send({ type: 'hidden' }); }, 320);
     } else send({ type: 'hidden' });
   }
 
+  // The keys follow the panel: never asked for or given back on their own.
   let wantKeys = false;
-  function keyboard(on) { if (on !== wantKeys) { wantKeys = on; send({ type: 'keyboard', on }); } }
+  const panelUp = () => !!(panel && panel.isConnected);
+  function syncKeys() { const on = panelUp(); if (on !== wantKeys) { wantKeys = on; send({ type: 'keyboard', on }); } }
+  // The frog is going: nothing may open beside it any more.
+  const here = () => !!(frog && mode !== 'off');
 
   function show(m) {
     closePanel(); closePill();
@@ -252,7 +265,7 @@
 
   function onFrogClick() {
     if (ignoreClick) { ignoreClick = false; return; }
-    if (mode === 'menu' || (panel && panel.classList.contains('ctx'))) { closePanel(); keyboard(false); mode = 'idle'; idleSoon(3000); return; }
+    if (mode === 'menu' || (panel && panel.classList.contains('ctx'))) { closePanel(); mode = 'idle'; idleSoon(3000); return; }
     if (mode !== 'idle') return;
     // Asleep with nothing to work on: it says what it needs.
     if (spot() && (!awake || !S.words)) { pose('puzzled'); frog.classList.remove('asleep'); note('Select some text, then click me', 2200, false); sleepSoon(2400); return; }
@@ -319,12 +332,12 @@
     el.innerHTML = items.map(([k, label, hint]) => k === 'hr' ? '<hr>' : `<button class="item" role="menuitem" data-k="${k}">${esc(label)}${hint ? `<small>${esc(hint)}</small>` : ''}</button>`).join('');
     el.addEventListener('mousedown', e => e.preventDefault());
     el.querySelectorAll('[data-k]').forEach(b => b.onclick = () => ctxDo(b.dataset.k));
-    el.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePanel(); keyboard(false); mode = 'idle'; idleSoon(3000); } });
-    panel = el; mode = 'menu'; root.appendChild(el); placePanel(el); keyboard(true);
+    el.addEventListener('keydown', e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePanel(); mode = 'idle'; idleSoon(3000); } });
+    panel = el; mode = 'menu'; root.appendChild(el); placePanel(el); syncKeys();
     setTimeout(() => el.focus({ preventScroll: true }), 0); rectsSoon();
   }
   function ctxDo(k) {
-    closePanel(); keyboard(false); mode = 'idle';
+    closePanel(); mode = 'idle';
     const order = ['small', 'medium', 'large'], i = order.indexOf(S.size || 'medium');
     if (k === 'spot') {
       // Here becomes its home.
@@ -355,7 +368,13 @@
     const where = S.words ? `${S.words} word${S.words === 1 ? '' : 's'}${S.app ? ' in ' + esc(S.app) : ''}` : esc(S.app || '');
     return `<div class="head"><span class="mark" aria-hidden="true"></span><span class="name">Chattering</span><span class="sep">·</span><span class="where">${where}</span>${right || ''}</div>`;
   }
-  function closePanel() { if (panel) { panel.remove(); panel = null; rectsSoon(); } }
+  // A panel gone takes its mode (a menu, an answer in review) and the keys
+  // with it: whatever closed it (Esc, a drag, a new show, the host).
+  function closePanel() {
+    if (panel) { panel.remove(); panel = null; rectsSoon(); }
+    if (mode === 'menu' || mode === 'answer') mode = 'idle';
+    syncKeys();
+  }
   function closePill() { if (pill) { pill.remove(); pill = null; rectsSoon(); } }
 
   function openMenu() {
@@ -387,7 +406,7 @@
     });
     el.tabIndex = -1;
     panel = el; root.appendChild(el); placePanel(el);
-    keyboard(true);
+    syncKeys();
     setTimeout(() => el.focus({ preventScroll: true }), 0);
     pose('idle');
     rectsSoon();
@@ -404,7 +423,7 @@
   }
   function working(label) {
     closePanel(); closePill(); clearTimeout(fadeT);
-    mode = 'busy'; keyboard(false);
+    mode = 'busy';
     pose('cast'); frog.classList.remove('enter', 'cheer', 'shake'); frog.classList.add('busy'); sparkles(7);
     const el = document.createElement('div'); el.className = 'pill'; el.setAttribute('role', 'status');
     el.innerHTML = `<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="live">${esc(label)}</span>${S.model ? `<span class="dim">${esc(shortModel(S.model))}</span>` : ''}`;
@@ -453,15 +472,15 @@
       send({ type: 'judge', call: a.call, verdict: v });
     });
     panel = el; root.appendChild(el); placePanel(el);
-    keyboard(true);
+    syncKeys();
     setTimeout(() => el.focus({ preventScroll: true }), 0);
     rectsSoon();
   }
   function act(what) {
-    if (what === 'close') { closePanel(); keyboard(false); mode = 'idle'; pose('idle'); idleSoon(1500); send({ type: 'close' }); if (spot()) sleepSoon(4000); return; }
+    if (what === 'close') { closePanel(); mode = 'idle'; pose('idle'); idleSoon(1500); send({ type: 'close' }); if (spot()) sleepSoon(4000); return; }
     if (what === 'again') { send({ type: 'again' }); working(answerData && answerData.label || 'Again'); return; }
-    if (what === 'copy') { send({ type: 'copy' }); closePanel(); keyboard(false); mode = 'idle'; note('<span class="live">✓</span> Copied to the clipboard', 1800); return; }
-    if (what === 'replace') { send({ type: 'replace' }); closePanel(); keyboard(false); mode = 'busy'; return; }
+    if (what === 'copy') { send({ type: 'copy' }); closePanel(); mode = 'idle'; note('<span class="live">✓</span> Copied to the clipboard', 1800); return; }
+    if (what === 'replace') { send({ type: 'replace' }); closePanel(); mode = 'busy'; return; }
   }
   // A short word beside the frog, then it hops away.
   function note(htmlText, ms, away = true) {
@@ -479,13 +498,14 @@
       + `<div class="acts"><span class="grow"></span>${p.again !== false ? '<button class="btn" data-act="again">Try again</button>' : ''}<button class="btn go" data-act="close">Close <kbd>↵</kbd></button></div>`;
     el.addEventListener('mousedown', e => e.preventDefault());
     el.querySelectorAll('[data-act]').forEach(b => b.onclick = () => act(b.dataset.act));
-    panel = el; root.appendChild(el); placePanel(el); keyboard(true);
+    panel = el; root.appendChild(el); placePanel(el); syncKeys();
     setTimeout(() => el.focus({ preventScroll: true }), 0); rectsSoon();
   }
 
   // ---- keys (the host gives them only while a panel is open) ----
   document.addEventListener('keydown', e => {
-    if (!panel || e.target.id === 'ask') return;
+    if (!panelUp()) { syncKeys(); return; } // keys with no panel: give them back
+    if (e.target.id === 'ask') return;
     if (mode === 'answer') {
       if (e.key === 'Escape') { e.preventDefault(); act('close'); }
       else if (e.key === 'Enter') { e.preventDefault(); const go = panel.querySelector('.btn.go'); if (go) go.click(); }
@@ -493,7 +513,7 @@
     }
     if (mode !== 'menu') return;
     const rows = [...panel.querySelectorAll('.row')], cur = Math.max(0, rows.findIndex(b => b.classList.contains('on')));
-    if (e.key === 'Escape') { e.preventDefault(); closePanel(); keyboard(false); mode = 'idle'; idleSoon(2500); return; }
+    if (e.key === 'Escape') { e.preventDefault(); closePanel(); mode = 'idle'; idleSoon(2500); return; }
     if (panel.classList.contains('ctx')) return;
     if (e.key === 'Tab') { e.preventDefault(); panel.querySelector('#ask').focus(); return; }
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -514,17 +534,20 @@
     receive(m) {
       if (typeof m === 'string') m = JSON.parse(m);
       if (m.type === 'show') show(m);
-      else if (m.type === 'open') { if (frog && mode === 'idle') openMenu(); }
-      else if (m.type === 'working') { if (frog) working(m.label); }
-      else if (m.type === 'answer') { if (frog) answer(m); }
-      else if (m.type === 'problem') { if (frog) problem(m); }
-      else if (m.type === 'done') { stopWorking(); if (frog) { pose('happy'); frog.classList.add('cheer'); sparkles(9); note(m.html || esc(m.text || 'Done'), m.ms || 2200); } }
+      else if (m.type === 'open') { if (here() && mode === 'idle') openMenu(); }
+      else if (m.type === 'working') { if (here()) working(m.label); }
+      else if (m.type === 'answer') { if (here()) answer(m); }
+      else if (m.type === 'problem') { if (here()) problem(m); }
+      else if (m.type === 'released') { wantKeys = false; closePanel(); if (here() && mode === 'idle') idleSoon(3000); }
+      else if (m.type === 'done') { stopWorking(); if (here()) { pose('happy'); frog.classList.add('cheer'); sparkles(9); note(m.html || esc(m.text || 'Done'), m.ms || 2200); } }
       else if (m.type === 'hide') hopAway();
       else if (m.type === 'wake') { if (frog && mode === 'idle') wakeUp(m); }
       else if (m.type === 'sleep') { if (frog && mode === 'idle') goSleep(); }
       else if (m.type === 'theme') applyTheme(m.theme, m.systemDark);
     },
     get state() { return { mode, panel: panel && panel.className, words: S && S.words }; },
+    // The host asks this while it gives the page the keys.
+    get holdsKeys() { return wantKeys && panelUp(); },
   };
   send({ type: 'ready' });
 })();
