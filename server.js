@@ -1291,7 +1291,7 @@ function receiverFor(identity) {
     path: (abs, folders) => {
       if (all) return true;
       if (typeof abs !== 'string' || !abs) return member;
-      try { assertPathAccess(identity, path.resolve(expandHomePath(abs)), 'see'); return true; } catch { return false; }
+      try { assertPathAccess(identity, path.resolve(expandHomePath(abs)), 'see', folders); return true; } catch { return false; }
     },
   };
 }
@@ -6030,11 +6030,10 @@ function projectFolders() {
 function projectOfPath(abs, folders = projectFolders()) {
   const p = String(abs || '');
   let best = '', bestName = null;
-  // The deepest project folder that contains the path (platform.isInside:
-  // separators and letter case as this system has them).
-  const consider = (cwd, name) => { if (cwd && platform.isInside(p, cwd) && cwd.length > best.length) { best = cwd; bestName = name; } };
-  for (const [name, rec] of Object.entries(createdProjects)) consider(rec.cwd, canonicalProjectName(name));
-  for (const [key, e] of Object.entries(index)) if (e.cwd) consider(e.cwd, projectNameOf(e.cwd, key));
+  // The deepest project folder that contains the path (separators and
+  // letter case as this system has them).
+  const at = p ? platform.comparablePath(p) : '';
+  for (const f of folders) if (f.cwd.length > best.length && platform.isInsideComparable(at, f.at)) { best = f.cwd; bestName = f.name; }
   if (bestName) return bestName;
   const m = p.match(/[\\/]Projects[\\/]([^\\/]+)/i);
   return m ? canonicalProjectName(m[1]) : null;
