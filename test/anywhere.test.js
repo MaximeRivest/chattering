@@ -282,7 +282,8 @@ test('a phone pairs, then comes back, as its person, over an encrypted channel',
   assert.match(tunnel.device, /^d/);
   assert.equal(w.home.pairingState(pairing.id).paired.name, 'Pixel 8 · Chrome');
   assert.equal([...w.creds.values()][0].label, 'Pixel 8 · Chrome · anywhere');
-  assert.equal(fs.statSync(path.join(w.dir, 'anywhere.json')).mode & 0o777, 0o600, 'the home keeps its keys to itself');
+  // POSIX modes only: Windows reports 0o666 for any file (its ACLs are not modes).
+  if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(w.dir, 'anywhere.json')).mode & 0o777, 0o600, 'the home keeps its keys to itself');
 
   // Requests arrive as the person, marked forwarded; the phone chooses none of it.
   const who = await fetchThrough(tunnel, { method: 'GET', path: '/who', headers: { Cookie: 'stolen=1', Authorization: 'Bearer forged', 'X-Forwarded-For': '1.2.3.4', Origin: 'https://evil.example', Accept: 'application/json' } });
@@ -540,7 +541,7 @@ test('a computer links to another: its own local address, private, from anywhere
   assert.equal(link.name, 'lambda');
   assert.equal(link.url, `http://localhost:${portBase}/`);
   assert.equal(link.connected, true);
-  assert.equal(fs.statSync(path.join(dir, 'anywhere-links.json')).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(dir, 'anywhere-links.json')).mode & 0o777, 0o600);
   assert.equal(w.home.status().devices[0].name, 'XPSwhite · Chattering', 'listed there as this computer');
 
   const base = `http://localhost:${portBase}`;

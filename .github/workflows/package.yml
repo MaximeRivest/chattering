@@ -13,6 +13,15 @@ on:
         description: JSON list of runner labels
         type: string
         required: true
+  # A build that publishes nothing: to try the download on one person's
+  # computer before a release (gh workflow run package.yml -f runners=…).
+  workflow_dispatch:
+    inputs:
+      runners:
+        description: JSON list of runner labels
+        type: string
+        required: true
+        default: '["windows-latest"]'
 
 jobs:
   build:
