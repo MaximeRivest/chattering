@@ -136,3 +136,6 @@ a.primary.big, button.primary.big { width: 100%; display: block; text-decoration
 .choice .ghost { width: 100%; margin-bottom: 10px; }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+/* The computers sheet: adding one from here (a code pasted, or scanned in the app). */
+.sheet-card h3 { margin: 18px 0 4px; font-size: .95rem; color: var(--text); }
+.sheet-card .paste { margin-top: 10px; }

@@ -130,6 +130,23 @@ the 1 MB app.
   tip that matters (and is asked *before* pairing where it wants Chattering,
   because a home-screen app on iOS has its own storage, apart from Safari's).
 
+## Several computers on one phone (2026-10-08)
+
+A phone pairs with each computer once (each one's own code, its own link
+and key). The app's own machine switcher, inside the shell, lists the
+computers this phone is paired with and moves between them (the shell's
+`__anywhere.homes()` / `switchTo()`), instead of the addresses the computer
+knows for others (a Tailscale or LAN address does not open from the
+relay's site). "Add a computer…" opens the shell's computers sheet, which
+now adds one itself: a pasted code (an iPhone's icon: Safari copies it, as
+for the first computer), or the Android app's scanner. Settings →
+machines shows the same list with "open". On a phone the switcher is in a
+conversation's ⋯ menu ("Switch machine") and in Settings → machines.
+Tested with two real servers and an iPhone-like icon
+(anywhere-switch-browser.test.js). The Android app carries its own copy
+of the shell: the sheet's scan button arrives with its next version; the
+switcher itself works with the shell it has.
+
 ## Trade-offs, stated
 
 - **The phone's page comes from the relay.** Whoever runs the relay could

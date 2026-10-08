@@ -220,13 +220,43 @@
     s.innerHTML = `<div class="sheet-card" role="dialog" aria-label="Your computers">
       <h2>Your computers</h2>
       <div class="homes">${homes.map(h => `<div class="home-row"><button type="button" class="home${h.homeId === active ? ' on' : ''}" data-home="${esc(h.homeId)}"><span class="dot"></span>${esc(h.name)}${h.user && h.user.name ? `<small>as ${esc(h.user.name)}</small>` : ''}</button><button type="button" class="ghost small" data-forget="${esc(h.homeId)}" title="Forget it on this phone">Forget</button></div>`).join('')}</div>
-      <p class="hint">To add a computer, press <b>Add a device</b> in its Chattering (Settings → Machines) and scan the code.</p>
+      <h3>Add a computer</h3>
+      <p class="hint">On that computer's own screen: Chattering → <b>Settings → Machines → Add a device</b>.${APP ? '' : IOS && standalone()
+        ? ' Scan its code with the Camera; in Safari choose <b>On the home screen</b> (that copies the code), then come back here.'
+        : ' Copy the link under its code (or scan the code; it opens this page).'}</p>
+      ${APP ? '<button type="button" class="primary" id="sheetScan">Scan the code</button>'
+        : '<button type="button" class="primary" id="sheetPaste">Paste the code</button><form class="paste" id="sheetPasteForm" hidden><div class="row"><input id="sheetPasteLink" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://…#pair=…"><button type="submit">Pair</button></div></form>'}
       ${PRIVACY}
       <button type="button" class="ghost" id="sheetClose">Close</button></div>`;
     s.hidden = false;
     requestAnimationFrame(() => s.classList.add('show'));
     $('sheetClose').onclick = closeSheet;
     s.onclick = e => { if (e.target === s) closeSheet(); };
+    const scan = $('sheetScan'); if (scan) scan.onclick = () => { closeSheet(); window.ChatteringApp.scanCode(); };
+    // A code from another computer, pasted: the same as one in the address.
+    const take = async v => {
+      let code = null;
+      try { const u = new URL(String(v || '').trim()); if (u.protocol === 'https:' || u.origin === location.origin) code = P.readPairingLink(u.hash); } catch {}
+      if (!code) return false;
+      closeSheet();
+      if (await takeCode(code)) switchTo(active);
+      return true;
+    };
+    const paste = $('sheetPaste');
+    if (paste) paste.onclick = async () => {
+      let v = '';
+      try { v = await navigator.clipboard.readText(); } catch {}
+      if (await take(v)) return;
+      const f = $('sheetPasteForm'), field = $('sheetPasteLink');
+      f.hidden = false; field.focus();
+      field.setCustomValidity(v ? 'This is not a pairing link.' : 'Nothing was copied. Copy the link shown under the code on that computer, then paste it here.');
+      field.reportValidity();
+    };
+    const form = $('sheetPasteForm');
+    if (form) {
+      $('sheetPasteLink').oninput = e => e.target.setCustomValidity('');
+      form.onsubmit = async e => { e.preventDefault(); const field = $('sheetPasteLink'); if (!(await take(field.value))) { field.setCustomValidity('This is not a pairing link.'); field.reportValidity(); } };
+    }
     bindHomes();
     s.querySelectorAll('[data-forget]').forEach(b => b.onclick = async () => {
       const h = homeOf(b.dataset.forget);

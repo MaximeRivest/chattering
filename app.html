@@ -3345,7 +3345,15 @@ function pageOnThisComputer() {
   return h === '127.0.0.1' || h === 'localhost' || h === '[::1]' || h.endsWith('.localhost');
 }
 function localMachinesHere() { return pageOnThisComputer() ? ((settingsState && settingsState.localMachines) || []) : []; }
-function machineCount() { return remoteMachinesHere().length + localMachinesHere().length + linkedMachinesHere().length + localLinksHere().length + ((wayBackHere() || {}).places || []).length; }
+// On a phone or tablet through the encrypted link (design/85), the shell
+// around this page holds the computers this device is paired with; the
+// switcher moves between those (the addresses this computer knows for
+// others do not open there).
+function phoneComputers() {
+  if (!window.__anywhereInside) return null;
+  try { const h = window.top !== window ? window.top.__anywhere : null; return h && typeof h.homes === 'function' && typeof h.switchTo === 'function' ? h : null; } catch { return null; }
+}
+function machineCount() { if (phoneComputers()) return 1; return remoteMachinesHere().length + localMachinesHere().length + linkedMachinesHere().length + localLinksHere().length + ((wayBackHere() || {}).places || []).length; }
 function localMachineWhere(m, all) {
   const linuxes = all.filter(x => x.kind === 'wsl').length;
   return m.kind === 'windows' ? 'Windows, on this computer' : 'Linux' + (linuxes > 1 && m.distro ? ' (' + m.distro + ')' : '') + ', on this computer';
@@ -3395,7 +3403,7 @@ function remoteMachinesHere() {
 function localLinksHere() { return localMachinesHere().flatMap(m => (m.blocked ? [] : (m.links || []).map(l => ({ m, l })))); }
 function renderMachineBtn() {
   const btn = $('machineBtn');
-  const list = [...remoteMachinesHere(), ...localMachinesHere(), ...linkedMachinesHere(), ...localLinksHere(), ...((wayBackHere() || {}).places || [])];
+  const list = phoneComputers() ? [1] : [...remoteMachinesHere(), ...localMachinesHere(), ...linkedMachinesHere(), ...localLinksHere(), ...((wayBackHere() || {}).places || [])];
   const host = (settingsState && settingsState.hostname) || '';
   btn.hidden = !list.length;
   btn.textContent = '@' + (host || 'this machine');
@@ -3411,7 +3419,15 @@ function toggleMachinePop(show) {
   const locals = localMachinesHere();
   const back = wayBackHere();
   const localLinks = localLinksHere();
-  pop.innerHTML = `<div class="mach-head">you are on ${esc(host)} · go to</div>` +
+  const phone = phoneComputers();
+  if (phone) {
+    const homes = phone.homes();
+    pop.innerHTML = `<div class="mach-head">you are on ${esc(host)} · go to</div>` +
+      homes.filter(x => !x.active).map(x => `<button type="button" data-home="${esc(x.id)}"><span>${esc(x.name)}</span><span class="mach-url">encrypted link</span></button>`).join('') +
+      `<button type="button" data-computers><span>${homes.length > 1 ? 'Your computers…' : 'Add a computer…'}</span><span class="mach-url">on this ${/iPad|Tablet/i.test(navigator.userAgent) ? 'tablet' : 'phone'}</span></button>`;
+    pop.querySelectorAll('button[data-home]').forEach(b => b.onclick = () => { toggleMachinePop(false); phone.switchTo(b.dataset.home); });
+    pop.querySelector('button[data-computers]').onclick = () => { toggleMachinePop(false); phone.openSheet(); };
+  } else pop.innerHTML = `<div class="mach-head">you are on ${esc(host)} · go to</div>` +
     (back ? back.places.map(p => `<button type="button" data-back="${esc(p.id)}"><span>${esc(p.name)}</span><span class="mach-url">${esc(p.where)}</span></button>`).join('') : '') +
     locals.map(m => `<button type="button" data-local="${esc(m.id)}"><span>${esc(m.name)}</span><span class="mach-url">${esc(localMachineWhere(m, locals))}</span></button>`).join('') +
     linkedMachinesHere().map(m => `<button type="button" data-link="${esc(m.id)}"><span>${esc(m.name)}</span><span class="mach-url">encrypted link</span></button>`).join('') +
@@ -3437,7 +3453,7 @@ function toggleMachinePop(show) {
     b.disabled = false; url.textContent = r.why || 'not reachable';
   });
   const anchor = sideLayoutOn() ? $('railMachine') : $('machineBtn');
-  const rect = anchor.getBoundingClientRect();
+  const rect = anchor.offsetParent ? anchor.getBoundingClientRect() : { left: (innerWidth - pop.offsetWidth) / 2, bottom: 56 };
   pop.style.maxHeight = Math.max(80, innerHeight - rect.bottom - 14) + 'px';
   pop.style.left = Math.max(8, Math.min(rect.left, innerWidth - pop.offsetWidth - 8)) + 'px';
   pop.style.top = Math.max(8, Math.min(rect.bottom + 6, innerHeight - pop.offsetHeight - 8)) + 'px';
@@ -16755,8 +16771,14 @@ function paneMachines() {
       <button type="button" class="ghost" data-edit>edit</button>
       <button type="button" class="ghost" data-del title="Remove">✕</button>
     </div>`;
+  const phone = phoneComputers();
+  const device = /iPad|Tablet/i.test(navigator.userAgent) ? 'tablet' : 'phone';
   return `<h2>machines</h2>
     <p class="lead">This page is talking to <b>${esc(host)}</b>. Connected machines appear in the header switcher; each one keeps its own conversations, agents, and notes.</p>
+    ${phone ? `<div class="set-group" id="setPhoneComputers"><h3>computers on this ${device}</h3>
+      <div class="set-help">This ${device} reaches each of these through its own encrypted link. To add one, press <b>Add a device</b> on that computer's Chattering (on its own screen), then add it here.</div>
+      ${phone.homes().map(x => `<div class="mach-item shown"><b class="mach-name">${esc(x.name)}</b><span class="mach-url">${x.active ? 'you are here' : 'encrypted link'}</span>${x.active ? '' : `<button type="button" class="ghost" data-phone-home="${esc(x.id)}">open</button>`}</div>`).join('')}
+      <div class="any-actions"><button type="button" data-phone-computers>Add or remove a computer…</button></div></div>` : ''}
     <div class="set-group" id="setAnywhere"><h3>your devices, anywhere</h3><div id="setAnywhereBody"><span class="hint">…</span></div></div>
     <div class="set-group">
       <h3>reach this machine from other devices</h3>
@@ -16792,6 +16814,11 @@ function paneMachines() {
 }
 
 function bindPaneMachines(root) {
+  const phone = phoneComputers();
+  if (phone) {
+    root.querySelectorAll('[data-phone-home]').forEach(b => b.onclick = () => phone.switchTo(b.dataset.phoneHome));
+    const add = root.querySelector('[data-phone-computers]'); if (add) add.onclick = () => phone.openSheet();
+  }
   const lanBox = $('setLan');
   if (lanBox) lanBox.onchange = () => {
     lanBox.disabled = true;
