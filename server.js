@@ -6364,8 +6364,9 @@ function linkWayBack(req, res, link) {
     return true;
   }
   if (u.pathname === '/_chattering/go' && req.method === 'GET') {
-    // A page opened by the person, not a script's fetch or a frame.
-    const navigating = !req.headers['sec-fetch-mode'] || (req.headers['sec-fetch-mode'] === 'navigate' && req.headers['sec-fetch-dest'] === 'document');
+    // A page opened by the person, not a script's fetch or a frame (the
+    // destination says so even when a service worker passed the request on).
+    const navigating = !req.headers['sec-fetch-dest'] || req.headers['sec-fetch-dest'] === 'document';
     if (!navigating) { res.writeHead(403, { 'Content-Type': 'text/plain' }); res.end('Open this address as a page.\n'); return true; }
     const place = places.find(p => p.id === u.searchParams.get('to'));
     if (!place) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('That is no longer on this computer.\n'); return true; }

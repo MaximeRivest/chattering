@@ -19,10 +19,11 @@ self.addEventListener('activate', event => {
 self.addEventListener('fetch', event => {
   const req = event.request;
   const url = new URL(req.url);
-  if (req.method !== 'GET' || url.origin !== self.location.origin || !url.pathname.startsWith('/vendor/')) {
-    event.respondWith(fetch(req));
-    return;
-  }
+  // Not answered here at all: the browser fetches it as it would with no
+  // worker. (Answering with fetch(req) made a page opened by the person a
+  // request of this worker's, no longer a navigation, which the way back
+  // through an encrypted link refuses, design/90.)
+  if (req.method !== 'GET' || url.origin !== self.location.origin || !url.pathname.startsWith('/vendor/')) return;
   event.respondWith((async () => {
     const cache = await caches.open(VENDOR_CACHE);
     const hit = await cache.match(req);
