@@ -138,6 +138,24 @@ async function startLocked({ quiet }) {
   try { tail = fs.readFileSync(LOG_FILE, 'utf8').split('\n').slice(-20).join('\n'); } catch {}
   throw new Error('Chattering did not start. The end of its log (' + LOG_FILE + '):\n' + tail);
 }
+// On Windows: wake the Linux sides this account runs Chattering in, so the
+// switcher finds them (localmachines.js). Not waited for; a side already
+// held answers at once and its new holder exits.
+function wakeLinuxSides() {
+  if (!platform.IS_WIN || process.env.CHATTERING_NO_WSL_WAKE === '1') return 0;
+  const lm = require('./localmachines.js');
+  let n = 0;
+  for (const side of lm.linuxSidesToWake(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'))) {
+    try {
+      const cmd = lm.wakeCommand(side);
+      const c = spawn(cmd.file, cmd.args, { detached: true, windowsHide: true, stdio: 'ignore' });
+      c.on('error', () => {});
+      c.unref();
+      n++;
+    } catch {}
+  }
+  return n;
+}
 function signedInUrl(port) { return `http://127.0.0.1:${port}/?token=${encodeURIComponent(token())}`; }
 
 // ---- the browser ------------------------------------------------------------------------
@@ -355,8 +373,8 @@ async function main(argv) {
   const [cmd = 'open', ...rest] = argv;
   const force = rest.includes('--force');
   try {
-    if (cmd === 'open') { const r = await start(); if (!openBrowser(signedInUrl(r.port))) say('Open ' + signedInUrl(r.port)); return; }
-    if (cmd === 'start') { const r = await start({ quiet: true }); say('Chattering ' + (r.status.version || '') + ' is running on port ' + r.port + '.'); return; }
+    if (cmd === 'open') { wakeLinuxSides(); const r = await start(); if (!openBrowser(signedInUrl(r.port))) say('Open ' + signedInUrl(r.port)); return; }
+    if (cmd === 'start') { wakeLinuxSides(); const r = await start({ quiet: true }); say('Chattering ' + (r.status.version || '') + ' is running on port ' + r.port + '.'); return; }
     if (cmd === 'stop') { process.exitCode = (await stop({ force })) ? 0 : 1; return; }
     if (cmd === 'url') { const r = await running(); if (!r) fail('Chattering is not running (start it: chattering-app start)'); say(signedInUrl(r.port)); return; }
     if (cmd === 'status') {

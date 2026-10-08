@@ -219,4 +219,38 @@ function portsTaken(localAppData, { now = Date.now() } = {}) {
   return readCards(folderIn(localAppData), { now }).filter(c => c.kind !== 'windows').flatMap(c => c.ports);
 }
 
-module.exports = { CARD_VERSION, FOLDER, MAX_AGE_MS, installId, folderIn, cardFileName, makeCard, normalizeCard, readCards, writeCard, wslLocalAppData, decodeCmdOutput, createLocalMachines, portsTaken };
+// The Linux sides this Windows account has run Chattering in, to wake when
+// the Windows app starts or opens (design/84): WSL stops a distribution
+// once no Windows program holds it, and systemd inside does not count, so
+// its Chattering is not there for the switcher until something holds it.
+// From every card, however old (a laptop off for weeks still has its Linux
+// side), one per distribution and user.
+const WSL_NAME_RE = /^[A-Za-z0-9_.-]{1,60}$/;
+function linuxSidesToWake(localAppData, { fsLib = fs } = {}) {
+  if (!localAppData) return [];
+  const dir = folderIn(localAppData);
+  let names = [];
+  try { names = fsLib.readdirSync(dir).filter(n => n.startsWith('wsl-') && n.endsWith('.json')); } catch { return []; }
+  const seen = new Set(), out = [];
+  for (const n of names) {
+    let raw = null;
+    try { raw = JSON.parse(fsLib.readFileSync(path.join(dir, n), 'utf8')); } catch { continue; }
+    if (!raw || raw.app !== 'chattering' || raw.kind !== 'wsl' || !WSL_NAME_RE.test(String(raw.distro || '')) || !WSL_NAME_RE.test(String(raw.user || ''))) continue;
+    const key = raw.distro + '/' + raw.user;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ distro: raw.distro, user: raw.user });
+  }
+  return out;
+}
+// The command that starts that side's Chattering and holds the
+// distribution open: a Linux process that only sleeps, one per Linux user
+// (flock; a second one exits at once), as windows/launch.ps1 does. The
+// script travels as base64: no quoting between Windows and bash to get wrong.
+function wakeCommand({ distro, user }, systemRoot = process.env.SystemRoot || 'C:\\Windows') {
+  const script = 'systemctl --user start chattering.service && exec flock -n "$XDG_RUNTIME_DIR/chattering-launcher.lock" sleep infinity';
+  const b64 = Buffer.from(script, 'utf8').toString('base64');
+  return { file: path.win32.join(systemRoot, 'System32', 'wsl.exe'), args: ['-d', distro, '-u', user, '--exec', 'bash', '-c', 'echo ' + b64 + ' | base64 -d | bash'] };
+}
+
+module.exports = { linuxSidesToWake, wakeCommand, CARD_VERSION, FOLDER, MAX_AGE_MS, installId, folderIn, cardFileName, makeCard, normalizeCard, readCards, writeCard, wslLocalAppData, decodeCmdOutput, createLocalMachines, portsTaken };

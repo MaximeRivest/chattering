@@ -106,3 +106,24 @@ test('cmd output decodes whether or not it came as UTF-16', () => {
   assert.equal(lm.decodeCmdOutput(Buffer.from('C:\\Users\\a\\AppData\\Local\r\n', 'utf16le')), 'C:\\Users\\a\\AppData\\Local');
   assert.equal(lm.decodeCmdOutput(Buffer.from('C:\\Users\\a\\AppData\\Local\r\n')), 'C:\\Users\\a\\AppData\\Local');
 });
+
+test('the Windows app wakes every Linux side it has known, however long ago, and only with safe names', () => {
+  const lm = require('../localmachines.js');
+  const local = fs.mkdtempSync(path.join(os.tmpdir(), 'wake-'));
+  const dir = lm.folderIn(local);
+  fs.mkdirSync(dir, { recursive: true });
+  const card = (file, over) => fs.writeFileSync(path.join(dir, file), JSON.stringify({ app: 'chattering', v: 1, kind: 'wsl', distro: 'Ubuntu-24.04', user: 'lilly', port: 7433, updatedAt: 0, ...over }));
+  card('wsl-Ubuntu-24.04-lilly.json', {});                       // a card from long ago still counts
+  card('wsl-Ubuntu-24.04-lilly-old.json', {});                   // the same side twice: once
+  card('wsl-Debian-me.json', { distro: 'Debian', user: 'me' });
+  card('wsl-bad.json', { distro: 'x" & calc', user: 'me' });     // never put on a command line
+  card('windows.json', { kind: 'windows', distro: '', user: 'aurel' });
+  assert.deepEqual(lm.linuxSidesToWake(local).map(s => s.distro + '/' + s.user).sort(), ['Debian/me', 'Ubuntu-24.04/lilly']);
+  assert.deepEqual(lm.linuxSidesToWake(path.join(local, 'nothing')), []);
+  const cmd = lm.wakeCommand({ distro: 'Ubuntu-24.04', user: 'lilly' }, 'C:\\Windows');
+  assert.equal(cmd.file, 'C:\\Windows\\System32\\wsl.exe');
+  assert.deepEqual(cmd.args.slice(0, 7), ['-d', 'Ubuntu-24.04', '-u', 'lilly', '--exec', 'bash', '-c']);
+  const b64 = /^echo ([A-Za-z0-9+/=]+) \| base64 -d \| bash$/.exec(cmd.args[7])[1];
+  assert.equal(Buffer.from(b64, 'base64').toString(), 'systemctl --user start chattering.service && exec flock -n "$XDG_RUNTIME_DIR/chattering-launcher.lock" sleep infinity');
+  fs.rmSync(local, { recursive: true, force: true });
+});
