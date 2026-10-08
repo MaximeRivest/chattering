@@ -390,9 +390,9 @@
   }
   // The safe area (the clock and camera above, the home indicator below).
   // This page has it; the frame may not (WebKit gives a frame none, Chromium
-  // gives it the page's). Where the frame lacks a side, the frame keeps clear
-  // of it, except the bottom, which the app pads itself (--sai-bottom in
-  // app.html) so its bar reaches the edge. Measured, not guessed per browser.
+  // gives it the page's). Where the frame lacks a side, the app is told how
+  // much to pad (--anywhere-inset-*, app.html), so it draws to the edges and
+  // keeps its buttons clear. Measured, not guessed per browser.
   function safeArea(doc) {
     const d = doc.createElement('div');
     d.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)';
@@ -402,18 +402,28 @@
     d.remove();
     return out;
   }
+  // The frame's height. An iPhone's home-screen icon with a translucent
+  // status bar lays the page out shorter than the screen by the status bar
+  // (100% and innerHeight both), while drawing from the very top: an empty
+  // band was left under the app. There the screen's own height is the
+  // truth (the icon is always the whole screen); elsewhere the page's.
+  function fullHeight() {
+    const page = Math.max(innerHeight, document.documentElement.clientHeight);
+    if (!(IOS && /iPhone|iPod/.test(navigator.userAgent) && standalone())) return page;
+    const portrait = matchMedia('(orientation: portrait)').matches;
+    const screenH = portrait ? Math.max(screen.width, screen.height) : Math.min(screen.width, screen.height);
+    return Math.max(page, screenH);
+  }
   function fitFrame() {
     if (!frame) return;
+    document.documentElement.style.setProperty('--frame-h', fullHeight() + 'px');
     const own = safeArea(document);
     let inner = null, doc = null;
     try { doc = frame.contentDocument; if (doc && doc.body && doc.location.href !== 'about:blank') inner = safeArea(doc); } catch {}
     if (!inner) return; // not loaded yet: its load fits it
-    const lack = side => (inner[side] >= own[side] ? 0 : own[side]);
-    const root = document.documentElement.style;
-    root.setProperty('--fit-t', lack('top') + 'px');
-    root.setProperty('--fit-l', lack('left') + 'px');
-    root.setProperty('--fit-r', lack('right') + 'px');
-    try { doc.documentElement.style.setProperty('--anywhere-inset-bottom', lack('bottom') + 'px'); } catch {}
+    const root = doc.documentElement;
+    for (const side of ['top', 'right', 'bottom', 'left']) root.style.setProperty('--anywhere-inset-' + side, (inner[side] >= own[side] ? 0 : own[side]) + 'px');
+    root.setAttribute('data-anywhere-inset', '');
   }
   addEventListener('resize', fitFrame);
   addEventListener('orientationchange', () => setTimeout(fitFrame, 300));
@@ -458,7 +468,7 @@
     },
     themeColor(c) {
       const m = document.querySelector('meta[name="theme-color"]'); if (m && c) m.content = c;
-      if (c) document.documentElement.style.setProperty('--app-bg', c); // the sides beside the frame, in the app's colour
+      if (c) document.documentElement.style.setProperty('--app-bg', c); // anything beside the frame, in the app's colour
     },
     homes: () => homes.map(h => ({ id: h.homeId, name: h.name, active: h.homeId === active })),
     switchTo, openSheet,

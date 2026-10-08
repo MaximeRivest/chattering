@@ -135,14 +135,20 @@ try {
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { overscroll-behavior: none; }
-/* The bottom safe area (home indicator). Through the encrypted link the app
-   is a frame, and WebKit gives a frame no safe area: the page around it
-   passes its own in --anywhere-inset-bottom (anywhere/public/shell.js). */
-:root { --sai-bottom: max(env(safe-area-inset-bottom), var(--anywhere-inset-bottom, 0px)); }
+/* The safe area (the clock and camera above, the home indicator below).
+   Through the encrypted link the app is a frame, and WebKit gives a frame
+   no safe area: the page around it passes its own in --anywhere-inset-*
+   and marks the frame data-anywhere-inset (anywhere/public/shell.js). */
+:root { --sai-top: max(env(safe-area-inset-top), var(--anywhere-inset-top, 0px)); --sai-bottom: max(env(safe-area-inset-bottom), var(--anywhere-inset-bottom, 0px)); }
+html[data-anywhere-inset] body header { padding-top: var(--sai-top); height: calc(var(--header-h) + var(--sai-top)); }
+/* Home hides the header: the page itself keeps clear of the top. */
+html[data-anywhere-inset] body.home { padding-top: var(--sai-top); }
 body { margin: 0; font: var(--fs-body)/1.5 var(--font); background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow-x: clip; }
 @media (display-mode: standalone) {
   body { height: 100dvh; }
-  header { padding-top: env(safe-area-inset-top); height: calc(var(--header-h) + env(safe-area-inset-top)); }
+  /* Specific enough to win over the phone layout's own header padding. */
+  html:root body header { padding-top: var(--sai-top); height: calc(var(--header-h) + var(--sai-top)); }
+  html:root body.home { padding-top: var(--sai-top); }
 }
 /* Systematic: no fixed height on the base button. A label that wraps grows
    the box instead of clipping. One-line buttons still measure exactly 30px

@@ -20,15 +20,14 @@ body { overflow: hidden; }
 b { font-weight: 650; }
 
 /* ---- the app, full screen, once connected ---- */
-/* Inside the safe area where the frame gets none of its own (WebKit, an
-   iPhone's home-screen icon: the app would sit under the clock and the
-   camera). shell.js sets --fit-*; the bottom one goes to the app instead,
-   whose own bar then reaches the edge. The strip under the status bar stays
-   dark: an iPhone writes the time there in white. */
-#app { position: fixed; top: var(--fit-t, 0px); left: var(--fit-l, 0px); width: calc(100% - var(--fit-l, 0px) - var(--fit-r, 0px)); height: calc(100% - var(--fit-t, 0px)); border: 0; background: var(--bg); opacity: 0; transition: opacity .35s ease; }
+/* Full screen, edge to edge: the app pads itself for the clock, the camera
+   and the home indicator (shell.js tells it how much when the frame is not
+   told by the browser). --frame-h: an iPhone's home-screen icon lays this
+   page out a status bar shorter than its screen, which left an empty band
+   under the app. */
+#app { position: fixed; top: 0; left: 0; width: 100%; height: var(--frame-h, 100%); border: 0; background: var(--bg); opacity: 0; transition: opacity .35s ease; }
 body.app-open #app { opacity: 1; }
 html:has(body.app-open), body.app-open { background: var(--app-bg, var(--bg)); }
-body.app-open::before { content: ''; position: fixed; top: 0; left: 0; right: 0; height: var(--fit-t, 0px); background: #101412; }
 /* The previews' carrier: a page with no face. */
 iframe.carrier { display: none; }
 
