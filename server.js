@@ -21712,6 +21712,31 @@ function startLanTls() {
 applyLanMode(lanWanted(), () => {
   // Listening: tell the other installs on this computer where this one is.
   localMachines.start().catch(e => console.log('[this computer] ' + e.message));
+  // The Windows app keeps its Linux side up (design/84): the launcher wakes
+  // it when Chattering starts or opens, and this wakes it again whenever it
+  // stops answering (WSL shut down by an update, by wsl --shutdown, or its
+  // holding process gone), at most every two minutes per side.
+  if (platform.IS_WIN && LOCAL_KIND === 'windows' && process.env.CHATTERING_NO_WSL_WAKE !== '1') {
+    const lastWake = new Map();
+    const keepLinuxUp = async () => {
+      for (const side of localMachinesLib.linuxSidesToWake(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'))) {
+        const key = side.distro + '/' + side.user;
+        if (Date.now() - (lastWake.get(key) || 0) < 2 * 60 * 1000) continue;
+        const up = await fetch(`http://127.0.0.1:${side.port}/health`, { signal: AbortSignal.timeout(3000) }).then(r => r.status < 500, () => false);
+        if (up) continue;
+        lastWake.set(key, Date.now());
+        try {
+          const cmd = localMachinesLib.wakeCommand(side);
+          const c = spawn(cmd.file, cmd.args, { detached: true, windowsHide: true, stdio: 'ignore' });
+          c.on('error', () => {});
+          c.unref();
+          console.log(`[this computer] the Linux side (${key}) did not answer: waking it`);
+        } catch (e) { console.log('[this computer] waking the Linux side: ' + e.message); }
+      }
+    };
+    setTimeout(keepLinuxUp, 30 * 1000).unref?.();
+    setInterval(keepLinuxUp, 60 * 1000).unref?.();
+  }
   // The server upgrades the history store before any Pi worker opens it.
   try { checkpoints(); } catch (e) { console.error('Saved file history unavailable:', e.message); }
   fullScan().then(() => {

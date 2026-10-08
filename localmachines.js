@@ -239,7 +239,8 @@ function linuxSidesToWake(localAppData, { fsLib = fs } = {}) {
     const key = raw.distro + '/' + raw.user;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ distro: raw.distro, user: raw.user });
+    const port = Number(raw.port);
+    out.push({ distro: raw.distro, user: raw.user, port: Number.isInteger(port) && port > 0 && port < 65536 ? port : 7433 });
   }
   return out;
 }
