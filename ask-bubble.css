@@ -72,7 +72,7 @@
 /* A phone: a sheet over the bottom, not a box under the thumb. */
 .ask-bubble.sheet { left: 0; right: 0; bottom: 0; top: auto; width: auto; }
 body.phone-shell .ask-bubble.sheet { bottom: var(--phone-bar-h, 0px); }
-.ask-bubble.sheet .ask-compose { border-radius: var(--r-composer) var(--r-composer) 0 0; border-bottom: 0; padding-bottom: calc(8px + env(safe-area-inset-bottom)); }
+.ask-bubble.sheet .ask-compose { border-radius: var(--r-composer) var(--r-composer) 0 0; border-bottom: 0; padding-bottom: calc(8px + var(--sai-bottom, env(safe-area-inset-bottom))); }
 .ask-bubble.sheet .ask-compose::before, .ask-bubble.sheet .ask-compose::after { display: none; }
 
 /* Binary e-ink: no shadow, no half-tones, a solid frame. */

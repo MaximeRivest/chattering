@@ -142,6 +142,28 @@ test('an iPhone: Safari copies the code for the home-screen icon, which pastes i
   await icon.until(`document.body.classList.contains('app-open')`, 'paired, and the app open', 60000);
   await icon.until(`document.getElementById('app').contentWindow.document.title.includes('Chattering')`, 'Chattering itself in the icon');
   await icon.shot('iphone-3-app.png');
+
+  // The safe area: an iPhone's clock and camera above, its home indicator
+  // below (59 and 34 px on a 15 Pro). Chromium gives the frame the page's
+  // safe area itself: the frame stays full screen and the app pads itself.
+  await send('Emulation.setSafeAreaInsetsOverride', { insets: { top: 59, bottom: 34, left: 0, right: 0 } }, icon.sid);
+  await icon.evaluate(`dispatchEvent(new Event('resize')), 1`);
+  const app = `document.getElementById('app')`;
+  const fit = () => icon.evaluate(`({ t: getComputedStyle(document.documentElement).getPropertyValue('--fit-t').trim(), top: ${app}.getBoundingClientRect().top, bottomInApp: ${app}.contentDocument.documentElement.style.getPropertyValue('--anywhere-inset-bottom'), bar: ${app}.contentWindow.getComputedStyle(${app}.contentDocument.documentElement).getPropertyValue('--sai-bottom').trim() })`);
+  const chromium = await fit();
+  assert.equal(chromium.t, '0px', 'Chromium: the frame has its own safe area');
+  assert.equal(chromium.top, 0);
+  assert.equal(chromium.bottomInApp, '0px');
+  // WebKit gives a frame no safe area (env() is 0 there): stand for it by
+  // having the frame measure none. The frame then keeps clear of the top,
+  // and the app is told the bottom, which it pads itself.
+  await icon.evaluate(`(() => { const w = ${app}.contentWindow, real = w.getComputedStyle.bind(w); w.getComputedStyle = (el, p) => (el && /safe-area-inset/.test(el.style.cssText) ? { paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px' } : real(el, p)); dispatchEvent(new Event('resize')); return 1; })()`);
+  const webkit = await fit();
+  assert.equal(webkit.t, '59px', 'WebKit: the frame starts below the clock and the camera');
+  assert.equal(webkit.top, 59);
+  assert.equal(webkit.bottomInApp, '34px', 'the app is told the home indicator');
+  assert.match(await icon.evaluate(`getComputedStyle(document.body, '::before').height`), /^59px$/, 'a dark strip under the status bar');
+  await icon.shot('iphone-4-safe-area.png');
   const st = await (await fetch(base + '/api/anywhere')).json();
   assert.equal(st.devices.length, 1);
   assert.equal(st.devices[0].name, 'iPhone · Safari');

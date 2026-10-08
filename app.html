@@ -135,6 +135,10 @@ try {
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 html, body { overscroll-behavior: none; }
+/* The bottom safe area (home indicator). Through the encrypted link the app
+   is a frame, and WebKit gives a frame no safe area: the page around it
+   passes its own in --anywhere-inset-bottom (anywhere/public/shell.js). */
+:root { --sai-bottom: max(env(safe-area-inset-bottom), var(--anywhere-inset-bottom, 0px)); }
 body { margin: 0; font: var(--fs-body)/1.5 var(--font); background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow-x: clip; }
 @media (display-mode: standalone) {
   body { height: 100dvh; }
@@ -1996,12 +2000,12 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
 
   /* ---- phone shell (design/58): bottom bar, full-screen sheets, a one-row
      conversation head. body.phone-shell is set by applyPhoneShell(). ---- */
-  body.phone-shell { --phone-bar-h: calc(54px + env(safe-area-inset-bottom)); }
+  body.phone-shell { --phone-bar-h: calc(54px + var(--sai-bottom)); }
   /* Reading and typing own the screen: the bar leaves with the top bar
      (scroll down, or the keyboard) and returns the same way. A sheet keeps
      it, so the way out is always on screen. */
   body.phone-shell.chrome-min:not(.home):not(.phone-sheet) { --phone-bar-h: 0px; }
-  body.phone-shell #phoneBar { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 48; height: var(--phone-bar-h); padding: 0 2px env(safe-area-inset-bottom); background: var(--surface-1); border-top: 1px solid var(--border); box-shadow: 0 -1px 0 var(--shadow-color); }
+  body.phone-shell #phoneBar { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 48; height: var(--phone-bar-h); padding: 0 2px var(--sai-bottom); background: var(--surface-1); border-top: 1px solid var(--border); box-shadow: 0 -1px 0 var(--shadow-color); }
   body.phone-shell.chrome-min:not(.home):not(.phone-sheet) #phoneBar { display: none; }
   body.phone-shell.zen:not(.home) #phoneBar { display: none; }
   #phoneBar > button, #phoneBar > .pb-slot { position: relative; flex: 1 1 0; min-width: 0; height: 54px; min-height: 54px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 0 2px; border: 0; border-radius: 0; background: transparent; color: var(--text-dim); font-size: 10px; font-weight: 600; letter-spacing: .02em; line-height: 1; }
@@ -2024,8 +2028,8 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
 
   /* Everything below the bar moves up by its height. */
   body.phone-shell .composer-dock { bottom: var(--phone-bar-h); }
-  body.phone-shell:not(.home) #view { padding-bottom: calc(20px + var(--phone-bar-h) + env(safe-area-inset-bottom)); }
-  body.phone-shell:not(.home) #view:has(.agent-compose) { padding-bottom: calc(var(--compose-h, 174px) + var(--phone-bar-h) + 16px + env(safe-area-inset-bottom)); }
+  body.phone-shell:not(.home) #view { padding-bottom: calc(20px + var(--phone-bar-h) + var(--sai-bottom)); }
+  body.phone-shell:not(.home) #view:has(.agent-compose) { padding-bottom: calc(var(--compose-h, 174px) + var(--phone-bar-h) + 16px + var(--sai-bottom)); }
   body.phone-shell:not(.chrome-min) .agent-compose { padding-bottom: 8px; }
   body.phone-shell.home #left { padding-bottom: var(--phone-bar-h); }
   body.phone-shell #tabs { bottom: calc(8px + var(--phone-bar-h)); }
@@ -2072,7 +2076,7 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
   /* Phone dashboard: keep chart-local controls, not the application header. */
   body.home header, body.home #tabs { display: none !important; }
   /* the tab switcher floats in the corner instead of owning a full-width bar */
-  #tabs { position: fixed; left: auto; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom)); z-index: 35; width: auto; height: auto; padding: 2px; background: var(--surface-1); border: 1px solid var(--border-strong); border-bottom: 1px solid var(--border-strong); box-shadow: 0 2px 12px var(--shadow-color); }
+  #tabs { position: fixed; left: auto; right: 8px; bottom: calc(8px + var(--sai-bottom)); z-index: 35; width: auto; height: auto; padding: 2px; background: var(--surface-1); border: 1px solid var(--border-strong); border-bottom: 1px solid var(--border-strong); box-shadow: 0 2px 12px var(--shadow-color); }
   #tabs button[data-tab] { height: 34px; min-height: 34px; min-width: 0; padding: 0 8px; font-size: 11px; }
   /* the search collapses to one magnifier button; tap toggles the field */
   #selShown, #ganttResize { display: none !important; }
@@ -2087,10 +2091,10 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
   .mobile-home .title { -webkit-line-clamp: 2; font-size: 15px; }
   .mobile-home .meta, .mobile-home .snip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-  body:not(.home) #view { padding: 8px 10px calc(20px + env(safe-area-inset-bottom)); }
+  body:not(.home) #view { padding: 8px 10px calc(20px + var(--sai-bottom)); }
   /* the padding tracks the real composer height (set by a ResizeObserver),
      so the transcript is never hidden behind the composer */
-  body:not(.home) #view:has(.agent-compose) { padding-bottom: calc(var(--compose-h, 174px) + 16px + env(safe-area-inset-bottom)); }
+  body:not(.home) #view:has(.agent-compose) { padding-bottom: calc(var(--compose-h, 174px) + 16px + var(--sai-bottom)); }
   /* reading hides the chrome: scroll down → gone, scroll up or reach the top → back */
   body.chrome-min:not(.home) header { display: none; }
   /* the head scrolls away with the transcript; sticky costs too much screen */
@@ -2107,7 +2111,7 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
   .msg .msg-copy, .msg .msg-read, .msg [data-answer-version] { min-height: 28px; height: 28px; }
 
   .composer-dock { position: fixed; left: 0; right: 0; bottom: 0; z-index: 45; }
-  .agent-compose { width: auto; max-width: none; margin: 0; padding: 8px 10px calc(8px + env(safe-area-inset-bottom)); border-width: 1px 0 0; }
+  .agent-compose { width: auto; max-width: none; margin: 0; padding: 8px 10px calc(8px + var(--sai-bottom)); border-width: 1px 0 0; }
   /* resting composer: one slim bar — tap it, or hold a draft, to expand */
   .agent-compose.compose-min { flex-direction: row; align-items: stretch; padding-top: 6px; }
   .agent-compose.compose-min .model-strip,

@@ -384,8 +384,39 @@
       stage.hidden = true;
       stage.dataset.screen = '';
     }, { once: true });
+    frame.addEventListener('load', fitFrame);
     document.body.appendChild(frame);
+    fitFrame();
   }
+  // The safe area (the clock and camera above, the home indicator below).
+  // This page has it; the frame may not (WebKit gives a frame none, Chromium
+  // gives it the page's). Where the frame lacks a side, the frame keeps clear
+  // of it, except the bottom, which the app pads itself (--sai-bottom in
+  // app.html) so its bar reaches the edge. Measured, not guessed per browser.
+  function safeArea(doc) {
+    const d = doc.createElement('div');
+    d.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;visibility:hidden;pointer-events:none;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)';
+    (doc.body || doc.documentElement).appendChild(d);
+    const c = doc.defaultView.getComputedStyle(d);
+    const out = { top: parseFloat(c.paddingTop) || 0, right: parseFloat(c.paddingRight) || 0, bottom: parseFloat(c.paddingBottom) || 0, left: parseFloat(c.paddingLeft) || 0 };
+    d.remove();
+    return out;
+  }
+  function fitFrame() {
+    if (!frame) return;
+    const own = safeArea(document);
+    let inner = null, doc = null;
+    try { doc = frame.contentDocument; if (doc && doc.body && doc.location.href !== 'about:blank') inner = safeArea(doc); } catch {}
+    if (!inner) return; // not loaded yet: its load fits it
+    const lack = side => (inner[side] >= own[side] ? 0 : own[side]);
+    const root = document.documentElement.style;
+    root.setProperty('--fit-t', lack('top') + 'px');
+    root.setProperty('--fit-l', lack('left') + 'px');
+    root.setProperty('--fit-r', lack('right') + 'px');
+    try { doc.documentElement.style.setProperty('--anywhere-inset-bottom', lack('bottom') + 'px'); } catch {}
+  }
+  addEventListener('resize', fitFrame);
+  addEventListener('orientationchange', () => setTimeout(fitFrame, 300));
 
   // What the app's frame calls (inside.js): sockets and event streams.
   // Also app(): the app's window, for the Android app, whose native parts
@@ -425,7 +456,10 @@
       try { if (path && !/[#&]pair=/.test(location.hash) && path !== location.pathname + location.search + location.hash) history.replaceState(null, '', path); } catch {}
       if (title) document.title = title;
     },
-    themeColor(c) { const m = document.querySelector('meta[name="theme-color"]'); if (m && c) m.content = c; },
+    themeColor(c) {
+      const m = document.querySelector('meta[name="theme-color"]'); if (m && c) m.content = c;
+      if (c) document.documentElement.style.setProperty('--app-bg', c); // the sides beside the frame, in the app's colour
+    },
     homes: () => homes.map(h => ({ id: h.homeId, name: h.name, active: h.homeId === active })),
     switchTo, openSheet,
     // Where the app shows what agents make, and a promise that it can.
