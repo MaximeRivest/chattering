@@ -45,9 +45,17 @@ const safePart = s => String(s || '').replace(/[^A-Za-z0-9._-]+/g, '_').slice(0,
 function folderIn(localAppData, pathLib = path) { return pathLib.join(localAppData, 'Chattering', FOLDER); }
 function cardFileName(card) { return card.kind === 'windows' ? 'windows.json' : `wsl-${safePart(card.distro)}-${safePart(card.user)}.json`; }
 
-function makeCard({ kind, name, port, ports = [], publicKey, distro = '', user = '', version = '', now = Date.now() }) {
+// The other computers an install's owner links it to (design/90), for the
+// other installs on this computer to offer their own owner: each at a
+// local port of the install that holds the link.
+const LINK_ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+function cleanLinks(links) {
+  return (Array.isArray(links) ? links : []).map(l => ({ id: String((l && l.id) || ''), name: String((l && l.name) || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 60), port: Number(l && l.port) }))
+    .filter(l => LINK_ID_RE.test(l.id) && l.name && Number.isInteger(l.port) && l.port > 0 && l.port < 65536).slice(0, 8);
+}
+function makeCard({ kind, name, port, ports = [], publicKey, distro = '', user = '', version = '', links = [], now = Date.now() }) {
   return { app: 'chattering', v: CARD_VERSION, kind, name: String(name || '').slice(0, 60), port, ports: [...new Set([port, ...ports].filter(p => Number.isInteger(p) && p > 0 && p < 65536))],
-    publicKey, distro: String(distro || ''), user: String(user || ''), version: String(version || ''), updatedAt: now };
+    publicKey, distro: String(distro || ''), user: String(user || ''), version: String(version || ''), links: cleanLinks(links), updatedAt: now };
 }
 
 // A card as read from disk, or null. Nothing on it is taken on faith: the
@@ -65,7 +73,7 @@ function normalizeCard(raw, now = Date.now()) {
   if (!name) return null;
   const ports = (Array.isArray(raw.ports) ? raw.ports : []).map(Number).filter(p => Number.isInteger(p) && p > 0 && p < 65536).slice(0, 8);
   return { kind: raw.kind, name, port, ports: [...new Set([port, ...ports])], publicKey, id: installId(publicKey),
-    distro: String(raw.distro || '').slice(0, 60), user: String(raw.user || '').slice(0, 60), version: String(raw.version || '').slice(0, 30), updatedAt };
+    distro: String(raw.distro || '').slice(0, 60), user: String(raw.user || '').slice(0, 60), version: String(raw.version || '').slice(0, 30), links: cleanLinks(raw.links), updatedAt };
 }
 
 // Every valid card in the folder, the Windows app first. One per key: the

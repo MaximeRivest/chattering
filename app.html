@@ -3345,7 +3345,7 @@ function pageOnThisComputer() {
   return h === '127.0.0.1' || h === 'localhost' || h === '[::1]' || h.endsWith('.localhost');
 }
 function localMachinesHere() { return pageOnThisComputer() ? ((settingsState && settingsState.localMachines) || []) : []; }
-function machineCount() { return (settingsOf().machines || []).length + localMachinesHere().length; }
+function machineCount() { return remoteMachinesHere().length + localMachinesHere().length + linkedMachinesHere().length + localLinksHere().length + ((wayBackHere() || {}).places || []).length; }
 function localMachineWhere(m, all) {
   const linuxes = all.filter(x => x.kind === 'wsl').length;
   return m.kind === 'windows' ? 'Windows, on this computer' : 'Linux' + (linuxes > 1 && m.distro ? ' (' + m.distro + ')' : '') + ', on this computer';
@@ -3353,7 +3353,7 @@ function localMachineWhere(m, all) {
 const LOCAL_BLOCKED = {
   'same-port': m => `${m.name} and this one use the same address on this computer, so only one can be opened. Restart the computer (or run “chattering-app stop” in a terminal) and open Chattering on Windows again: it will keep clear of the Linux side's address from then on.`,
 };
-async function goToLocalMachine(m, b) {
+async function goToLocalMachine(m, b, viaLink = '') {
   const where = b.querySelector('.mach-url');
   const down = why => { b.disabled = false; where.textContent = why; where.classList.add('mach-down'); };
   b.disabled = true; where.textContent = 'checking…';
@@ -3365,7 +3365,8 @@ async function goToLocalMachine(m, b) {
   // refused connection is an error and any answer is not.
   try { await fetch(base + '/health', { mode: 'no-cors', cache: 'no-store', signal: AbortSignal.timeout(5000) }); }
   catch { return down(m.kind === 'wsl' ? 'it does not answer — open Chattering (Linux) once to start it' : 'it does not answer — open Chattering from the Start menu to start it'); }
-  location.href = base + hand.path;
+  // On into one of its links: it signs this person in, then opens the link.
+  location.href = base + hand.path + (viaLink ? '&link=' + encodeURIComponent(viaLink) : '');
 }
 // Other computers this install links to (design/90): each at a local port,
 // so only from this computer's own screen (localhost).
@@ -3373,9 +3374,28 @@ function linkedMachinesHere() {
   if (!/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) return [];
   return (settingsState && settingsState.anywhereLinks) || [];
 }
+// This page shown through an encrypted link (design/90): the computer that
+// holds the link answers /_chattering/here at the same address with the
+// way back to itself (its installs, its other links). Asked once per page.
+var wayBack = null, wayBackAsked = false;
+function wayBackHere() {
+  if (!wayBackAsked && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) {
+    wayBackAsked = true;
+    fetch('/_chattering/here', { cache: 'no-store' }).then(r => (r.ok && /json/.test(r.headers.get('content-type') || '') ? r.json() : null))
+      .then(w => { if (w && Array.isArray(w.places) && w.places.length) { wayBack = w; renderMachineBtn(); } }).catch(() => {});
+  }
+  return wayBack;
+}
+// Machines this install knows, less those that are this computer when the
+// page is seen through its link (they are reached the way back instead).
+function remoteMachinesHere() {
+  const keys = new Set((wayBackHere() || {}).keys || []);
+  return (settingsOf().machines || []).map((m, i) => ({ m, i })).filter(x => !(x.m.publicKey && keys.has(x.m.publicKey)));
+}
+function localLinksHere() { return localMachinesHere().flatMap(m => (m.blocked ? [] : (m.links || []).map(l => ({ m, l })))); }
 function renderMachineBtn() {
   const btn = $('machineBtn');
-  const list = [...(settingsOf().machines || []), ...localMachinesHere(), ...linkedMachinesHere()];
+  const list = [...remoteMachinesHere(), ...localMachinesHere(), ...linkedMachinesHere(), ...localLinksHere(), ...((wayBackHere() || {}).places || [])];
   const host = (settingsState && settingsState.hostname) || '';
   btn.hidden = !list.length;
   btn.textContent = '@' + (host || 'this machine');
@@ -3389,13 +3409,23 @@ function toggleMachinePop(show) {
   const host = (settingsState && settingsState.hostname) || 'this machine';
   const list = settingsOf().machines || [];
   const locals = localMachinesHere();
+  const back = wayBackHere();
+  const localLinks = localLinksHere();
   pop.innerHTML = `<div class="mach-head">you are on ${esc(host)} · go to</div>` +
+    (back ? back.places.map(p => `<button type="button" data-back="${esc(p.id)}"><span>${esc(p.name)}</span><span class="mach-url">${esc(p.where)}</span></button>`).join('') : '') +
     locals.map(m => `<button type="button" data-local="${esc(m.id)}"><span>${esc(m.name)}</span><span class="mach-url">${esc(localMachineWhere(m, locals))}</span></button>`).join('') +
     linkedMachinesHere().map(m => `<button type="button" data-link="${esc(m.id)}"><span>${esc(m.name)}</span><span class="mach-url">encrypted link</span></button>`).join('') +
-    list.map((m, i) => `<button type="button" data-i="${i}"><span>${esc(m.name)}</span><span class="mach-url">${esc(m.url.replace(/^https?:\/\//i, ''))}</span></button>`).join('');
+    localLinks.map(({ m, l }, k) => `<button type="button" data-locallink="${k}"><span>${esc(l.name)}</span><span class="mach-url">encrypted link, through ${esc(m.name)}</span></button>`).join('') +
+    remoteMachinesHere().map(({ m, i }) => `<button type="button" data-i="${i}"><span>${esc(m.name)}</span><span class="mach-url">${esc(m.url.replace(/^https?:\/\//i, ''))}</span></button>`).join('');
+  // Back to the computer this page is seen from: it opens the place itself.
+  pop.querySelectorAll('button[data-back]').forEach(b => b.onclick = () => { location.href = '/_chattering/go?to=' + encodeURIComponent(b.dataset.back); });
   pop.querySelectorAll('button[data-local]').forEach(b => b.onclick = () => {
     const m = locals.find(x => x.id === b.dataset.local);
     if (m) goToLocalMachine(m, b);
+  });
+  pop.querySelectorAll('button[data-locallink]').forEach(b => b.onclick = () => {
+    const x = localLinks[Number(b.dataset.locallink)];
+    if (x) goToLocalMachine(x.m, b, x.l.id);
   });
   // A linked computer: connect (or say why not), then its local address.
   pop.querySelectorAll('button[data-link]').forEach(b => b.onclick = async () => {

@@ -46,6 +46,37 @@ shown under the other computer's code (Add a device), and it appears in the
 list and in the machine switcher (entries marked "encrypted link"; only on
 this computer's own screen, since the address is local).
 
+## One laptop, two sides, and the server (2026-10-08)
+
+Checked on Lilly's PC (the Windows app, Chattering in WSL, lambda): every
+way between the three, as the same person, without Tailscale.
+
+- **Opening the link from this computer's switcher works.** The link
+  refused every request from another site, and another port of localhost
+  is the same site, so the switcher's jump from the Windows app
+  (localhost:7434) to its link (localhost:7461) got "Requests from other
+  sites are refused". A page opened there (Sec-Fetch-Mode navigate,
+  destination document) from the same site is now let through; a script
+  or a WebSocket from another port is still refused, another site always.
+- **The way back.** The server's pages, seen through the link, are the
+  server's: its switcher knew nothing of the laptop. The install holding
+  the link now answers two paths of its own at the link's address, never
+  carried: `/_chattering/here` (this install, the other installs on this
+  computer, this person's other links: names only, plus the installs'
+  public keys so the page leaves out the server's entries that reach the
+  same installs another way, such as a Tailscale address) and
+  `/_chattering/go?to=…`, which opens one as this person (a handoff to
+  the other install here). The server's scripts can list the places; only
+  opening a page follows one, so they never read a handoff.
+- **The other side of the laptop.** An install's card on this computer
+  (design/84) lists the links its owner made. The other install offers
+  them to its own owner ("lambda · encrypted link, through LILLY-PC"):
+  the switcher signs the person in to the install holding the link and
+  goes on into it (`?handoff=…&link=<id>`), one hop for the person.
+
+Tested with a relay and three real servers standing for the two sides and
+the server (anywhere-links-local.test.js).
+
 ## Next
 
 2. **Both ways, and from the pairing page**: linking A to B also links B

@@ -37,6 +37,10 @@ function createAnywhereLinks(opts) {
     rtc,                                   // { RTCPeerConnection, error }
     iceForNode = x => x,
     authorize,                             // (req, link) → true when this person may use this link
+    // (req, res, link) → true when this install answered the request
+    // itself (its own paths under /_chattering/, never carried): the way
+    // back from the other computer to this one's own installs.
+    local = () => false,
     deviceName = () => require('os').hostname() + ' · Chattering',
     onChange = () => {},
     log = () => {},
@@ -156,7 +160,14 @@ function createAnywhereLinks(opts) {
     const h = String(req.headers.host || '').toLowerCase();
     return h === `localhost:${link.port}` || h === `127.0.0.1:${link.port}`;
   }
-  const crossSite = req => ['cross-site', 'same-site'].includes(String(req.headers['sec-fetch-site'] || ''));
+  // Another site: refused. Another port of this computer (localhost:7434
+  // is the same site as localhost:7461) only by opening a page there: the
+  // machine switcher of this computer's own Chattering goes here that way.
+  const isNavigation = req => String(req.headers['sec-fetch-mode'] || '') === 'navigate' && String(req.headers['sec-fetch-dest'] || '') === 'document';
+  const crossSite = req => {
+    const site = String(req.headers['sec-fetch-site'] || '');
+    return site === 'cross-site' || (site === 'same-site' && !isNavigation(req));
+  };
   function forwardHeaders(req) {
     const out = {};
     for (const [k, v] of Object.entries(req.headers)) {
@@ -178,6 +189,10 @@ function createAnywhereLinks(opts) {
       let ok = false;
       try { ok = await authorize(req, link); } catch {}
       if (!ok) return refuse(res, 401, `Sign in to Chattering on this computer as the person who linked ${link.name}, then reload.`);
+      if (req.url.startsWith('/_chattering/')) {
+        try { if (await local(req, res, link)) return; } catch (err) { return refuse(res, 500, err.message); }
+        return refuse(res, 404, 'Not here.');
+      }
       let body = null;
       if (req.method !== 'GET' && req.method !== 'HEAD') {
         const parts = []; let size = 0;
@@ -209,7 +224,7 @@ function createAnywhereLinks(opts) {
       res.on('close', () => { if (!ended) h.cancel(); });
     });
     server.on('upgrade', async (req, socket, head) => {
-      if (!allowedHost(req, link) || crossSite(req)) return refuseUpgrade(socket, 403, 'Forbidden');
+      if (!allowedHost(req, link) || ['cross-site', 'same-site'].includes(String(req.headers['sec-fetch-site'] || ''))) return refuseUpgrade(socket, 403, 'Forbidden');
       let ok = false;
       try { ok = await authorize(req, link); } catch {}
       if (!ok) return refuseUpgrade(socket, 401, 'Unauthorized');

@@ -5530,7 +5530,7 @@ const localMachines = platform.IS_WIN || platform.IS_WSL || LOCAL_APPDATA_OVERRI
     kind: LOCAL_KIND,
     onlyIfFolder: LOCAL_KIND === 'wsl',
     self: () => ({ name: MACHINE_NAME, port: PORT, ports: [PREVIEW_PORT, TLS_PORT, PREVIEW_TLS_PORT], publicKey: installKey.publicKey,
-      distro: wslDistroName(), user: os.userInfo().username, version: APP_VERSION || '' }),
+      distro: wslDistroName(), user: os.userInfo().username, version: APP_VERSION || '', links: ownerLinksForCard() }),
     locate: LOCAL_APPDATA_OVERRIDE ? async () => LOCAL_APPDATA_OVERRIDE
       : platform.IS_WIN ? async () => process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')
       : () => localMachinesLib.wslLocalAppData({ run: runWindowsProgram, cacheFile: path.join(CACHE_DIR, 'windows-localappdata') }),
@@ -5563,8 +5563,17 @@ function wslDistroName() {
   return wslDistroCache;
 }
 // What the page may know of another install on this computer: never its key.
-function publicLocalMachine(m) {
-  return { id: m.id, name: m.name, kind: m.kind, distro: m.distro || '', port: m.port, blocked: m.blocked || null };
+function publicLocalMachine(m, { links = false } = {}) {
+  return { id: m.id, name: m.name, kind: m.kind, distro: m.distro || '', port: m.port, blocked: m.blocked || null, links: links ? (m.links || []) : [] };
+}
+// The links this install's owner made (design/90), on this install's card:
+// the other installs on this computer offer them to their own owner, who
+// arrives here as this install's owner (design/84) and goes on through.
+function ownerLinksForCard() {
+  let list = [];
+  try { list = anywhereLinks.list(); } catch { return []; } // not made yet, at the first card
+  const owner = usersLib.ownerOf(roster);
+  return list.filter(l => !l.by || (owner && l.by.id === owner.id)).map(l => ({ id: l.id, name: l.name, port: l.port }));
 }
 let accessRules = accessLib.loadRules(ACCESS_FILE);
 let accessRulesVersion = 0;
@@ -6323,10 +6332,49 @@ const anywhereLinks = anywhereLinksLib.createAnywhereLinks({
     if (!identity || !identity.user) return false;
     return identity.tier === 'console' || !link.by || identity.user.id === link.by.id;
   },
-  onChange: () => { clearTimeout(anywhereTimer); anywhereTimer = setTimeout(() => broadcast({ type: 'anywhere' }), 150); },
+  local: (req, res, link) => linkWayBack(req, res, link),
+  onChange: () => { clearTimeout(anywhereTimer); anywhereTimer = setTimeout(() => broadcast({ type: 'anywhere' }), 150); localMachines.publish().catch(() => {}); },
   log: m => console.error(m),
 });
 anywhereLinks.start().catch(e => console.error('anywhere links: ' + e.message));
+// From the other computer's pages, shown at a link's port, back to this
+// computer: /_chattering/here lists this install, the other installs on
+// this computer and this person's other links (names only, and the keys
+// of this computer's installs, so the page can leave out the entries that
+// reach them another way); /_chattering/go?to=… opens one, as this person
+// (a handoff to another install here). Only by opening a page: the other
+// computer's scripts can list the places but never read a handoff.
+function linkWayBack(req, res, link) {
+  const u = new URL(req.url, 'http://localhost');
+  const identity = identifyRequest(req);
+  if (!identity || !identity.user) return false;
+  const hostName = String(req.headers.host || '').toLowerCase().startsWith('127.0.0.1:') ? '127.0.0.1' : 'localhost';
+  const locals = localMachines.list().filter(m => !m.blocked);
+  const linuxes = locals.filter(m => m.kind === 'wsl').length + (LOCAL_KIND === 'wsl' ? 1 : 0);
+  const whereOf = (kind, distro) => kind === 'windows' ? 'Windows, on this computer' : 'Linux' + (linuxes > 1 && distro ? ' (' + distro + ')' : '') + ', on this computer';
+  const places = [
+    { id: 'self', name: MACHINE_NAME, where: whereOf(LOCAL_KIND, wslDistroName()), go: () => `http://${hostName}:${PORT}/` },
+    ...locals.map(m => ({ id: 'local:' + m.id, name: m.name, where: whereOf(m.kind, m.distro),
+      go: () => `http://${hostName}:${m.port}/?handoff=` + encodeURIComponent(usersLib.mintHandoff(installKey, identity.user, { ttlMs: 30000 })) })),
+    ...linksFor(identity).filter(l => l.id !== link.id).map(l => ({ id: 'link:' + l.id, name: l.name, where: 'encrypted link', go: () => `http://${hostName}:${l.port}/` })),
+  ];
+  if (u.pathname === '/_chattering/here' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ name: MACHINE_NAME, places: places.map(p => ({ id: p.id, name: p.name, where: p.where })), keys: [installKey.publicKey, ...locals.map(m => m.publicKey)] }));
+    return true;
+  }
+  if (u.pathname === '/_chattering/go' && req.method === 'GET') {
+    // A page opened by the person, not a script's fetch or a frame.
+    const navigating = !req.headers['sec-fetch-mode'] || (req.headers['sec-fetch-mode'] === 'navigate' && req.headers['sec-fetch-dest'] === 'document');
+    if (!navigating) { res.writeHead(403, { 'Content-Type': 'text/plain' }); res.end('Open this address as a page.\n'); return true; }
+    const place = places.find(p => p.id === u.searchParams.get('to'));
+    if (!place) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('That is no longer on this computer.\n'); return true; }
+    res.writeHead(302, { Location: place.go(), 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+    res.end();
+    return true;
+  }
+  return false;
+}
 const linksFor = identity => anywhereLinks.list().filter(l => !l.by || (identity && identity.user && (l.by.id === identity.user.id || usersLib.canManageUsers(identity))));
 async function anywhereResponse(identity) {
   const st = anywhere.status();
@@ -6382,7 +6430,7 @@ function settingsResponse(identity = ownerIdentity()) {
     // The other installs on this computer (design/84): the switcher offers
     // them to a browser on this computer, with no pairing to do. Guests
     // are walled to what was shared with them, here.
-    localMachines: identity && identity.user && !usersLib.isGuest(identity.user) ? localMachines.list().map(publicLocalMachine) : [],
+    localMachines: identity && identity.user && !usersLib.isGuest(identity.user) ? localMachines.list().map(m => publicLocalMachine(m, { links: usersLib.isOwnerTier(identity) })) : [],
     // Other computers this install links to (design/90), for the switcher.
     anywhereLinks: identity && identity.user && !usersLib.isGuest(identity.user) ? linksFor(identity).map(l => ({ id: l.id, name: l.name, port: l.port, connected: l.connected })) : [],
     port: PORT,
@@ -17442,7 +17490,12 @@ async function handleRequest(req, res) {
           if (user.disabled) throw new Error('this person is disabled here');
           const { secret } = usersLib.issueCredential(roster, user.id, { kind: 'session', label: 'handoff' });
           saveRoster();
-          return setSignInCookie(secret, landing, user);
+          // From the other install on this computer, on into a link this
+          // person made here (its switcher lists this install's links).
+          const via = u.searchParams.get('link');
+          const l = via && sameComputerOwner ? anywhereLinks.list().find(x => x.id === via && (!x.by || x.by.id === user.id)) : null;
+          const host = String(req.headers.host || '').toLowerCase().startsWith('127.0.0.1:') ? '127.0.0.1' : 'localhost';
+          return setSignInCookie(secret, l ? `http://${host}:${l.port}/` : landing, user);
         } catch (e) {
           noteSignIn('fail', { via: 'handoff' }, handoff);
           res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' });

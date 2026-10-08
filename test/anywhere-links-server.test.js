@@ -17,6 +17,11 @@ const root = path.join(__dirname, '..');
 const rtc = loadRtc(root);
 after(async () => { await new Promise(r => setTimeout(r, 300)); if (rtc.cleanup) rtc.cleanup(); setTimeout(() => process.exit(), 1000); });
 async function freePort() { const s = net.createServer(); await new Promise(r => s.listen(0, '127.0.0.1', r)); const port = s.address().port; await new Promise(r => s.close(r)); return port; }
+// A request with the headers a browser sends (fetch() sets Sec-Fetch-Mode itself).
+const raw = (url, headers = {}) => new Promise((resolve, reject) => {
+  const r = require('node:http').get(url, { headers }, res => { let body = ''; res.on('data', b => body += b); res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body })); });
+  r.on('error', reject);
+});
 const until = async (fn, label, ms = 20000) => { const t0 = Date.now(); for (;;) { const v = await fn(); if (v) return v; if (Date.now() - t0 > ms) throw new Error('timed out: ' + label); await new Promise(r => setTimeout(r, 100)); } };
 
 async function chattering(t, name, token, relayUrl, linkBase) {
@@ -75,6 +80,24 @@ test('a Chattering links to another through its settings, and opens it at a loca
   // Nobody else: no sign-in, or a sign-in B does not know.
   assert.equal((await fetch(at + '/api/settings')).status, 401);
   assert.equal((await fetch(at + '/api/settings', { headers: { Cookie: 'chattering=someone-else' } })).status, 401);
+  // Opened from B's own switcher (another port of this computer: the same
+  // site), as a page; a script of that other port is still refused.
+  const nav = { 'Sec-Fetch-Site': 'same-site', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' };
+  assert.equal((await raw(at + '/', { Cookie: cookie, Accept: 'text/html', ...nav })).status, 200, 'B\'s switcher opens A');
+  assert.equal((await raw(at + '/api/settings', { Cookie: cookie, 'Sec-Fetch-Site': 'same-site', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' })).status, 403);
+  assert.equal((await raw(at + '/', { Cookie: cookie, 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' })).status, 403, 'another site cannot open it');
+  // The way back: B answers at A's address with B itself (never carried to A).
+  const here = await (await fetch(at + '/_chattering/here', { headers: { Cookie: cookie } })).json();
+  assert.equal(here.name, 'xpswhite');
+  assert.deepEqual(here.places.map(p => p.id), ['self']);
+  assert.equal(here.keys.length, 1, 'B\'s key, for the page to leave out entries that are B');
+  assert.equal((await fetch(at + '/_chattering/here')).status, 401, 'for B\'s person only');
+  const bPort = new URL(B.base).port;
+  const go = await raw(at + '/_chattering/go?to=self', { Cookie: cookie, ...nav });
+  assert.equal(go.status, 302);
+  assert.equal(go.headers.location, `http://localhost:${bPort}/`);
+  assert.equal((await raw(at + '/_chattering/go?to=self', { Cookie: cookie, 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' })).status, 403, 'a script cannot follow the way back');
+  assert.equal((await raw(at + '/_chattering/go?to=nowhere', { Cookie: cookie, ...nav })).status, 404);
   // The switcher's check, then removal: the address closes.
   const check = await (await fetch(B.base + '/api/anywhere/links/check?id=' + linked.links[0].id)).json();
   assert.equal(check.ok, true);
