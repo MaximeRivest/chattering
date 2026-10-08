@@ -184,6 +184,24 @@ function createRelay(opts = {}) {
     const previewOf = P.relayHostOfPreview(hostOf(req));
     if (previewOf && u.pathname !== '/healthz') return servePreviewSite(req, res, u, previewOf);
     if (u.pathname === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); return res.end('ok\n'); }
+    // TEMPORARY (2026-10-08, to be removed): an iPhone home-screen icon's
+    // layout numbers, to find why the app stops short of the screen's
+    // bottom there. Numbers and a few flags only, never a person or an
+    // address; written to the journal (kept in memory on this machine).
+    if (u.pathname === '/_anywhere/layout-report' && req.method === 'POST') {
+      let body = '';
+      req.on('data', c => { body += c; if (body.length > 2048) req.destroy(); });
+      req.on('end', () => {
+        try {
+          const raw = JSON.parse(body);
+          const out = {};
+          for (const [k, v] of Object.entries(raw).slice(0, 40)) if (/^[a-zA-Z0-9_.]{1,24}$/.test(k) && (typeof v === 'number' || typeof v === 'boolean' || (typeof v === 'string' && /^[\w .:/()-]{0,40}$/.test(v)))) out[k] = v;
+          console.log('layout-report ' + JSON.stringify(out));
+        } catch {}
+        res.writeHead(204, { 'Cache-Control': 'no-store' }); res.end();
+      });
+      return;
+    }
     if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405, { Allow: 'GET, HEAD' }); return res.end(); }
     let name = u.pathname;
     // The service worker lives at the root so it may answer for every address.

@@ -14,7 +14,7 @@
    shell holds), which hands it to the shell, which carries it through the
    tunnel to the computer's preview server. It never shows the shell. */
 'use strict';
-const VERSION = 'anywhere-16';
+const VERSION = 'anywhere-17';
 const PREVIEW = location.hostname.startsWith('previews.');
 const SHELL_CACHE = (PREVIEW ? 'anywhere-carrier-' : 'anywhere-shell-') + VERSION;
 const SHELL_FILES = PREVIEW ? ['/_anywhere/carrier.html', '/_anywhere/carrier.js']
@@ -22,7 +22,9 @@ const SHELL_FILES = PREVIEW ? ['/_anywhere/carrier.html', '/_anywhere/carrier.js
     '/_anywhere/inside.js', '/_anywhere/manifest.webmanifest', '/_anywhere/mark.svg', '/_anywhere/favicon.svg', '/_anywhere/icon-192.png', '/_anywhere/apple-touch-icon.png'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(SHELL_CACHE).then(c => c.addAll(SHELL_FILES)).catch(() => {}).then(() => self.skipWaiting()));
+  // From the network, never the browser's own cache (the files are cached
+  // there for five minutes): a new version must not install the old files.
+  e.waitUntil(caches.open(SHELL_CACHE).then(c => c.addAll(SHELL_FILES.map(f => new Request(f, { cache: 'reload' })))).catch(() => {}).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', e => {
   e.waitUntil((async () => {
@@ -48,7 +50,7 @@ self.addEventListener('fetch', e => {
 async function shellFile(req) {
   const cache = await caches.open(SHELL_CACHE);
   const hit = await cache.match(req, { ignoreSearch: true });
-  const fresh = fetch(req).then(r => { if (r.ok) cache.put(req, r.clone()).catch(() => {}); return r; }).catch(() => null);
+  const fresh = fetch(req, { cache: 'no-cache' }).then(r => { if (r.ok) cache.put(req, r.clone()).catch(() => {}); return r; }).catch(() => null);
   if (hit) return hit;
   return (await fresh) || new Response('Chattering cannot open without the network the first time.', { status: 503, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
 }

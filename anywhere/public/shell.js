@@ -424,6 +424,31 @@
     const root = doc.documentElement;
     for (const side of ['top', 'right', 'bottom', 'left']) root.style.setProperty('--anywhere-inset-' + side, (inner[side] >= own[side] ? 0 : own[side]) + 'px');
     root.setAttribute('data-anywhere-inset', '');
+    layoutReport(own, inner);
+  }
+  // TEMPORARY (2026-10-08, to be removed): on an iPhone's home-screen icon,
+  // the layout numbers once per launch to the relay's journal (no person,
+  // no address), to find why the app stops short of the bottom there.
+  let reported = false;
+  function layoutReport(own, inner) {
+    if (reported || !(IOS && standalone())) return;
+    reported = true;
+    setTimeout(() => {
+      try {
+        const r = frame.getBoundingClientRect(), d = frame.contentDocument, w = frame.contentWindow;
+        const bar = d && d.getElementById('phoneBar'), br = bar ? bar.getBoundingClientRect() : null;
+        const vv = window.visualViewport;
+        const ios = (/OS (\d+)_(\d+)/.exec(navigator.userAgent) || []).slice(1).join('.');
+        fetch('/_anywhere/layout-report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+          shell: 'anywhere-17', ios, dpr: devicePixelRatio, navStandalone: navigator.standalone === true, mqStandalone: matchMedia('(display-mode: standalone)').matches,
+          innerH: innerHeight, innerW: innerWidth, clientH: document.documentElement.clientHeight, screenH: screen.height, screenW: screen.width,
+          vvH: vv ? vv.height : -1, vvTop: vv ? vv.offsetTop : -1, frameTop: r.top, frameH: r.height, frameVar: getComputedStyle(document.documentElement).getPropertyValue('--frame-h').trim(),
+          ownT: own.top, ownB: own.bottom, innerT: inner.top, innerB: inner.bottom,
+          appInnerH: w ? w.innerHeight : -1, app100vh: d ? (() => { const x = d.createElement('div'); x.style.cssText = 'position:fixed;height:100vh;width:0'; d.body.appendChild(x); const h = x.getBoundingClientRect().height; x.remove(); return h; })() : -1,
+          barTop: br ? br.top : -1, barBottom: br ? br.bottom : -1, bodyH: document.body.getBoundingClientRect().height,
+        }) }).catch(() => {});
+      } catch {}
+    }, 2500);
   }
   addEventListener('resize', fitFrame);
   addEventListener('orientationchange', () => setTimeout(fitFrame, 300));
