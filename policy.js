@@ -375,6 +375,7 @@ const ROUTES = {
   '/api/sync/join-remote': 'owner',
 
   // ---- the launcher ----
+  '/api/app/android': 'guest', // a version number and a public download address
   '/api/app/status': 'owner',
   '/api/app/stop': 'owner',
   '/api/sso/check': 'owner',

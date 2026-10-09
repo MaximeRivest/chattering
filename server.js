@@ -10013,6 +10013,7 @@ function runningAgentKeys() {
 const BOOT_ID = crypto.randomUUID();
 const BOOT_AT = Date.now();
 const APP_VERSION = (() => { try { return require('./package.json').version || null; } catch { return null; } })();
+const ANDROID_APP_VERSION = (() => { try { return require('./package.json').androidApp || null; } catch { return null; } })();
 let runningAgentsSig = null;
 function refreshAgentsSignal() {
   const keys = runningAgentKeys();
@@ -20747,6 +20748,10 @@ async function handleRequest(req, res) {
         const doc = await require('./oidc.js').createOidc().discover(cfg.issuer);
         json(res, 200, { ok: true, issuer: doc.issuer, authorize: doc.authorization_endpoint });
       } catch (e) { json(res, 400, { error: e.message }); }
+    } else if (u.pathname === '/api/app/android' && req.method === 'GET') {
+      // The Android app this computer's code goes with (package.json
+      // androidApp) and where to get it: the page offers it to an older app.
+      json(res, 200, { version: ANDROID_APP_VERSION, url: anywhereLib.ANDROID_APK_URL });
     } else if (u.pathname === '/api/app/status' && req.method === 'GET') {
       // For the launcher: which install and version answers on this port,
       // and whether work is running (an update or stop waits for it).

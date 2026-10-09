@@ -2,6 +2,9 @@ plugins {
     id "com.android.application"
     id "org.jetbrains.kotlin.android"
 }
+def androidAppVersion = new groovy.json.JsonSlurper().parse(rootProject.file("../package.json")).androidApp as String
+def androidAppCode = androidAppVersion.tokenize(".").collect { it as int }.with { it[0] * 10000 + it[1] * 100 + it[2] }
+
 android {
     namespace "app.rockfrog.chattering"
     compileSdk 35
@@ -10,8 +13,12 @@ android {
         applicationId "app.rockfrog.chattering"
         minSdk 26
         targetSdk 35
-        versionCode 10
-        versionName "0.3.5"
+        // One version for the app, in the repository's package.json
+        // (androidApp): the computer reads it too, and offers the update to
+        // an older app (app.html, androidAppUpdate). The code only grows:
+        // 0.3.6 → 306, above the 10 that 0.3.5 used.
+        versionCode androidAppCode
+        versionName androidAppVersion
     }
     buildTypes {
         release {

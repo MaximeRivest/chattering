@@ -608,6 +608,12 @@ class MainActivity : AppCompatActivity() {
     // way back on a device without a navigation bar). Never fall back to
     // loading an untrusted site in the WebView that exposes native bridges.
     inner class AppBridge {
+        /** This app's version (from 0.3.6; older apps have no version()).
+         *  The page compares it with the one its computer knows and offers
+         *  the update: the app is not on a store that would update it. */
+        @JavascriptInterface
+        fun version(): String = BuildConfig.VERSION_NAME
+
         /** The page's paste field: a pairing link, opened here. */
         @JavascriptInterface
         fun openLink(url: String) {

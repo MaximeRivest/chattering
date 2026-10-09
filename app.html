@@ -16715,8 +16715,61 @@ function phoneNotifyRowHtml() {
   try { on = !!bridge.isEnabled(); } catch {}
   return `<h3>this device</h3>
     <label class="set-check"><input id="setPhoneNotify" type="checkbox"${on ? ' checked' : ''}> notify me here when a reply is ready</label>
-    <div class="set-help">Works while the app is in the background. A small “listening” notice stays in the shade while it is on; the phone must reach the laptop.</div>`;
+    <div class="set-help">Works while the app is in the background. A small “listening” notice stays in the shade while it is on; the phone must reach the laptop.</div>
+    ${androidAppUpdate.rowHtml()}`;
 }
+
+// The Android app against the version this computer's code goes with
+// (package.json androidApp, GET /api/app/android). The app is not on a store
+// that would update it, and an older one breaks quietly: before 0.3.4,
+// through the encrypted link, dictation said "Permission denied" and a
+// picked picture never reached the message. So the page says when the app
+// is behind, once a day, and Settings shows it for as long as it is.
+// Apps before 0.3.6 have no version(): they count as older.
+const androidAppUpdate = (() => {
+  const bridge = () => window.ChatteringApp || null;
+  let latest = null; // { version, url } once asked
+  const have = () => {
+    try { const b = bridge(); return b && typeof b.version === 'function' ? String(b.version() || '') : ''; } catch { return ''; }
+  };
+  const parts = v => String(v || '0').split('.').map(n => parseInt(n, 10) || 0);
+  const older = (a, b) => {
+    const x = parts(a), y = parts(b);
+    for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) < (y[i] || 0);
+    return false;
+  };
+  const behind = () => !!(latest && latest.version && latest.url && older(have(), latest.version));
+  const download = () => {
+    const b = bridge();
+    try { if (b && typeof b.openExternal === 'function') return b.openExternal(latest.url); } catch {}
+    window.open(latest.url, '_blank');
+  };
+  async function check() {
+    if (!bridge()) return;
+    try {
+      const r = await fetch('/api/app/android');
+      if (r.ok) latest = await r.json();
+    } catch {}
+    if (!behind()) return;
+    const key = 'chattering.androidAppNudge', today = new Date().toISOString().slice(0, 10);
+    let shown = '';
+    try { shown = localStorage.getItem(key) || ''; } catch {}
+    if (shown === latest.version + '@' + today) return;
+    try { localStorage.setItem(key, latest.version + '@' + today); } catch {}
+    const mine = have();
+    toast(`A newer Chattering app is ready (${latest.version}; this one is ${mine || 'older'}). Tap to download it.`, download, 'ok');
+  }
+  // Settings → this device. A link to the release: the page sends links to
+  // other sites to the phone's browser, which downloads it.
+  function rowHtml() {
+    const mine = have();
+    if (behind()) return `<div class="set-row">Chattering app ${esc(mine || '(older than 0.3.6)')}: <a href="${esc(latest.url)}">get ${esc(latest.version)}</a></div>
+    <div class="set-help">Opens the download in the phone's browser. It installs over this app and keeps the pairing and settings.</div>`;
+    return mine ? `<div class="set-help">Chattering app ${esc(mine)}.</div>` : '';
+  }
+  if (bridge()) setTimeout(check, 3000);
+  return { check, rowHtml };
+})();
 
 window.nativeNotifyChanged = on => {
   const box = $('setPhoneNotify');
