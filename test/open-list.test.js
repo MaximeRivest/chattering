@@ -139,7 +139,7 @@ test('the side list: opened conversations, previews, typing dots, unread dot, cl
 
   // The ⋯ menu: pin, mark unread, close, open — no "remove from replies".
   await ev(`openAgentRowMenu(${JSON.stringify(keys.alpha)}, 0, 0)`);
-  assert.deepEqual(await ev(`[...document.querySelectorAll('.ag-menu [data-ag-action]')].map(b=>b.textContent)`), ['Pin to the top', 'Mark as unread', 'Close', 'Open']);
+  assert.deepEqual(await ev(`[...document.querySelectorAll('.ag-menu [data-ag-action]')].map(b=>b.textContent)`), ['Move to a group…', 'Pin to the top', 'Mark as unread', 'Close', 'Open']);
   await ev(`closeFileActionMenu()`);
   assert.deepEqual(exceptions, []);
 });

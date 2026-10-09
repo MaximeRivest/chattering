@@ -216,6 +216,7 @@ async function showDraft(id) {
     <div class="draft-empty">
       <div class="draft-empty-title">new conversation</div>
       <p>Write below and send. Nothing runs before that.</p>
+      ${d.group && window.ListGroups && ListGroups.groupName(d.group) ? `<p class="dim draft-group">It will join the group <b>${esc(ListGroups.groupName(d.group))}</b> in the side list.</p>` : ''}
       <p class="dim">Until the first message goes, the folder, the mode, the model, the reasoning level, the context, and any instructions are still yours to change — the line above the box shows where it stands.</p>
       ${others.length ? `<p class="draft-others">${others.length === 1 ? 'one other unsent draft' : others.length + ' other unsent drafts'}: ${others.slice(0, 3).map(o => `<a href="#new=${esc(o.id)}">${esc(draftSummary(o))}</a>`).join(' · ')}${others.length > 3 ? ` · <a href="#project=${encodeURIComponent(LOOSE_PROJECT)}">all</a>` : ''}</p>` : ''}
     </div>
@@ -441,6 +442,8 @@ async function sendDraft(btn) {
       draftState = null;
       // Started beside a file: the conversation keeps it there.
       if (d.beside && window.Pair) Pair.carryInto(key, d.beside);
+      // Started with a group's + : it joins that group (design/96).
+      if (d.group && window.ListGroups) ListGroups.join(key, d.group);
       await open(key, 'bottom');
     } catch (e) { errToast(e.message); if (state) state.textContent = 'not started'; }
     finally { window._draftSendBusy = false; }
@@ -483,6 +486,7 @@ async function sendDraft(btn) {
     window._sendPendingKey = out.runError ? null : out.key;
     window._sendPendingAt = Date.now();
     if (d.beside && window.Pair) Pair.carryInto(out.key, d.beside);
+    if (d.group && window.ListGroups) ListGroups.join(out.key, d.group);
     await open(out.key, 'bottom');
     // Your words on screen at once, as for every later send. The run has
     // only just begun writing the session, so the transcript just loaded

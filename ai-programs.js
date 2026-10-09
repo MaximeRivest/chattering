@@ -62,6 +62,11 @@ function definitions(t) {
     inputs: { folder_name: t.string(), path: t.string(), identity: t.string(), overview: t.string(), recent_conversation_titles: t.list(t.string()) },
     outputs: { title: t.string() },
   });
+  add('group_name', {
+    description: 'Name a group a person makes of some of their open AI work conversations, to find them again in a side list: what the conversations have in common (the effort, the person, the problem), in 1 to 4 words, at most 32 characters, no trailing period. Not a generic word such as conversations, misc, stuff, group, work. When existing group names are given, do not repeat one.',
+    inputs: { conversation_titles: t.list(t.string()), projects: t.list(t.string()), existing_group_names: t.list(t.string()) },
+    outputs: { name: t.string() },
+  });
   add('note_title', {
     description: 'Title a distilled note of a work session, and say what it holds.',
     inputs: { note: t.string() },

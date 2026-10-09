@@ -2353,7 +2353,7 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
   <button id="barFold" title="Fold the top bar — click the rail to bring it back (`)">▴</button>
 </header>
 <button id="zenExit" title="Leave zen mode (z)">zen ✕</button>
-<div id="agentsPop" hidden><div id="agentsSheetHead"><span class="sheet-title">Agents</span><button id="agentsSheetClose" type="button" title="Close" aria-label="Close agents">✕</button></div><div id="agentsUnread"></div><div id="agentsLegacy"></div></div>
+<div id="agentsPop" hidden><div id="agentsSheetHead"><span class="sheet-title">Agents</span><button id="agentsSheetArrange" type="button" title="Arrange the list" aria-label="Arrange the list" aria-haspopup="menu"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3.5h12M2 7h8M5 10.5h9M5 13.5h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button><button id="agentsSheetClose" type="button" title="Close" aria-label="Close agents">✕</button></div><div id="agentsUnread"></div><div id="agentsLegacy"></div></div>
 <div id="machinePop" hidden></div>
 <aside id="side" hidden aria-label="Navigation and agents">
   <div id="sidePanel">
@@ -2372,6 +2372,7 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
         <button id="sideNew" title="New conversation (C) — a blank page: no project memory, home folder, pi defaults">+ <span>new</span></button>
         <button id="sideNewMore" hidden title="Other ways to start" aria-haspopup="menu" aria-label="More ways to start">▾</button>
       </div>
+      <button id="sideArrange" type="button" title="Arrange the list: your groups, by project, tidy up (Shift+G)" aria-label="Arrange the list" aria-haspopup="menu"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3.5h12M2 7h8M5 10.5h9M5 13.5h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
     </div>
   </div>
   <div id="sideAgents"></div>
@@ -2513,6 +2514,21 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <script src="/sidebar-projects.js"></script>
 <script src="/project-scope.js"></script>
 <script src="/open-files.js"></script>
+<script src="/list-groups.js"></script>
+<script>
+// A server started before list-groups.js existed answers 404 for it: the
+// list then draws as it did before groups (design/96), until a restart.
+if (!window.ListGroups) window.ListGroups = (() => {
+  const no = () => false, none = () => null, nothing = () => {};
+  return {
+    arrange: () => 'groups', tidying: no, selected: no, dragOn: no, groupOf: none, groupName: () => '', isHead: no,
+    layout: listed => ({ loose: listed, sections: [] }), items: (lay, { loose, row }) => loose.map(r => ({ key: r.key, html: row(r.s, r.key) })),
+    barHtml: () => '', selbarHtml: () => '', remember: nothing, onClick: no, onKey: no, onContextMenu: no, onDblClick: nothing,
+    wireDrag: nothing, follow: nothing, join: nothing, picker: nothing, move: nothing, arrangeMenu: nothing, clearSelection: no,
+  };
+})();
+</script>
+<link rel="stylesheet" href="/list-groups.css">
 <script src="/filesmode.js"></script>
 <script src="/files-browser.js"></script>
 <script src="/live-file.js"></script>
@@ -3547,9 +3563,11 @@ const AGENT_READ_LEGACY_KEY = 'chattering.agentRead.v1'; // per-browser state, i
 const AGENT_READ_CACHE_KEY = 'chattering.agentRead.v2';  // last server state, boot copy
 // Besides reads and finishes, four explicit marks (design/42, design/59):
 // opened (a person opened it: it belongs to the side list), flagged (marked
-// unread by hand), dismissed (closed from the list), pinned.
+// unread by hand), dismissed (closed from the list), pinned. And the list's
+// groups (design/96, list-groups.js): groups[id] = { name, order, folded },
+// member[key] = id.
 const AGENT_MARK_MAPS = ['opened', 'flagged', 'dismissed', 'pinned'];
-const emptyAgentReadState = () => ({ since: Date.now(), read: {}, finished: {}, opened: {}, flagged: {}, dismissed: {}, pinned: {} });
+const emptyAgentReadState = () => ({ since: Date.now(), read: {}, finished: {}, opened: {}, flagged: {}, dismissed: {}, pinned: {}, groups: {}, member: {} });
 let agentReadState = emptyAgentReadState();
 let agentReadLoaded = false;           // the server state has been fetched once
 const agentReadPending = new Map();    // key → local read time, not yet accepted by the server
@@ -3557,6 +3575,8 @@ let agentReadPushTimer = null, agentReadPushing = false;
 function agentReadStateFrom(d) {
   const out = { since: Number(d.since) || agentReadState.since, read: { ...(d.read || {}) }, finished: { ...(d.finished || {}) } };
   for (const map of AGENT_MARK_MAPS) out[map] = { ...(d[map] || {}) };
+  out.groups = JSON.parse(JSON.stringify(d.groups && typeof d.groups === 'object' ? d.groups : {}));
+  out.member = { ...(d.member || {}) };
   return out;
 }
 try {
@@ -3592,6 +3612,11 @@ function applyAgentReadFromServer(d, { replace = false } = {}) {
     for (const map of AGENT_MARK_MAPS) for (const [key, at] of Object.entries(d[map] || {})) {
       if (Number(at) > 0) agentReadState[map][key] = Number(at); else delete agentReadState[map][key];
     }
+    // Groups: a whole group, or 0 when it is gone; a member's group id, or ''.
+    if (!agentReadState.groups) agentReadState.groups = {};
+    if (!agentReadState.member) agentReadState.member = {};
+    for (const [id, g] of Object.entries(d.groups || {})) { if (g && typeof g === 'object') agentReadState.groups[id] = { ...g }; else delete agentReadState.groups[id]; }
+    for (const [key, id] of Object.entries(d.member || {})) { if (id) agentReadState.member[key] = id; else delete agentReadState.member[key]; }
   }
   saveAgentReadState();
   updateActiveBtn();
@@ -4252,6 +4277,9 @@ function reconcileList(host, items) {
       entered.push(el);
     }
     if (listMarkup.get(el) !== item.html) { el.innerHTML = item.html; listMarkup.set(el, item.html); }
+    // A group's tray is drawn by its items (list-groups.js).
+    const cls = 'ag-item' + (item.cls ? ' ' + item.cls : '');
+    if (el.className !== cls) el.className = cls;
     // Leaving wrappers stay in the flow while they fold; skip past them.
     while (host.children[cursor] && leaving.includes(host.children[cursor])) cursor++;
     if (host.children[cursor] !== el) host.insertBefore(el, host.children[cursor] || null);
@@ -4447,19 +4475,25 @@ async function renderAgentsPop(refetch) {
     : s && s.last && s.last.role === 'assistant' && s.last.asks ? 'asks' : '';
   const stateWord = { stopped: 'stopped', working: 'working', asks: 'waiting for your answer', '': '' };
   const quietClass = (state, key) => state === 'working' && quietSince(key) ? ' quiet' : '';
-  const more = (s, key) => s && key ? `<button class="ag-more" data-more="${esc(key)}" title="Pin, mark unread, close…" aria-label="Conversation actions" aria-haspopup="menu">⋯</button>` : '';
+  const more = (s, key) => s && key ? `<button class="ag-more" data-more="${esc(key)}" title="Pin, mark unread, move to a group, close…" aria-label="Conversation actions" aria-haspopup="menu">⋯</button>` : '';
+  // ⊕ moves the row to a group (design/96); not in the project view, nor
+  // while a tidy-up proposal is on screen.
+  const grouping = ListGroups.arrange() === 'groups' && !ListGroups.tidying();
+  const groupBtn = (s, key) => s && key && grouping ? `<button class="ag-group-btn" data-group="${esc(key)}" title="${ListGroups.groupOf(key) ? 'Move to another group' : 'Move to a group'} (g)" aria-label="Move to a group" aria-haspopup="dialog">⊕</button>` : '';
   const closeBtn = (key, r) => r
     ? `<button class="ag-close" data-close="${esc(key)}" data-recovery="${esc(r.id)}" title="Give up recovering this run and close. Saved history is kept." aria-label="Give up and close">✕</button>`
     : `<button class="ag-close" data-close="${esc(key)}" title="Close — it comes back if the assistant replies again" aria-label="Close">✕</button>`;
   const resumeBtn = r => r.canResume ? `<button class="ag-resume" data-recovery-id="${esc(r.id)}" data-recovery-action="resume"${r.state === 'resuming' ? ' disabled' : ''}>${r.state === 'resuming' ? 'Resuming…' : 'Resume'}</button>` : '';
-  const row = (s, key, { closable = true } = {}) => {
+  // peek: let through a folded group; inProject: under its project's
+  // header, so the row does not name the project again (design/96).
+  const row = (s, key, { closable = true, peek = false, inProject = false } = {}) => {
     const r = interruptedBy.get(key) || null;
     const state = stateOf(s, key), isUnread = unreadKeys.has(s && s.key);
     const o = orchestration(key);
     const title = rowTitle(s) === '(untitled)' && r && r.title ? r.title : rowTitle(s);
     const what = state === 'stopped' ? stoppedLine(r) : state === 'working' ? workingLine(s, key) : previewLine(s);
-    const sub = [projectLink(s), esc(origin(key)), what].filter(Boolean).join(' · ');
-    const acts = (r ? resumeBtn(r) : '') + (state === 'working' && !delegatedBy.has(key) ? kill(pidOf(key), title) : '') + more(s, key) + (closable ? closeBtn(key, r) : '');
+    const sub = [inProject ? '' : projectLink(s), esc(origin(key)), what].filter(Boolean).join(' · ');
+    const acts = (r ? resumeBtn(r) : '') + (state === 'working' && !delegatedBy.has(key) ? kill(pidOf(key), title) : '') + groupBtn(s, key) + more(s, key) + (closable ? closeBtn(key, r) : '');
     const activity = s ? agentActivityAt(s) : r ? r.createdAt : 0;
     const fill = contextFill(s);
     const fillSaid = fill ? `context ${fill.pct}% full \u00b7 ${fmtTokens(fill.used)} of ${fmtTokens(fill.size)} tokens${fill.sized ? '' : ' (window assumed)'}` : '';
@@ -4468,7 +4502,7 @@ async function renderAgentsPop(refetch) {
     // (the context line only once it is nearly full: said on every row it
     // would bury the titles).
     const said = [isUnread ? 'unread' : '', stateWord[state], quietClass(state, key) ? 'quiet' : '', fill && fill.warn ? 'context nearly full' : ''].filter(Boolean).join(', ');
-    return `<div class="ag-row${state ? ' ' + state : ''}${quietClass(state, key)}${isUnread ? ' unread' : ''}${key === activeRel && ['conversation', 'tree'].includes(viewKind) ? ' current' : ''}${agentIsPinned(key) ? ' pinned' : ''}" data-key="${esc(key)}">` +
+    return `<div class="ag-row${state ? ' ' + state : ''}${quietClass(state, key)}${isUnread ? ' unread' : ''}${key === activeRel && ['conversation', 'tree'].includes(viewKind) ? ' current' : ''}${agentIsPinned(key) ? ' pinned' : ''}${peek ? ' peek' : ''}${ListGroups.selected(key) ? ' selected' : ''}" data-key="${esc(key)}"${s && grouping && ListGroups.dragOn() ? ' draggable="true"' : ''}>` +
       `<span class="ag-main"><span class="ag-title" title="${esc(tip)}"><span>${esc(title)}</span>${said ? `<span class="sr-only">, ${esc(said)}</span>` : ''}${isUnread || state === 'asks' || state === 'stopped' ? markHtml : ''}${state === 'working' ? typingHtml : ''}${presenceSlotHtml(key)}${s ? participantsHtml(s) : ''}${s && s.mirror ? `<span class="badge-mirror" title="Mirrored from ${esc(s.mirror.peerName)}: read here, driven there">${esc(s.mirror.peerName)}</span>` : ''}<span class="ag-age">${esc(activity ? tinyAge(now - activity) : '')}</span></span>` +
       (sub || o.badge ? `<span class="ag-sub"><span class="ag-dir">${sub}</span>${o.badge}</span>` : '') + `</span>` +
       `<span class="ag-acts">${acts}</span>` +
@@ -4487,7 +4521,14 @@ async function renderAgentsPop(refetch) {
     .filter(item => item.s || interruptedBy.has(item.key))
     .sort((a, b) => (pinAt(b.key) - pinAt(a.key))
       || ((b.s ? born(b.s) : interruptedBy.get(b.key).createdAt) - (a.s ? born(a.s) : interruptedBy.get(a.key).createdAt)));
-  const items = panelListRows('open', listed).map(({ key, s }) => ({ key, html: row(s, key) }));
+  // Groups (design/96, list-groups.js): loose rows on top, then each group
+  // as a tray of its header and rows; a folded group shows only what needs
+  // the person and the conversation on screen. Pages count loose rows.
+  const currentKey = ['conversation', 'tree'].includes(viewKind) ? activeRel : null;
+  const rowInfo = key => ({ state: stateOf(byKey(key), key), unread: unreadKeys.has(key) });
+  ListGroups.remember({ listed, info: rowInfo, current: currentKey });
+  const lay = ListGroups.layout(listed, { info: rowInfo, current: currentKey });
+  const items = ListGroups.items(lay, { loose: panelListRows('open', lay.loose), row, info: rowInfo, typingHtml });
   for (const { key } of listed) { const p = procByKey.get(key); if (p) shownPids.add(p.pid); }
   // Processes and delegated work no listed row accounts for: terminal
   // sessions nobody opened here, warm RPC processes, server children,
@@ -4522,13 +4563,18 @@ async function renderAgentsPop(refetch) {
   // once; from then on rows are reconciled in place.
   let list = $('agentsUnread').querySelector(':scope > section[data-sec="open"]');
   if (!list) {
-    $('agentsUnread').innerHTML = '<section data-sec="open" class="ag-open" role="list" aria-label="Open conversations"></section><div class="ag-tail"></div>';
-    list = $('agentsUnread').firstElementChild;
+    $('agentsUnread').innerHTML = '<div class="ag-listbar"></div><section data-sec="open" class="ag-open" role="list" aria-label="Open conversations"></section><div class="ag-tail"></div><div class="ag-selwrap"></div>';
+    list = $('agentsUnread').querySelector(':scope > section[data-sec="open"]');
   }
   reconcileList(list, items);
   const tail = $('agentsUnread').querySelector(':scope > .ag-tail');
-  const tailHtml = items.length ? panelListMore('open', listed.length) : '<div class="ag-empty">Nothing open yet. Conversations you open appear here.</div>';
+  const tailHtml = items.length ? panelListMore('open', lay.loose.length) : '<div class="ag-empty">Nothing open yet. Conversations you open appear here.</div>';
   if (listMarkup.get(tail) !== tailHtml) { tail.innerHTML = tailHtml; listMarkup.set(tail, tailHtml); }
+  for (const [sel, html] of [['.ag-listbar', ListGroups.barHtml()], ['.ag-selwrap', ListGroups.selbarHtml()]]) {
+    const el = $('agentsUnread').querySelector(':scope > ' + sel);
+    if (el && listMarkup.get(el) !== html) { el.innerHTML = html; listMarkup.set(el, html); }
+  }
+  for (const b of [$('sideArrange'), $('agentsSheetArrange')]) if (b) b.classList.toggle('lens', ListGroups.arrange() === 'project');
   // Files kept open (open-files.js, design/77): under the conversations,
   // above the processes nobody listed.
   const openFiles = OpenFiles.sectionHtml({ markHtml, typingHtml, isOpen: OpenFiles.sectionOpen(),
@@ -4561,7 +4607,7 @@ async function renderAgentsPop(refetch) {
   }
 }
 function agentRows() {
-  return [...$('agentsPop').querySelectorAll('.ag-row[data-key]')].filter(row => row.dataset.key && !row.closest('details:not([open])') && !row.closest('.ag-item[inert]'));
+  return [...$('agentsPop').querySelectorAll('.ag-row[data-key], .ag-ghead[data-key]')].filter(row => row.dataset.key && !row.closest('details:not([open])') && !row.closest('.ag-item[inert]'));
 }
 function selectAgentRow(key, scroll = true) {
   const rows = agentRows();
@@ -4579,6 +4625,8 @@ function selectAgentRow(key, scroll = true) {
 function agentsPopKeydown(e) {
   if ($('agentsPop').hidden) return false;
   if (e.target.closest('.dg-card, .dg-origin') && e.key !== 'Escape') return true;
+  // Groups (design/96): fold, rename, move to a group, pick several.
+  if (!e.target.closest('a, button, summary') && ListGroups.onKey(e, agentsSelectedKey)) return true;
   if (e.key === 'Escape' || e.key === 'a') {
     e.preventDefault();
     toggleAgents(false);
@@ -4677,7 +4725,11 @@ function openAgentRowMenu(key, x, y, anchor) {
   const s = sessions.find(item => item.key === key);
   if (!s) return;
   const unread = !!agentUnreadAt(s), pinned = agentIsPinned(key);
+  const group = ListGroups.groupOf(key);
+  const anchorRow = () => [...$('agentsPop').querySelectorAll('.ag-row[data-key]')].find(r => r.dataset.key === key);
   const items = [
+    [group ? 'Move to another group…' : 'Move to a group…', () => ListGroups.picker([key], anchorRow()), 'Group it with others you name; fold a group to set it aside (g)'],
+    ...(group ? [['Take out of “' + group.name + '”', () => ListGroups.move([key], null)]] : []),
     [pinned ? 'Unpin' : 'Pin to the top', () => setAgentPinned(key, !pinned)],
     [unread ? 'Mark as read' : 'Mark as unread', () => unread ? markAgentRead(key) : markAgentUnread(key)],
     ['Close', () => dismissAgentConversation(key), 'Leaves the list; it comes back if the assistant replies again. Nothing is deleted.'],
@@ -4703,6 +4755,9 @@ function openAgentRowMenu(key, x, y, anchor) {
   menu.querySelector('button').focus();
 }
 $('activeBtn').onclick = e => { e.stopPropagation(); toggleAgents(); };
+$('agentsPop').addEventListener('contextmenu', e => { ListGroups.onContextMenu(e); });
+$('agentsPop').addEventListener('dblclick', e => ListGroups.onDblClick(e));
+ListGroups.wireDrag($('agentsUnread'));
 $('agentsPop').addEventListener('contextmenu', e => {
   if (e.target.closest('.ag-project')) return;
   const row = e.target.closest('.ag-row[data-key]');
@@ -4716,6 +4771,8 @@ $('rightFileList').onclick = $('agentsPop').onclick = async e => {
     if (sideLayoutOn()) setAgentsKbd(false); else toggleAgents(false);
     if (typeof closePhoneSheets === 'function') closePhoneSheets();
   })) return;
+  // Groups (list-groups.js): headers, their actions, ⊕, picking several rows.
+  if (e.currentTarget === $('agentsPop') && ListGroups.onClick(e)) return;
   const scopeButton = e.target.closest('[data-project-scope-picker]');
   if (scopeButton) { e.stopPropagation(); openWorkspaceProjectPicker(scopeButton); return; }
   const projectButton = e.target.closest('[data-open-project]');
@@ -10596,6 +10653,7 @@ async function openTranscriptEditor(btn) {
     btn.disabled = false;
     if (out.error) return errToast(out.error);
     readerDrafts.set(out.key, out.text || m.text);
+    ListGroups.follow(key, out.key);
     await open(out.key, 'bottom');
     toast('a new Codex conversation, just before that question: change it and send');
     return;
@@ -13793,6 +13851,7 @@ async function renderConv(scroll) {
       const out = await (await fetch('/api/fork', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: d.key, node: last.eid }) })).json();
       if (out.error) throw new Error(out.error);
       toast('forked into a conversation of this machine');
+      ListGroups.follow(d.key, out.key);
       open(out.key);
     } catch (e) { errToast(e.message); mirrorFork.disabled = false; }
   };
@@ -15513,6 +15572,7 @@ async function forkFrom(key, n, btn) {
     }
     btn.textContent = 'opening fork…';
     toast('fork created — its conversation is independent; project files are shared' + (btn._forkResult && btn._forkResult.note ? '. ' + btn._forkResult.note : ''));
+    ListGroups.follow(key, forkKey);
     // Opening the new session must not wait for a refresh of the entire list.
     await open(forkKey);
     void load().catch(() => {});
@@ -17509,6 +17569,7 @@ $('homeFilters').onclick = e => { e.stopPropagation(); toggleHomeFilters(); };
 new MutationObserver(() => $('homeFilters').setAttribute('aria-expanded', String(!$('filtersPop').hidden)))
   .observe($('filtersPop'), { attributes: true, attributeFilter: ['hidden'] });
 $('sideNew').onclick = startScopedConversation;
+for (const b of [$('sideArrange'), $('agentsSheetArrange')]) b.onclick = e => { e.stopPropagation(); ListGroups.arrangeMenu(b); };
 $('sideNewMore').onclick = e => {
   e.stopPropagation();
   closeFileActionMenu();
@@ -18287,7 +18348,7 @@ function helpNow() {
   // Open panels sit on top of the view.
   if (settingsOpen) sections.push({ label: 'settings', keys: [['esc / ,', 'back to where you were']] });
   if (!$('filtersPop').hidden) sections.push({ label: 'filters', keys: [['esc / f', 'close the filters']] });
-  if (agentsTrayOpen()) sections.push({ label: 'agents', keys: [['↑ ↓', 'select an agent'], ['enter', 'open the selected conversation'], ['p', 'pin / unpin'], ['u', 'mark unread / read'], ['del', 'close the conversation'], ['j', 'background jobs in Settings'], ['esc / a', sideLayoutOn() ? 'leave the side panel' : 'close the agents panel']] });
+  if (agentsTrayOpen()) sections.push({ label: 'agents', keys: [['↑ ↓', 'select an agent'], ['enter', 'open the selected conversation'], ['p', 'pin / unpin'], ['u', 'mark unread / read'], ['del', 'close the conversation'], ['g', 'move to a group'], ['space', 'pick several (or ctrl/shift-click)'], ['← →', 'fold / unfold the group'], ['shift ← →', 'fold / unfold every group'], ['f2', 'rename the group'], ['G', 'arrange: by project, tidy up'], ['j', 'background jobs in Settings'], ['esc / a', sideLayoutOn() ? 'leave the side panel' : 'close the agents panel']] });
 
   // The view itself.
   if (document.body.classList.contains('file-full')) {
@@ -18529,7 +18590,8 @@ document.addEventListener('keydown', e => {
     if (!$('markPop').hidden) { hideMarkPop(); return; }
     if (mgCollapseOpen()) return;
     if (!$('filtersPop').hidden) { $('filtersPop').hidden = true; return; }
-    if (agentsTrayOpen()) { toggleAgents(false); return; }
+    // A selection or a tidy-up proposal in the list goes first (design/96).
+    if (agentsTrayOpen()) { if (!ListGroups.onKey(e, agentsSelectedKey)) toggleAgents(false); return; }
     if (!inField && viewKind === 'file' && $('view').querySelector('.quick-file-view')) {
       // In the editor: cancel back to the diff. In the diff: back to the conversation.
       const cancel = $('qfCancel'), back = $('qfBack');

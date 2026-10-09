@@ -111,8 +111,8 @@ writer.
 ### Chattering's own AI programs (2026-09-27)
 
 Every single-turn model call Chattering makes is now a FunctAI program
-(`ai-programs.js`), 37 of them: conversation_title, timeline_labels,
-project_title (projects and epics), note_title, document_commit_title;
+(`ai-programs.js`), 38 of them: conversation_title, timeline_labels,
+project_title (projects and epics), group_name (design/96), note_title, document_commit_title;
 session_problems, problem_note, parent_note; conversation_evidence,
 section_evidence, evidence_merge, epic_story; memory_dialogue, memory_tools,
 project_overview, intent_weigh, intent_weigh_changes, project_intent,

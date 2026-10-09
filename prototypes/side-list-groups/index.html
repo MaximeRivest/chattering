@@ -1,0 +1,966 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Groups in the side list — prototype</title>
+<style>
+/* Tokens copied from design/tokens.css (rockfrog-dark, rockfrog-light) and
+   the e-ink binary mode, so the prototype reads as Chattering does. */
+:root[data-theme="dark"] {
+  --bg:#101412; --surface-1:#1a1f1b; --surface-2:#232824; --surface-3:#2d332e;
+  --border:#3a413b; --border-strong:#5a625b;
+  --text:#e1e6e1; --text-dim:#c9d0ca; --text-faint:#8d958f;
+  --red:#f9b2a7; --yellow:#dbc183; --green:#99d1a4; --cyan:#7dd0e3;
+  --accent:var(--green); --warn:var(--yellow); --danger:var(--red);
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px rgba(0,0,0,.35);
+  --panel-bg:#141815; --motion:1;
+}
+:root[data-theme="light"] {
+  --bg:#f3f5f1; --surface-1:#fbfcfa; --surface-2:#eceee9; --surface-3:#e1e5df;
+  --border:#dce2db; --border-strong:#b7beb6;
+  --text:#101412; --text-dim:#4f5751; --text-faint:#737c75;
+  --red:#a4443a; --yellow:#85650f; --green:#377a4c; --cyan:#2c6b80;
+  --accent:var(--green); --warn:var(--yellow); --danger:var(--red);
+  --shadow:0 1px 2px rgba(16,20,18,.04),0 10px 30px rgba(16,20,18,.08);
+  --panel-bg:#f7f8f5; --motion:1;
+}
+:root[data-theme="eink"] {
+  --bg:#fff; --surface-1:#fff; --surface-2:#fff; --surface-3:#fff;
+  --border:#000; --border-strong:#000;
+  --text:#000; --text-dim:#000; --text-faint:#000;
+  --red:#000; --yellow:#000; --green:#000; --cyan:#000;
+  --accent:#000; --warn:#000; --danger:#000; --shadow:none; --panel-bg:#fff; --motion:0;
+}
+:root { --font: Inter, system-ui, -apple-system, "Segoe UI", sans-serif; --r:10px; --row-r:8px; --menu-r:14px; }
+* { box-sizing: border-box; }
+html, body { margin:0; height:100%; background:var(--bg); color:var(--text); font:13px/1.35 var(--font); }
+button { font:inherit; color:inherit; cursor:pointer; }
+:root[data-theme="eink"] *, :root[data-theme="eink"] *::before { animation:none !important; transition:none !important; }
+
+#stage { display:grid; grid-template-columns: 288px 1fr; height:100vh; }
+body.phone #stage { grid-template-columns: 390px 1fr; }
+
+/* ---- The side column, as in app.html ---- */
+#side { display:flex; flex-direction:column; min-height:0; background:var(--panel-bg); border-right:1px solid var(--border); position:relative; }
+.side-top { display:flex; gap:4px; padding:8px 8px 4px; }
+.side-top .chip { height:30px; display:flex; align-items:center; gap:6px; padding:0 9px; border:1px solid var(--border); border-radius:var(--row-r); background:transparent; font-size:12px; white-space:nowrap; }
+.side-top .chip.proj { flex:1; justify-content:space-between; background:var(--surface-2); }
+.nav-row { display:flex; align-items:center; gap:2px; padding:2px 8px 6px; color:var(--text-dim); }
+.nav-row .nb { height:26px; min-width:26px; border:0; background:transparent; border-radius:var(--row-r); color:var(--text-dim); padding:0 6px; }
+.nav-row .nb:hover { background:var(--surface-2); color:var(--text); }
+.nav-row .new { font-weight:600; color:var(--text); }
+.nav-row .spacer { flex:1; }
+#arrangeBtn { font-size:13px; position:relative; }
+#arrangeBtn.lens::after { content:""; position:absolute; top:4px; right:3px; width:5px; height:5px; border-radius:50%; background:var(--accent); }
+
+#list { flex:1 1 auto; min-height:0; overflow:auto; padding:0 4px 8px; outline:none; }
+.dock { padding:0 4px 4px; }
+.side-foot { display:flex; align-items:center; gap:8px; padding:6px 10px; color:var(--text-faint); font-size:12px; }
+.side-foot .av { width:26px; height:26px; border-radius:50%; background:var(--surface-3); display:inline-flex; align-items:center; justify-content:center; font-size:10px; color:var(--text-dim); }
+
+/* Rows: copied shape of .ag-row (design/59). */
+.item { display:block; }
+.row { position:relative; display:flex; gap:8px; align-items:center; padding:4px 10px; margin:0 2px; border-radius:var(--row-r); cursor:pointer; font-size:12px; user-select:none; }
+.row:hover { background:var(--surface-2); }
+.row.current { background:var(--surface-2); }
+.row.current .t { color:var(--accent); }
+.row.cursor { outline:1px solid var(--accent); outline-offset:-1px; }
+.row.sel { background:color-mix(in srgb, var(--accent) 16%, transparent); }
+:root[data-theme="eink"] .row.sel { outline:2px solid #000; outline-offset:-2px; background:#fff; }
+.row .main { flex:1; min-width:0; display:flex; flex-direction:column; }
+.row .tl { display:flex; align-items:center; gap:6px; min-width:0; }
+.row .t { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.row.unread .t { font-weight:700; }
+.row .age { margin-left:auto; padding-left:8px; color:var(--text-faint); font-size:10px; flex:0 0 auto; }
+.row .sub { display:flex; min-width:0; }
+.row .dir { flex:1; color:var(--text-faint); font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.row .doing { color:var(--accent); }
+.row .you { color:var(--text-dim); }
+.mark { flex:0 0 auto; display:inline-flex; align-items:center; justify-content:center; min-width:6px; height:10px; font:700 10px/1 var(--font); }
+.row.unread .mark::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--accent); }
+.row.asks .mark { color:var(--warn); } .row.asks .mark::before { content:"?"; }
+.row.stopped .mark { color:var(--danger); } .row.stopped .mark::before { content:"!"; }
+.typing { flex:0 0 auto; display:inline-flex; gap:2px; align-items:center; height:6px; }
+.typing i { width:4px; height:4px; border-radius:50%; background:var(--accent); opacity:.35; animation:typing 1.2s ease-in-out infinite; }
+.typing i:nth-child(2){animation-delay:.2s} .typing i:nth-child(3){animation-delay:.4s}
+@keyframes typing { 0%,60%,100%{opacity:.35} 30%{opacity:1} }
+.ctx { position:absolute; left:10px; right:10px; bottom:1px; height:2px; pointer-events:none; }
+.ctx::before { content:""; display:block; height:100%; width:var(--fill); background:color-mix(in srgb, var(--text) 16%, transparent); }
+.ctx.warn::before { background:color-mix(in srgb, var(--warn) 75%, transparent); }
+.acts { position:absolute; right:6px; top:3px; display:none; gap:2px; padding-left:8px; background:linear-gradient(90deg, transparent, var(--surface-2) 8px); }
+.row:hover .acts, .row.cursor .acts { display:flex; }
+.acts button { height:22px; min-width:22px; padding:0 5px; border:0; background:transparent; color:var(--text-faint); border-radius:6px; font-size:11px; }
+.acts button:hover { background:var(--surface-3); color:var(--text); }
+.row .glyph { color:var(--text-faint); font-size:10px; min-width:1.4em; text-align:center; }
+
+/* ---- Group header ---- */
+.gh { display:flex; align-items:center; gap:6px; height:28px; padding:0 8px 0 8px; margin:10px 2px 1px; border-radius:var(--row-r); cursor:pointer; user-select:none; color:var(--text-dim); font-size:11px; position:relative; }
+.gh:hover { background:var(--surface-2); color:var(--text); }
+.gh.cursor { outline:1px solid var(--accent); outline-offset:-1px; }
+.gh .chev { width:10px; height:10px; flex:none; color:var(--text-faint); display:inline-flex; transition:transform .16s ease; }
+.gh .chev svg { width:10px; height:10px; }
+.gh.open .chev { transform:rotate(90deg); }
+.gh .name { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; letter-spacing:.01em; }
+.gh .name a { color:inherit; text-decoration:none; } .gh .name a:hover { text-decoration:underline; }
+.gh .count { color:var(--text-faint); font-weight:400; font-variant-numeric:tabular-nums; }
+.gh .sum { margin-left:auto; display:flex; gap:7px; align-items:center; font-size:10px; color:var(--text-faint); }
+.gh .sum .u { display:inline-flex; align-items:center; gap:3px; color:var(--text); font-weight:700; }
+.gh .sum .u::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--accent); }
+.gh .sum .q { color:var(--warn); font-weight:700; }
+.gh .sum .n { font-weight:400; color:var(--text-faint); margin-left:2px; }
+.gh .sum .x { color:var(--danger); font-weight:700; }
+.gh .gacts { display:none; gap:2px; position:absolute; right:6px; background:linear-gradient(90deg, transparent, var(--surface-2) 8px); padding-left:8px; }
+.gh:hover .gacts, .gh.cursor .gacts { display:flex; }
+.gh .gacts button { height:22px; min-width:22px; border:0; background:transparent; border-radius:6px; color:var(--text-faint); font-size:12px; }
+.gh .gacts button:hover { background:var(--surface-3); color:var(--text); }
+.gh.new-in-preview .name::after { content:"new"; margin-left:6px; font-size:9px; font-weight:600; color:var(--accent); border:1px solid currentColor; border-radius:5px; padding:0 3px; }
+.gh.drop { background:color-mix(in srgb, var(--accent) 20%, transparent); color:var(--text); }
+.gh input.rename { font:600 11px var(--font); color:var(--text); background:var(--surface-1); border:1px solid var(--accent); border-radius:5px; padding:1px 4px; width:150px; outline:none; }
+/* A row inside a group: no indent (the panel is narrow); the header and,
+   in the "tray" style, the tray say where the group ends. */
+.in-group .row { }
+/* Peeking: a reply in a folded group shows under its header, marked by a
+   short rule on its left so it reads as "from inside". */
+.row.peek::before { content:""; position:absolute; left:3px; top:7px; bottom:7px; width:2px; border-radius:2px; background:var(--accent); opacity:.7; }
+:root[data-theme="eink"] .row.peek::before { opacity:1; }
+
+/* Style variant: trays. A group is a card lighter than the page. */
+body.v-tray .tray { background:var(--tray-bg); border-radius:12px; margin:8px 0 2px; padding:1px 0 3px; box-shadow:var(--tray-edge); }
+:root[data-theme="dark"] { --tray-bg:#1b201c; --tray-edge:none; }
+:root[data-theme="light"] { --tray-bg:#ffffff; --tray-edge:0 1px 2px rgba(16,20,18,.06), 0 0 0 1px rgba(16,20,18,.035); }
+:root[data-theme="eink"] { --tray-bg:#fff; --tray-edge:none; }
+body.v-tray .tray > .item > .gh { margin-top:2px; }
+body.v-tray .tray .row:hover, body.v-tray .tray .row.current { background:var(--surface-2); }
+:root[data-theme="eink"] body.v-tray .tray { box-shadow:none; border:1px solid #000; }
+
+/* Drop hint for "make a group of these two". */
+.row.drop-join { box-shadow:inset 0 0 0 1.5px var(--accent); background:color-mix(in srgb, var(--accent) 10%, transparent); }
+.row.drop-join::after { content:"＋ group"; position:absolute; right:8px; top:50%; transform:translateY(-50%); font-size:10px; font-weight:700; color:var(--accent); background:var(--panel-bg); padding:1px 5px; border-radius:5px; }
+.loose-drop { height:0; overflow:hidden; margin:0 6px; border-radius:6px; border:1px dashed transparent; font-size:10px; color:transparent; display:flex; align-items:center; justify-content:center; }
+body.dragging .loose-drop.armed { height:20px; margin:3px 6px; border-color:var(--border-strong); color:var(--text-faint); }
+.loose-drop.drop { border-color:var(--accent) !important; color:var(--accent) !important; }
+
+/* Lens banner (By project) and tidy preview bar */
+.lens-bar, .tidy-bar { margin:2px 6px 6px; padding:6px 8px; border-radius:var(--row-r); font-size:11px; display:flex; align-items:center; gap:8px; }
+.lens-bar { color:var(--text-faint); padding:2px 8px; }
+.lens-bar button { border:0; background:none; color:var(--accent); padding:0; font-size:11px; }
+.tidy-bar { background:var(--surface-1); box-shadow:0 0 0 1px var(--accent); color:var(--text); flex-wrap:wrap; }
+.tidy-bar b { font-weight:600; }
+.tidy-bar .sp { flex:1; }
+.btn { height:24px; padding:0 9px; border-radius:7px; border:1px solid var(--border-strong); background:var(--surface-1); font-size:11px; }
+.btn kbd { background:transparent; box-shadow:none; color:inherit; opacity:.7; padding:0 0 0 2px; }
+.btn.primary { background:var(--accent); color:var(--bg); border-color:var(--accent); font-weight:600; }
+:root[data-theme="eink"] .btn.primary { background:#000; color:#fff; }
+
+/* Selection bar */
+#selbar { position:absolute; left:8px; right:8px; bottom:46px; display:none; align-items:center; gap:6px; padding:6px 6px 6px 10px; background:var(--surface-1); border-radius:12px; box-shadow:var(--shadow), 0 0 0 1px var(--border); font-size:11px; z-index:5; }
+#selbar.on { display:flex; }
+#selbar .sp { flex:1; }
+
+/* Popover: the group picker and menus */
+.pop { position:fixed; z-index:50; width:244px; background:var(--surface-1); border-radius:var(--menu-r); box-shadow:var(--shadow), 0 0 0 1px var(--border); padding:6px; font-size:12px; }
+:root[data-theme="eink"] .pop { border:2px solid #000; box-shadow:none; }
+.pop .ph { font-size:10px; color:var(--text-faint); padding:2px 6px 5px; letter-spacing:.03em; }
+.pop input { width:100%; height:30px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--text); padding:0 9px; font:inherit; outline:none; }
+.pop input:focus { border-color:var(--accent); }
+.pop .opts { margin-top:4px; max-height:260px; overflow:auto; }
+.pop .opt { display:flex; align-items:center; gap:8px; width:100%; text-align:left; border:0; background:transparent; padding:6px 8px; border-radius:8px; }
+.pop .opt.on { background:var(--surface-2); }
+.pop .opt .k { color:var(--text-faint); font-size:10px; margin-left:auto; }
+.pop .opt .ic { width:14px; text-align:center; color:var(--text-faint); }
+.pop .opt .sug { font-size:9px; color:var(--accent); border:1px solid currentColor; border-radius:5px; padding:0 3px; margin-left:4px; }
+.pop .sep { height:1px; background:var(--border); margin:4px 2px; }
+.pop .hint { font-size:10px; color:var(--text-faint); padding:5px 8px 2px; }
+.pop .radio { display:flex; gap:8px; align-items:center; }
+.pop .radio::before { content:""; width:10px; height:10px; border-radius:50%; border:1.5px solid var(--text-faint); flex:none; }
+.pop .radio.on::before { border-color:var(--accent); background:radial-gradient(var(--accent) 45%, transparent 50%); }
+.pop .shimmer { color:var(--text-faint); font-style:italic; }
+
+/* Toast */
+#toast { position:fixed; left:300px; bottom:16px; background:var(--surface-1); box-shadow:var(--shadow), 0 0 0 1px var(--border); border-radius:10px; padding:8px 12px; font-size:12px; display:none; gap:12px; align-items:center; z-index:60; }
+#toast.on { display:flex; }
+#toast button { border:0; background:none; color:var(--accent); font-weight:600; padding:0; }
+
+/* ---- Phone: the same list as the phone sheet; touch sizes, no hover, no
+   drag. Long-press a row (or its ⋯) for its menu; pickers are bottom sheets. */
+body.phone #side { border-right:1px solid var(--border); }
+body.phone .row { padding:8px 12px; font-size:14px; }
+body.phone .row .dir, body.phone .row .age { font-size:12px; }
+body.phone .acts { display:flex; position:static; background:none; padding:0; }
+body.phone .acts [data-act="group"], body.phone .acts [data-act="close"] { display:none; }
+body.phone .acts button { height:36px; min-width:36px; font-size:15px; }
+body.phone .gh { height:40px; font-size:13px; padding:0 4px 0 12px; }
+body.phone .gh .gacts { display:flex; position:static; background:none; }
+body.phone .gh .gacts [data-gact="new"] { display:none; }
+body.phone .gh .gacts button { height:36px; min-width:36px; font-size:15px; }
+body.phone .gh .sum { margin-left:auto; margin-right:2px; font-size:12px; }
+body.phone .side-top .chip { height:36px; font-size:13px; }
+.pop.sheet { width:auto; border-radius:18px 18px 0 0; padding:10px 10px 18px; font-size:14px; }
+.pop.sheet .opt { min-height:44px; }
+.pop.sheet .opt .k:not(:empty) { display:none; }
+.pop.sheet .hint { display:none; }
+.pop.sheet input { height:42px; font-size:15px; }
+.pop.sheet::before { content:""; display:block; width:36px; height:4px; border-radius:2px; background:var(--border-strong); margin:0 auto 8px; }
+body.phone .scrim { position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:49; }
+:root[data-theme="eink"] body.phone .scrim { background:transparent; }
+
+/* ---- The notes side (the prototype's own controls) ---- */
+#notes { overflow:auto; padding:22px 28px 60px; }
+#notes h1 { font-size:20px; margin:0 0 4px; }
+#notes .lead { color:var(--text-dim); max-width:70ch; margin:0 0 16px; }
+.controls { display:flex; flex-wrap:wrap; gap:16px; margin:0 0 18px; padding:10px 12px; background:var(--surface-1); border-radius:var(--r); box-shadow:0 0 0 1px var(--border); }
+.controls .grp { display:flex; flex-direction:column; gap:5px; }
+.controls .lbl { font-size:10px; color:var(--text-faint); letter-spacing:.04em; text-transform:uppercase; }
+.seg { display:inline-flex; background:var(--surface-2); border-radius:8px; padding:2px; }
+.seg button { border:0; background:transparent; padding:3px 9px; border-radius:6px; font-size:11px; color:var(--text-dim); }
+.seg button.on { background:var(--surface-1); color:var(--text); box-shadow:0 0 0 1px var(--border); }
+.sim { display:flex; flex-wrap:wrap; gap:6px; }
+.cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(300px, 1fr)); gap:14px; }
+.card { background:var(--surface-1); border-radius:var(--r); box-shadow:0 0 0 1px var(--border); padding:12px 14px; }
+.card h3 { margin:0 0 6px; font-size:13px; }
+.card p, .card li { color:var(--text-dim); font-size:12px; margin:4px 0; }
+.card ul { padding-left:18px; margin:4px 0; }
+kbd { font:11px ui-monospace, monospace; background:var(--surface-2); border-radius:4px; padding:0 4px; box-shadow:0 0 0 1px var(--border); }
+#notes h2 { font-size:14px; margin:22px 0 8px; }
+.mini { display:flex; gap:14px; flex-wrap:wrap; }
+.mini figure { margin:0; width:230px; }
+.mini figcaption { font-size:11px; color:var(--text-dim); margin-top:6px; }
+.mini .m { background:var(--panel-bg); border-radius:10px; box-shadow:0 0 0 1px var(--border); padding:8px; font-size:10px; height:200px; overflow:hidden; }
+.mini .m .chips { display:flex; gap:4px; margin-bottom:6px; } .mini .m .chips span { padding:2px 7px; border-radius:20px; background:var(--surface-2); } .mini .m .chips span.on { background:var(--accent); color:var(--bg); }
+.mini .m .r { height:22px; border-radius:5px; margin:3px 0; background:var(--surface-2); opacity:.7; display:flex; align-items:center; padding:0 6px; }
+.mini .m .h { margin:7px 0 2px; color:var(--text-faint); font-weight:600; }
+.verdict { font-size:11px; margin-top:3px; }
+.verdict.no { color:var(--danger); } .verdict.yes { color:var(--accent); }
+</style>
+</head>
+<body class="v-tray">
+<div id="stage">
+  <aside id="side">
+    <div class="side-top"><span class="chip">lambda</span><span class="chip">☰ Gantt</span><span class="chip proj">All projects <span>▾</span></span></div>
+    <div class="nav-row"><button class="nb">‹</button><button class="nb">›</button><button class="nb new">＋ new</button><span class="spacer"></span><button class="nb" id="arrangeBtn" title="Arrange: your groups, by project, tidy up (Shift+G)" aria-label="Arrange the list"><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M2 3.5h12M2 7h8M5 10.5h9M5 13.5h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button><button class="nb">▾</button></div>
+    <div id="list" tabindex="0" role="list" aria-label="Open conversations"></div>
+    <div class="dock" id="dock"></div>
+    <div id="selbar"><span id="selcount">2 selected</span><span class="sp"></span><button class="btn primary" id="selGroup">Group… <kbd>g</kbd></button><button class="btn" id="selClose">Close</button><button class="btn" id="selClear" title="Clear selection (Esc)">✕</button></div>
+    <div class="side-foot"><span class="av">ML</span><span class="av">🎙</span><span style="margin-left:auto">◂</span></div>
+  </aside>
+  <main id="notes">
+    <h1>Groups in the side list</h1>
+    <p class="lead">A working prototype with your real open list (8 Oct, evening). Click, drag, and type in the column on the left: it behaves as the design says. Nothing here touches the live app.</p>
+
+    <div class="controls">
+      <div class="grp"><span class="lbl">Start from</span><div class="seg" id="segState"><button data-v="today" class="on">Today's list</button><button data-v="after">Grouped</button></div></div>
+      <div class="grp"><span class="lbl">Group look</span><div class="seg" id="segLook"><button data-v="tray" class="on">Trays (proposed)</button><button data-v="head">Headers only</button></div></div>
+      <div class="grp"><span class="lbl">Theme</span><div class="seg" id="segTheme"><button data-v="dark" class="on">Dark</button><button data-v="light">Light</button><button data-v="eink">E-ink</button></div></div>
+      <div class="grp"><span class="lbl">Width</span><div class="seg" id="segWidth"><button data-v="desk" class="on">Laptop</button><button data-v="phone">Phone</button></div></div>
+      <div class="grp"><span class="lbl">Make something happen</span><div class="sim">
+        <button class="btn" id="simReply">A reply lands in a folded group</button>
+        <button class="btn" id="simWork">An agent starts in a folded group</button>
+        <button class="btn" id="simStop">A run stops in a folded group</button>
+      </div></div>
+    </div>
+
+    <div class="cards">
+      <div class="card"><h3>Try this</h3><ul>
+        <li>Hover a row: <b>⊕</b> moves it into a group. Or press <kbd>g</kbd> with the keyboard cursor on it.</li>
+        <li>In the picker, the group you used last is first: <kbd>g</kbd> <kbd>Enter</kbd> puts a row where the previous one went.</li>
+        <li>Drag one row onto another: the two become a new group.</li>
+        <li><kbd>Ctrl</kbd>/<kbd>Shift</kbd>-click to pick several, then <kbd>g</kbd>.</li>
+        <li>Click a group's name to fold it. Double-click to rename.</li>
+        <li>The <b>arrange</b> button by <i>＋ new</i>: <i>Tidy up</i> proposes groups for you, or switch to <i>By project</i>.</li>
+      </ul></div>
+      <div class="card"><h3>The rules, in short</h3><ul>
+        <li>A group is a name you give to some open rows. Rows outside groups stay on top, as today.</li>
+        <li>A <b>folded</b> group is your back burner: out of the way, never out of reach.</li>
+        <li>A folded group still shows a <b>new reply</b> or a <b>stopped run</b>, under its header. Once read, the row tucks back in (when you move on, not while you read it).</li>
+        <li>The header says the rest: how many, who is working, open questions.</li>
+        <li>Closing a row keeps its group: if the assistant replies later it comes back where you put it.</li>
+        <li>Same list, same groups, same folds on laptop, phone and tablet.</li>
+        <li>A fork or a new conversation started from a grouped one joins that group; <i>＋ new</i> at the top stays loose.</li>
+      </ul></div>
+      <div class="card"><h3>Keyboard (list focused)</h3><ul>
+        <li><kbd>↑</kbd><kbd>↓</kbd> rows and headers · <kbd>Enter</kbd> open / fold</li>
+        <li><kbd>←</kbd> fold the group you're in · <kbd>→</kbd> unfold</li>
+        <li><kbd>g</kbd> move to group · <kbd>Space</kbd> pick several · <kbd>Esc</kbd> clear</li>
+        <li><kbd>Shift</kbd>+<kbd>←</kbd> fold every group · <kbd>Shift</kbd>+<kbd>G</kbd> arrange</li>
+        <li><kbd>F2</kbd> rename a group · <kbd>Delete</kbd> close (with Undo)</li>
+      </ul></div>
+    </div>
+
+    <h2>Other shapes I considered, and why not</h2>
+    <div class="mini">
+      <figure><div class="m"><div class="chips"><span class="on">All</span><span>SegBench</span><span>Later</span><span>＋</span></div><div class="r">So sometimes it may be…</div><div class="r">Lily's Chattering Build…</div><div class="r">Segmentation Benchmark…</div><div class="r">Pilot Creation…</div></div>
+        <figcaption><b>Folder chips</b> (Telegram, WhatsApp lists). One folder at a time.<div class="verdict no">You oversee many agents at once; a chip hides the ones working in other folders, so it would need badges on every chip and you'd still flip back and forth.</div></figcaption></figure>
+      <figure><div class="m"><div class="r">So sometimes it may be…</div><div class="r">Lily's Chattering Build…</div><div class="r">Segmentation Benchmark…</div><div class="h">› Set aside · 9</div></div>
+        <figcaption><b>One "set aside" drawer</b> (Edge, Arc's archive). One gesture, one bucket.<div class="verdict no">Exactly the fixed "back burner" you weren't sure about. In the design, a folded group named "Later" gives the same thing, and it can become something else.</div></figcaption></figure>
+      <figure><div class="m"><div class="chips"><span class="on">● Chattering dev</span><span>Research</span></div><div class="r">So sometimes it may be…</div><div class="r">Lily's Chattering Build…</div><div class="h" style="color:var(--text-faint)">(other space: 9 hidden)</div></div>
+        <figcaption><b>Spaces</b> (Arc, Slack workspaces). Whole separate lists you switch between.<div class="verdict no">Too heavy for "some rows I'll get back to"; the machine picker already plays this role for computers.</div></figcaption></figure>
+      <figure><div class="m"><div class="r">So sometimes it may be…</div><div style="background:var(--surface-1);border-radius:8px;padding:1px 4px 3px;margin-top:6px"><div class="h">⌄ SegBench 2</div><div class="r">Segmentation Benchmark…</div></div><div style="background:var(--surface-1);border-radius:8px;padding:1px 4px 3px;margin-top:6px"><div class="h">› Scholars reading list 5</div><div class="r" style="box-shadow:inset 2px 0 0 var(--accent)">Pilot Creation… ●</div></div></div>
+        <figcaption><b>Groups in the list</b> (Slack sections, Chrome tab groups), folds that still let replies through.<div class="verdict yes">Chosen. Everything in one scroll, your own names, and folding is the back burner.</div></figcaption></figure>
+    </div>
+
+    <h2>Decisions, and what each one costs</h2>
+    <div class="cards">
+      <div class="card"><h3>Names you choose, not a fixed “back burner”</h3><p>Folding <i>is</i> the back burner, so no special bucket is built in. “Later” is only the name the picker offers first. If the habit fades, nothing in the app was designed around it.</p><p><b>Cost:</b> one decision (a name) the first time; the picker’s suggestion makes it one key.</p></div>
+      <div class="card"><h3>A folded group lets replies and stops through</h3><p>Otherwise you’d stop trusting the fold and keep everything open, which is today’s problem. A question (<b>?</b>) does <i>not</i> peek once read: back-burner work often ends with a question, and it would never fold.</p><p><b>Cost:</b> a reply in a group you meant to forget still shows. If that ever bothers you, a per-group “quiet” switch is the next step, not a v1 feature.</p></div>
+      <div class="card"><h3>Loose rows on top, groups below</h3><p>New conversations land loose, where your attention is. A group never pushes a working row off screen. New groups go first among the groups; drag a tray’s header to reorder.</p><p><b>Cost:</b> a group you’re actively in sits below the loose rows. Pin still lifts any row to the very top.</p></div>
+      <div class="card"><h3>By project is a view, not a second set of groups</h3><p>It lives behind the arrange button, says it’s on (a dot on the button and a line at the top of the list), and leaves your groups untouched. Rows lose their now-redundant project name.</p><p><b>Cost:</b> two arrangements means two shapes for the same list; that’s why it’s one click away and never the default.</p></div>
+      <div class="card"><h3>Tidy up proposes; you apply</h3><p>The easy “sort this out for me” action. Plain rules, shown before anything moves: rows in use stay loose, two or more from one project become a folded group, single leftovers go to “Later”. Undo afterwards too.</p><p><b>Cost:</b> no model call, so it can’t spot cross-project efforts (“Lily’s setup”). That’s what naming suggestions are for.</p></div>
+      <div class="card"><h3>Suggested names</h3><p>Rows from one project: the project’s name. Rows from several: a small model reads the titles and proposes one (“Lily’s setup”). It appears a moment later and never replaces what you typed.</p><p><b>Cost:</b> one short model call when you open the picker on mixed rows; off when AI work is off, like titles.</p></div>
+    </div>
+
+    <h2>What it would take to build</h2>
+    <div class="cards">
+      <div class="card"><h3>State</h3><ul>
+        <li>Two maps in the shared list state (<code>agent-read.json</code>, beside <code>pinned</code>): <code>groups[id] = {name, order, folded}</code> and <code>member[key] = id</code>. Same deltas, same sync, same Undo as closing.</li>
+        <li>Membership survives a close, so a reply brings the row back into its group. An empty group stays hidden for 30 days, then goes; its name stays offered.</li>
+        <li>Keys are prefixed so files can join groups later (<code>file:/path</code>).</li>
+      </ul></div>
+      <div class="card"><h3>Where</h3><ul>
+        <li><code>renderAgentsPop()</code>: sections instead of one flat list; <code>reconcileList()</code> already animates moves between them.</li>
+        <li>Row ⋯ menu gains “Move to group…”; the picker reuses the model picker’s type-to-filter pattern.</li>
+        <li>Phone sheet and e-ink: same list; bottom-sheet picker; no drag.</li>
+        <li>Tests: grouping/peek/tuck rules in <code>agentread.test.js</code>; the journey in <code>open-list.test.js</code>.</li>
+      </ul></div>
+      <div class="card"><h3>Next, if you like it</h3><ul>
+        <li><b>Files in groups:</b> an effort is often 2 conversations and a notebook. “Open files” would become one more tray.</li>
+        <li><b>Fold until…:</b> a folded group that unfolds itself tomorrow morning.</li>
+        <li><b>New conversation in a group</b> carries the group’s context (e.g. its conversations attached).</li>
+      </ul></div>
+    </div>
+  </main>
+</div>
+<div id="toast"><span id="toastMsg"></span><button id="toastUndo">Undo</button></div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]));
+
+// ---------------------------------------------------------------- data
+// The open list as it was on 8 Oct (screenshot of lambda's Chattering),
+// newest conversation first, which is the list's order.
+const ROWS = [
+  { key:'c1', title:'So sometimes it may be nice to group the tabs', project:'chattering', state:'working', doing:'working', age:'4s', since:'44s', ctx:22 },
+  { key:'c2', title:'Segmentation Benchmark Protocol Design', project:'segbench', state:'working', doing:'working', age:'42s', since:'17m', ctx:61 },
+  { key:'c3', title:'Segmentation Benchmark Project Setup', project:'segbench', state:'working', doing:'tool · bash', age:'6m', since:'9m', ctx:38 },
+  { key:'c4', title:"Lily's Chattering Build and Mesh Connectivity", project:'chattering', preview:"It's partly fixed. The top is right now, but Ch…", age:'1m', ctx:71 },
+  { key:'c5', title:'Pilot Creation and Continuation', project:'scholarsreadinglist', preview:'You were right: the drift view failed because…', age:'1h', ctx:30 },
+  { key:'c6', title:'I want to create a new project here, named figurer', project:'scholarsreadinglist', preview:'Created figurer/ and opened the first notebook', age:'11h', ctx:12 },
+  { key:'c7', title:'Python Port Audit and Gap Completion', project:'functai', state:'asks', preview:'All three are done, tested in all four languages. Merge now?', age:'10h', ctx:44 },
+  { key:'c8', title:'Attachment Refactor Parity and Webpage Capture', project:'attachments', preview:"Here's what I'd do before launch…", age:'10h', ctx:52 },
+  { key:'c9', title:'Semantic Search Deployment and Hardening', project:'scholarsreadinglist', preview:'Done. Exact-word and boolean search now…', age:'9h', ctx:40 },
+  { key:'c10', title:'FunctAI Usage Audit, Skill Installation, Docs', project:'functai', preview:'Done. Every planned change is built, tested in…', age:'10h', ctx:88 },
+  { key:'c11', title:'V3 Pipeline Review', project:'scholarsreadinglist', preview:'Memory-wise, yes: it would probably fit…', age:'1d', ctx:46 },
+  { key:'c12', title:'dpyr Work Reading, Sampling and Filtering', project:'scholarsreadinglist', preview:'Very feasible on your machine—but the 47M rows…', age:'10h', ctx:91 },
+  { key:'c13', title:'Prior Data Science Automation Ideas', project:'statlm', state:'working', doing:'thinking', age:'3m', since:'6m', ctx:20 },
+  { key:'c14', title:'Pi LiteLLM LM15 Provider Model Integration', project:'lm15-dev', state:'asks', preview:'Mostly right. To say "lm15 supports this provider" we…', age:'2d', ctx:57 },
+];
+const FILES = [{ key:'f1', name:'exhibit-a-background-ip.md', project:'bigspin', glyph:'▤' }];
+
+let S; // the whole state
+function initial(which) {
+  const rows = new Map(ROWS.map(r => [r.key, { ...r, unread:false }]));
+  const s = { rows, groups:[], member:{}, current:'c1', cursor:null, selected:new Set(), held:new Set(),
+    arrange:'groups', projFold:{}, lastGroup:null, recentNames:['Later'], tidy:null, anchor:null };
+  if (which === 'after') {
+    s.groups = [
+      { id:'g1', name:'SegBench', folded:false },
+      { id:'g2', name:'Scholars reading list', folded:true },
+      { id:'g3', name:'Later', folded:true },
+    ];
+    for (const k of ['c2','c3']) s.member[k] = 'g1';
+    for (const k of ['c5','c6','c9','c11','c12']) s.member[k] = 'g2';
+    for (const k of ['c7','c8','c10','c14']) s.member[k] = 'g3';
+    rows.get('c5').unread = true;
+    s.lastGroup = 'g3';
+  }
+  return s;
+}
+
+// ---------------------------------------------------------------- derived
+const groupOf = key => { const g = S.member[key]; return S.groups.find(x => x.id === g) || null; };
+const needsYou = r => r.unread || r.state === 'stopped';
+function sections(state = S) {
+  // [{group|null, rows:[...], visible:[...]}]
+  const listed = [...state.rows.values()];
+  if (state.arrange === 'project') {
+    const by = new Map();
+    for (const r of listed) { if (!by.has(r.project)) by.set(r.project, []); by.get(r.project).push(r); }
+    return [...by].map(([p, rows]) => {
+      const g = { id:'p:' + p, name:p, folded:!!state.projFold[p], project:true };
+      return { group:g, rows, visible: g.folded ? rows.filter(r => needsYou(r) || state.held.has(r.key)) : rows };
+    });
+  }
+  const out = [{ group:null, rows:listed.filter(r => !state.groups.some(g => g.id === state.member[r.key])), visible:null }];
+  out[0].visible = out[0].rows;
+  for (const g of state.groups) {
+    const rows = listed.filter(r => state.member[r.key] === g.id);
+    if (!rows.length && !g.keepEmpty) continue;
+    out.push({ group:g, rows, visible: g.folded ? rows.filter(r => needsYou(r) || state.held.has(r.key)) : rows });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- render
+const CHEV = '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M3.5 2 L6.5 5 L3.5 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const typing = '<span class="typing" aria-label="working"><i></i><i></i><i></i></span>';
+function rowHtml(r, { peek = false, inProject = false } = {}) {
+  const st = r.state || '';
+  const cls = ['row', st, r.unread ? 'unread' : '', r.key === S.current ? 'current' : '', r.key === S.cursor ? 'cursor' : '', S.selected.has(r.key) ? 'sel' : '', peek ? 'peek' : ''].filter(Boolean).join(' ');
+  const what = st === 'working' ? `<span class="doing">${esc(r.doing)}</span> · ${esc(r.since)}`
+    : st === 'stopped' ? `<span class="doing" style="color:var(--danger)">stopped</span> · connection lost`
+    : r.preview ? (r.you ? '<span class="you">You:</span> ' : '') + esc(r.preview) : '';
+  const sub = [inProject ? '' : esc(r.project), what].filter(Boolean).join(' · ');
+  const showMark = r.unread || st === 'asks' || st === 'stopped';
+  const g = groupOf(r.key);
+  return `<div class="${cls}" data-key="${r.key}" draggable="${S.tidy || S.arrange === 'project' || document.body.classList.contains('phone') ? 'false' : 'true'}">` +
+    `<span class="main"><span class="tl"><span class="t">${esc(r.title)}</span>${showMark ? '<span class="mark"></span>' : ''}${st === 'working' ? typing : ''}<span class="age">${esc(r.age)}</span></span>` +
+    `<span class="sub"><span class="dir">${sub}</span></span></span>` +
+    `<span class="acts">${S.arrange === 'project' ? '' : '<button data-act="group" title="' + (g ? 'Move to another group' : 'Move to a group') + ' (g)">⊕</button>'}<button data-act="more" title="Pin, mark unread, close…">⋯</button><button data-act="close" title="Close — it comes back if the assistant replies again">✕</button></span>` +
+    `<span class="ctx${r.ctx > 85 ? ' warn' : ''}" style="--fill:${r.ctx}%"></span></div>`;
+}
+function summaryHtml(rows, visible) {
+  const hidden = rows.filter(r => !visible.includes(r));
+  const work = rows.filter(r => r.state === 'working').length;
+  const unread = hidden.filter(r => r.unread).length; // visible ones already show themselves
+  const asks = rows.filter(r => r.state === 'asks').length;
+  const bits = [];
+  if (work) bits.push(`<span title="${work} working">${typing}${work > 1 ? ' ' + work : ''}</span>`);
+  if (asks) bits.push(`<span class="q" title="${asks} waiting for your answer">?${asks > 1 ? '<span class="n">' + asks + '</span>' : ''}</span>`);
+  if (unread) bits.push(`<span class="u" title="${unread} unread">${unread}</span>`);
+  return bits.join('');
+}
+function headerHtml(sec, { preview = false } = {}) {
+  const g = sec.group;
+  const open = !g.folded;
+  const nameHtml = g.project ? `<a href="#project=${esc(g.name)}" title="Open project · ${esc(g.name)}">${esc(g.name)}</a>` : esc(g.name);
+  const cls = ['gh', open ? 'open' : '', S.cursor === 'h:' + g.id ? 'cursor' : '', preview && g.isNew ? 'new-in-preview' : ''].filter(Boolean).join(' ');
+  const acts = g.project || preview ? '' : `<span class="gacts"><button data-gact="new" title="New conversation in this group">＋</button><button data-gact="more" title="Rename, ungroup, close all…">⋯</button></span>`;
+  return `<div class="${cls}" data-gid="${esc(g.id)}" draggable="${g.project || preview ? 'false' : 'true'}" role="button" aria-expanded="${open}">` +
+    `<span class="chev">${CHEV}</span><span class="name">${nameHtml}</span><span class="count">${sec.rows.length}</span>` +
+    `<span class="sum">${open ? '' : summaryHtml(sec.rows, sec.visible)}</span>${acts}</div>`;
+}
+
+function render() {
+  const st = S.tidy ? S.tidy.state : S;
+  const secs = (S.tidy ? sectionsFor(st) : sections());
+  const items = [];
+  if (S.arrange === 'project') items.push({ key:'lens', html:`<div class="lens-bar">Arranged by project · <button id="lensBack">back to your groups</button></div>` });
+  if (S.tidy) items.push({ key:'tidy', html:`<div class="tidy-bar"><span>Tidy up: <b>${S.tidy.moved}</b> conversations into <b>${S.tidy.newGroups}</b> group${S.tidy.newGroups === 1 ? '' : 's'}. Working and unread ones stay on top.</span><span class="sp"></span><button class="btn" id="tidyCancel">Cancel</button><button class="btn primary" id="tidyApply">Apply</button></div>` });
+  for (const sec of secs) {
+    if (!sec.group) {
+      for (const r of sec.visible) items.push({ key:'r:' + r.key, html:rowHtml(r) });
+      if (S.arrange === 'groups' && !S.tidy) items.push({ key:'loose-drop', html:`<div class="loose-drop${S.groups.length ? ' armed' : ''}" data-loose="1">drop here to take out of its group</div>` });
+      continue;
+    }
+    const peekOf = r => sec.group.folded;
+    const inner = [headerHtml(sec, { preview: !!S.tidy })].concat(sec.visible.map(r => rowHtml(r, { peek: peekOf(r), inProject: !!sec.group.project })));
+    // Each group is one keyed item so the tray style can wrap it.
+    items.push({ key:'g:' + sec.group.id, html:`<div class="tray">${inner.join('')}</div>`, group:true });
+  }
+  reconcile($('list'), items);
+  // Dock: Open files, as today.
+  $('dock').innerHTML = `<details class="of" open style="margin:0 2px"><summary style="list-style:none;display:flex;gap:6px;padding:6px 8px 4px;color:var(--text-faint);font-size:10px;letter-spacing:.04em;cursor:pointer">Open files<span style="margin-left:auto">${FILES.length} ⌄</span></summary>` +
+    FILES.map(f => `<div class="row" style="cursor:default"><span class="glyph">${f.glyph}</span><span class="main"><span class="tl"><span class="t">${esc(f.name)}</span></span><span class="sub"><span class="dir">${esc(f.project)}</span></span></span></div>`).join('') + `</details>`;
+  $('arrangeBtn').classList.toggle('lens', S.arrange === 'project');
+  const n = S.selected.size;
+  $('selbar').classList.toggle('on', n > 1);
+  $('selcount').textContent = n + ' selected';
+  bindDynamic();
+}
+
+// Keyed reconciliation with FLIP motion, the same idea as reconcileList()
+// in app.html (design/59): items keep their identity, moved items slide,
+// new ones fade in, removed ones fold away.
+const markup = new WeakMap();
+function motionOn() { return getComputedStyle(document.documentElement).getPropertyValue('--motion').trim() === '1' && !matchMedia('(prefers-reduced-motion: reduce)').matches; }
+function reconcile(host, items) {
+  const motion = motionOn() && host.children.length > 0;
+  const tops = new Map();
+  const rowTops = new Map();
+  if (motion) {
+    for (const el of host.children) if (el.dataset.item) tops.set(el.dataset.item, el.getBoundingClientRect().top);
+    for (const r of host.querySelectorAll('.row[data-key]')) rowTops.set(r.dataset.key, r.getBoundingClientRect());
+  }
+  const want = new Set(items.map(i => i.key));
+  for (const el of [...host.children]) if (!want.has(el.dataset.item)) {
+    if (!motion) { el.remove(); continue; }
+    el.dataset.item = '';
+    el.style.overflow = 'hidden';
+    el.animate([{ height: el.offsetHeight + 'px', opacity: 1 }, { height: '0px', opacity: 0 }], { duration: 160, easing: 'ease-in', fill: 'forwards' }).finished.then(() => el.remove(), () => {});
+  }
+  const have = new Map([...host.children].filter(e => e.dataset.item).map(e => [e.dataset.item, e]));
+  let i = 0;
+  const entered = new Set();
+  for (const it of items) {
+    let el = have.get(it.key);
+    if (!el) { el = document.createElement('div'); el.className = 'item'; el.dataset.item = it.key; entered.add(el); }
+    if (markup.get(el) !== it.html) { el.innerHTML = it.html; markup.set(el, it.html); }
+    while (host.children[i] && !host.children[i].dataset.item) i++;
+    if (host.children[i] !== el) host.insertBefore(el, host.children[i] || null);
+    i++;
+  }
+  if (!motion) return;
+  for (const el of host.children) {
+    if (!el.dataset.item) continue;
+    if (entered.has(el)) { el.animate([{ opacity: 0, transform: 'translateY(-4px)' }, { opacity: 1, transform: 'none' }], { duration: 180, easing: 'ease-out' }); continue; }
+  }
+  // Rows slide from where they were, wherever they ended up (into a group,
+  // out of one); rows that were not visible before fade in.
+  for (const r of host.querySelectorAll('.row[data-key]')) {
+    const was = rowTops.get(r.dataset.key);
+    const now = r.getBoundingClientRect();
+    if (!was) { if (!r.closest('.item') || !entered.has(r.closest('.item'))) r.animate([{ opacity: 0, transform: 'translateY(-6px)' }, { opacity: 1, transform: 'none' }], { duration: 200, easing: 'ease-out' }); continue; }
+    const dy = was.top - now.top;
+    if (Math.abs(dy) > .5) r.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: 240, easing: 'cubic-bezier(.2,.7,.2,1)' });
+  }
+  for (const h of host.querySelectorAll('.gh')) {
+    const it = h.closest('.item');
+    const was = tops.get(it.dataset.item);
+    if (was == null) continue;
+    const dy = was - it.getBoundingClientRect().top;
+    if (Math.abs(dy) > .5) h.animate([{ transform: `translateY(${dy}px)` }, { transform: 'none' }], { duration: 240, easing: 'cubic-bezier(.2,.7,.2,1)' });
+  }
+}
+
+// When a row moves into a folded group it disappears; show where it went:
+// the header's count gets a brief nudge.
+function nudge(gid) {
+  if (!motionOn()) return;
+  const h = document.querySelector(`.gh[data-gid="${gid}"]`);
+  if (h) h.animate([{ background: 'color-mix(in srgb, var(--accent) 22%, transparent)' }, { background: 'transparent' }], { duration: 700, easing: 'ease-out' });
+}
+
+// ---------------------------------------------------------------- actions
+let undoFn = null, toastT = null;
+function toast(msg, undo) {
+  $('toastMsg').textContent = msg; undoFn = undo || null;
+  $('toastUndo').style.display = undo ? '' : 'none';
+  $('toast').classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => $('toast').classList.remove('on'), 5000);
+}
+$('toastUndo').onclick = () => { if (undoFn) undoFn(); $('toast').classList.remove('on'); };
+const snapshot = () => ({ groups: S.groups.map(g => ({ ...g })), member: { ...S.member }, rows: new Map([...S.rows].map(([k, r]) => [k, { ...r }])) });
+const restore = snap => { S.groups = snap.groups; S.member = snap.member; S.rows = snap.rows; render(); };
+
+let gseq = 10;
+function moveTo(keys, gid, { name } = {}) {
+  const snap = snapshot();
+  let g = gid ? S.groups.find(x => x.id === gid) : null;
+  if (!g && name) {
+    g = { id: 'g' + (++gseq), name, folded: false };
+    // A new group goes first among the groups: nearest the rows you work in.
+    S.groups.unshift(g);
+    S.recentNames = S.recentNames.filter(n => n.toLowerCase() !== name.toLowerCase());
+  }
+  for (const k of keys) { if (g) S.member[k] = g.id; else delete S.member[k]; }
+  if (g) S.lastGroup = g.id;
+  S.selected.clear();
+  dissolveEmpty();
+  render();
+  if (g && g.folded) nudge(g.id);
+  const what = keys.length === 1 ? '“' + S.rows.get(keys[0]).title.slice(0, 32) + (S.rows.get(keys[0]).title.length > 32 ? '…' : '') + '”' : keys.length + ' conversations';
+  toast(g ? `Moved ${what} to ${g.name}` : `Took ${what} out of its group`, () => restore(snap));
+}
+function dissolveEmpty() {
+  // A group with no row left in the list is forgotten, but its name stays
+  // offered in the picker. (In the real app a closed row keeps its group,
+  // so the group comes back with its rows; here closing removes the row.)
+  for (const g of [...S.groups]) if (!Object.values(S.member).includes(g.id)) {
+    S.groups = S.groups.filter(x => x !== g);
+    if (!S.recentNames.includes(g.name)) S.recentNames.unshift(g.name);
+  }
+}
+function toggleFold(gid, fold) {
+  if (gid.startsWith('p:')) { const p = gid.slice(2); S.projFold[p] = fold ?? !S.projFold[p]; render(); return; }
+  const g = S.groups.find(x => x.id === gid); if (!g) return;
+  g.folded = fold ?? !g.folded;
+  render();
+}
+function closeRows(keys) {
+  const snap = snapshot();
+  for (const k of keys) { S.rows.delete(k); }
+  S.selected.clear();
+  dissolveEmpty();
+  render();
+  toast(keys.length === 1 ? 'Closed · it comes back, in its group, if the assistant replies' : `Closed ${keys.length}`, () => restore(snap));
+}
+function openRow(key) {
+  // Opening a row: it becomes current, is read. A row that was peeking out
+  // of a folded group is held visible while it is current, and tucks back
+  // in once you open something else (never under your eyes).
+  const prev = S.current;
+  S.current = key;
+  const r = S.rows.get(key); if (r) r.unread = false;
+  const g = groupOf(key);
+  S.held = new Set(g && g.folded ? [key] : []);
+  if (prev && prev !== key) S.held.delete(prev);
+  render();
+}
+
+// ---------------------------------------------------------------- the group picker
+let pop = null;
+function closePop() { if (pop) { if (pop._scrim) pop._scrim.remove(); pop.remove(); pop = null; } }
+function suggestName(keys) {
+  const rows = keys.map(k => S.rows.get(k));
+  const projects = [...new Set(rows.map(r => r.project))];
+  if (projects.length === 1 && keys.length > 1) return { name: prettyProject(projects[0]), why: 'all in ' + projects[0] };
+  // Several projects: in the real app a small model names the group from
+  // the titles (one quick call, on by default only where AI work is on).
+  const t = rows.map(r => r.title).join(' ').toLowerCase();
+  if (/segment|benchmark/.test(t)) return { name: 'SegBench', ai: true };
+  if (/lily|mesh|iphone/.test(t)) return { name: "Lily's setup", ai: true };
+  if (/audit|functai|port|litellm|lm15/.test(t)) return { name: 'Libraries to finish', ai: true };
+  if (keys.length === 1) return null;
+  return { name: 'Group of ' + keys.length, ai: false };
+}
+const prettyProject = p => ({ scholarsreadinglist: 'Scholars reading list', segbench: 'SegBench', functai: 'FunctAI', 'lm15-dev': 'lm15' }[p] || p);
+
+function place(el, anchorEl, { left = 8 } = {}) {
+  if (document.body.classList.contains('phone')) {
+    const r = $('side').getBoundingClientRect();
+    el.classList.add('sheet');
+    el.style.left = r.left + 'px'; el.style.width = r.width + 'px'; el.style.bottom = '0px'; el.style.top = 'auto';
+    const scrim = document.createElement('div'); scrim.className = 'scrim';
+    scrim.style.left = r.left + 'px'; scrim.style.width = r.width + 'px'; scrim.style.right = 'auto';
+    document.body.insertBefore(scrim, el); el._scrim = scrim;
+    return;
+  }
+  const r = anchorEl.getBoundingClientRect();
+  el.style.left = Math.min(r.left + left, innerWidth - 260) + 'px';
+  el.style.top = Math.max(8, Math.min(r.bottom + 4, innerHeight - el.offsetHeight - 10)) + 'px';
+}
+function openPicker(keys, anchorEl) {
+  closePop();
+  const inGroup = keys.some(k => S.member[k]);
+  const sug = suggestName(keys);
+  pop = document.createElement('div');
+  pop.className = 'pop'; pop.setAttribute('role', 'dialog');
+  pop.innerHTML = `<div class="ph">${keys.length > 1 ? 'Move ' + keys.length + ' conversations to' : 'Move to group'}</div><input placeholder="Group name…" aria-label="Group name" autocomplete="off"><div class="opts" role="listbox"></div><div class="hint"><kbd>Enter</kbd> move · <kbd>Esc</kbd> cancel</div>`;
+  document.body.appendChild(pop);
+  place(pop, anchorEl);
+  const input = pop.querySelector('input'), opts = pop.querySelector('.opts');
+  let sel = 0, list = [];
+  let aiName = sug && sug.ai ? null : sug && sug.name; // the model's name arrives a moment later
+  const draw = () => {
+    const q = input.value.trim(), ql = q.toLowerCase();
+    const groups = [...S.groups].sort((a, b) => (b.id === S.lastGroup) - (a.id === S.lastGroup));
+    list = [];
+    for (const g of groups) if (!ql || g.name.toLowerCase().includes(ql)) {
+      const here = keys.every(k => S.member[k] === g.id);
+      if (!here) list.push({ kind: 'group', g, label: g.name, note: (g.id === S.lastGroup ? 'last used · ' : '') + (g.folded ? 'folded' : '') });
+    }
+    if (q && !S.groups.some(g => g.name.toLowerCase() === ql)) list.push({ kind: 'new', name: q, label: `New group “${q}”` });
+    if (!q) {
+      if (sug) list.push({ kind: 'new', name: aiName || sug.name, label: aiName ? `New group “${aiName}”` : sug.ai ? 'New group' : `New group “${sug.name}”`, sug: sug.ai ? (aiName ? 'suggested' : 'naming…') : sug.why ? 'same project' : '' , pending: sug.ai && !aiName });
+      for (const n of S.recentNames.filter(n => !S.groups.some(g => g.name === n)).slice(0, 2)) list.push({ kind: 'new', name: n, label: `New group “${n}”`, note: 'used before' });
+      if (!sug) list.push({ kind: 'focus', label: 'New group…', note: 'type a name' });
+    }
+    if (inGroup && !ql) list.push({ kind: 'out', label: 'Take out of its group' });
+    sel = Math.min(sel, list.length - 1);
+    opts.innerHTML = list.map((o, i) => `<button class="opt${i === sel ? ' on' : ''}" data-i="${i}" role="option">` +
+      `<span class="ic">${o.kind === 'group' ? '<span style="font-size:10px">' + Object.values(S.member).filter(v => v === o.g.id).length + '</span>' : o.kind === 'out' ? '↖' : '＋'}</span>` +
+      `<span class="${o.pending ? 'shimmer' : ''}">${esc(o.label)}</span>${o.sug ? `<span class="sug">${esc(o.sug)}</span>` : ''}<span class="k">${esc(o.note || '')}</span></button>`).join('');
+  };
+  const choose = i => {
+    const o = list[i]; if (!o) return;
+    if (o.kind === 'focus') { input.focus(); return; }
+    if (o.kind === 'new' && o.pending) return;
+    closePop();
+    if (o.kind === 'group') moveTo(keys, o.g.id);
+    else if (o.kind === 'new') moveTo(keys, null, { name: o.name });
+    else moveTo(keys, null);
+  };
+  input.addEventListener('input', () => { sel = 0; draw(); });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') { sel = Math.min(list.length - 1, sel + 1); draw(); e.preventDefault(); }
+    else if (e.key === 'ArrowUp') { sel = Math.max(0, sel - 1); draw(); e.preventDefault(); }
+    else if (e.key === 'Enter') { e.preventDefault(); choose(sel); }
+    else if (e.key === 'Escape') { closePop(); $('list').focus(); }
+  });
+  opts.addEventListener('mousedown', e => { const b = e.target.closest('.opt'); if (b) { e.preventDefault(); choose(Number(b.dataset.i)); } });
+  draw();
+  input.focus();
+  if (sug && sug.ai) setTimeout(() => { if (!pop) return; aiName = sug.name; draw(); }, 650);
+}
+
+function openMenu(anchorEl, title, items) {
+  closePop();
+  pop = document.createElement('div');
+  pop.className = 'pop';
+  pop.innerHTML = (title ? `<div class="ph">${esc(title)}</div>` : '') + items.map((it, i) => it === '-' ? '<div class="sep"></div>' : `<button class="opt${it.radio !== undefined ? ' radio' + (it.radio ? ' on' : '') : ''}" data-i="${i}">${it.radio === undefined ? `<span class="ic">${it.ic || ''}</span>` : ''}<span>${esc(it.label)}</span><span class="k">${esc(it.k || '')}</span></button>`).join('');
+  document.body.appendChild(pop);
+  place(pop, anchorEl, { left: 0 });
+  pop.addEventListener('mousedown', e => { const b = e.target.closest('.opt'); if (!b) return; e.preventDefault(); const it = items[Number(b.dataset.i)]; closePop(); setTimeout(it.run); });
+}
+
+function groupMenu(gid, anchor) {
+  const g = S.groups.find(x => x.id === gid); if (!g) return;
+  const keys = Object.keys(S.member).filter(k => S.member[k] === gid && S.rows.has(k));
+  const i = S.groups.indexOf(g);
+  openMenu(anchor, g.name, [
+    { ic: '✎', label: 'Rename', k: 'F2', run: () => rename(gid) },
+    { ic: '＋', label: 'New conversation in this group', run: () => newInGroup(gid) },
+    { ic: g.folded ? '⌄' : '›', label: g.folded ? 'Unfold' : 'Fold', k: g.folded ? '→' : '←', run: () => toggleFold(gid) },
+    '-',
+    ...(i > 0 ? [{ ic: '↑', label: 'Move up', run: () => { S.groups.splice(i, 1); S.groups.splice(i - 1, 0, g); render(); } }] : []),
+    ...(i < S.groups.length - 1 ? [{ ic: '↓', label: 'Move down', run: () => { S.groups.splice(i, 1); S.groups.splice(i + 1, 0, g); render(); } }] : []),
+    { ic: '↖', label: 'Ungroup', run: () => moveTo(keys, null) },
+    { ic: '✕', label: `Close all ${keys.length}`, run: () => closeRows(keys) },
+  ]);
+}
+function rename(gid) {
+  const h = document.querySelector(`.gh[data-gid="${gid}"] .name`); if (!h) return;
+  const g = S.groups.find(x => x.id === gid);
+  h.innerHTML = `<input class="rename" value="${esc(g.name)}" aria-label="Group name">`;
+  const inp = h.querySelector('input'); h.closest('.gh').scrollIntoView({ block: 'nearest', behavior: motionOn() ? 'smooth' : 'auto' }); inp.focus({ preventScroll: true }); inp.select();
+  let done = false;
+  const finish = ok => { if (done) return; done = true; if (ok && inp.value.trim()) g.name = inp.value.trim(); markup.delete(h.closest('.item')); render(); $('list').focus(); };
+  inp.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') finish(true); if (e.key === 'Escape') finish(false); });
+  inp.addEventListener('blur', () => finish(true));
+  inp.addEventListener('click', e => e.stopPropagation());
+}
+let newSeq = 0;
+function newInGroup(gid) {
+  const key = 'n' + (++newSeq);
+  const g = S.groups.find(x => x.id === gid);
+  const rows = [...S.rows];
+  rows.unshift([key, { key, title: 'New conversation', project: 'chattering', preview: 'Draft · starts in the group “' + g.name + '”', age: 'now', ctx: 0 }]);
+  S.rows = new Map(rows);
+  S.member[key] = gid; g.folded = false;
+  openRow(key);
+}
+
+// ---------------------------------------------------------------- arrange & tidy
+function arrangeMenu() {
+  openMenu($('arrangeBtn'), 'Arrange open conversations', [
+    { radio: S.arrange === 'groups', label: 'Your groups', run: () => { S.arrange = 'groups'; render(); } },
+    { radio: S.arrange === 'project', label: 'By project', run: () => { S.arrange = 'project'; S.tidy = null; render(); } },
+    '-',
+    { ic: '⇣', label: 'Tidy up…', k: 'you see it first', run: startTidy },
+    { ic: '›', label: 'Fold every group', k: '⇧←', run: foldAll },
+  ]);
+}
+function foldAll() { S.groups.forEach(g => g.folded = true); for (const r of S.rows.values()) S.projFold[r.project] = true; render(); }
+function sectionsFor(st) { const keep = S; S = st; try { return sections(st); } finally { S = keep; } }
+function startTidy() {
+  // A proposal, never an automatic change: rows you're in now (working,
+  // unread, current, asked a question in the last hour) stay on top; the
+  // rest gather by project when two or more share one; what's left and
+  // hasn't moved since yesterday goes to "Later". Existing groups stay.
+  S.arrange = 'groups';
+  const st = { ...S, groups: S.groups.map(g => ({ ...g })), member: { ...S.member }, rows: S.rows, tidy: null };
+  const loose = [...S.rows.values()].filter(r => !S.member[r.key]);
+  const active = r => r.state === 'working' || r.unread || r.key === S.current || /^\d+[sm]$/.test(r.age);
+  const rest = loose.filter(r => !active(r));
+  const byProj = new Map();
+  for (const r of rest) { if (!byProj.has(r.project)) byProj.set(r.project, []); byProj.get(r.project).push(r); }
+  let moved = 0, newGroups = 0;
+  const later = [];
+  for (const [p, rows] of byProj) {
+    if (rows.length >= 2) {
+      const g = { id: 'g' + (++gseq), name: prettyProject(p), folded: true, isNew: true };
+      st.groups.push(g); newGroups++;
+      for (const r of rows) { st.member[r.key] = g.id; moved++; }
+    } else later.push(...rows);
+  }
+  if (later.length) {
+    let g = st.groups.find(x => x.name === 'Later');
+    if (!g) { g = { id: 'g' + (++gseq), name: 'Later', folded: true, isNew: true }; st.groups.push(g); newGroups++; }
+    for (const r of later) { st.member[r.key] = g.id; moved++; }
+  }
+  if (!moved) { toast('Nothing to tidy: everything open is in use or already grouped'); return; }
+  S.tidy = { state: st, moved, newGroups };
+  render();
+}
+function applyTidy() {
+  const snap = snapshot();
+  const st = S.tidy.state;
+  S.groups = st.groups.map(g => { const { isNew, ...rest } = g; return rest; });
+  S.member = st.member; S.tidy = null;
+  render();
+  toast('Tidied. Double-click a group to rename it', () => restore(snap));
+}
+
+// ---------------------------------------------------------------- events
+function bindDynamic() {
+  const lb = $('lensBack'); if (lb) lb.onclick = () => { S.arrange = 'groups'; render(); };
+  const ta = $('tidyApply'); if (ta) ta.onclick = applyTidy;
+  const tc = $('tidyCancel'); if (tc) tc.onclick = () => { S.tidy = null; render(); };
+}
+$('list').addEventListener('click', e => {
+  if (e.target.closest('.tidy-bar, .lens-bar, input')) return;
+  if (S.tidy) return;
+  const act = e.target.closest('[data-act]');
+  const row = e.target.closest('.row[data-key]');
+  const gh = e.target.closest('.gh');
+  const gact = e.target.closest('[data-gact]');
+  if (gact) { e.stopPropagation(); const gid = gh.dataset.gid; if (gact.dataset.gact === 'more') groupMenu(gid, gact); else newInGroup(gid); return; }
+  if (gh) { if (e.target.closest('a')) { e.preventDefault(); toast('Would open the project overview'); return; } S.cursor = 'h:' + gh.dataset.gid; toggleFold(gh.dataset.gid); return; }
+  if (!row) return;
+  const key = row.dataset.key;
+  if (act) {
+    e.stopPropagation();
+    const keys = S.selected.has(key) && S.selected.size > 1 ? [...S.selected] : [key];
+    if (act.dataset.act === 'group') openPicker(keys, row);
+    else if (act.dataset.act === 'close') closeRows(keys);
+    else openMenu(act, S.rows.get(key).title, [
+      { ic: '⊕', label: S.member[key] ? 'Move to another group…' : 'Move to a group…', k: 'g', run: () => openPicker([key], row) },
+      ...(S.member[key] ? [{ ic: '↖', label: 'Take out of its group', run: () => moveTo([key], null) }] : []),
+      '-',
+      { ic: '📌', label: 'Pin to the top', k: 'p', run: () => toast('Pinned (unchanged from today)') },
+      { ic: '●', label: 'Mark as unread', k: 'u', run: () => { S.rows.get(key).unread = true; render(); } },
+      { ic: '✕', label: 'Close', k: 'Del', run: () => closeRows([key]) },
+    ]);
+    return;
+  }
+  if (e.ctrlKey || e.metaKey) { S.selected.has(key) ? S.selected.delete(key) : S.selected.add(key); S.anchor = key; S.cursor = key; render(); return; }
+  if (e.shiftKey && S.anchor) {
+    const order = visibleKeys().filter(k => !k.startsWith('h:'));
+    const a = order.indexOf(S.anchor), b = order.indexOf(key);
+    if (a >= 0 && b >= 0) { for (let i = Math.min(a, b); i <= Math.max(a, b); i++) S.selected.add(order[i]); }
+    S.cursor = key; render(); return;
+  }
+  S.selected.clear(); S.anchor = key; S.cursor = key;
+  openRow(key);
+});
+$('list').addEventListener('contextmenu', e => {
+  const row = e.target.closest('.row[data-key]'); if (!row || S.tidy) return;
+  e.preventDefault(); row.querySelector('[data-act="more"]').click();
+});
+$('list').addEventListener('dblclick', e => {
+  const gh = e.target.closest('.gh'); if (!gh || gh.dataset.gid.startsWith('p:') || S.tidy) return;
+  toggleFold(gh.dataset.gid); // undo the click's fold
+  rename(gh.dataset.gid);
+});
+$('selGroup').onclick = () => openPicker([...S.selected], $('selbar'));
+$('selClose').onclick = () => closeRows([...S.selected]);
+$('selClear').onclick = () => { S.selected.clear(); render(); };
+$('arrangeBtn').onclick = e => { e.stopPropagation(); arrangeMenu(); };
+document.addEventListener('mousedown', e => { if (pop && !pop.contains(e.target)) closePop(); });
+
+// Keyboard
+function visibleKeys() {
+  return [...$('list').querySelectorAll('.gh[data-gid], .row[data-key]')].map(el => el.classList.contains('gh') ? 'h:' + el.dataset.gid : el.dataset.key);
+}
+$('list').addEventListener('keydown', e => {
+  if (pop || e.target.tagName === 'INPUT') return;
+  const keys = visibleKeys();
+  if (!S.cursor || !keys.includes(S.cursor)) S.cursor = keys.includes(S.current) ? S.current : keys[0];
+  const at = keys.indexOf(S.cursor);
+  const onHead = S.cursor.startsWith('h:');
+  const gidHere = onHead ? S.cursor.slice(2) : (S.arrange === 'project' ? 'p:' + (S.rows.get(S.cursor) || {}).project : S.member[S.cursor]);
+  const k = e.key;
+  if (k === 'ArrowDown' || k === 'ArrowUp') { S.cursor = keys[Math.max(0, Math.min(keys.length - 1, at + (k === 'ArrowDown' ? 1 : -1)))]; render(); e.preventDefault(); scrollCursor(); return; }
+  if (k === 'ArrowLeft' && e.shiftKey) { foldAll(); e.preventDefault(); return; }
+  if ((k === 'ArrowLeft' || k === 'ArrowRight') && gidHere) {
+    if (k === 'ArrowLeft') S.cursor = 'h:' + gidHere; // fold lands the cursor on the header
+    toggleFold(gidHere, k === 'ArrowLeft'); e.preventDefault(); return;
+  }
+  if (k === 'Enter') { if (onHead) toggleFold(S.cursor.slice(2)); else { S.selected.clear(); openRow(S.cursor); } e.preventDefault(); return; }
+  if (k === ' ' && !onHead) { S.selected.has(S.cursor) ? S.selected.delete(S.cursor) : S.selected.add(S.cursor); render(); e.preventDefault(); return; }
+  if (k === 'Escape') { S.selected.clear(); render(); return; }
+  if (k === 'g' && !onHead && S.arrange === 'groups') { const ks = S.selected.size ? [...S.selected] : [S.cursor]; openPicker(ks, document.querySelector(`.row[data-key="${ks[ks.length - 1]}"]`)); e.preventDefault(); return; }
+  if (k === 'G') { arrangeMenu(); e.preventDefault(); return; }
+  if (k === 'F2' && onHead && !gidHere.startsWith('p:')) { rename(gidHere); e.preventDefault(); return; }
+  if (k === 'Delete' && !onHead) { closeRows(S.selected.size ? [...S.selected] : [S.cursor]); e.preventDefault(); }
+});
+function scrollCursor() { const el = $('list').querySelector('.cursor'); if (el) el.scrollIntoView({ block: 'nearest' }); }
+
+// Drag and drop (pointer: fine). Dragging a row onto a group header or a
+// grouped row moves it there; onto a loose row makes a new group of the two
+// (loose rows have no other order to drop into: they follow their age);
+// onto the strip under the loose rows takes it out. Headers drag to reorder.
+let drag = null, dwell = null;
+$('list').addEventListener('dragstart', e => {
+  const row = e.target.closest('.row[data-key]'), gh = e.target.closest('.gh[data-gid]');
+  if (row) { const k = row.dataset.key; drag = { keys: S.selected.has(k) && S.selected.size > 1 ? [...S.selected] : [k] }; }
+  else if (gh) drag = { gid: gh.dataset.gid };
+  else return;
+  e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', 'x');
+  document.body.classList.add('dragging');
+});
+function clearDrop() { document.querySelectorAll('.drop, .drop-join').forEach(x => x.classList.remove('drop', 'drop-join')); }
+$('list').addEventListener('dragover', e => {
+  if (!drag) return;
+  const row = e.target.closest('.row[data-key]'), gh = e.target.closest('.gh[data-gid]'), loose = e.target.closest('[data-loose]');
+  clearDrop();
+  if (drag.gid) { if (gh && gh.dataset.gid !== drag.gid) { gh.classList.add('drop'); e.preventDefault(); } return; }
+  if (gh) { gh.classList.add('drop'); e.preventDefault(); return; }
+  if (loose) { loose.classList.add('drop'); e.preventDefault(); return; }
+  if (row && !drag.keys.includes(row.dataset.key)) {
+    const g = S.member[row.dataset.key];
+    if (g) { document.querySelector(`.gh[data-gid="${g}"]`)?.classList.add('drop'); }
+    else row.classList.add('drop-join');
+    e.preventDefault();
+  }
+});
+$('list').addEventListener('drop', e => {
+  if (!drag) return;
+  e.preventDefault();
+  const row = e.target.closest('.row[data-key]'), gh = e.target.closest('.gh[data-gid]'), loose = e.target.closest('[data-loose]');
+  const d = drag; drag = null; clearDrop(); document.body.classList.remove('dragging');
+  if (d.gid) { if (gh) { const a = S.groups.findIndex(g => g.id === d.gid), g = S.groups[a]; S.groups.splice(a, 1); S.groups.splice(S.groups.findIndex(x => x.id === gh.dataset.gid), 0, g); render(); } return; }
+  if (gh) return moveTo(d.keys, gh.dataset.gid);
+  if (loose) return moveTo(d.keys, null);
+  if (row) {
+    const g = S.member[row.dataset.key];
+    if (g) return moveTo(d.keys, g);
+    // Two loose rows make a group: it opens named, the name selected.
+    const keys = [...new Set([row.dataset.key, ...d.keys])];
+    const sug = suggestName(keys);
+    moveTo(keys, null, { name: sug ? sug.name : 'New group' });
+    setTimeout(() => rename(S.groups[0].id), 60);
+  }
+});
+$('list').addEventListener('dragend', () => { drag = null; clearDrop(); document.body.classList.remove('dragging'); });
+
+// Simulations
+function foldedGroupRows() {
+  const out = [];
+  for (const g of S.groups) if (g.folded) for (const [k, r] of S.rows) if (S.member[k] === g.id) out.push([g, r]);
+  return out;
+}
+$('simReply').onclick = () => {
+  const cand = foldedGroupRows().filter(([, r]) => !r.unread && r.state !== 'working');
+  if (!cand.length) { toast('Fold a group first (or start from “Grouped”)'); return; }
+  const [g, r] = cand[cand.length - 1];
+  r.unread = true; r.state = r.state === 'asks' ? 'asks' : ''; r.age = 'now'; r.preview = 'Done. I checked the three cases you listed and…';
+  render(); toast(`A reply in “${g.name}” shows under its header. Open it; it tucks back when you move on.`);
+};
+$('simWork').onclick = () => {
+  const cand = foldedGroupRows().filter(([, r]) => r.state !== 'working' && !r.unread);
+  if (!cand.length) { toast('Fold a group first (or start from “Grouped”)'); return; }
+  const [g, r] = cand[0];
+  r.state = 'working'; r.doing = 'tool · bash'; r.since = '2s'; r.age = 'now';
+  render(); toast(`Work in “${g.name}” shows as dots on its header; the row stays folded until it has something for you.`);
+};
+$('simStop').onclick = () => {
+  const cand = foldedGroupRows().filter(([, r]) => r.state !== 'stopped');
+  if (!cand.length) { toast('Fold a group first (or start from “Grouped”)'); return; }
+  const [g, r] = cand[Math.floor(cand.length / 2)];
+  r.state = 'stopped'; r.age = 'now';
+  render(); toast(`A stopped run is something to act on: it shows under “${g.name}”.`);
+};
+
+// Controls
+function seg(id, fn) { $(id).addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; $(id).querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); fn(b.dataset.v); }); }
+seg('segState', v => { S = initial(v); render(); });
+seg('segLook', v => { document.body.classList.toggle('v-tray', v === 'tray'); document.body.classList.toggle('v-head', v === 'head'); });
+seg('segTheme', v => { document.documentElement.dataset.theme = v; render(); });
+seg('segWidth', v => { document.body.classList.toggle('phone', v === 'phone'); markupReset(); render(); });
+function markupReset() { for (const el of $('list').children) markup.delete(el); }
+
+// URL presets for screenshots: ?state=after&look=tray&theme=light&phone=1
+const q = new URLSearchParams(location.search);
+S = initial(q.get('state') || 'today');
+if (q.get('theme')) { document.documentElement.dataset.theme = q.get('theme'); $('segTheme').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === q.get('theme'))); }
+if (q.get('look') === 'head') { document.body.classList.add('v-head'); document.body.classList.remove('v-tray'); $('segLook').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === 'head')); }
+if (q.get('phone')) document.body.classList.add('phone');
+if (q.get('state')) $('segState').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.v === q.get('state')));
+render();
+$('list').focus();
+window.__S = () => S;
+</script>
+</body>
+</html>

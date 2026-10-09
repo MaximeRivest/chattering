@@ -62,7 +62,7 @@ function browser(overrides = {}) {
     fetch: async () => { calls.push('create'); return { ok: true, json: async () => ({ key: 'new-fork' }) }; },
     open: async key => calls.push(['open', key]),
     load: () => { calls.push('refresh-list'); return new Promise(() => {}); },
-    toast: () => {}, errToast: text => calls.push(['error', text]), ...overrides,
+    toast: () => {}, errToast: text => calls.push(['error', text]), ListGroups: { follow: () => {} }, ...overrides,
   });
   vm.runInContext(slice(app, 'async function forkFrom(key, n, btn)', '// ---- epics ----'), ctx);
   return { ctx, calls };

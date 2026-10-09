@@ -1,0 +1,112 @@
+/* Groups in the side list (list-groups.js, design/96).
+   A group is a tray: a header and its rows on a faint tint of the text
+   colour, so it reads lighter than the panel on dark themes and a shade
+   darker on light ones, whatever the theme. The items of the list stay
+   flat (one reconciled list), so the tray is drawn by its items: the first
+   rounds the top, the last the bottom. */
+#agentsPop { --ag-tray-bg: color-mix(in srgb, var(--text) 4.5%, transparent); }
+.ag-item.ag-tray { background: var(--ag-tray-bg); margin: 0 2px; }
+.ag-item.ag-tray-first { margin-top: 8px; padding-top: 2px; border-top-left-radius: var(--panel-r); border-top-right-radius: var(--panel-r); }
+.ag-item.ag-tray-last { margin-bottom: 2px; padding-bottom: 3px; border-bottom-left-radius: var(--panel-r); border-bottom-right-radius: var(--panel-r); }
+:root[data-theme-mode="binary"] .ag-item.ag-tray { background: transparent; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
+:root[data-theme-mode="binary"] .ag-item.ag-tray-first { border-top: 1px solid var(--border); }
+:root[data-theme-mode="binary"] .ag-item.ag-tray-last { border-bottom: 1px solid var(--border); }
+
+/* The header: chevron, name, count; folded, what is going on inside. */
+.ag-ghead { position: relative; display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px 0 8px; margin: 0 2px; border-radius: var(--panel-row-r); cursor: pointer; user-select: none; color: var(--text-dim); font-size: var(--fs-micro); }
+.ag-ghead:hover { background: var(--surface-2); color: var(--text); }
+:root[data-theme-mode="binary"] .ag-ghead:hover { background: transparent; text-decoration: underline; }
+.ag-ghead .ag-chev { flex: none; color: var(--text-faint); transition: transform .16s ease; }
+.ag-ghead.open .ag-chev { transform: rotate(90deg); }
+:root[data-theme-motion="none"] .ag-ghead .ag-chev { transition: none; }
+.ag-ghead .ag-gname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; color: inherit; text-decoration: none; letter-spacing: .01em; }
+.ag-ghead a.ag-gname:hover { text-decoration: underline; }
+.ag-ghead .ag-gcount { flex: none; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.ag-ghead .ag-gsum { flex: none; margin-left: auto; display: inline-flex; align-items: center; gap: 8px; font-size: 10px; }
+.ag-ghead .ag-gwork { display: inline-flex; align-items: center; gap: 3px; }
+.ag-ghead .ag-gask { color: var(--warn); font-weight: 700; }
+.ag-ghead .ag-gn { margin-left: 2px; color: var(--text-faint); font-weight: 400; }
+.ag-ghead .ag-gnewtag { flex: none; padding: 0 4px; border: 1px solid currentColor; border-radius: var(--r-sm); color: var(--accent); font-size: 9px; font-weight: 700; line-height: 13px; }
+.ag-ghead.proposed { cursor: default; }
+.ag-ghead .ag-acts { position: absolute; right: 6px; top: 3px; display: none; gap: 2px; align-items: center; padding-left: 8px; background: linear-gradient(90deg, transparent, var(--surface-2) 8px); }
+.ag-ghead:hover .ag-acts, .ag-ghead.kbd-selected .ag-acts, .ag-ghead .ag-acts:has([aria-expanded="true"]) { display: flex; }
+.ag-ghead .ag-acts button { min-height: 22px; height: 22px; padding: 0 6px; border: 0; background: transparent; color: var(--text-faint); font-size: 12px; line-height: 1; }
+.ag-ghead .ag-acts button:hover { color: var(--text); background: var(--surface-3); }
+.ag-ghead.renaming { cursor: default; }
+.ag-ghead .ag-grename { flex: 1 1 auto; min-width: 0; height: 22px; min-height: 22px; margin: 0; padding: 0 6px; border: 1px solid var(--accent); border-radius: var(--r-sm); background: var(--surface-1); color: var(--text); font: 700 var(--fs-micro) var(--font); }
+.ag-ghead .ag-grename:focus { outline: 0; }
+body.side-layout #agentsPop .ag-ghead.kbd-selected { outline: 1px solid var(--accent); outline-offset: -1px; }
+body.side-layout #agentsPop:not(.kbd) .ag-ghead.kbd-selected { outline: 0; }
+#agentsPop .ag-ghead.kbd-selected { background: var(--surface-2); }
+body.side-layout #agentsPop:not(.kbd) .ag-ghead.kbd-selected:not(:hover) { background: transparent; }
+@media (pointer: coarse) {
+  .ag-ghead { min-height: 40px; font-size: var(--fs-label); }
+  .ag-ghead .ag-acts { display: flex; position: static; padding: 0; background: none; }
+  .ag-ghead .ag-acts .ag-gnew { display: none; }
+  .ag-ghead .ag-acts button { min-height: 36px; height: 36px; padding: 0 10px; font-size: 14px; }
+}
+
+/* A row let through a folded group (a reply, a stop, the one on screen):
+   a short rule on its left says it comes from inside. */
+.ag-row.peek::before { content: ""; position: absolute; left: 3px; top: 7px; bottom: 7px; width: 2px; border-radius: var(--r-sm); background: var(--accent); opacity: .7; }
+:root[data-theme-mode="binary"] .ag-row.peek::before { opacity: 1; }
+/* Rows picked with Ctrl/Shift-click or Space. */
+.ag-row.selected { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.ag-row.selected:hover { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+:root[data-theme-mode="binary"] .ag-row.selected { background: transparent; outline: 2px solid var(--text); outline-offset: -2px; }
+/* ⊕ beside ⋯: move to a group. Touch screens use the ⋯ menu. */
+.ag-row .ag-group-btn { border: 0; background: transparent; color: var(--text-faint); font-size: 12px; }
+.ag-row .ag-group-btn:hover { color: var(--text); background: var(--surface-3); }
+@media (pointer: coarse) { .ag-row .ag-group-btn { display: none; } }
+
+/* Drag and drop (pointer: fine). */
+.ag-ghead.ag-drop { background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--text); }
+.ag-row.ag-drop-join { box-shadow: inset 0 0 0 1.5px var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.ag-row.ag-drop-join::after { content: "+ group"; position: absolute; right: 8px; top: 50%; transform: translateY(-50%); padding: 1px 6px; border-radius: var(--r-sm); background: var(--panel-bg); color: var(--accent); font-size: 10px; font-weight: 700; }
+.ag-item.ag-loose-drop { height: 0; overflow: hidden; }
+body.ag-dragging-grouped .ag-item.ag-loose-drop { height: auto; }
+.ag-drop-out { margin: 4px 6px; padding: 4px; border: 1px dashed var(--border-strong); border-radius: var(--panel-row-r); color: var(--text-faint); font-size: 10px; text-align: center; }
+.ag-item.ag-loose-drop.ag-drop .ag-drop-out { border-color: var(--accent); color: var(--accent); }
+body.ag-dragging .ag-row .ag-acts, body.ag-dragging .ag-ghead .ag-acts { display: none; }
+
+/* Above the list: a tidy-up proposal, or the arrangement in use. */
+.ag-listbar:empty { display: none; }
+.ag-tidybar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 2px 6px 6px; padding: 8px 10px; border-radius: var(--panel-row-r); background: var(--surface-1); box-shadow: 0 0 0 1px var(--accent); color: var(--text); font-size: var(--fs-micro); line-height: 1.4; }
+.ag-tidybar .ag-tidyacts { display: flex; gap: 6px; margin-left: auto; }
+.ag-tidybar button, .ag-selbar button { height: 24px; min-height: 24px; padding: 0 9px; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--surface-1); color: var(--text); font-size: var(--fs-micro); }
+.ag-tidybar button.primary, .ag-selbar button.primary { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--accent-ink); font-weight: 700; }
+.ag-lensbar { padding: 0 12px 6px; color: var(--text-faint); font-size: 10px; }
+.ag-lensbar button { height: auto; min-height: 0; padding: 0; border: 0; background: none; color: var(--accent); font-size: 10px; }
+.ag-lensbar button:hover { text-decoration: underline; }
+/* Several rows picked: what to do with them, at the bottom of the list. */
+.ag-selwrap { position: sticky; bottom: 0; z-index: 2; }
+.ag-selbar { display: flex; align-items: center; gap: 6px; margin: 6px; padding: 6px 6px 6px 10px; border-radius: var(--panel-r); background: var(--surface-1); box-shadow: 0 0 0 1px var(--border-strong), 0 6px 20px var(--shadow-color); font-size: var(--fs-micro); }
+.ag-selbar > span { flex: 1 1 auto; }
+.ag-selbar:empty { display: none; }
+@media (pointer: coarse) { .ag-tidybar button, .ag-selbar button { height: 36px; min-height: 36px; padding: 0 12px; } }
+
+/* The arrange button, beside "+ new" (and in the phone sheet's head). A dot
+   when the list is arranged by project on this device. */
+#sideArrange, #agentsSheetArrange { position: relative; flex: 0 0 auto; width: 28px; padding: 0; justify-content: center; color: var(--text-dim); }
+#sideArrange.lens::after, #agentsSheetArrange.lens::after { content: ""; position: absolute; top: 5px; right: 4px; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+#agentsSheetArrange { display: inline-flex; align-items: center; width: 40px; height: 40px; min-height: 40px; border: 0; background: transparent; }
+
+/* The picker: the shared .mpick (a bottom sheet on phones). */
+.mpick.ag-group-picker { max-height: min(420px, calc(100dvh - 16px)); }
+.mpick.ag-group-picker .ag-gp-head { padding: 10px 12px 0; color: var(--text-faint); font-size: 10px; letter-spacing: .03em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mpick.ag-group-picker .mp-top { padding: 6px 10px 8px; }
+.mpick.ag-group-picker .mp-list { min-height: 0; padding: 0 0 4px; }
+.mpick.ag-group-picker .mp-row { gap: 8px; }
+.mpick.ag-group-picker .mp-row > span:last-child:not(.ag-gp-ic) { margin-left: auto; flex: none; }
+.mpick.ag-group-picker .mp-row.pending b { color: var(--text-faint); font-style: italic; }
+.mpick.ag-group-picker .ag-gp-ic { flex: 0 0 14px; color: var(--text-faint); text-align: center; }
+.mpick.ag-group-picker .ag-gp-hint { padding: 6px 12px 8px; border-top: 1px solid var(--border); color: var(--text-faint); font-size: 10px; }
+.mpick.ag-group-picker .ag-gp-hint kbd { font: 10px var(--font-mono); }
+@media (pointer: coarse) { .mpick.ag-group-picker .ag-gp-hint { display: none; } }
+@media (max-width: 700px) { .mpick.ag-group-picker { width: auto !important; max-width: 100%; max-height: 72dvh; } }
+/* Menus: a separator, a radio, a key hint. */
+.file-action-menu .ag-menu-sep { height: 1px; margin: 4px 2px; border: 0; background: var(--border); }
+.file-action-menu .ag-radio { display: inline-block; width: 9px; height: 9px; margin-right: 8px; border: 1.5px solid var(--text-faint); border-radius: 50%; vertical-align: -1px; }
+.file-action-menu .ag-radio.on { border-color: var(--accent); background: radial-gradient(var(--accent) 40%, transparent 46%); }
+.file-action-menu .ag-menu-key { float: right; margin-left: 12px; color: var(--text-faint); font: 10px var(--font-mono); }
+@media (pointer: coarse) { .file-action-menu .ag-menu-key { display: none; } }

@@ -432,7 +432,7 @@ test('app scripts parse and integration uses separate task hosts and read-only n
   new vm.Script(reader, { filename: 'conversation-reader.js' });
   assert.ok(reader.includes('class="dg-card" data-dg-key='));
   assert.ok(html.includes('<script src="/conversation-reader.js"></script>'));
-  assert.ok(html.includes("[projectLink(s), esc(origin(key)), what].filter(Boolean)"), 'a delegated row names its parent on the second line');
+  assert.ok(html.includes("[inProject ? '' : projectLink(s), esc(origin(key)), what].filter(Boolean)"), 'a delegated row names its parent on the second line');
   assert.ok(html.includes("d.messages.findIndex(m => m.eid === entryId)"));
   assert.ok(html.includes("if (h.startsWith('read='))"));
 });

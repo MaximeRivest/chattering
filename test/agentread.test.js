@@ -12,8 +12,8 @@ test('fresh state guards with since = now', () => {
 
 test('normalize drops junk and keeps valid numbers', () => {
   const s = R.normalize({ since: '5', read: { a: 10, b: 'x', '': 3 }, finished: { c: -1, d: 7 } }, 99);
-  assert.deepEqual(s, { since: 5, read: { a: 10 }, finished: { d: 7 }, opened: {}, flagged: {}, dismissed: {}, pinned: {} });
-  assert.deepEqual(R.normalize(null, 42), { since: 42, read: {}, finished: {}, opened: {}, flagged: {}, dismissed: {}, pinned: {} });
+  assert.deepEqual(s, { since: 5, read: { a: 10 }, finished: { d: 7 }, opened: {}, flagged: {}, dismissed: {}, pinned: {}, groups: {}, member: {} });
+  assert.deepEqual(R.normalize(null, 42), { since: 42, read: {}, finished: {}, opened: {}, flagged: {}, dismissed: {}, pinned: {}, groups: {}, member: {} });
   const marks = R.normalize({ opened: { o: 2, p: 'no' }, flagged: { a: 3, b: 0 }, dismissed: { c: '9' }, pinned: { d: 4, '': 5 } }, 1);
   assert.deepEqual([marks.opened, marks.flagged, marks.dismissed, marks.pinned], [{ o: 2 }, { a: 3 }, { c: 9 }, { d: 4 }]);
 });
@@ -186,4 +186,60 @@ test('applyDelta mirrors the server on a browser copy, 0 removes a mark', () => 
   assert.deepEqual(local.pinned, {});
   assert.deepEqual(local.flagged, {});
   assert.equal(local.dismissed.c, 2400);
+});
+
+// design/96: named groups in the side list.
+test('groups: one change creates a group and fills it; updates carry only what changed', () => {
+  const s = R.createState(1000);
+  const d = R.applyGroups(s, { groups: { gLater1: { name: '  Later  ', order: 0 } }, member: { a: 'gLater1', b: 'gLater1' } });
+  assert.deepEqual(d, { groups: { gLater1: { name: 'Later', order: 0, folded: false } }, member: { a: 'gLater1', b: 'gLater1' } });
+  // A fold from one device keeps a rename from another.
+  R.applyGroups(s, { groups: { gLater1: { name: 'Back burner' } } });
+  const fold = R.applyGroups(s, { groups: { gLater1: { folded: true } } });
+  assert.deepEqual(fold.groups.gLater1, { name: 'Back burner', order: 0, folded: true });
+  assert.equal(R.applyGroups(s, { groups: { gLater1: { folded: true } } }), null, 'no change, no delta');
+  // A new group needs a name; bad ids and members of unknown groups are refused.
+  assert.equal(R.applyGroups(s, { groups: { gNoName: { order: 1 } }, member: { c: 'gNoName' } }), null);
+  assert.equal(R.applyGroups(s, { groups: { 'bad id': { name: 'x' } } }), null);
+  assert.equal(R.applyGroups(s, { member: { c: 'gMissing' } }), null);
+  assert.equal(R.applyGroups(s, { groups: { gLong01: { name: 'x'.repeat(200) } }, member: { c: 'gLong01' } }).groups.gLong01.name.length, R.GROUP_NAME_MAX);
+});
+
+test('groups: taking the last conversation out removes the group; removing a group frees its conversations', () => {
+  const s = R.createState(1000);
+  R.applyGroups(s, { groups: { gOne01: { name: 'One' }, gTwo01: { name: 'Two' } }, member: { a: 'gOne01', b: 'gTwo01', c: 'gTwo01' } });
+  assert.deepEqual(R.applyGroups(s, { member: { a: '' } }), { groups: { gOne01: 0 }, member: { a: '' } });
+  assert.deepEqual(R.applyGroups(s, { groups: { gTwo01: 0 } }), { groups: { gTwo01: 0 }, member: { b: '', c: '' } });
+  assert.deepEqual(s.groups, {});
+  assert.deepEqual(s.member, {});
+  // Moving between groups in one change.
+  R.applyGroups(s, { groups: { gA0001: { name: 'A' }, gB0001: { name: 'B' } }, member: { a: 'gA0001', b: 'gB0001' } });
+  assert.deepEqual(R.applyGroups(s, { member: { b: 'gA0001' } }), { groups: { gB0001: 0 }, member: { b: 'gA0001' } });
+});
+
+test('groups: a close keeps the membership; long-closed memberships are let go', () => {
+  const day = 24 * 3600 * 1000, now = 100 * day;
+  const s = R.createState(1000);
+  R.applyGroups(s, { groups: { gOld001: { name: 'Old' } }, member: { a: 'gOld001', b: 'gOld001' } });
+  R.open(s, 'a', 2000); R.open(s, 'b', 2000);
+  R.dismiss(s, 'a', { now: now - 40 * day });
+  R.dismiss(s, 'b', { now: now - 2 * day });
+  assert.equal(s.member.a, 'gOld001', 'closing keeps the group');
+  const d = R.pruneGroups(s, { now, listed: key => R.isListed(s, key) });
+  assert.deepEqual(d, { groups: {}, member: { a: '' } }, 'only the membership closed for more than 30 days goes');
+  // A conversation closed long ago that replied since is listed: it stays.
+  R.applyGroups(s, { member: { c: 'gOld001' } });
+  s.dismissed.c = now - 40 * day;
+  assert.equal(R.pruneGroups(s, { now, listed: () => true }), null);
+});
+
+test('groups: normalize drops broken entries; applyDelta mirrors the server', () => {
+  const s = R.normalize({ since: 5, groups: { gGood01: { name: 'Good', order: 2, folded: true }, gEmpty1: { name: 'Nobody' }, x: { name: 'bad id' }, gNoNam1: {} }, member: { a: 'gGood01', b: 'gGone01', c: 7 } });
+  assert.deepEqual(s.groups, { gGood01: { name: 'Good', order: 2, folded: true } });
+  assert.deepEqual(s.member, { a: 'gGood01' });
+  const copy = R.normalize(JSON.parse(JSON.stringify(s)));
+  const d = R.applyGroups(s, { groups: { gNew001: { name: 'New', order: -1 } }, member: { a: 'gNew001', b: 'gNew001' } });
+  R.applyDelta(copy, d);
+  assert.deepEqual(copy.groups, s.groups);
+  assert.deepEqual(copy.member, s.member);
 });

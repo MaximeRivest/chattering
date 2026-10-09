@@ -4713,6 +4713,37 @@ function agentReadPin(pins) {
   }
   if (any) agentReadApply(merged);
 }
+// The list's groups (design/96). Only conversations the person may see can
+// be put in or taken out; the groups themselves are the household's.
+function agentReadGroups(change, identity) {
+  if (!change || typeof change !== 'object') return;
+  const can = receiverFor(identity);
+  const member = {};
+  for (const [key, id] of Object.entries(change.member && typeof change.member === 'object' ? change.member : {})) if (can.key(key)) member[key] = id;
+  agentReadApply(agentReadLib.applyGroups(agentRead, { groups: change.groups, member }));
+}
+// Memberships of conversations closed for more than 30 days are let go,
+// with the groups nobody is in any more: once a day, first ten minutes in.
+function agentReadPruneGroups() {
+  agentReadApply(agentReadLib.pruneGroups(agentRead, { listed: key => agentReadLib.isListed(agentRead, key, index[key] ? index[key].mtimeMs : 0) }));
+}
+setTimeout(agentReadPruneGroups, 10 * 60 * 1000).unref();
+setInterval(agentReadPruneGroups, 24 * 3600 * 1000).unref();
+// A name for a group of conversations, from their titles (the picker asks
+// when the conversations come from several projects; one project names
+// itself). One short model call, made when a person asks.
+async function suggestGroupName(keys, identity) {
+  const can = receiverFor(identity);
+  const entries = keys.filter(k => index[k] && can.key(k)).slice(0, 12).map(k => index[k]);
+  if (!entries.length) throw Object.assign(new Error('no conversation to name'), { status: 400 });
+  const titles = entries.map(e => String(e.title || e.timelineTitle || '').slice(0, 120)).filter(Boolean);
+  const projects = [...new Set(entries.map(e => projectOfEntry(e)).filter(p => p && p !== LOOSE_PROJECT && p !== '?'))];
+  const existing = [...new Set(Object.values(agentRead.groups).map(g => g.name))].slice(0, 40);
+  const { outputs } = await aiProgram('group_name', { conversation_titles: titles, projects, existing_group_names: existing }, { timeoutMs: 30000, thinking: 'off' });
+  const name = String(outputs.name || '').replace(/\s+/g, ' ').trim().replace(/[.。]+$/, '').slice(0, agentReadLib.GROUP_NAME_MAX);
+  if (!name) throw new Error('the model returned no name');
+  return { name };
+}
 async function agentReadDelegated(keys) {
   const merged = { read: {} };
   let any = false;
@@ -17067,6 +17098,8 @@ const APP_FILES = {
     '/delegation-ui.js': { file: 'delegation-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/filesmode.js': { file: 'filesmode.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/open-files.js': { file: 'open-files.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/list-groups.js': { file: 'list-groups.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/list-groups.css': { file: 'list-groups.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
     '/navigation.js': { file: 'navigation.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/timeline-chart.js': { file: 'timeline-chart.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/timeline-controls.js': { file: 'timeline-controls.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
@@ -19950,6 +19983,13 @@ async function handleRequest(req, res) {
         const { refused } = openFilesApply(identity, JSON.parse(body || '{}'));
         json(res, 200, { ...openFilesFor(identity), refused });
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/agent-read/group-name' && req.method === 'POST') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      try {
+        const p = JSON.parse(body || '{}');
+        json(res, 200, await suggestGroupName((Array.isArray(p.keys) ? p.keys : []).map(String), identity));
+      } catch (e) { json(res, e.status || 502, { error: e.message }); }
     } else if (u.pathname === '/api/agent-read' && req.method === 'GET') {
       const receiver = receiverFor(identity);
       json(res, 200, receiver.all ? agentRead : policy.eventView({ type: 'agent-read', ...agentRead }, { ...receiver, member: true }));
@@ -19974,6 +20014,8 @@ async function handleRequest(req, res) {
         // { restore: [keys] } undoes a close.
         if (Array.isArray(p.restore)) agentReadRestore(p.restore.map(String));
         if (p.pin && typeof p.pin === 'object') agentReadPin(p.pin);
+        // { grouping: { groups: { id: {…} | 0 }, member: { key: id | '' } } } (design/96).
+        if (p.grouping && typeof p.grouping === 'object') agentReadGroups(p.grouping, identity);
         json(res, 200, agentRead);
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/voice/state' && req.method === 'GET') {
