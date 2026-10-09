@@ -277,7 +277,11 @@ $DOMAIN, previews.$DOMAIN {
 	reverse_proxy 127.0.0.1:$RELAY_PORT
 }
 $CADDY_SITES
+
+# Other sites this machine also serves, one file each (not managed by this script).
+import /etc/caddy/conf.d/*.caddy
 EOF
+install -d -m 0755 -o root -g root /etc/caddy/conf.d
 # With the admin API off there is no reload: a change is a restart.
 write /etc/systemd/system/caddy.service.d/10-relay.conf 0644 root:root <<'EOF' && systemctl daemon-reload || true
 [Service]
