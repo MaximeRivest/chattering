@@ -13320,7 +13320,11 @@ async function startBrowserAgentSpeech() {
       // Same origin: the server relays to the speech stage. A direct LAN
       // address here breaks phones on Tailscale and every HTTPS page.
       const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(scheme + '//' + location.host + '/api/speech/stream');
+      // interim: the words while they are said (a preview every 0.7 s of
+      // speech), not only at each pause, which left whole sentences
+      // unseen while the person talked on. Not on e-ink, where every
+      // preview is a screen refresh: there, pauses only.
+      const ws = new WebSocket(scheme + '//' + location.host + '/api/speech/stream' + (isEink() ? '' : '?interim=700'));
       ws.binaryType = 'arraybuffer';
       state.ws = ws;
       ws.onopen = () => {

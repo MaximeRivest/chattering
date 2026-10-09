@@ -20871,11 +20871,15 @@ function speechStreamUpgrade(req, socket, head) {
     return;
   }
   const target = new URL(speechUrl());
+  // What the page may ask of the speech service: interim=<ms>, a preview
+  // during speech as well as at pauses. Nothing else of the page's query
+  // reaches it.
+  const interim = /^\d{1,5}$/.test(u.searchParams.get('interim') || '') ? '?interim=' + u.searchParams.get('interim') : '';
   const upstream = net.connect(Number(target.port) || 80, target.hostname);
   const drop = () => { try { socket.destroy(); } catch {} try { upstream.destroy(); } catch {} };
   upstream.on('connect', () => {
     const lines = [
-      'GET /stream HTTP/1.1',
+      `GET /stream${interim} HTTP/1.1`,
       `Host: ${target.host}`,
       'Upgrade: websocket',
       'Connection: Upgrade',
