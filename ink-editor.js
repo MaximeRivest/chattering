@@ -107,6 +107,7 @@
           ${typeof Pair !== 'undefined' && ws.placement !== 'beside' ? '<button type="button" id="inkBeside">☷ A conversation beside</button>' : ''}
           ${ws.project ? '<button type="button" id="liveBrowse">Browse this folder</button>' : ''}
           <span class="ink-menu-hint">Pen writes · finger scrolls · ${e(modKey('Z'))} undoes</span>
+          <span class="ink-menu-hint" id="inkPenMode"></span>
         </div></details>
       </header>
       <div class="fw-banner" id="fwBanner" hidden></div>
@@ -204,7 +205,19 @@
     if ($('liveBrowse')) $('liveBrowse').onclick = () => liveFileBrowseFolder(v.ws);
     const more = root.querySelector('.ink-more');
     // The app's pen overlay must not take the pen while the menu is over the page.
-    more.addEventListener('toggle', () => native(v, !more.open));
+    more.addEventListener('toggle', () => { native(v, !more.open); if (more.open) paintPenMode(); });
+  }
+  // Which pen draws here, said plainly: the way to tell an app update took.
+  function paintPenMode() {
+    const el = $('inkPenMode');
+    if (!el) return;
+    const n = nativeInk();
+    let fast = false;
+    try { fast = !!(n && typeof n.fastNib === 'function' && n.fastNib()); } catch {}
+    el.textContent = !n ? (window.ChatteringInk ? 'Pen drawn by the page (an older app: update it for the fast pen)' : 'Pen drawn by the page')
+      : fast ? 'Pen: the e-ink fast layer'
+      : typeof n.fastNib === 'function' ? 'Pen drawn by the app (on e-ink, the fast layer starts with your first line)'
+      : 'Pen drawn by the app';
   }
   function closeMenu(v) { const m = v.root.querySelector('.ink-more'); if (m && m.open) m.open = false; }
   function setTool(v, tool) { v.tool = tool; v.root.dataset.tool = tool; paintTools(v); native(v, true); }
