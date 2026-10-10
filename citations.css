@@ -1,0 +1,118 @@
+/* citations.css — numbered citations, their paper card, the reference list
+   (citations.js, design/97-citations.md). Meaning never rides on colour
+   alone: a problem also changes the shape (a "!" and a bold edge), so the
+   e-ink theme keeps it. */
+
+/* ---- the number in the text ---- */
+.md .cite {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 1.6em; height: 1.45em; min-height: 0; padding: 0 .45em; margin: 0 1px;
+  font: 600 .74em/1 var(--font); font-variant-numeric: tabular-nums;
+  vertical-align: .18em;
+  color: var(--cyan);
+  background: color-mix(in srgb, var(--cyan) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cyan) 30%, transparent);
+  border-radius: var(--r-pill);
+  cursor: pointer; white-space: nowrap; position: relative;
+}
+/* A finger gets a larger target than the eye sees: the number stays small
+   so it never pushes the lines of text apart. */
+.md .cite::before { content: ''; position: absolute; inset: -6px -3px; }
+.md .cite:hover, .md .cite[aria-expanded="true"] { background: color-mix(in srgb, var(--cyan) 26%, transparent); border-color: var(--cyan); }
+.md .cite:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.md .cite.problem { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); border-color: var(--danger); }
+.md .cite.problem::after { content: '!'; margin-left: .25em; font-weight: 800; }
+@media (pointer: coarse) { .md .cite::before { inset: -10px -6px; } .cite-close { width: 40px; height: 40px; } }
+
+/* The word before a number, the number and its punctuation: one piece. */
+.md .cite-nb { white-space: nowrap; }
+
+/* A link to a paper (doi.org, openalex.org) previews its card on hover. */
+.md a.paper-link { text-decoration-style: dotted; text-underline-offset: 2px; }
+
+/* ---- the card ---- */
+.cite-pop {
+  position: fixed; z-index: 10030; overflow: auto; overscroll-behavior: contain;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: var(--r-menu);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, .28), 0 2px 6px rgba(0, 0, 0, .18);
+  font: 14px/1.45 var(--font);
+}
+.cite-pop[hidden] { display: none; }
+/* A narrow screen gets the card as a sheet from the bottom edge. */
+.cite-pop.sheet { left: 8px !important; right: 8px; width: auto !important; top: auto !important; bottom: calc(8px + env(safe-area-inset-bottom, 0px)); max-height: 70vh !important; border-radius: var(--r-dialog); }
+.cite-close {
+  position: sticky; top: 0; float: right; margin: -4px -6px 0 8px; width: 32px; height: 32px; min-height: 0; padding: 0;
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-pill);
+  color: var(--text-dim); font: 18px/1 var(--font); cursor: pointer; z-index: 1;
+}
+.cite-close:hover { color: var(--text); border-color: var(--border-strong); }
+.cite-pop-in { padding: 12px 14px; }
+.cite-paper + .cite-paper { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.cite-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 4px; }
+.cite-num {
+  font: 600 11px/1 var(--font); font-variant-numeric: tabular-nums;
+  color: var(--text-dim); border: 1px solid var(--border-strong); border-radius: var(--r-pill); padding: 3px 7px;
+}
+.cite-badge {
+  font: 600 10.5px/1 var(--font); letter-spacing: .02em; text-transform: uppercase;
+  color: var(--text-dim); background: var(--surface-2); border-radius: var(--r-sm); padding: 4px 6px;
+}
+.cite-badge.strong { color: var(--cyan); background: color-mix(in srgb, var(--cyan) 14%, transparent); }
+.cite-badge.danger { color: var(--bg); background: var(--danger); }
+.cite-title { display: block; color: var(--text); font-weight: 600; font-size: 15px; line-height: 1.35; text-decoration: none; }
+.cite-title:hover { text-decoration: underline; }
+.cite-authors, .cite-meta { color: var(--text-dim); font-size: var(--fs-meta, 12px); margin-top: 3px; }
+.cite-abstract { margin-top: 8px; font-size: 13px; line-height: 1.55; color: var(--text); }
+.cite-abstract.clipped {
+  max-height: 6.4em; overflow: hidden;
+  -webkit-mask-image: linear-gradient(#000 60%, transparent); mask-image: linear-gradient(#000 60%, transparent);
+}
+.cite-more, .cite-goto, .cite-retry {
+  background: none; border: 0; padding: 4px 0; font: inherit; font-size: var(--fs-meta, 12px);
+  color: var(--cyan); cursor: pointer;
+}
+.cite-more:hover, .cite-goto:hover, .cite-retry:hover { text-decoration: underline; }
+.cite-goto { display: block; margin-top: 10px; padding-top: 8px; width: 100%; text-align: left; border-top: 1px solid var(--border); border-radius: 0; }
+.cite-links { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 8px; font-size: var(--fs-meta, 12px); }
+.cite-links a { color: var(--cyan); text-decoration: none; }
+.cite-links a:hover { text-decoration: underline; }
+.cite-note { margin: 6px 0 0; font-size: 13px; color: var(--text-dim); }
+.cite-note.warn { color: var(--warn); }
+.cite-note.danger { color: var(--danger); border-left: 3px solid var(--danger); padding-left: 8px; }
+.cite-src { margin: 8px 0 0; font-size: var(--fs-micro, 11px); color: var(--text-faint); }
+.cite-pop-in.many .cite-title { font-size: 14px; }
+
+/* ---- the reference list ---- */
+.md ol.cite-refs { list-style: none; padding-left: 0; margin: 10px 0; display: grid; gap: 8px; }
+.md .cite-ref { display: grid; grid-template-columns: 2.4em 1fr; gap: 0 8px; margin: 0; align-items: start; border-radius: var(--r-sm); transition: background-color .4s; }
+.md .cite-ref-n {
+  justify-self: end; margin-top: 2px;
+  font: 600 11px/1 var(--font); font-variant-numeric: tabular-nums;
+  color: var(--text-dim); border: 1px solid var(--border-strong); border-radius: var(--r-pill); padding: 3px 6px;
+}
+.md .cite-ref-body { min-width: 0; }
+.md .cite-ref-paper + .cite-ref-paper { margin-top: 4px; }
+.md .cite-ref-title { color: var(--text); font-weight: 500; text-decoration: none; margin-right: 6px; }
+.md .cite-ref-title:hover { text-decoration: underline; }
+.md .cite-ref-paper .cite-badge { vertical-align: 1px; margin-right: 4px; }
+.md .cite-ref-sub { color: var(--text-dim); font-size: var(--fs-meta, 12px); overflow-wrap: anywhere; }
+.md .cite-ref-ids { font-size: var(--fs-meta, 12px); overflow-wrap: anywhere; }
+.md .cite-ref-ids a { color: var(--text-dim); margin-right: 8px; }
+.md .cite-ref-label { color: var(--text-dim); }
+.md .cite-ref .cite-note { margin-top: 2px; font-size: var(--fs-meta, 12px); }
+.md .cite-ref.problem .cite-ref-n { color: var(--danger); border-color: var(--danger); border-width: 2px; }
+.md .cite-ref.problem .cite-ref-title { text-decoration: line-through; text-decoration-thickness: 1px; }
+.md .cite-ref.flash { background: color-mix(in srgb, var(--cyan) 18%, transparent); }
+
+/* ---- e-ink: no tints, no shadows, edges in ink ---- */
+:root[data-theme-mode="binary"] .md .cite { color: var(--text); background: transparent; border-color: var(--text); }
+:root[data-theme-mode="binary"] .md .cite[aria-expanded="true"] { background: var(--text); color: var(--bg); }
+:root[data-theme-mode="binary"] .md .cite.problem { border-width: 2px; color: var(--text); }
+:root[data-theme-mode="binary"] .cite-pop { box-shadow: none; border: 2px solid var(--text); }
+:root[data-theme-mode="binary"] .cite-badge { color: var(--text); background: transparent; border: 1px solid var(--text); }
+:root[data-theme-mode="binary"] .cite-badge.danger { color: var(--bg); background: var(--text); }
+:root[data-theme-mode="binary"] .cite-abstract.clipped { -webkit-mask-image: none; mask-image: none; }
+:root[data-theme-mode="binary"] .cite-note.danger, :root[data-theme-mode="binary"] .cite-note.warn { color: var(--text); font-weight: 600; }
+:root[data-theme-mode="binary"] .md .cite-ref.flash { background: transparent; outline: 2px solid var(--text); }
+@media (prefers-reduced-motion: reduce) { .md .cite-ref { transition: none; } }

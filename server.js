@@ -9927,6 +9927,14 @@ function matchArgsToKey(args) {
   return null;
 }
 
+// Cited papers for the citation cards (papers.js, design/97): built on
+// first use; answers are kept in the cache folder.
+let papersInstance = null;
+function papersApi() {
+  if (!papersInstance) papersInstance = require('./papers.js').createPapers({ cacheFile: path.join(CACHE_DIR, 'papers-cache.json'), log: m => console.error(m) });
+  return papersInstance;
+}
+
 // Records read API (records.js): built once, on first use, after every
 // function it needs exists. Mutable state goes in as getters.
 let recordsApiInstance = null;
@@ -17139,6 +17147,8 @@ const APP_FILES = {
     '/artifacts.js': { file: 'artifacts.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/shares-ui.js': { file: 'shares-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/document-look.js': { file: 'document-look.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/citations.js': { file: 'citations.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/citations.css': { file: 'citations.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
     '/document-editor.css': { file: 'document-editor.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
     '/made-panel.js': { file: 'made-panel.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/step-changes-ui.js': { file: 'step-changes-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
@@ -20692,6 +20702,13 @@ async function handleRequest(req, res) {
       // (a phone that slept, a network that changed) and reconnect.
       const beat = setInterval(() => { try { res.write('event: ping\ndata: {}\n\n'); } catch {} }, 25000);
       req.on('close', () => { clearInterval(beat); sseByConn.delete(conn); docFollowDetach(conn); programLiveUnfollow(conn); if (presence.remove(conn)) broadcastPresence(); });
+    } else if (u.pathname === '/api/papers' && req.method === 'GET') {
+      // What the papers an answer cites are: ids=a,b,c (DOI, W-number, PMCID).
+      const ids = (u.searchParams.get('ids') || '').split(/[\s,]+/).filter(Boolean);
+      if (!ids.length) return json(res, 400, { error: 'ids is required' });
+      if (ids.length > require('./papers.js').MAX_REFS) return json(res, 400, { error: 'at most 100 ids at once' });
+      try { json(res, 200, await papersApi().lookup(ids)); }
+      catch (e) { json(res, 500, { error: e.message }); }
     } else if (u.pathname.startsWith('/api/records/') && req.method === 'GET') {
       // The agent-facing read API: same text the CLI and the Pi tools print.
       // Failures are plain text too, so a shell or a tool call reads them as is.

@@ -17,6 +17,8 @@
 <link rel="stylesheet" href="/tokens.css">
 <link rel="stylesheet" href="/surfaces.css">
 <script src="/document-look.js"></script>
+<script src="/citations.js"></script>
+<link rel="stylesheet" href="/citations.css">
 <script>
 // Is `file` the folder `root` or inside it? Paths arrive as the server's
 // system writes them: C:\work\a on Windows, /home/u/a elsewhere. Either
@@ -14875,6 +14877,10 @@ function mdRender(src, q = '') {
     .replace(/[\ue200-\ue2ff]/g, '');
   // Multi-word queries mark each term (matching the AND search semantics).
   const qr = q ? termRegex(q) : null;
+  // Numbered citations (citations.js): null until the scan below finds a
+  // reference list; false where the module is not loaded.
+  let cites = typeof Citations !== 'undefined' ? null : false;
+  const proseParts = [];
   const mark = h => qr ? h.replace(qr, m => `<mark>${m}</mark>`) : h;
   // Every link form in one pass, so nothing is linked twice: markdown links
   // to any target, bare absolute file paths, bare URLs.
@@ -14894,9 +14900,15 @@ function mdRender(src, q = '') {
   // punctuation. Matches are taken from text esc() already encoded (quotes
   // included), so they go straight into attributes: encoding them again
   // would turn one "&amp;" into "&amp;amp;".
+  // A link to a paper (doi.org, openalex.org) shows the paper's card on
+  // hover (citations.js).
+  const paperAttrs = url => {
+    const id = cites !== false && typeof Citations !== 'undefined' ? Citations.idOfUrl(url) : '';
+    return id ? ` class="paper-link" data-cite-ids="${id}"` : '';
+  };
   const pathButton = (p, label) => `<button type="button" class="msg-path" data-transcript-path="${p}" title="Open ${p}">${label}</button>`;
   const mdLink = (text, target) => {
-    if (/^(?:https?:\/\/|mailto:)/i.test(target)) return `<a href="${target}" target="_blank" rel="noopener">${text}</a>`;
+    if (/^(?:https?:\/\/|mailto:)/i.test(target)) return `<a href="${target}" target="_blank" rel="noopener"${paperAttrs(target)}>${text}</a>`;
     if (/^(?:~\/|\/|[A-Za-z]:[\\/])/.test(target)) return pathButton(target, text);
     if (target.startsWith('#') || /[<>&]/.test(target)) return text;
     return `<a class="md-file" data-path-candidate="${target.replace(/^\.\//, '')}" title="${target}">${text}</a>`;
@@ -14914,7 +14926,7 @@ function mdRender(src, q = '') {
         if (last === ')' && (url.split('(').length - 1) < (url.split(')').length - 1)) { tail = last + tail; url = url.slice(0, -1); continue; }
         break;
       }
-      return `${pre}<a href="${url}" target="_blank" rel="noopener">${url}</a>${tail}`;
+      return `${pre}<a href="${url}" target="_blank" rel="noopener"${paperAttrs(url)}>${url}</a>${tail}`;
     });
   // A code span that reads like a relative file (`README.md`, `src/a.py:12`,
   // `plans/`) is only a candidate here. The conversation view asks the
@@ -14926,11 +14938,14 @@ function mdRender(src, q = '') {
   };
   // Links run last: bold, italic, and code are already tags, so a URL or
   // link after "<b>" still links and a link's own text is never re-linked.
-  const inline = s => linkify(mark(esc(s))
+  const inlineBase = s => linkify(mark(esc(s))
     .replace(/`([^`]+)`/g, (_, c) => codeSpan(c))
     .replace(/\*\*((?:[^*]|\*(?!\*))+?)\*\*/g, '<b>$1</b>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<i>$2</i>')
     .replace(/~~([^~]+)~~/g, '<s>$1</s>'));
+  // [n] markers whose numbers the message's reference list defines become
+  // buttons for the paper card (citations.js); others stay text.
+  const inline = s => cites ? cites.chips(inlineBase(s)) : inlineBase(s);
   const out = [];
   // lists is a stack of open lists: nesting follows the source indentation.
   let lists = [], quote = [], table = [];
@@ -14967,7 +14982,11 @@ function mdRender(src, q = '') {
       table = [];
     }
   };
-  const closeBlocks = () => { while (lists.length) closeList(); flushQT(); };
+  // The reference list: consecutive reference lines (blank lines between
+  // them allowed) make one <ol>, closed by any other block.
+  let refItems = [];
+  const flushRefs = () => { if (refItems.length) { out.push(`<ol class="cite-refs">${refItems.join('')}</ol>`); refItems = []; } };
+  const closeBlocks = () => { while (lists.length) closeList(); flushQT(); flushRefs(); };
   // Task boxes: "- [ ] todo" / "- [x] done" render as disabled checkboxes.
   const liHtml = s => {
     const t = s.match(/^\[([ xX])\]\s+(.*)$/);
@@ -14978,6 +14997,13 @@ function mdRender(src, q = '') {
   const renderText = part => {
     for (const line of part.split('\n')) {
       let m;
+      const defs = cites ? cites.parseLine(line) : null;
+      if (defs) {
+        if (!refItems.length) { while (lists.length) closeList(); flushQT(); }
+        for (const d of defs) refItems.push(cites.refItem(d, inlineBase));
+        continue;
+      }
+      if (refItems.length && line.trim()) flushRefs();
       if (/^\s*\|.*\|\s*$/.test(line)) { while (lists.length) closeList(); if (quote.length) { out.push(`<blockquote>${quote.join('')}</blockquote>`); quote = []; } table.push(line); continue; }
       if (table.length) flushQT();
       if ((m = line.match(/^(#{1,6})\s+(.*)$/))) { closeBlocks(); out.push(`<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`); continue; }
@@ -14994,6 +15020,11 @@ function mdRender(src, q = '') {
     }
   };
   const parts = src.split(/^(```.*)$/m);
+  for (let i = 0; i < parts.length; i++) {
+    if (/^```/.test(parts[i])) { i += 2; continue; }
+    if (cites !== false) proseParts.push(parts[i]);
+  }
+  if (proseParts.length) cites = Citations.scan(proseParts);
   for (let i = 0; i < parts.length; i++) {
     if (/^```/.test(parts[i])) {
       closeBlocks();

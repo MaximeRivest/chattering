@@ -149,6 +149,8 @@ const ROUTES = {
   '/api/distill-stream': 'member',
   '/api/distill/save': 'member',
   '/api/records/*': 'member',
+  // Public paper records for citation cards: nothing private goes out.
+  'GET /api/papers': 'guest',
   '/api/notes': 'member',
   '/api/notefile': 'member',
   '/api/evidence': 'member',
