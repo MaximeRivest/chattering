@@ -198,12 +198,13 @@ async function showFilesBrowser(project, opts = {}) {
     <div class="fb-toolbar fb-browse-bar"><select id="fbRoot" aria-label="Repository" hidden></select><label><input id="fbOnly" type="checkbox"> Changed only</label>
       <div class="fb-finder" id="fbFinder"><form id="fbSearchForm" role="search"><svg aria-hidden="true" viewBox="0 0 16 16"><circle cx="6.5" cy="6.5" r="4.5"/><path d="m10 10 4 4"/></svg><input id="fbSearch" type="search" disabled placeholder="Go to file" aria-label="Go to file" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="fbFinderList" aria-keyshortcuts="T" autocomplete="off" spellcheck="false"><kbd aria-hidden="true">T</kbd></form>
         <div id="fbFinderPopup" class="fb-finder-popup" hidden><div class="fb-finder-tools"><select id="fbFindMode" aria-label="Search mode"><option value="files">File names</option><option value="contents">File contents</option></select><span>Entire repository</span><button id="fbFindSubmit" type="button" hidden>Search</button></div><div id="fbFinderList" role="listbox" aria-label="Matching files and folders"></div><div id="fbFinderStatus" role="status"></div><div class="fb-finder-help">↑ ↓ select · Enter open · Esc close</div></div>
-      </div><button id="fbNew">+ Document</button></div>
+      </div><button id="fbNew">+ Document</button>${typeof InkNotes !== 'undefined' ? '<button id="fbInk" title="A page to write on with a pen, kept in documents/handwritten/">✎ Handwritten note</button>' : ''}</div>
     <div id="fbNotice" role="status"></div><div id="fbBody">Loading files…</div>
   </section>`;
   $('fbConversation')?.addEventListener('click', () => open(s.conv, 'restore'));
   $('fbSummary')?.addEventListener('click', () => showProjectOverview(project));
   $('fbNew').onclick = () => createProjectDocument(project);
+  if ($('fbInk')) $('fbInk').onclick = () => InkNotes.create(project);
   $('fbRefresh').onclick = () => fbLoad(s);
   $('fbRange').value = s.range; $('fbActor').value = s.actor;
   $('fbOnly').checked = s.only;

@@ -504,7 +504,7 @@ const OpenFiles = (() => {
   const isRowKey = key => typeof key === 'string' && key.startsWith(KEY_PREFIX);
   const pathOfKey = key => isRowKey(key) ? key.slice(KEY_PREFIX.length) : null;
   function tinyAgeOf(ms) { return typeof tinyAge === 'function' ? tinyAge(ms) : Math.round(ms / 1000) + 's'; }
-  const KIND_GLYPH = { md: ['▤', 'Document or notebook'], code: ['‹›', 'Code or text'], image: ['◩', 'Image'], video: ['▷', 'Video'], pdf: ['▯', 'PDF'] };
+  const KIND_GLYPH = { md: ['▤', 'Document or notebook'], code: ['‹›', 'Code or text'], image: ['◩', 'Image'], video: ['▷', 'Video'], pdf: ['▯', 'PDF'], ink: ['✎', 'Handwritten note'] };
   const kindOf = path => typeof fileWsKind === 'function' ? fileWsKind(path) : /\.(md|markdown|qmd|rmd|mdx)$/i.test(path) ? 'md' : 'code';
 
   // The rows in the order they show: the kept files, newest first, and a

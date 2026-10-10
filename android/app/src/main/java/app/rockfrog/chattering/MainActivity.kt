@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.Uri
+import android.graphics.RectF
 import android.graphics.Bitmap
 import android.net.http.SslError
 import android.os.Build
@@ -113,6 +114,15 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun clearAll() {
             runOnUiThread { ink.clearAll() }
+        }
+        /** Where the pen writes, in css pixels of the page (design/98). */
+        @JavascriptInterface
+        fun setRegion(left: Float, top: Float, right: Float, bottom: Float) {
+            runOnUiThread { ink.region = if (right > left && bottom > top) RectF(left, top, right, bottom) else null }
+        }
+        @JavascriptInterface
+        fun setWidth(cssPx: Float) {
+            runOnUiThread { ink.setWidthCss(cssPx) }
         }
     }
     private lateinit var web: WebView
@@ -793,14 +803,23 @@ class MainActivity : AppCompatActivity() {
                 break
             }
         }
-        if (stylus) {
-            ink.requestUnbufferedDispatch(ev)
-            ink.feed(ev)
-            return true
-        }
-        if (ink.isDrawing()) {
-            ink.feed(ev)
-            return true
+        // The overlay draws in its own coordinates, which are the page's
+        // (both fill the same frame); the activity sees the window's.
+        val at = IntArray(2)
+        ink.getLocationInWindow(at)
+        val local = MotionEvent.obtain(ev)
+        local.offsetLocation(-at[0].toFloat(), -at[1].toFloat())
+        try {
+            val down = ev.actionMasked == MotionEvent.ACTION_DOWN || ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN
+            // A line starts only where the page writes; once started it is the
+            // overlay's to the end, wherever the pen goes.
+            if (ink.isDrawing() || (stylus && down && ink.inRegion(local.getX(local.actionIndex), local.getY(local.actionIndex)))) {
+                if (stylus) ink.requestUnbufferedDispatch(ev)
+                ink.feed(local)
+                return true
+            }
+        } finally {
+            local.recycle()
         }
         val finger = ev.getToolType(ev.actionIndex) == MotionEvent.TOOL_TYPE_FINGER
                 || ev.getToolType(ev.actionIndex) == MotionEvent.TOOL_TYPE_UNKNOWN

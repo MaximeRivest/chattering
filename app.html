@@ -354,6 +354,9 @@ body.side-layout .agent-compose { border-bottom: 0; }
 #sideNew { flex: 1 1 auto; min-width: 0; font-weight: 700; }
 #sideNewMore { flex: 0 0 auto; width: 28px; padding: 0; justify-content: center; color: var(--text-dim); }
 #sideNewMore[hidden] { display: none; }
+/* A handwritten note in one tap (design/98), once this device has a pen. */
+#sideInk { flex: 0 0 auto; width: 30px; padding: 0; justify-content: center; color: var(--text-dim); font-size: 15px; }
+#sideInk[hidden] { display: none; }
 #sideAgents { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 body.side-layout #agentsPop { position: static; width: auto; max-width: none; max-height: none; flex: 1 1 auto; min-height: 0; border: 0; padding: 0 var(--sp-1); overflow: auto; display: flex; flex-direction: column; }
 /* The dock: folded sections, traffic and notifications, at the bottom. */
@@ -2373,6 +2376,7 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
       <div class="side-new">
         <button id="sideNew" title="New conversation (C) — a blank page: no project memory, home folder, pi defaults">+ <span>new</span></button>
         <button id="sideNewMore" hidden title="Other ways to start" aria-haspopup="menu" aria-label="More ways to start">▾</button>
+        <button id="sideInk" hidden title="New handwritten note" aria-label="New handwritten note">✎</button>
       </div>
       <button id="sideArrange" type="button" title="Arrange the list: your groups, by project, tidy up (Shift+G)" aria-label="Arrange the list" aria-haspopup="menu"><svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3.5h12M2 7h8M5 10.5h9M5 13.5h9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
     </div>
@@ -2553,6 +2557,9 @@ if (!window.ListGroups) window.ListGroups = (() => {
 <link rel="stylesheet" href="/file-viewers.css">
 <script src="/table-view.js"></script>
 <link rel="stylesheet" href="/table-view.css">
+<script src="/ink-format.js"></script>
+<script src="/ink-editor.js"></script>
+<link rel="stylesheet" href="/ink-editor.css">
 <script src="/change-review-ui.js"></script>
 <script src="/review-locations-ui.js"></script>
 <link rel="stylesheet" href="/change-review.css">
@@ -17568,6 +17575,10 @@ function renderSideNew() {
   const p = sideNewProject();
   $('sideNew').querySelector('span').textContent = p ? 'new here' : 'new';
   $('sideNew').title = p ? 'New conversation in ' + p : 'New conversation (C) — a blank page: no project memory, home folder, pi defaults';
+  if ($('sideInk')) {
+    $('sideInk').hidden = !(typeof InkNotes !== 'undefined' && InkNotes.penSeen());
+    $('sideInk').title = 'New handwritten note' + (p ? ' in ' + p : '');
+  }
   $('sideNewMore').hidden = !p;
   const scope = workspaceScope();
   $('sideProject').querySelector('span').textContent = ProjectScope.label(scope);
@@ -17657,12 +17668,15 @@ $('homeFilters').onclick = e => { e.stopPropagation(); toggleHomeFilters(); };
 new MutationObserver(() => $('homeFilters').setAttribute('aria-expanded', String(!$('filtersPop').hidden)))
   .observe($('filtersPop'), { attributes: true, attributeFilter: ['hidden'] });
 $('sideNew').onclick = startScopedConversation;
+if ($('sideInk')) $('sideInk').onclick = () => InkNotes.create(sideNewProject());
 for (const b of [$('sideArrange'), $('agentsSheetArrange')]) b.onclick = e => { e.stopPropagation(); ListGroups.arrangeMenu(b); };
 $('sideNewMore').onclick = e => {
   e.stopPropagation();
   closeFileActionMenu();
   const p = sideNewProject();
   const items = [['New here · ' + p, startScopedConversation], ['New, no project', () => startLooseConversation()]];
+  // A handwritten note (design/98), before "New project…" when there is one.
+  if (typeof InkNotes !== 'undefined') { const at = items.findIndex(i => i[0] === 'New project…'); items.splice(at < 0 ? items.length : at, 0, ['✎ Handwritten note' + (p ? ' · ' + p : ''), () => InkNotes.create(p)]); }
   const menu = document.createElement('div');
   menu.className = 'file-action-menu ag-menu';
   menu.setAttribute('role', 'menu');

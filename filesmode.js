@@ -29,6 +29,8 @@ let fileWsSeq = 0;
 
 const MD_EXT = /\.(md|markdown|qmd|rmd|mdx)$/i;
 function fileWsKind(p) {
+  // A handwritten note (ink-editor.js, design/98) before any other SVG.
+  if (/\.ink\.svg$/i.test(String(p || ''))) return 'ink';
   if (/\.(png|jpe?g|gif|webp|avif|bmp|ico)$/i.test(String(p || ''))) return 'image';
   if (/\.(mp4|m4v|webm|ogv|mov)$/i.test(String(p || ''))) return 'video';
   if (/\.pdf$/i.test(String(p || ''))) return 'pdf';
@@ -214,6 +216,8 @@ function fileWsCloseEditor({ keepDraft = true, park = false } = {}) {
   fileWs.live?.dispose?.();
   fileWs.imageView?.dispose();
   fileWs.mediaView?.dispose();
+  fileWs.inkView?.dispose(); // saves what the pen wrote, then lets go
+  fileWs.inkView = null;
   fileWs.htmlPreview?.dispose();
   fileWs.tableView?.dispose();
   fileWs.tableView = null;
@@ -389,6 +393,8 @@ async function fileWsMountBody(ws, opts) {
   if (ws.kind === 'image') await liveFileMountImage(ws);
   else if (ws.kind === 'video') await liveFileMountVideo(ws);
   else if (ws.kind === 'pdf') await liveFileMountPDF(ws);
+  // A page served before ink-editor.js existed opens the note as its SVG text.
+  else if (ws.kind === 'ink' && typeof InkNotes !== 'undefined') await InkNotes.mount(ws);
   else if (ws.kind === 'md') await fileWsMountMarkdown(ws, opts);
   else await fileWsMountCode(ws, opts);
 }

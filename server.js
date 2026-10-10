@@ -31,6 +31,7 @@ const snippetsLib = require('./snippets.js');
 const memoryFingerprint = require('./memory-fingerprint.js');
 const { openSearchIndex, SearchIndex } = require('./searchindex.js');
 const foldsLib = require('./projectfolds.js');
+const inkNotes = require('./ink-notes.js');
 const areasLib = require('./areas.js');
 const gitmeta = require('./gitmeta.js');
 const lineDiff = require('./linediff.js');
@@ -13298,7 +13299,9 @@ async function editableFilePath(pathValue, key = '') {
   }
   if (!st) throw new Error('file not found on disk');
   if (!st.isFile()) throw new Error('not a regular file');
-  if (st.size > FILE_EDIT_MAX) throw new Error('file too large to edit here');
+  // A handwritten note (design/98) is a long SVG; it must never become
+  // unopenable as it grows.
+  if (st.size > (inkNotes.isInkPath(abs) ? inkNotes.INK_EDIT_MAX : FILE_EDIT_MAX)) throw new Error('file too large to edit here');
   const inside = root => root && (abs === root || abs.startsWith(root.endsWith(path.sep) ? root : root + path.sep));
   // Fast path: the cached repository list and indexed conversation
   // directories answer without spawning any git process. The full
@@ -13795,6 +13798,24 @@ async function docCreateResponse(body) {
   return { ok: true, path: abs, project };
 }
 
+// A new handwritten note (design/98, ink-notes.js): in the project's
+// documents/handwritten/, or in the notes folder without a project. The
+// person who makes it must be able to act in that project.
+async function inkNewResponse(body, identity) {
+  const project = String(body.project || '');
+  let folder;
+  if (project) {
+    const meta = projectMetaFor(project);
+    if (!meta || !meta.cwd) throw Object.assign(new Error('project not found'), { status: 404 });
+    folder = inkNotes.folderFor(meta.cwd);
+  } else folder = inkNotes.looseFolder(NOTES_DIR);
+  assertPathAccess(identity, folder, 'act');
+  const out = await inkNotes.create({ folder, when: body.when, tzOffset: body.tzOffset, title: body.title, paper: body.paper });
+  await recordDocEdit({ ts: Date.now(), path: out.path, action: 'create', actor: 'human', input: 'pen', added: 0, removed: 0, sha: sha256Hex(out.text), user: identity && identity.user ? identity.user.id : undefined });
+  recentFilesTouch(out.path, { project, kind: 'saved', actor: 'human' });
+  return { ok: true, path: out.path, project, sha: sha256Hex(out.text), text: out.text };
+}
+
 // Cheap document catalog for the project documents surface: every markdown
 // file in the project's repositories (tracked + untracked), newest first,
 // with the 24h activity badge from the durable activity index.
@@ -13838,7 +13859,7 @@ async function docAssetResponse(docPath, src) {
 // Notes, epics, and project-memory documents are markdown under NOTES_DIR.
 // A Markdown file under ~/notes/chattering (notes, epics, project memory).
 function isNotesDocument(abs) {
-  return abs.startsWith(NOTES_DIR + path.sep) && /\.md$/i.test(abs);
+  return abs.startsWith(NOTES_DIR + path.sep) && (/\.md$/i.test(abs) || inkNotes.isLooseNote(abs, NOTES_DIR));
 }
 
 // ---- trust: the vouch ledger ----
@@ -17133,6 +17154,10 @@ const APP_FILES = {
     '/file-viewers.css': { file: 'file-viewers.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
     '/table-view.js': { file: 'table-view.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/table-view.css': { file: 'table-view.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/ink-format.js': { file: 'ink-format.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/ink-editor.js': { file: 'ink-editor.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/ink-editor.css': { file: 'ink-editor.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/table-view.css': { file: 'table-view.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
     '/html-preview.js': { file: 'html-preview.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/pdf-viewer-config.js': { file: 'pdf-viewer-config.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/pdf-viewer.css': { file: 'pdf-viewer.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
@@ -18239,6 +18264,11 @@ async function handleRequest(req, res) {
       for await (const chunk of req) body += chunk;
       try { json(res, 200, await docCreateResponse(JSON.parse(body || '{}'))); }
       catch (e) { json(res, 400, { error: e.message }); }
+    } else if (u.pathname === '/api/ink/new' && req.method === 'POST') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      try { json(res, 200, await inkNewResponse(JSON.parse(body || '{}'), identity)); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/project/docs' && req.method === 'GET') {
       try { json(res, 200, await projectDocsResponse(u.searchParams.get('name') || '')); }
       catch (e) { json(res, e.message === 'project not found' ? 404 : 500, { error: e.message }); }

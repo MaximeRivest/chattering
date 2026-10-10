@@ -243,6 +243,7 @@ const ROUTES = {
   '/api/git/file-history/interval': 'member',
   '/api/git/file-feedback': 'member',
   '/api/doc/create': 'member',
+  '/api/ink/new': 'member', // design/98; the handler checks the project
   '/api/doc/asset': 'member',
   '/api/vouch/status': 'member',
   '/api/vouch/all': 'member',

@@ -1,0 +1,763 @@
+'use strict';
+// ink-editor.js — a handwritten note on screen (design/98).
+//
+// A note is a file like any other (ink-format.js): it opens in the file
+// view, stays in the side list under Open files, shows in recent files, and
+// can sit beside a conversation. This is the page you write on.
+//
+// Input, one rule per pointer kind:
+//   pen       writes (its eraser end, or the Eraser tool, erases);
+//   mouse     writes too (a Wacom tablet is a pen, a mouse is a slow one);
+//   finger    scrolls, 1:1, and never writes unless "Draw with a finger" is on;
+//             a hand resting on the screen while the pen is near is ignored.
+// The stroke being drawn goes on a canvas over the page (the cheapest
+// thing to add to, point by point); when the pen lifts it becomes a vector
+// path in the page's SVG and the canvas is cleared in the same frame, so the
+// line never blinks, on e-ink either. Finished strokes are SVG: sharp at any
+// size, no repainting the page, erased by removing one element.
+//
+// On the Android app with a pen, the app's own overlay draws the live line
+// (lower latency than the page can) inside the rectangle the page gives it,
+// and hands the finished stroke here (window.fileInkAcceptPacked). Toolbar,
+// menus and the rest of the screen keep the pen as a pointer.
+//
+// Saving: on its own, a moment after the pen stops, on leaving, and when
+// the tab hides. If another device saved the note meanwhile, the two are
+// merged (strokes added on both sides kept, strokes erased on either side
+// gone), never one over the other. A save that cannot reach the computer
+// keeps the note on this device and tries again.
+//
+// Later layers (design/98 "what comes next") plug in here: the page as a
+// picture (pageImage) for reading the writing and for AI commands on a
+// selection; an extra layer per page for what an AI adds, kept apart from
+// the pen so it can be erased as one.
+(function () {
+  const F = window.InkFormat;
+  if (!F) return;
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const PREF = 'chattering.ink.';
+  const WIDTHS = [{ w: 1.7, label: 'Fine' }, { w: 2.6, label: 'Medium' }, { w: 4.2, label: 'Bold' }];
+  const SAVE_AFTER_MS = 1400;
+  const PALM_MS = 900;       // a touch this soon after the pen was near is a hand
+  const PALM_SIZE = 46;      // css px: a contact wider than this is a hand
+  const pref = (k, d) => { try { const v = localStorage.getItem(PREF + k); return v == null ? d : v; } catch { return d; } };
+  const setPref = (k, v) => { try { localStorage.setItem(PREF + k, String(v)); } catch {} };
+  const e = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  const einkNow = () => typeof isEink === 'function' && isEink();
+  const draftKey = p => 'chattering.ink.draft:' + p;
+
+  let view = null; // the note on screen (one at a time, like the file view)
+
+  // A pen has been used on this device: the side list then offers a note
+  // in one tap (✎ beside + new). The e-ink tablet's app says so up front.
+  function penSeen() { return pref('pen', '') === '1' || document.documentElement.dataset.form === 'eink'; }
+  function notePen() {
+    if (pref('pen', '') === '1') return;
+    setPref('pen', '1');
+    if (typeof renderSideNew === 'function') renderSideNew();
+  }
+  window.addEventListener('pointerdown', ev => { if (ev.pointerType === 'pen') notePen(); }, { capture: true, passive: true });
+
+  // ---- a new note ----
+  async function create(project = '', opts = {}) {
+    const now = new Date();
+    const title = 'Note · ' + now.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }) + ' ' + now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    let out;
+    try { out = await postJson('/api/ink/new', { project: project || '', when: now.getTime(), tzOffset: now.getTimezoneOffset(), title, paper: pref('paper', F.DEFAULT_PAPER) }); }
+    catch { out = { error: 'Could not reach this computer. Check the connection and try again.' }; }
+    if (!out || out.error) { errToast(out && out.error === 'project not found' ? 'That project has no folder on this computer.' : (out && out.error) || 'Could not make the note'); return null; }
+    if (typeof OpenFiles !== 'undefined') OpenFiles.keep(out.path, project || '', 'pin');
+    if (opts.beside && typeof openLiveFileBeside === 'function') await openLiveFileBeside(out.path, { project: project || null, beside: opts.beside });
+    else await openLiveFile(out.path, { project: project || null, back: typeof currentHash !== 'undefined' ? currentHash : null });
+    return out.path;
+  }
+
+  // ---- mounting into the file view (filesmode.js calls this) ----
+  async function mount(ws) {
+    const host = $('ffCompare');
+    if (!host || fileWs !== ws) return;
+    ws.inkView?.dispose();
+    ws.readOnly = false;
+    const width = Number(pref('width', WIDTHS[1].w)) || WIDTHS[1].w;
+    host.innerHTML = `<div class="doc-view ink-view" data-tool="pen">
+      <header class="live-file-head ink-head">
+        <button id="liveBack" title="${e(liveBackLabel(ws).slice(2))}: return to the previous view"><span class="lf-back-arrow">←</span><span class="lf-wide">${e(liveBackLabel(ws).slice(2))}</span></button>
+        ${liveFileNameHtml(ws)}
+        <span id="docStatus" role="status">Opening…</span>
+        <div class="ink-tools" role="toolbar" aria-label="Writing tools">
+          <button type="button" data-ink-tool="pen" aria-pressed="true" title="Pen (P): write and draw">${icon('pen')}<span class="ink-label">Pen</span></button>
+          <button type="button" data-ink-tool="eraser" aria-pressed="false" title="Eraser (E): touch a line to remove it. The pen's eraser end works too">${icon('eraser')}<span class="ink-label">Eraser</span></button>
+          <span class="ink-widths" role="group" aria-label="Line width">${WIDTHS.map(o => `<button type="button" data-ink-width="${o.w}" aria-pressed="${o.w === width}" title="${o.label} line">${widthDot(o.w)}</button>`).join('')}</span>
+          <button type="button" id="inkUndo" disabled title="Undo (${e(modKey('Z'))})">${icon('undo')}</button>
+          <button type="button" id="inkRedo" disabled title="Redo (${e(modKey('Shift+Z'))})">${icon('redo')}</button>
+        </div>
+        <details class="live-more ink-more"><summary aria-label="Note options">⋯</summary><div>
+          <span class="ink-menu-label">Paper</span>
+          <div class="ink-papers" role="group" aria-label="Paper">${F.PAPERS.map(p => `<button type="button" data-ink-paper="${p}">${p[0].toUpperCase() + p.slice(1)}</button>`).join('')}</div>
+          <button type="button" id="inkFinger" aria-pressed="false">Draw with a finger</button>
+          <button type="button" id="inkAddPage">Add a page</button>
+          <button type="button" id="inkPng">Download this page as a picture</button>
+          ${typeof OpenFiles !== 'undefined' ? `<button type="button" data-keep-menu="${e(ws.path)}">${e(OpenFiles.menuLabel(ws.path))}</button>` : ''}
+          ${typeof Pair !== 'undefined' && ws.placement !== 'beside' ? '<button type="button" id="inkBeside">☷ A conversation beside</button>' : ''}
+          ${ws.project ? '<button type="button" id="liveBrowse">Browse this folder</button>' : ''}
+          <span class="ink-menu-hint">Pen writes · finger scrolls · ${e(modKey('Z'))} undoes</span>
+        </div></details>
+      </header>
+      <div class="fw-banner" id="fwBanner" hidden></div>
+      <div class="ink-stage">
+        <div class="ink-scroll" tabindex="0" aria-label="Handwritten note. Write with a pen or the mouse; scroll with a finger or the wheel."><div class="ink-pages"></div></div>
+        <canvas class="ink-live" aria-hidden="true"></canvas>
+      </div>
+    </div>`;
+    const root = host.querySelector('.ink-view');
+    const v = view = ws.inkView = {
+      ws, root, disposed: false, note: null, base: null, baseSha: '', rev: 0, savedRev: 0, saving: false, again: false, timer: 0,
+      tool: 'pen', width, finger: pref('finger', '0') === '1', undo: [], redo: [], pages: [], elOf: new WeakMap(),
+      scroll: root.querySelector('.ink-scroll'), pagesEl: root.querySelector('.ink-pages'), canvas: root.querySelector('.ink-live'),
+      status: $('docStatus'), cleanups: [], draw: null, pan: null, lastPen: 0, scale: 1,
+      dispose() { disposeView(v); },
+    };
+    $('liveBack').onclick = () => liveFileGoBack(ws);
+    wireHeader(v);
+    let d;
+    try { d = await (await fetch('/api/file/read?' + new URLSearchParams({ path: ws.path }))).json(); }
+    catch { d = { error: 'Could not reach this computer.' }; }
+    if (v.disposed || fileWs !== ws) return;
+    if (d.error) return fail(v, 'Could not open the note. ' + d.error);
+    let note;
+    try { note = F.parse(d.text); } catch (err) { return fail(v, 'This file is not a note Chattering can read: ' + err.message + '. It opens as text from Browse.'); }
+    v.base = F.parse(d.text); v.baseSha = d.sha; v.note = note;
+    restoreDraft(v, d);
+    showTitle(v);
+    ensureTrail(v);
+    layout(v);
+    renderAll(v);
+    wireInput(v);
+    wireLifecycle(v);
+    paintTools(v);
+    setStatus(v, v.rev !== v.savedRev ? 'Unsaved' : 'Saved');
+    if (typeof liveFileRememberOpen === 'function') liveFileRememberOpen(ws);
+    if (typeof liveFilePlaced === 'function' && ws.placement === 'beside') liveFilePlaced(ws);
+    // Opening a note puts you where you left it, else on its last page.
+    const at = Number(pref('place:' + ws.path, ''));
+    requestAnimationFrame(() => {
+      if (v.disposed) return;
+      if (Number.isFinite(at) && at > 0) v.scroll.scrollTop = at * v.scroll.scrollHeight;
+      else if (v.note.pages.length > 2) v.pages[v.note.pages.length - 2]?.el.scrollIntoView({ block: 'start' });
+      v.scroll.focus({ preventScroll: true });
+    });
+    native(v, true);
+  }
+
+  // The note's own name (its <title>) instead of the file's; a tap renames
+  // it. The file keeps its dated name, so links to it never break.
+  function showTitle(v) {
+    const el = $('ffTitle');
+    if (!el || v.disposed) return;
+    el.textContent = v.note.title || el.textContent;
+    el.classList.add('ink-title');
+    el.title = (v.note.title ? v.note.title + '\n' : '') + v.ws.path + '\nClick to rename';
+    el.onclick = () => {
+      const name = prompt('Name this note', v.note.title || '');
+      if (name == null || !name.trim() || name.trim() === v.note.title) return;
+      commit(v, { type: 'title', from: v.note.title, to: name.trim().slice(0, 200) });
+      v.note.title = name.trim().slice(0, 200);
+      showTitle(v);
+    };
+  }
+  function fail(v, text) {
+    v.status.textContent = 'Could not open';
+    v.pagesEl.innerHTML = `<p class="ink-message" role="alert">${e(text)}</p>`;
+  }
+  function setStatus(v, text) { if (!v.disposed && v.status) v.status.textContent = text; }
+
+  // ---- header ----
+  function icon(name) {
+    const paths = {
+      pen: '<path d="M3 13l1-3 7-7 2 2-7 7-3 1z"/><path d="M9.5 4.5l2 2"/>',
+      eraser: '<path d="M6 13h7"/><path d="M2.5 9.5l6-6 4 4-5.5 5.5H5z"/><path d="M5.5 6.5l4 4"/>',
+      undo: '<path d="M5 3L2 6l3 3"/><path d="M2 6h7a4 4 0 010 8H6"/>',
+      redo: '<path d="M11 3l3 3-3 3"/><path d="M14 6H7a4 4 0 000 8h3"/>',
+    };
+    return `<svg class="ink-icon" viewBox="0 0 16 16" aria-hidden="true">${paths[name]}</svg>`;
+  }
+  function widthDot(w) { const r = Math.min(5.5, 1 + w); return `<svg class="ink-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="${r}" class="ink-dot"/></svg>`; }
+
+  function wireHeader(v) {
+    const root = v.root;
+    root.querySelectorAll('[data-ink-tool]').forEach(b => b.onclick = () => setTool(v, b.dataset.inkTool));
+    root.querySelectorAll('[data-ink-width]').forEach(b => b.onclick = () => { v.width = Number(b.dataset.inkWidth); setPref('width', v.width); if (v.tool !== 'pen') setTool(v, 'pen'); paintTools(v); });
+    $('inkUndo').onclick = () => undo(v);
+    $('inkRedo').onclick = () => redo(v);
+    root.querySelectorAll('[data-ink-paper]').forEach(b => b.onclick = () => setPaper(v, b.dataset.inkPaper));
+    $('inkFinger').onclick = () => { v.finger = !v.finger; setPref('finger', v.finger ? '1' : '0'); paintTools(v); closeMenu(v); };
+    $('inkAddPage').onclick = () => { closeMenu(v); addPage(v); };
+    $('inkPng').onclick = () => { closeMenu(v); downloadPage(v); };
+    if ($('inkBeside')) $('inkBeside').onclick = () => { closeMenu(v); Pair.withConversation(v.ws); };
+    if ($('liveBrowse')) $('liveBrowse').onclick = () => liveFileBrowseFolder(v.ws);
+    const more = root.querySelector('.ink-more');
+    // The app's pen overlay must not take the pen while the menu is over the page.
+    more.addEventListener('toggle', () => native(v, !more.open));
+  }
+  function closeMenu(v) { const m = v.root.querySelector('.ink-more'); if (m && m.open) m.open = false; }
+  function setTool(v, tool) { v.tool = tool; v.root.dataset.tool = tool; paintTools(v); native(v, true); }
+  function paintTools(v) {
+    if (v.disposed) return;
+    v.root.querySelectorAll('[data-ink-tool]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.inkTool === v.tool)));
+    v.root.querySelectorAll('[data-ink-width]').forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.inkWidth) === v.width && v.tool === 'pen')));
+    v.root.querySelectorAll('[data-ink-paper]').forEach(b => b.setAttribute('aria-pressed', String(v.note && b.dataset.inkPaper === v.note.paper)));
+    const f = $('inkFinger'); if (f) { f.setAttribute('aria-pressed', String(v.finger)); f.textContent = v.finger ? 'Draw with a finger: on' : 'Draw with a finger: off'; }
+    if ($('inkUndo')) $('inkUndo').disabled = !v.undo.length;
+    if ($('inkRedo')) $('inkRedo').disabled = !v.redo.length;
+  }
+
+  // ---- pages on screen ----
+  function ensureTrail(v) {
+    const pages = v.note.pages;
+    if (!pages.length || !F.isBlankPage(pages[pages.length - 1])) pages.push(F.blankPage());
+  }
+  function pageWidth(v) {
+    const avail = v.scroll.clientWidth || v.root.clientWidth || 800;
+    const pad = avail < 560 ? 6 : 24;
+    return Math.max(160, Math.min(avail - pad * 2, 900));
+  }
+  function layout(v) {
+    const w = pageWidth(v);
+    v.scale = w / F.PAGE_W;
+    v.pagesEl.style.setProperty('--ink-page-w', w + 'px');
+    v.pagesEl.style.setProperty('--ink-page-h', Math.round(w * F.PAGE_H / F.PAGE_W) + 'px');
+    sizeCanvas(v);
+  }
+  function sizeCanvas(v) {
+    const c = v.canvas, r = v.scroll.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    c.width = Math.max(1, Math.round(r.width * dpr)); c.height = Math.max(1, Math.round(r.height * dpr));
+    c.style.width = r.width + 'px'; c.style.height = r.height + 'px';
+    v.ctx = c.getContext('2d');
+    v.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  function renderAll(v) {
+    v.pagesEl.replaceChildren();
+    v.pages = [];
+    v.note.pages.forEach((page, i) => v.pagesEl.appendChild(pageEl(v, page, i)));
+    paintTools(v);
+  }
+  function pageEl(v, page, i) {
+    const el = document.createElement('div');
+    el.className = 'ink-page';
+    el.dataset.page = String(i);
+    const svg = document.createElementNS(SVGNS, 'svg');
+    svg.setAttribute('viewBox', `0 0 ${F.PAGE_W} ${F.PAGE_H}`);
+    svg.setAttribute('class', 'ink-sheet');
+    svg.setAttribute('aria-label', 'Page ' + (i + 1));
+    svg.appendChild(paperEl(v.note.paper));
+    const extra = document.createElementNS(SVGNS, 'g'); extra.setAttribute('class', 'ink-extra');
+    for (const node of page.extra) { const n = safeSvg(node, v.ws.path); if (n) extra.appendChild(n); }
+    const strokes = document.createElementNS(SVGNS, 'g'); strokes.setAttribute('class', 'ink-strokes');
+    svg.append(extra, strokes);
+    el.appendChild(svg);
+    const no = document.createElement('span'); no.className = 'ink-page-no'; no.textContent = String(i + 1);
+    el.appendChild(no);
+    v.pages[i] = { el, svg, strokes };
+    for (const s of page.strokes) strokes.appendChild(strokeEl(v, s));
+    return el;
+  }
+  function paperEl(paper) {
+    const g = document.createElementNS(SVGNS, 'g');
+    g.setAttribute('class', 'ink-paper ink-paper-' + paper);
+    const add = (tag, attrs) => { const n = document.createElementNS(SVGNS, tag); for (const [k, val] of Object.entries(attrs)) n.setAttribute(k, val); g.appendChild(n); return n; };
+    add('rect', { class: 'ink-paper-bg', width: F.PAGE_W, height: F.PAGE_H });
+    let d = '';
+    if (paper === 'lines') for (let y = 98; y < F.PAGE_H - 30; y += 44) d += `M60 ${y}H${F.PAGE_W - 60}`;
+    if (paper === 'grid') { for (let y = 40; y < F.PAGE_H; y += 40) d += `M0 ${y}H${F.PAGE_W}`; for (let x = 40; x < F.PAGE_W; x += 40) d += `M${x} 0V${F.PAGE_H}`; }
+    if (d) add('path', { class: 'ink-rule', d });
+    if (paper === 'dots') {
+      let dots = '';
+      for (let y = 40; y < F.PAGE_H; y += 40) for (let x = 40; x < F.PAGE_W; x += 40) dots += `M${x - 1.5} ${y}a1.5 1.5 0 1 0 3 0a1.5 1.5 0 1 0 -3 0`;
+      add('path', { class: 'ink-dotgrid', d: dots });
+    }
+    return g;
+  }
+  function strokeEl(v, s) {
+    const p = document.createElementNS(SVGNS, 'path');
+    p.setAttribute('d', F.outline(s));
+    p.setAttribute('class', 'ink-s');
+    if (s.color) p.style.fill = s.color;
+    v.elOf.set(s, p);
+    return p;
+  }
+
+  // The extra layer, drawn from the parsed tree and never as markup: only
+  // shapes, text and pictures with safe addresses, no scripts, no handlers,
+  // no outside requests (a note an agent wrote must not run code here).
+  const SAFE_TAGS = new Set(['g', 'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'text', 'tspan', 'image', 'title', 'desc']);
+  const SAFE_ATTRS = /^(d|x|y|x1|y1|x2|y2|cx|cy|r|rx|ry|width|height|points|transform|fill|fill-opacity|fill-rule|stroke|stroke-width|stroke-opacity|stroke-linecap|stroke-linejoin|stroke-dasharray|opacity|font-size|font-family|font-weight|font-style|text-anchor|dominant-baseline|preserveAspectRatio|data-[\w-]+)$/;
+  function safeSvg(node, notePath) {
+    if (node.text != null) return document.createTextNode(node.text);
+    if (!node.tag || !SAFE_TAGS.has(node.tag)) return null;
+    const el = document.createElementNS(SVGNS, node.tag);
+    for (const [k, val] of Object.entries(node.attrs)) {
+      if (SAFE_ATTRS.test(k) && !/url\s*\(|javascript:|expression\s*\(/i.test(val)) el.setAttribute(k, val);
+    }
+    if (node.tag === 'image') {
+      const href = node.attrs.href || node.attrs['xlink:href'] || '';
+      if (/^data:image\/(png|jpe?g|gif|webp);base64,/i.test(href)) el.setAttribute('href', href);
+      else if (href && !/^[a-z][\w+.-]*:|^\/\//i.test(href)) el.setAttribute('href', '/api/doc/asset?' + new URLSearchParams({ doc: notePath, src: href }));
+    }
+    for (const c of node.children || []) { const n = safeSvg(c, notePath); if (n) el.appendChild(n); }
+    return el;
+  }
+
+  // ---- input ----
+  function wireInput(v) {
+    const sc = v.scroll;
+    const on = (el, type, fn, opts) => { el.addEventListener(type, fn, opts); v.cleanups.push(() => el.removeEventListener(type, fn, opts)); };
+    on(sc, 'pointerdown', ev => pointerDown(v, ev));
+    on(sc, 'pointermove', ev => pointerMove(v, ev));
+    on(sc, 'pointerup', ev => pointerUp(v, ev));
+    on(sc, 'pointercancel', ev => pointerUp(v, ev, true));
+    on(sc, 'lostpointercapture', ev => { if (v.draw && v.draw.id === ev.pointerId) pointerUp(v, ev); });
+    // No long-press menu, no text selection, no drag of the page's pictures.
+    on(sc, 'contextmenu', ev => { if (v.draw || ev.pointerType === 'pen' || ev.pointerType === 'touch') ev.preventDefault(); });
+    on(sc, 'dragstart', ev => ev.preventDefault());
+    on(sc, 'scroll', () => rememberPlace(v), { passive: true });
+    on(v.root, 'keydown', ev => keyDown(v, ev));
+    const ro = new ResizeObserver(() => { if (!v.disposed && !v.draw) { layout(v); native(v, true, { regionOnly: true }); } });
+    ro.observe(sc);
+    v.cleanups.push(() => ro.disconnect());
+  }
+
+  function pageAt(v, clientY) {
+    let best = 0, bestD = Infinity;
+    v.pages.forEach((p, i) => {
+      const r = p.el.getBoundingClientRect();
+      const d = clientY < r.top ? r.top - clientY : clientY > r.bottom ? clientY - r.bottom : 0;
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    return best;
+  }
+  function toPage(rect, x, y) { return [(x - rect.left) / rect.width * F.PAGE_W, (y - rect.top) / rect.height * F.PAGE_H]; }
+
+  function pointerDown(v, ev) {
+    if (v.disposed || !v.note) return;
+    const now = performance.now();
+    if (ev.pointerType === 'pen') { v.lastPen = now; notePen(); }
+    if (v.draw) { if (ev.pointerType === 'touch') ev.preventDefault(); return; } // one line at a time; a hand meanwhile is ignored
+    const touch = ev.pointerType === 'touch';
+    const palm = touch && (now - v.lastPen < PALM_MS || Math.max(ev.width || 0, ev.height || 0) > PALM_SIZE);
+    if (touch && palm) { ev.preventDefault(); return; }
+    // A finger writes only when asked to, and not on a device whose pen was
+    // just in use (that finger is holding the tablet).
+    const fingerWrites = v.finger && now - v.lastPen > 4000;
+    if (touch && !fingerWrites) { startPan(v, ev); return; }
+    if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+    ev.preventDefault();
+    v.scroll.focus({ preventScroll: true });
+    const erase = v.tool === 'eraser' || ev.button === 5 || (ev.buttons & 32) === 32;
+    const i = pageAt(v, ev.clientY);
+    const rect = v.pages[i].el.getBoundingClientRect();
+    const stage = v.scroll.getBoundingClientRect();
+    v.draw = { id: ev.pointerId, page: i, rect, stage, erase, pts: [], t0: Date.now(), start: now, erased: [], last: null, kind: ev.pointerType };
+    try { v.scroll.setPointerCapture(ev.pointerId); } catch {}
+    addPoint(v, ev);
+  }
+  function pressureOf(ev) {
+    if (ev.pointerType === 'mouse' || !(ev.pressure > 0)) return 0.5;
+    return Math.max(0.05, Math.min(1, ev.pressure));
+  }
+  function addPoint(v, ev) {
+    const d = v.draw;
+    const list = typeof ev.getCoalescedEvents === 'function' ? ev.getCoalescedEvents() : [];
+    for (const c of (list.length ? list : [ev])) {
+      const [x, y] = toPage(d.rect, c.clientX, c.clientY);
+      const p = pressureOf(c);
+      if (d.last) {
+        const dx = (x - d.last[0]) * v.scale, dy = (y - d.last[1]) * v.scale;
+        if (dx * dx + dy * dy < 0.6) continue; // under a css pixel apart: the same place
+      }
+      if (d.erase) {
+        // Along the whole move, not only where the events landed: a quick
+        // swipe of the eraser still crosses every line in its way.
+        const radius = eraseRadius(v);
+        const [lx, ly] = d.last || [x, y];
+        const steps = Math.max(1, Math.ceil(Math.hypot(x - lx, y - ly) / (radius * 0.8)));
+        for (let k = 1; k <= steps; k++) eraseNear(v, d.page, lx + (x - lx) * k / steps, ly + (y - ly) * k / steps, d.erased);
+      }
+      else liveSegment(v, d, c.clientX, c.clientY, p);
+      d.pts.push(x, y, p);
+      d.last = [x, y, c.clientX, c.clientY, p];
+    }
+  }
+  function liveSegment(v, d, cx, cy, p) {
+    const ctx = v.ctx;
+    if (!ctx) return;
+    const x = cx - d.stage.left, y = cy - d.stage.top;
+    const w = d.kind === 'mouse' ? v.width * v.scale : v.width * v.scale * (0.55 + 0.9 * p);
+    ctx.fillStyle = ctx.strokeStyle = inkColor(v);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    if (!d.last) { ctx.beginPath(); ctx.arc(x, y, w / 2, 0, Math.PI * 2); ctx.fill(); return; }
+    ctx.lineWidth = w;
+    ctx.beginPath(); ctx.moveTo(d.last[2] - d.stage.left, d.last[3] - d.stage.top); ctx.lineTo(x, y); ctx.stroke();
+  }
+  function inkColor(v) {
+    if (!v.inkColor) v.inkColor = getComputedStyle(v.root).getPropertyValue('--ink-pen').trim() || '#1d1f21';
+    return v.inkColor;
+  }
+  function pointerMove(v, ev) {
+    if (ev.pointerType === 'pen') v.lastPen = performance.now();
+    if (v.pan && ev.pointerId === v.pan.id) return panMove(v, ev);
+    if (!v.draw || ev.pointerId !== v.draw.id) return;
+    ev.preventDefault();
+    addPoint(v, ev);
+  }
+  function pointerUp(v, ev, cancelled = false) {
+    if (v.pan && ev.pointerId === v.pan.id) return panEnd(v, ev);
+    const d = v.draw;
+    if (!d || ev.pointerId !== d.id) return;
+    if (!cancelled && !d.erase) addPoint(v, ev);
+    v.draw = null;
+    if (d.erase) { if (d.erased.length) commit(v, { type: 'erase', page: d.page, items: d.erased }); return; }
+    if (cancelled || !d.pts.length) { clearLive(v); return; }
+    const pts = d.pts.length > 9 ? F.simplify(d.pts, 0.3) : d.pts;
+    const stroke = { pts, w: v.width, t0: d.t0, dur: Math.round(performance.now() - d.start), color: '' };
+    addStroke(v, d.page, stroke);
+    clearLive(v);
+  }
+  function clearLive(v) { if (v.ctx) v.ctx.clearRect(0, 0, v.canvas.width, v.canvas.height); }
+
+  function addStroke(v, page, stroke, { record = true } = {}) {
+    v.note.pages[page].strokes.push(stroke);
+    v.pages[page].strokes.appendChild(strokeEl(v, stroke));
+    if (record) commit(v, { type: 'add', page, stroke });
+    if (page === v.note.pages.length - 1) { // the last page has writing: a fresh one waits below
+      v.note.pages.push(F.blankPage());
+      v.pagesEl.appendChild(pageEl(v, v.note.pages[v.note.pages.length - 1], v.note.pages.length - 1));
+    }
+  }
+  // About ten screen pixels around the eraser, never finer than the line.
+  function eraseRadius(v) { return Math.max(6, 10 / v.scale); }
+  function eraseNear(v, page, x, y, into) {
+    const list = v.note.pages[page].strokes;
+    const radius = eraseRadius(v);
+    for (let i = list.length - 1; i >= 0; i--) {
+      const s = list[i];
+      const b = s.box || (s.box = F.bounds(s));
+      if (x < b.x0 - radius - 4 || x > b.x1 + radius + 4 || y < b.y0 - radius - 4 || y > b.y1 + radius + 4) continue;
+      if (!F.hits(s, x, y, radius)) continue;
+      list.splice(i, 1);
+      v.elOf.get(s)?.remove();
+      into.push({ stroke: s, index: i });
+    }
+  }
+
+  // ---- one finger scrolls ----
+  function startPan(v, ev) {
+    if (v.pan) return; // a second finger rides along with the first
+    ev.preventDefault();
+    v.pan = { id: ev.pointerId, y: ev.clientY, x: ev.clientX, top: v.scroll.scrollTop, left: v.scroll.scrollLeft, t: performance.now(), vy: 0 };
+    try { v.scroll.setPointerCapture(ev.pointerId); } catch {}
+  }
+  function panMove(v, ev) {
+    const p = v.pan, now = performance.now();
+    const dy = ev.clientY - p.y;
+    const before = v.scroll.scrollTop;
+    v.scroll.scrollTop = p.top - dy;
+    v.scroll.scrollLeft = p.left - (ev.clientX - p.x);
+    const dt = now - (p.lt || p.t);
+    if (dt > 0) p.vy = 0.7 * p.vy + 0.3 * ((v.scroll.scrollTop - before) / dt);
+    p.lt = now;
+  }
+  function panEnd(v, ev) {
+    const p = v.pan; v.pan = null;
+    // A flick keeps going and slows down; e-ink scrolls exactly as far as the finger.
+    if (einkNow() || Math.abs(p.vy) < 0.3 || performance.now() - (p.lt || 0) > 80) return;
+    let vy = p.vy, last = performance.now();
+    const step = t => {
+      if (v.disposed || v.pan || v.draw) return;
+      const dt = t - last; last = t;
+      v.scroll.scrollTop += vy * dt;
+      vy *= Math.pow(0.995, dt);
+      if (Math.abs(vy) > 0.02) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  // ---- keys ----
+  function keyDown(v, ev) {
+    if (ev.target.closest && ev.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+    const mod = ev.ctrlKey || ev.metaKey;
+    const k = ev.key.toLowerCase();
+    let done = true;
+    if (mod && k === 'z' && !ev.shiftKey) undo(v);
+    else if (mod && ((k === 'z' && ev.shiftKey) || k === 'y')) redo(v);
+    else if (mod && k === 's') save(v);
+    else if (!mod && !ev.altKey && k === 'p') setTool(v, 'pen');
+    else if (!mod && !ev.altKey && k === 'e') setTool(v, 'eraser');
+    else if (!mod && !ev.altKey && (k === 'pagedown' || k === 'pageup')) { v.scroll.scrollBy({ top: (k === 'pagedown' ? 1 : -1) * v.scroll.clientHeight * 0.9 }); }
+    else done = false;
+    if (done) { ev.preventDefault(); ev.stopPropagation(); }
+  }
+
+  // ---- undo, pages, paper ----
+  function commit(v, op) {
+    v.undo.push(op);
+    if (v.undo.length > 500) v.undo.shift();
+    v.redo = [];
+    changed(v);
+  }
+  function apply(v, op, back) {
+    if (op.type === 'add') {
+      const list = v.note.pages[op.page].strokes;
+      if (back) { const i = list.indexOf(op.stroke); if (i >= 0) list.splice(i, 1); v.elOf.get(op.stroke)?.remove(); }
+      else { list.push(op.stroke); v.pages[op.page].strokes.appendChild(strokeEl(v, op.stroke)); }
+    } else if (op.type === 'erase') {
+      const list = v.note.pages[op.page].strokes;
+      if (back) for (const it of op.items.slice().reverse()) { list.splice(Math.min(it.index, list.length), 0, it.stroke); }
+      else for (const it of op.items) { const i = list.indexOf(it.stroke); if (i >= 0) list.splice(i, 1); }
+      redrawPage(v, op.page);
+    } else if (op.type === 'paper') {
+      v.note.paper = back ? op.from : op.to;
+      renderAll(v);
+    } else if (op.type === 'title') {
+      v.note.title = back ? op.from : op.to;
+      showTitle(v);
+    }
+  }
+  function undo(v) { const op = v.undo.pop(); if (!op) return; apply(v, op, true); v.redo.push(op); changed(v); }
+  function redo(v) { const op = v.redo.pop(); if (!op) return; apply(v, op, false); v.undo.push(op); changed(v); }
+  function redrawPage(v, i) {
+    const g = v.pages[i].strokes;
+    g.replaceChildren(...v.note.pages[i].strokes.map(s => strokeEl(v, s)));
+  }
+  function setPaper(v, paper) {
+    if (!v.note || v.note.paper === paper) return;
+    commit(v, { type: 'paper', from: v.note.paper, to: paper });
+    v.note.paper = paper;
+    setPref('paper', paper);
+    renderAll(v);
+  }
+  function addPage(v) {
+    // A page after the last written one: the blank one already waiting, shown.
+    ensureTrail(v);
+    const last = v.pages[v.note.pages.length - 1];
+    last?.el.scrollIntoView({ block: 'start', behavior: einkNow() ? 'auto' : 'smooth' });
+  }
+
+  // ---- saving ----
+  function changed(v) {
+    v.rev++;
+    paintTools(v);
+    setStatus(v, 'Unsaved');
+    clearTimeout(v.timer);
+    v.timer = setTimeout(() => save(v), SAVE_AFTER_MS);
+    if (typeof OpenFiles !== 'undefined') OpenFiles.edited(v.ws.path, v.ws.project || '');
+  }
+  async function save(v) {
+    clearTimeout(v.timer);
+    if (!v.note || v.rev === v.savedRev) return;
+    if (v.saving) { v.again = true; return; }
+    v.saving = true;
+    setStatus(v, 'Saving…');
+    try {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const rev = v.rev;
+        const text = F.serialize(v.note);
+        let out;
+        try { out = await postJson('/api/file/save', { path: v.ws.path, baseSha: v.baseSha, text, actor: 'human', input: 'pen', project: v.ws.project || '' }); }
+        catch { out = { error: 'offline' }; }
+        if (out && !out.error) {
+          v.baseSha = out.sha; v.base = F.parse(text); v.savedRev = rev;
+          dropDraft(v);
+          setStatus(v, v.rev === rev ? 'Saved' : 'Unsaved');
+          break;
+        }
+        if (out && /changed on disk/.test(out.error)) { if (!(await mergeFromDisk(v))) break; continue; }
+        // Not reachable, or refused: the note stays here and on this device.
+        keepDraft(v, text);
+        setStatus(v, out.error === 'offline' ? 'Not saved: no connection. Kept on this device; retrying' : '⚠ Not saved: ' + out.error);
+        clearTimeout(v.timer);
+        v.timer = setTimeout(() => save(v), out.error === 'offline' ? 5000 : 15000);
+        break;
+      }
+    } finally {
+      v.saving = false;
+    }
+    if (v.again) { v.again = false; if (v.rev !== v.savedRev) save(v); }
+  }
+  // Another device (or an agent) saved this note: merge, don't overwrite.
+  async function mergeFromDisk(v) {
+    let d;
+    try { d = await (await fetch('/api/file/read?' + new URLSearchParams({ path: v.ws.path }))).json(); } catch { return false; }
+    if (d.error || v.disposed && !v.note) return false;
+    let theirs;
+    try { theirs = F.parse(d.text); } catch { setStatus(v, '⚠ The file on disk is no longer a note; not saved over it'); return false; }
+    v.note = F.merge(v.base, v.note, theirs);
+    v.base = theirs; v.baseSha = d.sha;
+    ensureTrail(v);
+    if (!v.disposed) { renderAll(v); showTitle(v); toastOnce(v, 'This note changed on another device. Both versions are merged.'); }
+    return true;
+  }
+  // Coming back to a note left open while another device wrote in it.
+  async function refreshFromDisk(v) {
+    if (v.disposed || v.saving || v.draw) return;
+    let d;
+    try { d = await (await fetch('/api/file/read?' + new URLSearchParams({ path: v.ws.path }))).json(); } catch { return; }
+    if (v.disposed || d.error || d.sha === v.baseSha || v.saving || v.draw) return;
+    let theirs; try { theirs = F.parse(d.text); } catch { return; }
+    const clean = v.rev === v.savedRev;
+    v.note = clean ? theirs : F.merge(v.base, v.note, theirs);
+    v.base = F.parse(d.text); v.baseSha = d.sha;
+    if (clean) { v.undo = []; v.redo = []; }
+    ensureTrail(v);
+    renderAll(v); showTitle(v);
+    setStatus(v, clean ? 'Updated from another device' : 'Unsaved');
+    if (!clean) save(v);
+  }
+  function toastOnce(v, text) { if (v.toasted === text) return; v.toasted = text; if (typeof toast === 'function') toast(text); }
+  function keepDraft(v, text) { try { localStorage.setItem(draftKey(v.ws.path), JSON.stringify({ sha: v.baseSha, text, at: Date.now() })); } catch {} }
+  function dropDraft(v) { try { localStorage.removeItem(draftKey(v.ws.path)); } catch {} }
+  // Writing that never reached the computer comes back the next time the
+  // note opens on this device, merged with what is on disk now.
+  function restoreDraft(v, disk) {
+    let draft;
+    try { draft = JSON.parse(localStorage.getItem(draftKey(v.ws.path)) || 'null'); } catch { draft = null; }
+    if (!draft || !draft.text || draft.text === disk.text) { if (draft) dropDraft(v); return; }
+    let mine; try { mine = F.parse(draft.text); } catch { dropDraft(v); return; }
+    v.note = draft.sha === disk.sha ? mine : F.merge(null, mine, F.parse(disk.text));
+    v.rev++;
+    setTimeout(() => save(v), 300);
+    toastOnce(v, 'Writing from this device that had not been saved is back in the note.');
+  }
+
+  function wireLifecycle(v) {
+    const hide = () => { if (document.visibilityState === 'hidden') flush(v); else refreshFromDisk(v); };
+    const unload = () => flush(v, true);
+    const online = () => { if (v.rev !== v.savedRev) save(v); };
+    document.addEventListener('visibilitychange', hide);
+    window.addEventListener('pagehide', unload);
+    window.addEventListener('online', online);
+    v.cleanups.push(() => { document.removeEventListener('visibilitychange', hide); window.removeEventListener('pagehide', unload); window.removeEventListener('online', online); });
+  }
+  // Leaving: the last strokes are kept on this device first (that never
+  // fails), then sent; a page that is closing sends what fits in a beacon.
+  function flush(v, closing = false) {
+    if (!v.note || v.rev === v.savedRev) return;
+    const text = F.serialize(v.note);
+    keepDraft(v, text);
+    if (closing) {
+      const body = JSON.stringify({ path: v.ws.path, baseSha: v.baseSha, text, actor: 'human', input: 'pen', project: v.ws.project || '' });
+      if (body.length < 60000) { try { fetch('/api/file/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }); } catch {} }
+      return;
+    }
+    save(v);
+  }
+  function rememberPlace(v) {
+    clearTimeout(v.placeTimer);
+    v.placeTimer = setTimeout(() => {
+      if (v.disposed) return;
+      const sc = v.scroll, max = sc.scrollHeight;
+      setPref('place:' + v.ws.path, max > 0 ? (sc.scrollTop / max).toFixed(4) : '0');
+    }, 400);
+  }
+
+  function disposeView(v) {
+    if (v.disposed) return;
+    flush(v);
+    v.disposed = true;
+    native(v, false);
+    for (const fn of v.cleanups) { try { fn(); } catch {} }
+    v.cleanups = [];
+    if (view === v) view = null;
+  }
+
+  // ---- the page as a picture (download now; reading and AI later) ----
+  async function pageImage(v, i, { scale = 2, background = '#ffffff' } = {}) {
+    const one = { ...v.note, pages: [v.note.pages[i]] };
+    const svg = F.serialize(one);
+    const img = new Image();
+    const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+    try {
+      await new Promise((ok, no) => { img.onload = ok; img.onerror = () => no(new Error('could not draw the page')); img.src = url; });
+      const c = document.createElement('canvas');
+      c.width = Math.round(F.PAGE_W * scale); c.height = Math.round(F.PAGE_H * scale);
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = background; ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      return await new Promise(ok => c.toBlob(ok, 'image/png'));
+    } finally { URL.revokeObjectURL(url); }
+  }
+  function visiblePage(v) {
+    const mid = v.scroll.getBoundingClientRect();
+    return pageAt(v, mid.top + mid.height / 2);
+  }
+  async function downloadPage(v) {
+    const i = visiblePage(v);
+    try {
+      const blob = await pageImage(v, i);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = v.ws.path.split(/[\\/]/).pop().replace(/\.ink\.svg$/i, '') + '-page-' + (i + 1) + '.png';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    } catch (err) { errToast(err.message); }
+  }
+
+  // ---- the Android app's pen overlay ----
+  // Used only by an app that can confine it to a rectangle (setRegion);
+  // an older app would take the pen everywhere, toolbar included, so the
+  // page draws by itself there. Not through the encrypted link's frame
+  // either: the app does not know where the frame sits on screen.
+  function nativeInk() {
+    const n = window.ChatteringInk;
+    return window.top === window && n && typeof n.setRegion === 'function' ? n : null;
+  }
+  function native(v, want, { regionOnly = false } = {}) {
+    const n = nativeInk();
+    if (!n) return;
+    try {
+      const on = want && !v.disposed && !!v.note;
+      if (!on) { if (!regionOnly) { n.setEnabled(false); } return; }
+      const r = v.scroll.getBoundingClientRect();
+      n.setRegion(Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom));
+      if (!regionOnly) { n.setErase(v.tool === 'eraser'); n.setWidth?.(v.width * v.scale); n.setEnabled(true); }
+    } catch {}
+  }
+  // A stroke the app drew: "x,y[,pressure[,ms]] …" in the page's css pixels.
+  function acceptPacked(packed, erase) {
+    const v = view;
+    if (!v || v.disposed || !v.note) return;
+    const pts = [];
+    for (const part of String(packed || '').split(' ')) {
+      const n = part.split(',').map(Number);
+      if (n.length >= 2 && Number.isFinite(n[0]) && Number.isFinite(n[1])) pts.push(n);
+    }
+    if (!pts.length) return;
+    const i = pageAt(v, pts[0][1]);
+    const rect = v.pages[i].el.getBoundingClientRect();
+    if (erase || v.tool === 'eraser') {
+      const items = [], radius = eraseRadius(v);
+      let last = null;
+      for (const [cx, cy] of pts) {
+        const [x, y] = toPage(rect, cx, cy);
+        const [lx, ly] = last || [x, y];
+        const steps = Math.max(1, Math.ceil(Math.hypot(x - lx, y - ly) / (radius * 0.8)));
+        for (let k = 1; k <= steps; k++) eraseNear(v, i, lx + (x - lx) * k / steps, ly + (y - ly) * k / steps, items);
+        last = [x, y];
+      }
+      if (items.length) commit(v, { type: 'erase', page: i, items });
+    } else {
+      const flat = [];
+      for (const [cx, cy, p] of pts) { const [x, y] = toPage(rect, cx, cy); flat.push(x, y, Number.isFinite(p) && p > 0 ? Math.min(1, p) : 0.5); }
+      const t = pts[pts.length - 1][3];
+      const stroke = { pts: flat.length > 9 ? F.simplify(flat, 0.3) : flat, w: v.width, t0: Date.now() - (Number.isFinite(t) ? t : 0), dur: Number.isFinite(t) ? t : 0, color: '' };
+      addStroke(v, i, stroke);
+    }
+    // The app's line goes once the page has drawn its own (no blink on e-ink).
+    clearTimeout(v.nativeClear);
+    v.nativeClear = setTimeout(() => { try { nativeInk()?.clearAll(); } catch {} }, 140);
+  }
+  window.fileInkAcceptPacked = acceptPacked;
+
+  window.InkNotes = { isInkPath: F.isInkPath, mount, create, penSeen, acceptPacked,
+    pageImage: (i, opts) => view && pageImage(view, i, opts), get current() { return view; } };
+})();
