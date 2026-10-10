@@ -55,6 +55,12 @@ class InkOverlay @JvmOverloads constructor(
         private set
 
     private val density = resources.displayMetrics.density
+    /**
+     * One css pixel of the page, in this view's pixels: the page's own
+     * devicePixelRatio (setPixelRatio), which is the screen's density only
+     * while the WebView is not zoomed. Region and lines both use it.
+     */
+    var cssPx = density
     private var widthCss = 2.3f
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -128,8 +134,8 @@ class InkOverlay @JvmOverloads constructor(
     /** Is this point (overlay pixels) where the page lets the pen write? */
     fun inRegion(x: Float, y: Float): Boolean {
         val r = region ?: return true
-        val cx = x / density
-        val cy = y / density
+        val cx = x / cssPx
+        val cy = y / cssPx
         return cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom
     }
 
@@ -206,10 +212,10 @@ class InkOverlay @JvmOverloads constructor(
         oy = at[1].toFloat()
         if (nibFailed || !EbcNib.loaded) return
         val r = region
-        val l = at[0] + (if (r != null) max(0f, r.left * density) else 0f).roundToInt()
-        val t = at[1] + (if (r != null) max(0f, r.top * density) else 0f).roundToInt()
-        val rr = at[0] + (if (r != null) min(width.toFloat(), r.right * density) else width.toFloat()).roundToInt()
-        val b = at[1] + (if (r != null) min(height.toFloat(), r.bottom * density) else height.toFloat()).roundToInt()
+        val l = at[0] + (if (r != null) max(0f, r.left * cssPx) else 0f).roundToInt()
+        val t = at[1] + (if (r != null) max(0f, r.top * cssPx) else 0f).roundToInt()
+        val rr = at[0] + (if (r != null) min(width.toFloat(), r.right * cssPx) else width.toFloat()).roundToInt()
+        val b = at[1] + (if (r != null) min(height.toFloat(), r.bottom * cssPx) else height.toFloat()).roundToInt()
         val rot = (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.rotation
         if (nib != 0L && l == nibL && t == nibT && rr == nibR && b == nibB && rot == nibRot) return
         stopNib()
@@ -342,7 +348,7 @@ class InkOverlay @JvmOverloads constructor(
         pSmooth = if (pSmooth < 0f) p else pSmooth + (p - pSmooth) * 0.35f
         val t = if (typicalP > 0f) typicalP else 0.5f
         val q = (0.5f * pSmooth / t).coerceIn(0.03f, 1f)
-        return max(0.75f, widthCss * density / 2f * (0.4f + 0.9f * sin(q * PI.toFloat() / 2f)))
+        return max(0.75f, widthCss * cssPx / 2f * (0.4f + 0.9f * sin(q * PI.toFloat() / 2f)))
     }
 
     // Draw points [from, n) joined to the point before them: on the panel
@@ -372,7 +378,7 @@ class InkOverlay @JvmOverloads constructor(
     /** "x,y,pressure,ms …": css pixels, pressure 0–1, ms since the pen went down. */
     private fun pack(): String {
         if (n < 1) return ""
-        val d = density
+        val d = cssPx
         val out = StringBuilder(n * 20)
         for (i in 0 until n) {
             if (i > 0) out.append(' ')

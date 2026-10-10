@@ -219,7 +219,7 @@
     const n = nativeInk();
     let fast = false;
     try { fast = !!(n && typeof n.fastNib === 'function' && n.fastNib()); } catch {}
-    el.textContent = !n ? (window.ChatteringInk ? 'Pen drawn by the page (an older app: update it for the fast pen)' : 'Pen drawn by the page')
+    el.textContent = !n ? (window.ChatteringInk && typeof window.ChatteringInk.setRegion !== 'function' ? 'Pen drawn by the page (an older app: update it for the fast pen)' : 'Pen drawn by the page')
       : fast ? 'Pen: the e-ink fast layer'
       : typeof n.fastNib === 'function' ? 'Pen drawn by the app (on e-ink, the fast layer starts with your first line)'
       : 'Pen drawn by the app';
@@ -661,7 +661,8 @@
       v.log = { text: d.text || '', lines: [], timer: 0 };
       const n = window.ChatteringInk;
       logLine(v, { event: 'open', note: v.ws.path.split('/').pop(), ua: navigator.userAgent, dpr: devicePixelRatio, secure: isSecureContext, rawupdate: RAW,
-        app: !!n, appRegion: !!(n && n.setRegion), appStrokeDrawn: !!(n && n.strokeDrawn), eink: einkNow(), scale: +v.scale.toFixed(3), typicalP });
+        app: !!n, appRegion: !!(n && n.setRegion), appStrokeDrawn: !!(n && n.strokeDrawn), framed: window.top !== window,
+        appPen: !!nativeInk(), eink: einkNow(), scale: +v.scale.toFixed(3), typicalP });
     } catch {}
   }
   function logLine(v, o) {
@@ -1011,11 +1012,34 @@
   // says so (strokeDrawn); the app then wipes its nib once the pen has
   // rested, so the panel only ever shows one copy of a line.
   // Only an app that confines the pen to a rectangle (setRegion) is used: an
-  // older one took the pen over the toolbar too. Not through the encrypted
-  // link's frame either: the app cannot tell where the frame sits.
+  // older one took the pen over the toolbar too.
+  //
+  // Through the encrypted link this page is a frame of the app's shell
+  // (anywhere/public/shell.js), on the same site, so it can read where it
+  // sits; the app's coordinates are the window's, so the region goes out
+  // shifted by the frame's corner and lines come back shifted the other
+  // way. This page once refused the app's pen in any frame, and every line
+  // on the AINOTE took the slow path (the page, ~43 points a second, the
+  // panel's full refresh): the pen log of 10 Oct showed fastNib false with
+  // the current app. A frame of another site, whose place cannot be read,
+  // still keeps the page's pen.
+  function frameOffset() {
+    let x = 0, y = 0, w = window;
+    try {
+      while (w !== w.top) {
+        const f = w.frameElement;
+        if (!f) return null;
+        const r = f.getBoundingClientRect(), cs = w.parent.getComputedStyle(f);
+        x += r.left + (parseFloat(cs.borderLeftWidth) || 0) + (parseFloat(cs.paddingLeft) || 0);
+        y += r.top + (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.paddingTop) || 0);
+        w = w.parent;
+      }
+    } catch { return null; }
+    return [x, y];
+  }
   function nativeInk() {
     const n = window.ChatteringInk;
-    return window.top === window && n && typeof n.setRegion === 'function' ? n : null;
+    return n && typeof n.setRegion === 'function' && frameOffset() ? n : null;
   }
   function native(v, want, { regionOnly = false } = {}) {
     const n = nativeInk();
@@ -1023,8 +1047,11 @@
     try {
       const on = want && !v.disposed && !!v.note;
       if (!on) { if (!regionOnly) { n.setEnabled(false); } return; }
-      const r = v.scroll.getBoundingClientRect();
-      n.setRegion(Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom));
+      const r = v.scroll.getBoundingClientRect(), [ox, oy] = frameOffset();
+      // The page's css pixel in device pixels, so the app maps the region and
+      // the lines with the page's own ratio, not one it assumes.
+      n.setPixelRatio?.(devicePixelRatio);
+      n.setRegion(Math.round(r.left + ox), Math.round(r.top + oy), Math.round(r.right + ox), Math.round(r.bottom + oy));
       if (!regionOnly) { n.setErase(v.tool === 'eraser'); n.setWidth?.(v.width * v.scale); if (typicalP) n.setPressureTypical?.(typicalP); n.setEnabled(true); }
     } catch {}
   }
@@ -1032,10 +1059,10 @@
   function acceptPacked(packed, erase) {
     const v = view;
     if (!v || v.disposed || !v.note) return;
-    const pts = [];
+    const pts = [], [ox, oy] = frameOffset() || [0, 0];
     for (const part of String(packed || '').split(' ')) {
       const n = part.split(',').map(Number);
-      if (n.length >= 2 && Number.isFinite(n[0]) && Number.isFinite(n[1])) pts.push(n);
+      if (n.length >= 2 && Number.isFinite(n[0]) && Number.isFinite(n[1])) { n[0] -= ox; n[1] -= oy; pts.push(n); }
     }
     if (!pts.length) return;
     const i = pageAt(v, pts[0][1]);

@@ -120,6 +120,11 @@ class MainActivity : AppCompatActivity() {
         fun setRegion(left: Float, top: Float, right: Float, bottom: Float) {
             runOnUiThread { ink.region = if (right > left && bottom > top) RectF(left, top, right, bottom) else null }
         }
+        /** The page's devicePixelRatio: its css pixel in device pixels. */
+        @JavascriptInterface
+        fun setPixelRatio(ratio: Float) {
+            runOnUiThread { if (ratio > 0.25f && ratio < 8f) ink.cssPx = ratio }
+        }
         @JavascriptInterface
         fun setWidth(cssPx: Float) {
             runOnUiThread { ink.setWidthCss(cssPx) }
