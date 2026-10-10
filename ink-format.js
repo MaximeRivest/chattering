@@ -436,7 +436,7 @@
     return out.length > 9 ? simplify(out, tolerance) : out;
   }
   // The discs a stroke is made of: [x, y, r, …] in page units.
-  function discs(stroke) {
+  function discs(stroke, { minR = 0.3 } = {}) {
     const p = densify(stroke.pts, 2), n = p.length / 3;
     const half = (stroke.w || 2.4) / 2;
     const arc = new Float64Array(n);
@@ -449,7 +449,7 @@
       const fromEnd = Math.min(arc[i], total - arc[i]);
       if (taper > 0 && fromEnd < taper) { const t = fromEnd / taper; k = 0.35 + 0.65 * t * t * (3 - 2 * t); }
       out[i * 3] = p[i * 3]; out[i * 3 + 1] = p[i * 3 + 1];
-      out[i * 3 + 2] = Math.max(0.3, half * pressureFactor(p[i * 3 + 2]) * k);
+      out[i * 3 + 2] = Math.max(minR, half * pressureFactor(p[i * 3 + 2]) * k);
     }
     // A tap is a dot, as a resting nib leaves one: a little wider than the line.
     if (total < half * 2) for (let i = 0; i < n; i++) out[i * 3 + 2] = Math.max(out[i * 3 + 2], half * 1.5 * pressureFactor(p[i * 3 + 2]));
@@ -470,8 +470,8 @@
     if ((ax * bx + ay * by) / (la * lb) < 0.992) return true; // about 7 degrees
     return Math.abs(d[i * 3 + 2] - d[i * 3 - 1]) > 0.08 || Math.abs(d[i * 3 + 5] - d[i * 3 + 2]) > 0.08;
   }
-  function trace(path, stroke) {
-    const d = discs(stroke), n = d.length / 3;
+  function trace(path, stroke, opts) {
+    const d = discs(stroke, opts), n = d.length / 3;
     for (let i = 0; i < n; i++) {
       const x = d[i * 3], y = d[i * 3 + 1], r = d[i * 3 + 2];
       if (needsDisc(d, i, n)) {

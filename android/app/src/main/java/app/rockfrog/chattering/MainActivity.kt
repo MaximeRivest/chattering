@@ -124,6 +124,11 @@ class MainActivity : AppCompatActivity() {
         fun setWidth(cssPx: Float) {
             runOnUiThread { ink.setWidthCss(cssPx) }
         }
+        /** This pen's typical pressure, learned by the page (counts as 0.5). */
+        @JavascriptInterface
+        fun setPressureTypical(p: Float) {
+            runOnUiThread { if (p > 0.01f && p <= 1f) ink.typicalP = p }
+        }
         /** The page has painted the last line: the app's copy may go once the pen rests. */
         @JavascriptInterface
         fun strokeDrawn() {
@@ -835,7 +840,7 @@ class MainActivity : AppCompatActivity() {
         }
         val finger = ev.getToolType(ev.actionIndex) == MotionEvent.TOOL_TYPE_FINGER
                 || ev.getToolType(ev.actionIndex) == MotionEvent.TOOL_TYPE_UNKNOWN
-        if (finger && SystemClock.uptimeMillis() - ink.lastStylusMs < 800) {
+        if (finger && (ink.isDrawing() || SystemClock.uptimeMillis() - ink.lastStylusMs < 1500)) {
             return true
         }
         // A finger scrolls the page: the pen's copy, fixed on the panel, goes first.

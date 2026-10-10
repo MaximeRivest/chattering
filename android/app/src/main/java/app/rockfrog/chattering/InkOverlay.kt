@@ -99,6 +99,20 @@ class InkOverlay @JvmOverloads constructor(
 
     private val wipe = Runnable { wipeNow() }
 
+    // A pen that lifts and lands again within JOIN_MS, within JOIN_DP, never
+    // left (light pressure makes the digitiser flicker): the line goes on.
+    private var pendingUp = false
+    private var pendingErase = false
+    private var upAt = 0L
+    private val send = Runnable { sendPending() }
+
+    /**
+     * This pen's typical pressure, which counts as 0.5: the AINOTE's reports
+     * about 0.1 for ordinary writing. The page learns it and tells this view
+     * (setPressureTypical); until then it is learned here from each line.
+     */
+    var typicalP = 0f
+
     init {
         setBackgroundColor(Color.TRANSPARENT)
         isClickable = false
@@ -137,7 +151,7 @@ class InkOverlay @JvmOverloads constructor(
     /** Everything this layer shows goes, now (a finger scrolls, the page changes). */
     fun wipeNow() {
         removeCallbacks(wipe)
-        if (drawing) return
+        if (drawing || pendingUp) return
         if (nib != 0L && nibDirty) EbcNib.clear(nib)
         nibDirty = false
         if (segW.isNotEmpty()) {
@@ -150,6 +164,7 @@ class InkOverlay @JvmOverloads constructor(
 
     /** Off: the overlay is cleared and handed back (focus lost, page gone). */
     fun clearAll() {
+        if (pendingUp) sendPending()
         drawing = false
         stylusId = MotionEvent.INVALID_POINTER_ID
         n = 0
@@ -210,7 +225,21 @@ class InkOverlay @JvmOverloads constructor(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                 if (stylusIndex < 0 || drawing) return drawing
-                if (!inRegion(event.getX(stylusIndex), event.getY(stylusIndex))) return false
+                val x0 = event.getX(stylusIndex)
+                val y0 = event.getY(stylusIndex)
+                if (pendingUp && n > 0 && event.eventTime - upAt < JOIN_MS &&
+                    Math.hypot((x0 - xs[n - 1]).toDouble(), (y0 - ys[n - 1]).toDouble()) < JOIN_DP * density) {
+                    removeCallbacks(send)
+                    pendingUp = false
+                    stylusId = event.getPointerId(stylusIndex)
+                    drawing = true
+                    val from = n - 1
+                    add(x0, y0, event.getPressure(stylusIndex), event.eventTime)
+                    draw(from, pendingErase)
+                    return true
+                }
+                if (pendingUp) sendPending()
+                if (!inRegion(x0, y0)) return false
                 removeCallbacks(wipe)
                 syncNib()
                 stylusId = event.getPointerId(stylusIndex)
@@ -249,16 +278,37 @@ class InkOverlay @JvmOverloads constructor(
                     add(event.getX(index), event.getY(index), event.getPressure(index), event.eventTime)
                     draw(from, erasing)
                 }
-                val packed = pack()
-                n = 0
                 drawing = false
                 stylusId = MotionEvent.INVALID_POINTER_ID
-                if (event.actionMasked == MotionEvent.ACTION_CANCEL) { wipeNow(); return true }
-                if (packed.isNotEmpty()) listener?.onStroke(packed, erasing)
+                if (event.actionMasked == MotionEvent.ACTION_CANCEL) { n = 0; wipeNow(); return true }
+                // Held a moment: the pen landing again right here is the same line.
+                pendingUp = true
+                pendingErase = erasing
+                upAt = event.eventTime
+                removeCallbacks(send)
+                postDelayed(send, JOIN_MS)
                 return true
             }
         }
         return drawing
+    }
+
+    private fun sendPending() {
+        removeCallbacks(send)
+        if (!pendingUp) return
+        pendingUp = false
+        learn()
+        val packed = pack()
+        n = 0
+        if (packed.isNotEmpty()) listener?.onStroke(packed, pendingErase)
+    }
+
+    private fun learn() {
+        if (n < 3) return
+        val list = ps.copyOf(n).filter { it > 0f && it != 0.5f }.sorted()
+        if (list.size < 3) return
+        val med = list[list.size / 2]
+        typicalP = max(0.02f, if (typicalP > 0f) typicalP * 0.8f + med * 0.2f else med)
     }
 
     private fun indexOfStylus(event: MotionEvent): Int {
@@ -290,7 +340,8 @@ class InkOverlay @JvmOverloads constructor(
     // (ink-format.js pressureFactor) on a low-passed pressure.
     private fun radius(p: Float): Float {
         pSmooth = if (pSmooth < 0f) p else pSmooth + (p - pSmooth) * 0.35f
-        val q = pSmooth.coerceIn(0f, 1f)
+        val t = if (typicalP > 0f) typicalP else 0.5f
+        val q = (0.5f * pSmooth / t).coerceIn(0.03f, 1f)
         return max(0.75f, widthCss * density / 2f * (0.4f + 0.9f * sin(q * PI.toFloat() / 2f)))
     }
 
@@ -340,6 +391,8 @@ class InkOverlay @JvmOverloads constructor(
     companion object {
         /** How long the pen rests before this copy goes and the page's shows alone. */
         const val WIPE_MS = 450L
+        const val JOIN_MS = 40L
+        const val JOIN_DP = 12f
 
         fun isStylusTool(tool: Int) =
             tool == MotionEvent.TOOL_TYPE_STYLUS || tool == MotionEvent.TOOL_TYPE_ERASER

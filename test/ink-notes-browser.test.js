@@ -67,6 +67,7 @@ test('handwritten notes: make, write, erase, undo, save, merge, reopen', { timeo
     await run(`(()=>{const d=InkNotes.current.draw;const under=document.querySelector('.ink-page .ink-sheet rect');under.dispatchEvent(new PointerEvent('lostpointercapture',{pointerId:d.id,pointerType:'pen',bubbles:true}));return !!InkNotes.current.draw})()`);
     for (let i = 1; i <= 10; i++) await command('Input.dispatchMouseEvent', { type: 'mouseMoved', x: sx + i * 20, y: sy + Math.sin(i) * 4, button: 'left', buttons: 1, pointerType: 'pen', force: 0.5 });
     await command('Input.dispatchMouseEvent', { type: 'mouseReleased', x: sx + 200, y: sy, button: 'left', buttons: 0, clickCount: 1, pointerType: 'pen' });
+    await until(`InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)===2 && !InkNotes.current.pending`, 'the line lands');
     const last = await run(`(()=>{const s=InkNotes.current.note.pages[0].strokes.at(-1);let len=0;for(let j=3;j<s.pts.length;j+=3)len+=Math.hypot(s.pts[j]-s.pts[j-3],s.pts[j+1]-s.pts[j-2]);return len})()`);
     assert.ok(last > 150, 'the whole line was kept, not only its first point: ' + last);
     await run(`InkNotes.current.note.pages[0].strokes.pop(); InkNotes.current.undo.pop();`);
@@ -74,7 +75,7 @@ test('handwritten notes: make, write, erase, undo, save, merge, reopen', { timeo
   // The mouse writes too; the finger scrolls and never writes.
   await pen(line(0.1, 0.2, 0.4), { type: 'mouse' });
   await until(`InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)===2`);
-  await run(`new Promise(r=>setTimeout(r,1000))`); // a touch right after the pen is a resting palm
+  await run(`new Promise(r=>setTimeout(r,1700))`); // a touch right after the pen is a resting palm
   const before = await run(`document.querySelector('.ink-scroll').scrollTop`);
   await size(1440, 1000, true);
   const tbox = await run(`(()=>{const r=document.querySelector('.ink-scroll').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height*0.6}})()`);
@@ -126,6 +127,29 @@ test('handwritten notes: make, write, erase, undo, save, merge, reopen', { timeo
   await until(`InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)===4 && !!document.querySelector('.ink-paper-grid')`, 'reopened as it was');
   assert.deepEqual(b.exceptions, []);
 
+  // The pen flickers off the glass for a few ms (light pressure): one line, not two.
+  {
+    const total = `InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)`;
+    const before = await run(total);
+    const typicalBefore = await run(`+localStorage.getItem('chattering.ink.pressure')`);
+    await run(`document.querySelector('.ink-scroll').scrollTop=0`);
+    const b2 = await run(`(()=>{const r=document.querySelector('.ink-page').getBoundingClientRect();return {x:r.left,y:r.top,w:r.width,h:r.height}})()`);
+    const sx = b2.x + b2.w * 0.1, sy = b2.y + b2.h * 0.5;
+    const mv = (type, x, y, buttons) => command('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons, clickCount: 1, pointerType: 'pen', force: 0.12 });
+    await mv('mousePressed', sx, sy, 1);
+    for (let i = 1; i <= 5; i++) await mv('mouseMoved', sx + i * 10, sy, 1);
+    await mv('mouseReleased', sx + 50, sy, 0);
+    await mv('mousePressed', sx + 52, sy, 1);
+    for (let i = 1; i <= 5; i++) await mv('mouseMoved', sx + 52 + i * 10, sy, 1);
+    await mv('mouseReleased', sx + 102, sy, 0);
+    await until(`${total}===${before}+1 && !InkNotes.current.pending`, 'joined into one line');
+    // A 1-point touch shorter than a person can tap is dropped.
+    await mv('mousePressed', sx, sy + 60, 1); await mv('mouseReleased', sx, sy + 60, 0);
+    await run(`new Promise(r=>setTimeout(r,120))`);
+    assert.equal(await run(total), before + 1, 'a 1 ms tap left no dot');
+    // A light pen's pressure is learned: its ordinary writing counts as normal.
+    assert.ok(await run(`+localStorage.getItem('chattering.ink.pressure')`) < typicalBefore - 0.05, 'the typical pressure follows this pen');
+  }
   // A phone: the page fits, the tools stay reachable.
   await size(390, 844, true);
   await until(`document.querySelector('.ink-page').getBoundingClientRect().width<=390`);

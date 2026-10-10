@@ -44,7 +44,11 @@
   const PREF = 'chattering.ink.';
   const WIDTHS = [{ w: 1.7, label: 'Fine' }, { w: 2.6, label: 'Medium' }, { w: 4.2, label: 'Bold' }];
   const SAVE_AFTER_MS = 1400;
-  const PALM_MS = 900;       // a touch this soon after the pen was near is a hand
+  const PALM_MS = 1500;      // a touch this soon after the pen was near is a hand
+  const JOIN_MS = 40;        // a pen that lifts and lands again this fast, this close, never left
+  const JOIN_PX = 12;
+  const TAP_MIN_MS = 20;     // a one-point touch shorter than this is the digitiser, not a dot
+  const PEN_LOG = '~/notes/chattering/pen-log.md';
   const PALM_SIZE = 46;      // css px: a contact wider than this is a hand
   const pref = (k, d) => { try { const v = localStorage.getItem(PREF + k); return v == null ? d : v; } catch { return d; } };
   const setPref = (k, v) => { try { localStorage.setItem(PREF + k, String(v)); } catch {} };
@@ -142,6 +146,7 @@
     renderAll(v);
     wireInput(v);
     wireLifecycle(v);
+    startLog(v);
     paintTools(v);
     setStatus(v, v.rev !== v.savedRev ? 'Unsaved' : 'Saved');
     if (typeof liveFileRememberOpen === 'function') liveFileRememberOpen(ws);
@@ -252,6 +257,7 @@
     const changed = w !== v.pageW;
     v.pageW = w;
     v.scale = w / F.PAGE_W;
+    setMinR(v);
     v.pagesEl.style.setProperty('--ink-page-w', w + 'px');
     v.pagesEl.style.setProperty('--ink-page-h', Math.round(w * F.PAGE_H / F.PAGE_W) + 'px');
     sizeLive(v);
@@ -353,10 +359,14 @@
   }
   // A stroke's shape, built once (page units) and kept with it.
   const shapes = new WeakMap();
+  // Never thinner than the screen shows cleanly: on e-ink a line under two
+  // device pixels breaks into grey dots.
+  let minR = 0.3;
+  function setMinR(v) { minR = (einkNow() ? 0.8 : 0.5) / Math.max(0.05, v.scale); }
   function shapeOf(s) {
-    let p = shapes.get(s);
-    if (!p) { p = F.trace(new Path2D(), s); shapes.set(s, p); }
-    return p;
+    let e = shapes.get(s);
+    if (!e || e.minR !== minR) { e = { minR, path: F.trace(new Path2D(), s, { minR }) }; shapes.set(s, e); }
+    return e.path;
   }
   function paintStroke(v, i, s) {
     const pg = v.pages[i];
@@ -470,15 +480,29 @@
   function pointerDown(v, ev) {
     if (v.disposed || !v.note) return;
     const now = performance.now();
-    if (ev.pointerType === 'pen') { v.lastPen = now; notePen(); }
-    if (v.draw) { if (ev.pointerType === 'touch') ev.preventDefault(); return; } // one line at a time; a hand meanwhile is ignored
+    if (ev.pointerType === 'pen') {
+      v.lastPen = now; notePen();
+      // The pen wins over a hand that landed first and started to scroll.
+      if (v.pan) { try { v.scroll.releasePointerCapture(v.pan.id); } catch {} v.pan = null; logTouch(v, 'pan stopped by the pen'); }
+      // The digitiser lost the pen for a few milliseconds: the same line goes on.
+      const j = v.pending;
+      if (j && now - j.at < JOIN_MS && Math.hypot(ev.clientX - j.x, ev.clientY - j.y) < JOIN_PX) {
+        clearTimeout(j.timer); v.pending = null;
+        ev.preventDefault();
+        v.draw = j.d; v.draw.id = ev.pointerId; v.draw.joined = (v.draw.joined || 0) + 1;
+        try { v.scroll.setPointerCapture(ev.pointerId); } catch {}
+        addPoint(v, ev);
+        return;
+      }
+    }
+    if (v.draw) { if (ev.pointerType === 'touch') { ev.preventDefault(); logTouch(v, 'ignored while writing', ev); } return; } // one line at a time; a hand meanwhile is ignored
     const touch = ev.pointerType === 'touch';
     const palm = touch && (now - v.lastPen < PALM_MS || Math.max(ev.width || 0, ev.height || 0) > PALM_SIZE);
-    if (touch && palm) { ev.preventDefault(); return; }
-    // A finger writes only when asked to, and not on a device whose pen was
-    // just in use (that finger is holding the tablet).
-    const fingerWrites = v.finger && now - v.lastPen > 4000;
-    if (touch && !fingerWrites) { startPan(v, ev); return; }
+    if (touch && palm) { ev.preventDefault(); logTouch(v, 'palm', ev); return; }
+    // A finger writes only when asked to, and never on a device with a pen
+    // (there, a touch on the page is a hand or a scroll).
+    const fingerWrites = v.finger && !penSeen() && now - v.lastPen > 4000;
+    if (touch && !fingerWrites) { logTouch(v, 'scroll', ev); startPan(v, ev); return; }
     if (ev.pointerType === 'mouse' && ev.button !== 0) return;
     ev.preventDefault();
     v.scroll.focus({ preventScroll: true });
@@ -487,6 +511,7 @@
     const rect = v.pages[i].el.getBoundingClientRect();
     const stage = v.scroll.getBoundingClientRect();
     clearTimeout(v.settleTimer);
+    finishPending(v);
     v.draw = { id: ev.pointerId, page: i, rect, stage, erase, pts: [], t0: Date.now(), start: now, erased: [], last: null, kind: ev.pointerType, p: -1,
       box: { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity } };
     try { v.scroll.setPointerCapture(ev.pointerId); } catch {}
@@ -494,7 +519,27 @@
   }
   function pressureOf(ev) {
     if (ev.pointerType === 'mouse' || !(ev.pressure > 0)) return 0.5;
-    return Math.max(0.05, Math.min(1, ev.pressure));
+    return Math.max(0.01, Math.min(1, ev.pressure));
+  }
+  // Pens differ: the AINOTE's reports about 0.1 for ordinary writing, which
+  // the width curve read as barely touching. This device's typical pressure
+  // (the median of its recent lines) is learned and counts as 0.5.
+  let typicalP = Number(pref('pressure', '')) || 0;
+  function normP(p) { return Math.max(0.03, Math.min(1, 0.5 * p / (typicalP || 0.5))); }
+  function learnP(raw) {
+    const list = raw.filter(p => p > 0 && p !== 0.5).sort((a, b) => a - b);
+    if (list.length < 3) return;
+    const med = list[list.length >> 1];
+    typicalP = Math.max(0.02, typicalP ? typicalP * 0.8 + med * 0.2 : med);
+    setPref('pressure', typicalP.toFixed(4));
+  }
+  function normalise(pts, kind) {
+    if (kind === 'mouse') return pts;
+    const raw = [];
+    for (let i = 2; i < pts.length; i += 3) raw.push(pts[i]);
+    learnP(raw);
+    for (let i = 2; i < pts.length; i += 3) pts[i] = normP(pts[i]);
+    return pts;
   }
   function addPoint(v, ev) {
     const d = v.draw;
@@ -526,7 +571,7 @@
     const ctx = v.ctx;
     if (!ctx) return;
     d.p = d.p < 0 ? p : d.p + (p - d.p) * 0.35;
-    const w = Math.max(1, v.width * v.scale * F.pressureFactor(d.kind === 'mouse' ? 0.5 : d.p));
+    const w = Math.max(einkNow() ? 1.6 : 1, v.width * v.scale * F.pressureFactor(d.kind === 'mouse' ? 0.5 : normP(d.p)));
     const x = cx - d.stage.left, y = cy - d.stage.top;
     ctx.fillStyle = ctx.strokeStyle = inkColor(v);
     if (!d.last) { ctx.beginPath(); ctx.arc(x, y, w / 2, 0, Math.PI * 2); ctx.fill(); }
@@ -546,7 +591,7 @@
     v.tail = null;
     const pred = ev.getPredictedEvents();
     if (!pred.length) return;
-    const w = Math.max(1, v.width * v.scale * F.pressureFactor(d.kind === 'mouse' ? 0.5 : d.p));
+    const w = Math.max(einkNow() ? 1.6 : 1, v.width * v.scale * F.pressureFactor(d.kind === 'mouse' ? 0.5 : normP(d.p)));
     let lx = d.last[2] - d.stage.left, ly = d.last[3] - d.stage.top;
     const box = { x0: lx, y0: ly, x1: lx, y1: ly };
     c.strokeStyle = inkColor(v); c.lineCap = 'round'; c.lineJoin = 'round'; c.lineWidth = w;
@@ -583,9 +628,70 @@
     clearTail(v);
     if (d.erase) { finishErase(v, d.page, d.erased); return; }
     if (cancelled || !d.pts.length) { settleLive(v, true); return; }
-    const stroke = { pts: F.settle(d.pts, { minStep: 0.6 / v.scale }), w: v.width, t0: d.t0, dur: Math.round(performance.now() - d.start), color: '' };
+    d.end = performance.now();
+    if (d.kind !== 'pen') return finishStroke(v, d);
+    // Held a moment: if the pen lands again right here, it is the same line.
+    const pend = v.pending = { d, at: d.end, x: ev.clientX, y: ev.clientY, timer: 0 };
+    pend.timer = setTimeout(() => { if (v.pending === pend) { v.pending = null; finishStroke(v, d); } }, JOIN_MS);
+  }
+  function finishPending(v) {
+    const j = v.pending;
+    if (!j) return;
+    clearTimeout(j.timer); v.pending = null;
+    finishStroke(v, j.d);
+  }
+  function finishStroke(v, d) {
+    const dur = Math.round((d.end || performance.now()) - d.start);
+    // One point, shorter than a person can tap: the digitiser's, not the hand's.
+    if (d.pts.length === 3 && dur < TAP_MIN_MS) { logStroke(v, d, 'page', { dropped: 'tap ' + dur + ' ms' }); settleLive(v, true); return; }
+    const raw = d.pts.filter((_, i) => i % 3 === 2);
+    const stroke = { pts: F.settle(normalise(d.pts, d.kind), { minStep: 0.6 / v.scale }), w: v.width, t0: d.t0, dur, color: '' };
     addStroke(v, d.page, stroke);
+    logStroke(v, d, 'page', { raw, dur });
     settleLive(v);
+  }
+
+  // ---- the pen log (design/98): on while ~/notes/chattering/pen-log.md exists ----
+  // What each line and each touch was, so delay and palms are measured, not
+  // guessed: which path drew it, the samples, their pressure and rate.
+  async function startLog(v) {
+    try {
+      const d = await (await fetch('/api/file/read?' + new URLSearchParams({ path: PEN_LOG }))).json();
+      if (d.error || v.disposed) return;
+      v.log = { text: d.text || '', lines: [], timer: 0 };
+      const n = window.ChatteringInk;
+      logLine(v, { event: 'open', note: v.ws.path.split('/').pop(), ua: navigator.userAgent, dpr: devicePixelRatio, secure: isSecureContext, rawupdate: RAW,
+        app: !!n, appRegion: !!(n && n.setRegion), appStrokeDrawn: !!(n && n.strokeDrawn), eink: einkNow(), scale: +v.scale.toFixed(3), typicalP });
+    } catch {}
+  }
+  function logLine(v, o) {
+    if (!v.log) return;
+    v.log.lines.push(JSON.stringify({ at: new Date().toISOString().slice(11, 23), ...o }));
+    clearTimeout(v.log.timer);
+    v.log.timer = setTimeout(() => flushLog(v), 1500);
+  }
+  function flushLog(v) {
+    const L = v.log;
+    if (!L || !L.lines.length) return;
+    L.text += L.lines.join('\n') + '\n'; L.lines = [];
+    if (L.text.length > 400000) L.text = L.text.slice(-300000);
+    postJson('/api/file/save', { path: PEN_LOG, text: L.text, actor: 'human', input: 'keyboard' }).catch(() => {});
+  }
+  function logTouch(v, what, ev) {
+    if (!v.log) return;
+    logLine(v, { event: 'touch', what, type: ev && ev.pointerType, w: ev && Math.round(ev.width || 0), h: ev && Math.round(ev.height || 0), sincePen: Math.round(performance.now() - v.lastPen) });
+  }
+  function logStroke(v, d, path, extra) {
+    if (!v.log) return;
+    const raw = extra.raw || [];
+    const sorted = raw.slice().sort((a, b) => a - b);
+    const n = window.ChatteringInk;
+    let fast = null;
+    try { fast = n && typeof n.fastNib === 'function' ? n.fastNib() : null; } catch {}
+    logLine(v, { event: 'stroke', path, type: d.kind, samples: d.pts.length / 3, dur: extra.dur, dropped: extra.dropped,
+      rateHz: extra.dur ? Math.round(d.pts.length / 3 / extra.dur * 1000) : null, joined: d.joined || 0,
+      p: sorted.length ? [sorted[0], sorted[sorted.length >> 1], sorted[sorted.length - 1]].map(x => +x.toFixed(3)) : null,
+      typicalP: +(typicalP || 0).toFixed(3), fastNib: fast });
   }
   // The finished line is on its page; the live one goes once the page has
   // been shown (two frames: a low-latency layer can reach the screen before
@@ -853,6 +959,8 @@
 
   function disposeView(v) {
     if (v.disposed) return;
+    finishPending(v);
+    flushLog(v);
     flush(v);
     v.disposed = true;
     native(v, false);
@@ -917,7 +1025,7 @@
       if (!on) { if (!regionOnly) { n.setEnabled(false); } return; }
       const r = v.scroll.getBoundingClientRect();
       n.setRegion(Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom));
-      if (!regionOnly) { n.setErase(v.tool === 'eraser'); n.setWidth?.(v.width * v.scale); n.setEnabled(true); }
+      if (!regionOnly) { n.setErase(v.tool === 'eraser'); n.setWidth?.(v.width * v.scale); if (typicalP) n.setPressureTypical?.(typicalP); n.setEnabled(true); }
     } catch {}
   }
   // A line the app drew: "x,y[,pressure[,ms]] …" in the page's css pixels.
@@ -947,8 +1055,16 @@
       const flat = [];
       for (const [cx, cy, p] of pts) { const [x, y] = toPage(rect, cx, cy); flat.push(x, y, Number.isFinite(p) && p > 0 ? Math.min(1, p) : 0.5); }
       const t = pts[pts.length - 1][3];
-      const stroke = { pts: F.settle(flat, { minStep: 0.6 / v.scale }), w: v.width, t0: Date.now() - (Number.isFinite(t) ? t : 0), dur: Number.isFinite(t) ? t : 0, color: '' };
-      addStroke(v, i, stroke);
+      const dur = Number.isFinite(t) ? t : 0;
+      const d = { kind: 'pen', pts: flat };
+      if (flat.length === 3 && dur < TAP_MIN_MS) logStroke(v, d, 'app', { dropped: 'tap ' + dur + ' ms', dur });
+      else {
+        const raw = flat.filter((_, k) => k % 3 === 2);
+        const stroke = { pts: F.settle(normalise(flat.slice(), 'pen'), { minStep: 0.6 / v.scale }), w: v.width, t0: Date.now() - dur, dur, color: '' };
+        addStroke(v, i, stroke);
+        logStroke(v, d, 'app', { raw, dur });
+        try { nativeInk()?.setPressureTypical?.(typicalP); } catch {}
+      }
     }
     // Once the page has shown it, the app may wipe its own copy.
     requestAnimationFrame(() => requestAnimationFrame(() => {
