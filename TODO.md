@@ -160,6 +160,10 @@ Revised 2026-09-23 (conversation 01a0cb65) after checking the plan against the p
 
 ## 6. Polish the phone and the iFlytek e-ink experience
 
+The iFlytek part is now its own chapter, with the pen at its centre: **design/99-the-pen-tablet.md** (write, prompt by hand, read, try, weave with other apps; in that order).
+
+- [x] The app's fast e-ink pen through the encrypted link (was never used there; fdf3774)
+- [ ] Pen validated on the AINOTE: the pen log says appPen, path app, fastNib; latency measured
 - [ ] A real week of use on the phone and on the iFlytek with a written list of what broke, then fix in order of frequency
 - [ ] Browser pane (item 1) on both devices
 - [ ] Global AI commands view (item 3) reachable on the phone
