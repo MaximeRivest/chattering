@@ -65,6 +65,8 @@ test('handwritten notes: make, write, erase, undo, save, merge, reopen', { timeo
   await command('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   await until(`document.querySelector('.ink-scroll').scrollTop>${before}+200`, 'one finger scrolls the note');
   assert.equal(await run(`document.querySelectorAll('.ink-s').length`), 2, 'the finger wrote nothing');
+  // A flick coasts on; once it has stopped, back to the top.
+  await run(`new Promise(ok=>{const sc=document.querySelector('.ink-scroll');let last=-1;const tick=()=>{if(sc.scrollTop===last)return ok();last=sc.scrollTop;setTimeout(tick,150)};tick()})`);
   await run(`document.querySelector('.ink-scroll').scrollTop=0`);
   await size(1440, 1000);
 
