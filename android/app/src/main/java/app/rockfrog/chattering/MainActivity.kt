@@ -124,6 +124,14 @@ class MainActivity : AppCompatActivity() {
         fun setWidth(cssPx: Float) {
             runOnUiThread { ink.setWidthCss(cssPx) }
         }
+        /** The page has painted the last line: the app's copy may go once the pen rests. */
+        @JavascriptInterface
+        fun strokeDrawn() {
+            runOnUiThread { ink.strokeDrawn() }
+        }
+        /** Is the e-ink panel's own overlay drawing the pen (diagnostics). */
+        @JavascriptInterface
+        fun fastNib(): Boolean = ink.fastNib()
     }
     private lateinit var web: WebView
     private lateinit var anywhere: AnywhereShell
@@ -227,6 +235,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        // Focus goes before an app switch animates: the panel overlay must be
+        // cleared and handed back now, or its ink shows over the next app.
+        if (!hasFocus && ::ink.isInitialized) ink.clearAll()
         if (hasFocus && mode == "anywhere" && ::web.isInitialized) web.evaluateJavascript("window.anywhereAppFocus&&window.anywhereAppFocus()", null)
     }
 
@@ -243,6 +254,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         NotifyService.appOnScreen = false
+        if (::ink.isInitialized) ink.clearAll()
         if (::listen.isInitialized) listen.onPause()
         if (::mic.isInitialized) mic.onPause()
         if (::web.isInitialized) {
@@ -826,6 +838,8 @@ class MainActivity : AppCompatActivity() {
         if (finger && SystemClock.uptimeMillis() - ink.lastStylusMs < 800) {
             return true
         }
+        // A finger scrolls the page: the pen's copy, fixed on the panel, goes first.
+        if (finger && ev.actionMasked == MotionEvent.ACTION_DOWN) ink.wipeNow()
         return super.dispatchTouchEvent(ev)
     }
 

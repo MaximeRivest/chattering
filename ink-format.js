@@ -364,7 +364,7 @@
         t = Math.max(0, Math.min(1, t));
         const ex = ax + t * dx - px, ey = ay + t * dy - py;
         // Pressure changes count too: a line that thickens keeps its points.
-        const dp = Math.abs(pts[i * 3 + 2] - (pts[a * 3 + 2] + t * (pts[b * 3 + 2] - pts[a * 3 + 2]))) * 4;
+        const dp = Math.abs(pts[i * 3 + 2] - (pts[a * 3 + 2] + t * (pts[b * 3 + 2] - pts[a * 3 + 2]))) * 2;
         const e = ex * ex + ey * ey + dp * dp;
         if (e > worst) { worst = e; at = i; }
       }
@@ -375,18 +375,15 @@
     return out;
   }
 
-  // The outline of a stroke whose width follows its pressure, as SVG path
-  // data to fill: a smooth band along the centre line with round ends.
-  // A sparse line (simplified, or written elsewhere with few points) gets
-  // points in between along a Catmull-Rom curve through its own points, so
-  // its outline bends smoothly instead of kinking at every corner.
+  // Points in between along a Catmull-Rom curve through a line's own points
+  // (a simplified line has few), so it bends smoothly instead of kinking.
   function densify(p, step = 4) {
     const n = p.length / 3;
-    if (n < 3) return p;
+    if (n < 2) return p;
     const out = [p[0], p[1], p[2]];
     for (let i = 0; i < n - 1; i++) {
       const x1 = p[i * 3], y1 = p[i * 3 + 1], x2 = p[i * 3 + 3], y2 = p[i * 3 + 4];
-      const k = Math.min(24, Math.floor(Math.hypot(x2 - x1, y2 - y1) / step));
+      const k = Math.min(48, Math.floor(Math.hypot(x2 - x1, y2 - y1) / step));
       if (k >= 1) {
         const a = Math.max(0, i - 1) * 3, d = Math.min(n - 1, i + 2) * 3;
         const x0 = p[a], y0 = p[a + 1], x3 = p[d], y3 = p[d + 1];
@@ -400,41 +397,112 @@
     }
     return out;
   }
-  function outline(stroke, opts = {}) {
-    const p = densify(stroke.pts), n = p.length / 3;
-    const base = (stroke.w || 2.4) * (opts.scale || 1);
-    const width = q => opts.uniform ? base : base * (0.55 + 0.9 * q);
-    const f = v => Math.round(v * 100) / 100;
-    if (n === 0) return '';
-    if (n === 1 || (n === 2 && Math.hypot(p[3] - p[0], p[4] - p[1]) < 0.5)) {
-      const r = width(p[2]) / 2, x = p[0], y = p[1];
-      return `M${f(x - r)} ${f(y)}a${f(r)} ${f(r)} 0 1 0 ${f(2 * r)} 0a${f(r)} ${f(r)} 0 1 0 ${f(-2 * r)} 0Z`;
+
+  // ---- how a stroke looks (design/98, after meridian's ink.rs and inkpen)
+  //
+  // Wet, then set. While the pen moves the line is drawn at the raw samples
+  // (latency first). When it lifts, the stroke settles once (settle): samples
+  // closer than a fraction of a pixel go (a slow pen floods one spot), the
+  // centre line follows the samples only part of the way each step (kills
+  // digitiser jitter, so slow writing comes out confident), pressure gets
+  // its own low-pass, and the line is simplified. That settled line is what
+  // the file stores, so drawing it later is deterministic.
+  //
+  // Drawing (trace): a Catmull-Rom curve through the stored points, a disc
+  // at each step and the tangent band between neighbours, all one filled
+  // shape (no seams, any corner, any pressure change), with the ends tapered
+  // over a short run-in. Width follows pressure on a sine ease: mid pressures
+  // matter most, as a real nib.
+  const pressureFactor = p => 0.4 + 0.9 * Math.sin(Math.max(0, Math.min(1, p)) * Math.PI / 2);
+  const FOLLOW = 0.5;   // centre-line follower: part of the way to each sample
+  const P_EMA = 0.35;   // pressure low-pass
+  function settle(raw, { minStep = 0.6, tolerance = 0.3 } = {}) {
+    const n = raw.length / 3;
+    if (n <= 1) return raw.slice(0, 3);
+    const min2 = minStep * minStep;
+    const out = [raw[0], raw[1], raw[2]];
+    let sx = raw[0], sy = raw[1], sp = raw[2], lx = raw[0], ly = raw[1];
+    for (let i = 1; i < n; i++) {
+      const x = raw[i * 3], y = raw[i * 3 + 1], p = raw[i * 3 + 2];
+      sp += (p - sp) * P_EMA;
+      if ((x - lx) * (x - lx) + (y - ly) * (y - ly) < min2) { out[out.length - 1] = sp; continue; }
+      lx = x; ly = y;
+      sx += (x - sx) * FOLLOW; sy += (y - sy) * FOLLOW;
+      out.push(sx, sy, sp);
     }
-    const left = [], right = [];
+    // The follower never quite arrives: the line ends where the pen lifted.
+    const ex = raw[(n - 1) * 3], ey = raw[(n - 1) * 3 + 1];
+    if ((ex - sx) * (ex - sx) + (ey - sy) * (ey - sy) >= min2 * 0.25) out.push(ex, ey, sp);
+    return out.length > 9 ? simplify(out, tolerance) : out;
+  }
+  // The discs a stroke is made of: [x, y, r, …] in page units.
+  function discs(stroke) {
+    const p = densify(stroke.pts, 2), n = p.length / 3;
+    const half = (stroke.w || 2.4) / 2;
+    const arc = new Float64Array(n);
+    for (let i = 1; i < n; i++) arc[i] = arc[i - 1] + Math.hypot(p[i * 3] - p[i * 3 - 3], p[i * 3 + 1] - p[i * 3 - 2]);
+    const total = n ? arc[n - 1] : 0;
+    const taper = Math.min(total / 3, 8);
+    const out = new Float64Array(n * 3);
     for (let i = 0; i < n; i++) {
-      const a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1);
-      let dx = p[b * 3] - p[a * 3], dy = p[b * 3 + 1] - p[a * 3 + 1];
-      const len = Math.hypot(dx, dy) || 1;
-      dx /= len; dy /= len;
-      const r = width(p[i * 3 + 2]) / 2;
-      left.push(p[i * 3] - dy * r, p[i * 3 + 1] + dx * r);
-      right.push(p[i * 3] + dy * r, p[i * 3 + 1] - dx * r);
+      let k = 1;
+      const fromEnd = Math.min(arc[i], total - arc[i]);
+      if (taper > 0 && fromEnd < taper) { const t = fromEnd / taper; k = 0.35 + 0.65 * t * t * (3 - 2 * t); }
+      out[i * 3] = p[i * 3]; out[i * 3 + 1] = p[i * 3 + 1];
+      out[i * 3 + 2] = Math.max(0.3, half * pressureFactor(p[i * 3 + 2]) * k);
     }
-    const side = (pts, start) => {
-      // Quadratic curves through the midpoints: smooth, and exactly on the ends.
-      let d = start ? `M${f(pts[0])} ${f(pts[1])}` : `L${f(pts[0])} ${f(pts[1])}`;
-      for (let i = 2; i + 2 < pts.length; i += 2) {
-        const mx = (pts[i] + pts[i + 2]) / 2, my = (pts[i + 1] + pts[i + 3]) / 2;
-        d += `Q${f(pts[i])} ${f(pts[i + 1])} ${f(mx)} ${f(my)}`;
+    // A tap is a dot, as a resting nib leaves one: a little wider than the line.
+    if (total < half * 2) for (let i = 0; i < n; i++) out[i * 3 + 2] = Math.max(out[i * 3 + 2], half * 1.5 * pressureFactor(p[i * 3 + 2]));
+    return out;
+  }
+  // Trace a stroke's shape into anything with moveTo/lineTo/arc/closePath
+  // (a canvas Path2D, a 2D context, or the SVG path writer below). Every
+  // part winds the same way, so one non-zero fill is their union.
+  // A disc goes only where it shows: the two ends, and a joint where the
+  // line turns more than a few degrees or the width changes (elsewhere the
+  // bands on either side already meet). A fifth of the shapes to fill.
+  function needsDisc(d, i, n) {
+    if (i === 0 || i === n - 1) return true;
+    const ax = d[i * 3] - d[i * 3 - 3], ay = d[i * 3 + 1] - d[i * 3 - 2];
+    const bx = d[i * 3 + 3] - d[i * 3], by = d[i * 3 + 4] - d[i * 3 + 1];
+    const la = Math.hypot(ax, ay), lb = Math.hypot(bx, by);
+    if (la < 1e-6 || lb < 1e-6) return true;
+    if ((ax * bx + ay * by) / (la * lb) < 0.992) return true; // about 7 degrees
+    return Math.abs(d[i * 3 + 2] - d[i * 3 - 1]) > 0.08 || Math.abs(d[i * 3 + 5] - d[i * 3 + 2]) > 0.08;
+  }
+  function trace(path, stroke) {
+    const d = discs(stroke), n = d.length / 3;
+    for (let i = 0; i < n; i++) {
+      const x = d[i * 3], y = d[i * 3 + 1], r = d[i * 3 + 2];
+      if (needsDisc(d, i, n)) {
+        path.moveTo(x + r, y);
+        path.arc(x, y, r, 0, Math.PI * 2);
+        path.closePath();
       }
-      d += `L${f(pts[pts.length - 2])} ${f(pts[pts.length - 1])}`;
-      return d;
-    };
-    const rev = [];
-    for (let i = right.length - 2; i >= 0; i -= 2) rev.push(right[i], right[i + 1]);
-    const rEnd = width(p[(n - 1) * 3 + 2]) / 2, rStart = width(p[2]) / 2;
-    return side(left, true) + `A${f(rEnd)} ${f(rEnd)} 0 0 0 ${f(rev[0])} ${f(rev[1])}` + side(rev, false).replace(/^L[^QLA]*/, '') +
-      `A${f(rStart)} ${f(rStart)} 0 0 0 ${f(left[0])} ${f(left[1])}Z`;
+      if (!i) continue;
+      const ax = d[i * 3 - 3], ay = d[i * 3 - 2], ar = d[i * 3 - 1];
+      const dx = x - ax, dy = y - ay, len = Math.hypot(dx, dy);
+      if (len <= Math.abs(r - ar) + 1e-6) continue; // one disc holds the other
+      const nx = -dy / len, ny = dx / len;
+      const q = [ax + nx * ar, ay + ny * ar, x + nx * r, y + ny * r, x - nx * r, y - ny * r, ax - nx * ar, ay - ny * ar];
+      let area = 0;
+      for (let k = 0; k < 8; k += 2) area += q[k] * q[(k + 3) % 8] - q[(k + 2) % 8] * q[k + 1];
+      if (area < 0) for (let a = 0, b = 6; a < b; a += 2, b -= 2) { [q[a], q[b]] = [q[b], q[a]]; [q[a + 1], q[b + 1]] = [q[b + 1], q[a + 1]]; }
+      path.moveTo(q[0], q[1]); path.lineTo(q[2], q[3]); path.lineTo(q[4], q[5]); path.lineTo(q[6], q[7]); path.closePath();
+    }
+    return path;
+  }
+  // The same shape as SVG path data (a picture of a note, outside a canvas).
+  function outline(stroke) {
+    const f = v => Math.round(v * 100) / 100;
+    let d = '';
+    trace({
+      moveTo(x, y) { d += `M${f(x)} ${f(y)}`; },
+      lineTo(x, y) { d += `L${f(x)} ${f(y)}`; },
+      arc(x, y, r) { d += `M${f(x - r)} ${f(y)}a${f(r)} ${f(r)} 0 1 0 ${f(2 * r)} 0a${f(r)} ${f(r)} 0 1 0 ${f(-2 * r)} 0`; },
+      closePath() { d += 'Z'; },
+    }, stroke);
+    return d;
   }
 
   // Strokes near a point (page units): what an eraser at (x, y) touches.
@@ -466,5 +534,5 @@
   function isInkPath(p) { return INK_PATH.test(String(p || '')); }
 
   return { FORMAT, PAGE_W, PAGE_H, PAGE_GAP, PAPERS, DEFAULT_PAPER, empty, blankPage, isBlankPage, parse, serialize, merge, strokeKey,
-    simplify, densify, outline, hits, bounds, pathData, pathPoints, fileName, isInkPath, parseXml, writeXml };
+    simplify, densify, settle, discs, trace, outline, pressureFactor, hits, bounds, pathData, pathPoints, fileName, isInkPath, parseXml, writeXml };
 });

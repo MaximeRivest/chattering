@@ -41,10 +41,11 @@
   box-shadow: 0 1px 3px var(--shadow-soft), 0 0 0 1px var(--border); background: var(--ink-paper); }
 :root[data-theme-mode="binary"] .ink-page { box-shadow: 0 0 0 1px #000; }
 .ink-sheet { display: block; width: 100%; height: 100%; overflow: hidden; }
+/* The ink: a canvas over the paper, the size of the page. */
+.ink-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .ink-paper-bg { fill: var(--ink-paper); }
 .ink-rule { stroke: var(--ink-rule); stroke-width: 1.2; fill: none; vector-effect: non-scaling-stroke; }
 .ink-dotgrid { fill: var(--ink-rule); }
-.ink-s { fill: var(--ink-pen); stroke: none; }
 .ink-page-no { position: absolute; right: 8px; bottom: 6px; font: 10px var(--font); color: var(--text-faint); pointer-events: none; }
 .ink-message { margin: 40px auto; max-width: 520px; padding: 0 16px; color: var(--text-dim); }
 @media (max-width: 560px) { .ink-pages { gap: 10px; padding-top: 8px; } }

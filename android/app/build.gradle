@@ -19,7 +19,12 @@ android {
         // 0.3.6 → 306, above the 10 that 0.3.5 used.
         versionCode androidAppCode
         versionName androidAppVersion
+        // The pen nib (cpp/ebc_nib.c, design/98), built for the devices
+        // that write with a pen; on any other ABI the app draws as a view.
+        externalNativeBuild { cmake { abiFilters "arm64-v8a", "armeabi-v7a", "x86_64" } }
     }
+    ndkVersion "29.0.14206865"
+    externalNativeBuild { cmake { path "src/main/cpp/CMakeLists.txt"; version "3.22.1" } }
     buildTypes {
         release {
             minifyEnabled false

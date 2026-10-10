@@ -10,16 +10,22 @@
 //   mouse     writes too (a Wacom tablet is a pen, a mouse is a slow one);
 //   finger    scrolls, 1:1, and never writes unless "Draw with a finger" is on;
 //             a hand resting on the screen while the pen is near is ignored.
-// The stroke being drawn goes on a canvas over the page (the cheapest
-// thing to add to, point by point); when the pen lifts it becomes a vector
-// path in the page's SVG and the canvas is cleared in the same frame, so the
-// line never blinks, on e-ink either. Finished strokes are SVG: sharp at any
-// size, no repainting the page, erased by removing one element.
 //
-// On the Android app with a pen, the app's own overlay draws the live line
-// (lower latency than the page can) inside the rectangle the page gives it,
-// and hands the finished stroke here (window.fileInkAcceptPacked). Toolbar,
-// menus and the rest of the screen keep the pen as a pointer.
+// Fast, the way the handwriting keyboard taught (~/Projects/iflytek,
+// handwriting-ime/fastink and research/ebc; remarkable_customization's
+// meridian ink.rs and inkpen):
+//   - wet, then set: while the pen moves the line is drawn at the raw
+//     samples on a low-latency layer (latency first); on lift it settles
+//     once (ink-format.js settle: jitter filter, follower, pressure
+//     low-pass) and is painted on its page;
+//   - every sample counts: pointerrawupdate where the browser has it (the
+//     web's unbuffered dispatch), coalesced samples otherwise, the browser's
+//     prediction for the last frame on screens that are not e-ink;
+//   - a finished line costs one fill: each page's ink is a canvas, painted
+//     one stroke at a time; an eraser repaints only around what it took;
+//     pages far from the screen give their canvas back;
+//   - on the Android app the app's nib draws the live line (on the e-ink
+//     panel's overlay where there is one) and the page only settles it.
 //
 // Saving: on its own, a moment after the pen stops, on leaving, and when
 // the tab hides. If another device saved the note meanwhile, the two are
@@ -107,13 +113,14 @@
       <div class="ink-stage">
         <div class="ink-scroll" tabindex="0" aria-label="Handwritten note. Write with a pen or the mouse; scroll with a finger or the wheel."><div class="ink-pages"></div></div>
         <canvas class="ink-live" aria-hidden="true"></canvas>
+        <canvas class="ink-live ink-predict" aria-hidden="true"></canvas>
       </div>
     </div>`;
     const root = host.querySelector('.ink-view');
     const v = view = ws.inkView = {
       ws, root, disposed: false, note: null, base: null, baseSha: '', rev: 0, savedRev: 0, saving: false, again: false, timer: 0,
-      tool: 'pen', width, finger: pref('finger', '0') === '1', undo: [], redo: [], pages: [], elOf: new WeakMap(),
-      scroll: root.querySelector('.ink-scroll'), pagesEl: root.querySelector('.ink-pages'), canvas: root.querySelector('.ink-live'),
+      tool: 'pen', width, finger: pref('finger', '0') === '1', undo: [], redo: [], pages: [], pageW: 0,
+      scroll: root.querySelector('.ink-scroll'), pagesEl: root.querySelector('.ink-pages'), canvas: root.querySelector('.ink-live:not(.ink-predict)'), predict: root.querySelector('.ink-predict'),
       status: $('docStatus'), cleanups: [], draw: null, pan: null, lastPen: 0, scale: 1,
       dispose() { disposeView(v); },
     };
@@ -212,6 +219,11 @@
   }
 
   // ---- pages on screen ----
+  // A page is three layers: the paper and anything the file adds (an SVG,
+  // drawn once, never touched while writing), the ink (a canvas holding the
+  // finished strokes, painted one stroke at a time), and the page number.
+  // Only pages near the screen keep a canvas; the others give their memory
+  // back and are painted again when they come near.
   function ensureTrail(v) {
     const pages = v.note.pages;
     if (!pages.length || !F.isBlankPage(pages[pages.length - 1])) pages.push(F.blankPage());
@@ -221,22 +233,36 @@
     const pad = avail < 560 ? 6 : 24;
     return Math.max(160, Math.min(avail - pad * 2, 900));
   }
+  const dprOf = () => Math.min(window.devicePixelRatio || 1, 2);
   function layout(v) {
-    const w = pageWidth(v);
+    const w = Math.round(pageWidth(v));
+    const changed = w !== v.pageW;
+    v.pageW = w;
     v.scale = w / F.PAGE_W;
     v.pagesEl.style.setProperty('--ink-page-w', w + 'px');
     v.pagesEl.style.setProperty('--ink-page-h', Math.round(w * F.PAGE_H / F.PAGE_W) + 'px');
-    sizeCanvas(v);
+    sizeLive(v);
+    if (changed) for (let i = 0; i < v.pages.length; i++) if (v.pages[i]?.backed) back(v, i);
   }
-  function sizeCanvas(v) {
-    const c = v.canvas, r = v.scroll.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    c.width = Math.max(1, Math.round(r.width * dpr)); c.height = Math.max(1, Math.round(r.height * dpr));
-    c.style.width = r.width + 'px'; c.style.height = r.height + 'px';
-    v.ctx = c.getContext('2d');
+  // The live layers cover the stage. Their context asks for low latency
+  // (desynchronized): where the browser can, it draws straight to the screen
+  // without waiting for the next composited frame, as Android's front-buffer
+  // canvas does.
+  function sizeLive(v) {
+    const r = v.scroll.getBoundingClientRect(), dpr = dprOf();
+    for (const c of [v.canvas, v.predict]) {
+      const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+      if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+      c.style.width = r.width + 'px'; c.style.height = r.height + 'px';
+    }
+    v.ctx ||= v.canvas.getContext('2d', { desynchronized: true });
+    v.pctx ||= v.predict.getContext('2d', { desynchronized: true });
     v.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    v.pctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    v.liveDirty = false; v.tail = null;
   }
   function renderAll(v) {
+    v.observer?.disconnect();
     v.pagesEl.replaceChildren();
     v.pages = [];
     v.note.pages.forEach((page, i) => v.pagesEl.appendChild(pageEl(v, page, i)));
@@ -253,14 +279,101 @@
     svg.appendChild(paperEl(v.note.paper));
     const extra = document.createElementNS(SVGNS, 'g'); extra.setAttribute('class', 'ink-extra');
     for (const node of page.extra) { const n = safeSvg(node, v.ws.path); if (n) extra.appendChild(n); }
-    const strokes = document.createElementNS(SVGNS, 'g'); strokes.setAttribute('class', 'ink-strokes');
-    svg.append(extra, strokes);
-    el.appendChild(svg);
+    svg.appendChild(extra);
+    const canvas = document.createElement('canvas');
+    canvas.className = 'ink-layer';
+    canvas.width = canvas.height = 0;
     const no = document.createElement('span'); no.className = 'ink-page-no'; no.textContent = String(i + 1);
-    el.appendChild(no);
-    v.pages[i] = { el, svg, strokes };
-    for (const s of page.strokes) strokes.appendChild(strokeEl(v, s));
+    el.append(svg, canvas, no);
+    v.pages[i] = { el, canvas, ctx: null, backed: false };
+    observe(v, el);
     return el;
+  }
+  function observe(v, el) {
+    if (!('IntersectionObserver' in window)) { back(v, Number(el.dataset.page)); return; }
+    v.observer ||= new IntersectionObserver(entries => {
+      for (const en of entries) {
+        const i = Number(en.target.dataset.page);
+        if (!v.pages[i] || v.disposed) continue;
+        if (en.isIntersecting) { if (!v.pages[i].backed) back(v, i, { slices: !onScreen(v, i) }); }
+        else if (v.pages[i].backed) unback(v, i);
+      }
+    }, { root: v.scroll, rootMargin: '150% 0px' });
+    v.observer.observe(el);
+  }
+  function onScreen(v, i) {
+    const r = v.pages[i].el.getBoundingClientRect(), s = v.scroll.getBoundingClientRect();
+    return r.bottom > s.top && r.top < s.bottom;
+  }
+  // Give a page its canvas and paint every stroke on it. A page on screen
+  // is painted at once; one coming near is painted a few milliseconds at a
+  // time between frames, so scrolling and the pen never wait for it.
+  function back(v, i, { slices = false } = {}) {
+    const pg = v.pages[i];
+    if (!pg) return;
+    const dpr = dprOf();
+    const w = Math.round(v.pageW * dpr), h = Math.round(v.pageW * F.PAGE_H / F.PAGE_W * dpr);
+    if (pg.canvas.width !== w || pg.canvas.height !== h) { pg.canvas.width = w; pg.canvas.height = h; }
+    pg.ctx = pg.canvas.getContext('2d');
+    pg.ctx.setTransform(w / F.PAGE_W, 0, 0, w / F.PAGE_W, 0, 0);
+    pg.ctx.clearRect(0, 0, F.PAGE_W, F.PAGE_H);
+    pg.backed = true;
+    const gen = pg.gen = (pg.gen || 0) + 1;
+    const list = v.note.pages[i].strokes.slice();
+    pg.slicing = false;
+    if (!slices) { for (const s of list) paintStroke(v, i, s); return; }
+    let k = 0;
+    pg.slicing = true;
+    const step = () => {
+      if (v.disposed || pg.gen !== gen || !pg.backed) return;
+      const until = performance.now() + 5;
+      while (k < list.length && performance.now() < until) paintStroke(v, i, list[k++]);
+      if (k < list.length) setTimeout(step, 0); else pg.slicing = false;
+    };
+    step();
+  }
+  function unback(v, i) {
+    const pg = v.pages[i];
+    pg.gen = (pg.gen || 0) + 1;
+    pg.canvas.width = pg.canvas.height = 0;
+    pg.ctx = null; pg.backed = false;
+  }
+  // A stroke's shape, built once (page units) and kept with it.
+  const shapes = new WeakMap();
+  function shapeOf(s) {
+    let p = shapes.get(s);
+    if (!p) { p = F.trace(new Path2D(), s); shapes.set(s, p); }
+    return p;
+  }
+  function paintStroke(v, i, s) {
+    const pg = v.pages[i];
+    if (!pg || !pg.backed) return;
+    pg.ctx.fillStyle = s.color || inkColor(v);
+    pg.ctx.fill(shapeOf(s), 'nonzero');
+  }
+  function boxOf(s) { return s.box || (s.box = F.bounds(s)); }
+  // Paint again only where something changed (an erased line, an undo).
+  function repaint(v, i, box) {
+    const pg = v.pages[i];
+    if (!pg || !pg.backed) return;
+    if (pg.slicing) return back(v, i, { slices: true }); // still being painted: start over from the page as it is
+    const pad = 12, x0 = box.x0 - pad, y0 = box.y0 - pad, x1 = box.x1 + pad, y1 = box.y1 + pad;
+    const c = pg.ctx;
+    c.save();
+    c.beginPath(); c.rect(x0, y0, x1 - x0, y1 - y0); c.clip();
+    c.clearRect(x0, y0, x1 - x0, y1 - y0);
+    for (const s of v.note.pages[i].strokes) {
+      const b = boxOf(s);
+      if (b.x1 + 10 < x0 || b.x0 - 10 > x1 || b.y1 + 10 < y0 || b.y0 - 10 > y1) continue;
+      c.fillStyle = s.color || inkColor(v);
+      c.fill(shapeOf(s), 'nonzero');
+    }
+    c.restore();
+  }
+  function unionBox(list) {
+    const b = { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity };
+    for (const s of list) { const o = boxOf(s); b.x0 = Math.min(b.x0, o.x0); b.y0 = Math.min(b.y0, o.y0); b.x1 = Math.max(b.x1, o.x1); b.y1 = Math.max(b.y1, o.y1); }
+    return b;
   }
   function paperEl(paper) {
     const g = document.createElementNS(SVGNS, 'g');
@@ -277,14 +390,6 @@
       add('path', { class: 'ink-dotgrid', d: dots });
     }
     return g;
-  }
-  function strokeEl(v, s) {
-    const p = document.createElementNS(SVGNS, 'path');
-    p.setAttribute('d', F.outline(s));
-    p.setAttribute('class', 'ink-s');
-    if (s.color) p.style.fill = s.color;
-    v.elOf.set(s, p);
-    return p;
   }
 
   // The extra layer, drawn from the parsed tree and never as markup: only
@@ -309,18 +414,29 @@
   }
 
   // ---- input ----
+  // pointerrawupdate, where there is one (Chromium, secure pages), hands
+  // each pen sample over as it arrives instead of once per frame: the web's
+  // requestUnbufferedDispatch. Elsewhere pointermove with its coalesced
+  // samples, so a fast stroke keeps every point either way.
+  const RAW = 'onpointerrawupdate' in window && window.isSecureContext;
   function wireInput(v) {
     const sc = v.scroll;
     const on = (el, type, fn, opts) => { el.addEventListener(type, fn, opts); v.cleanups.push(() => el.removeEventListener(type, fn, opts)); };
     on(sc, 'pointerdown', ev => pointerDown(v, ev));
-    on(sc, 'pointermove', ev => pointerMove(v, ev));
+    on(sc, RAW ? 'pointerrawupdate' : 'pointermove', ev => pointerMove(v, ev));
+    if (RAW) on(sc, 'pointermove', ev => { if (v.draw || v.pan) ev.preventDefault(); });
     on(sc, 'pointerup', ev => pointerUp(v, ev));
     on(sc, 'pointercancel', ev => pointerUp(v, ev, true));
-    on(sc, 'lostpointercapture', ev => { if (v.draw && v.draw.id === ev.pointerId) pointerUp(v, ev); });
+    // Only our own capture ending counts. On a touch screen the browser first
+    // gives the pen to the element under it; taking it for the page makes
+    // that element report a lost capture, which bubbles here: read as a
+    // lift, it ended every line after its first point (a note from the
+    // tablet held only one-point strokes of 7 ms).
+    on(sc, 'lostpointercapture', ev => { if (ev.target === sc && v.draw && v.draw.id === ev.pointerId) pointerUp(v, ev); });
     // No long-press menu, no text selection, no drag of the page's pictures.
     on(sc, 'contextmenu', ev => { if (v.draw || ev.pointerType === 'pen' || ev.pointerType === 'touch') ev.preventDefault(); });
     on(sc, 'dragstart', ev => ev.preventDefault());
-    on(sc, 'scroll', () => rememberPlace(v), { passive: true });
+    on(sc, 'scroll', () => { if (!v.draw) settleLive(v, true); rememberPlace(v); }, { passive: true });
     on(v.root, 'keydown', ev => keyDown(v, ev));
     const ro = new ResizeObserver(() => { if (!v.disposed && !v.draw) { layout(v); native(v, true, { regionOnly: true }); } });
     ro.observe(sc);
@@ -357,7 +473,9 @@
     const i = pageAt(v, ev.clientY);
     const rect = v.pages[i].el.getBoundingClientRect();
     const stage = v.scroll.getBoundingClientRect();
-    v.draw = { id: ev.pointerId, page: i, rect, stage, erase, pts: [], t0: Date.now(), start: now, erased: [], last: null, kind: ev.pointerType };
+    clearTimeout(v.settleTimer);
+    v.draw = { id: ev.pointerId, page: i, rect, stage, erase, pts: [], t0: Date.now(), start: now, erased: [], last: null, kind: ev.pointerType, p: -1,
+      box: { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity } };
     try { v.scroll.setPointerCapture(ev.pointerId); } catch {}
     addPoint(v, ev);
   }
@@ -373,7 +491,7 @@
       const p = pressureOf(c);
       if (d.last) {
         const dx = (x - d.last[0]) * v.scale, dy = (y - d.last[1]) * v.scale;
-        if (dx * dx + dy * dy < 0.6) continue; // under a css pixel apart: the same place
+        if (dx * dx + dy * dy < 0.25) { d.pts[d.pts.length - 1] = p; continue; } // under half a pixel: the same place
       }
       if (d.erase) {
         // Along the whole move, not only where the events landed: a quick
@@ -382,22 +500,55 @@
         const [lx, ly] = d.last || [x, y];
         const steps = Math.max(1, Math.ceil(Math.hypot(x - lx, y - ly) / (radius * 0.8)));
         for (let k = 1; k <= steps; k++) eraseNear(v, d.page, lx + (x - lx) * k / steps, ly + (y - ly) * k / steps, d.erased);
-      }
-      else liveSegment(v, d, c.clientX, c.clientY, p);
+      } else liveSegment(v, d, c.clientX, c.clientY, p);
       d.pts.push(x, y, p);
-      d.last = [x, y, c.clientX, c.clientY, p];
+      d.last = [x, y, c.clientX, c.clientY];
     }
+    if (!d.erase) predictTail(v, d, ev);
   }
+  // The live line: raw samples, round ends, width from pressure as the
+  // finished line will have it (smoothed the same way), so the settle is a
+  // smoothing, not a jump.
   function liveSegment(v, d, cx, cy, p) {
     const ctx = v.ctx;
     if (!ctx) return;
+    d.p = d.p < 0 ? p : d.p + (p - d.p) * 0.35;
+    const w = Math.max(1, v.width * v.scale * F.pressureFactor(d.kind === 'mouse' ? 0.5 : d.p));
     const x = cx - d.stage.left, y = cy - d.stage.top;
-    const w = d.kind === 'mouse' ? v.width * v.scale : v.width * v.scale * (0.55 + 0.9 * p);
     ctx.fillStyle = ctx.strokeStyle = inkColor(v);
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    if (!d.last) { ctx.beginPath(); ctx.arc(x, y, w / 2, 0, Math.PI * 2); ctx.fill(); return; }
-    ctx.lineWidth = w;
-    ctx.beginPath(); ctx.moveTo(d.last[2] - d.stage.left, d.last[3] - d.stage.top); ctx.lineTo(x, y); ctx.stroke();
+    if (!d.last) { ctx.beginPath(); ctx.arc(x, y, w / 2, 0, Math.PI * 2); ctx.fill(); }
+    else {
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = w;
+      ctx.beginPath(); ctx.moveTo(d.last[2] - d.stage.left, d.last[3] - d.stage.top); ctx.lineTo(x, y); ctx.stroke();
+    }
+    v.liveDirty = true;
+  }
+  // Where the pen is about to be (the browser's own prediction), drawn on a
+  // layer of its own and replaced at every sample: it hides about a frame
+  // of delay. Not on e-ink, where every guess would stay as a ghost.
+  function predictTail(v, d, ev) {
+    if (!v.pctx || einkNow() || typeof ev.getPredictedEvents !== 'function' || !d.last) return;
+    const c = v.pctx;
+    if (v.tail) c.clearRect(v.tail.x0, v.tail.y0, v.tail.x1 - v.tail.x0, v.tail.y1 - v.tail.y0);
+    v.tail = null;
+    const pred = ev.getPredictedEvents();
+    if (!pred.length) return;
+    const w = Math.max(1, v.width * v.scale * F.pressureFactor(d.kind === 'mouse' ? 0.5 : d.p));
+    let lx = d.last[2] - d.stage.left, ly = d.last[3] - d.stage.top;
+    const box = { x0: lx, y0: ly, x1: lx, y1: ly };
+    c.strokeStyle = inkColor(v); c.lineCap = 'round'; c.lineJoin = 'round'; c.lineWidth = w;
+    c.beginPath(); c.moveTo(lx, ly);
+    for (const pe of pred.slice(0, 3)) {
+      lx = pe.clientX - d.stage.left; ly = pe.clientY - d.stage.top;
+      c.lineTo(lx, ly);
+      box.x0 = Math.min(box.x0, lx); box.y0 = Math.min(box.y0, ly); box.x1 = Math.max(box.x1, lx); box.y1 = Math.max(box.y1, ly);
+    }
+    c.stroke();
+    v.tail = { x0: box.x0 - w - 2, y0: box.y0 - w - 2, x1: box.x1 + w + 2, y1: box.y1 + w + 2 };
+  }
+  function clearTail(v) {
+    if (v.tail && v.pctx) v.pctx.clearRect(v.tail.x0, v.tail.y0, v.tail.x1 - v.tail.x0, v.tail.y1 - v.tail.y0);
+    v.tail = null;
   }
   function inkColor(v) {
     if (!v.inkColor) v.inkColor = getComputedStyle(v.root).getPropertyValue('--ink-pen').trim() || '#1d1f21';
@@ -407,27 +558,40 @@
     if (ev.pointerType === 'pen') v.lastPen = performance.now();
     if (v.pan && ev.pointerId === v.pan.id) return panMove(v, ev);
     if (!v.draw || ev.pointerId !== v.draw.id) return;
-    ev.preventDefault();
+    if (ev.cancelable) ev.preventDefault();
     addPoint(v, ev);
   }
   function pointerUp(v, ev, cancelled = false) {
     if (v.pan && ev.pointerId === v.pan.id) return panEnd(v, ev);
     const d = v.draw;
     if (!d || ev.pointerId !== d.id) return;
-    if (!cancelled && !d.erase) addPoint(v, ev);
+    if (!cancelled && !d.erase && ev.type === 'pointerup') addPoint(v, ev);
     v.draw = null;
-    if (d.erase) { if (d.erased.length) commit(v, { type: 'erase', page: d.page, items: d.erased }); return; }
-    if (cancelled || !d.pts.length) { clearLive(v); return; }
-    const pts = d.pts.length > 9 ? F.simplify(d.pts, 0.3) : d.pts;
-    const stroke = { pts, w: v.width, t0: d.t0, dur: Math.round(performance.now() - d.start), color: '' };
+    clearTail(v);
+    if (d.erase) { finishErase(v, d.page, d.erased); return; }
+    if (cancelled || !d.pts.length) { settleLive(v, true); return; }
+    const stroke = { pts: F.settle(d.pts, { minStep: 0.6 / v.scale }), w: v.width, t0: d.t0, dur: Math.round(performance.now() - d.start), color: '' };
     addStroke(v, d.page, stroke);
-    clearLive(v);
+    settleLive(v);
   }
-  function clearLive(v) { if (v.ctx) v.ctx.clearRect(0, 0, v.canvas.width, v.canvas.height); }
+  // The finished line is on its page; the live one goes once the page has
+  // been shown (two frames: a low-latency layer can reach the screen before
+  // the page does, and clearing it first would blink). A line started
+  // meanwhile keeps the layer until it ends.
+  function settleLive(v, now = false) {
+    if (!v.liveDirty || !v.ctx) return;
+    const clear = () => {
+      if (v.draw || v.disposed) return;
+      v.ctx.save(); v.ctx.setTransform(1, 0, 0, 1, 0, 0); v.ctx.clearRect(0, 0, v.canvas.width, v.canvas.height); v.ctx.restore();
+      v.liveDirty = false;
+    };
+    if (now) return clear();
+    requestAnimationFrame(() => requestAnimationFrame(clear));
+  }
 
   function addStroke(v, page, stroke, { record = true } = {}) {
     v.note.pages[page].strokes.push(stroke);
-    v.pages[page].strokes.appendChild(strokeEl(v, stroke));
+    paintStroke(v, page, stroke);
     if (record) commit(v, { type: 'add', page, stroke });
     if (page === v.note.pages.length - 1) { // the last page has writing: a fresh one waits below
       v.note.pages.push(F.blankPage());
@@ -436,24 +600,40 @@
   }
   // About ten screen pixels around the eraser, never finer than the line.
   function eraseRadius(v) { return Math.max(6, 10 / v.scale); }
+  // Erased lines leave the page at once; the canvas is painted again only
+  // around them, a few times a second while the eraser moves.
   function eraseNear(v, page, x, y, into) {
     const list = v.note.pages[page].strokes;
     const radius = eraseRadius(v);
+    let hit = false;
     for (let i = list.length - 1; i >= 0; i--) {
       const s = list[i];
-      const b = s.box || (s.box = F.bounds(s));
+      const b = boxOf(s);
       if (x < b.x0 - radius - 4 || x > b.x1 + radius + 4 || y < b.y0 - radius - 4 || y > b.y1 + radius + 4) continue;
       if (!F.hits(s, x, y, radius)) continue;
       list.splice(i, 1);
-      v.elOf.get(s)?.remove();
       into.push({ stroke: s, index: i });
+      (v.eraseQ ||= []).push(s);
+      hit = true;
     }
+    if (hit && !v.eraseRaf) v.eraseRaf = requestAnimationFrame(() => flushErase(v, page));
+  }
+  function flushErase(v, page) {
+    v.eraseRaf = 0;
+    const q = v.eraseQ || [];
+    v.eraseQ = [];
+    if (q.length) repaint(v, page, unionBox(q));
+  }
+  function finishErase(v, page, items) {
+    if (v.eraseRaf) { cancelAnimationFrame(v.eraseRaf); flushErase(v, page); }
+    if (items.length) commit(v, { type: 'erase', page, items });
   }
 
   // ---- one finger scrolls ----
   function startPan(v, ev) {
     if (v.pan) return; // a second finger rides along with the first
     ev.preventDefault();
+    settleLive(v, true);
     v.pan = { id: ev.pointerId, y: ev.clientY, x: ev.clientX, top: v.scroll.scrollTop, left: v.scroll.scrollLeft, t: performance.now(), vy: 0 };
     try { v.scroll.setPointerCapture(ev.pointerId); } catch {}
   }
@@ -508,13 +688,13 @@
   function apply(v, op, back) {
     if (op.type === 'add') {
       const list = v.note.pages[op.page].strokes;
-      if (back) { const i = list.indexOf(op.stroke); if (i >= 0) list.splice(i, 1); v.elOf.get(op.stroke)?.remove(); }
-      else { list.push(op.stroke); v.pages[op.page].strokes.appendChild(strokeEl(v, op.stroke)); }
+      if (back) { const i = list.indexOf(op.stroke); if (i >= 0) list.splice(i, 1); repaint(v, op.page, boxOf(op.stroke)); }
+      else { list.push(op.stroke); paintStroke(v, op.page, op.stroke); }
     } else if (op.type === 'erase') {
       const list = v.note.pages[op.page].strokes;
       if (back) for (const it of op.items.slice().reverse()) { list.splice(Math.min(it.index, list.length), 0, it.stroke); }
       else for (const it of op.items) { const i = list.indexOf(it.stroke); if (i >= 0) list.splice(i, 1); }
-      redrawPage(v, op.page);
+      repaint(v, op.page, unionBox(op.items.map(it => it.stroke)));
     } else if (op.type === 'paper') {
       v.note.paper = back ? op.from : op.to;
       renderAll(v);
@@ -525,10 +705,6 @@
   }
   function undo(v) { const op = v.undo.pop(); if (!op) return; apply(v, op, true); v.redo.push(op); changed(v); }
   function redo(v) { const op = v.redo.pop(); if (!op) return; apply(v, op, false); v.undo.push(op); changed(v); }
-  function redrawPage(v, i) {
-    const g = v.pages[i].strokes;
-    g.replaceChildren(...v.note.pages[i].strokes.map(s => strokeEl(v, s)));
-  }
   function setPaper(v, paper) {
     if (!v.note || v.note.paper === paper) return;
     commit(v, { type: 'paper', from: v.note.paper, to: paper });
@@ -555,6 +731,8 @@
   async function save(v) {
     clearTimeout(v.timer);
     if (!v.note || v.rev === v.savedRev) return;
+    // Never while a line is being drawn: the pen gets every millisecond.
+    if (v.draw && !v.disposed) { v.timer = setTimeout(() => save(v), 600); return; }
     if (v.saving) { v.again = true; return; }
     v.saving = true;
     setStatus(v, 'Saving…');
@@ -665,6 +843,8 @@
     flush(v);
     v.disposed = true;
     native(v, false);
+    v.observer?.disconnect();
+    if (v.eraseRaf) cancelAnimationFrame(v.eraseRaf);
     for (const fn of v.cleanups) { try { fn(); } catch {} }
     v.cleanups = [];
     if (view === v) view = null;
@@ -702,11 +882,16 @@
     } catch (err) { errToast(err.message); }
   }
 
-  // ---- the Android app's pen overlay ----
-  // Used only by an app that can confine it to a rectangle (setRegion);
-  // an older app would take the pen everywhere, toolbar included, so the
-  // page draws by itself there. Not through the encrypted link's frame
-  // either: the app does not know where the frame sits on screen.
+  // ---- the Android app's pen nib ----
+  // On the app, the pen is the app's (InkOverlay.kt): it draws the live line
+  // itself, on the e-ink panel's own overlay where the device has one (the
+  // /dev/ebc nib of the handwriting keyboard), else on a view over the page,
+  // and hands each finished line here. The page settles it, paints it, and
+  // says so (strokeDrawn); the app then wipes its nib once the pen has
+  // rested, so the panel only ever shows one copy of a line.
+  // Only an app that confines the pen to a rectangle (setRegion) is used: an
+  // older one took the pen over the toolbar too. Not through the encrypted
+  // link's frame either: the app cannot tell where the frame sits.
   function nativeInk() {
     const n = window.ChatteringInk;
     return window.top === window && n && typeof n.setRegion === 'function' ? n : null;
@@ -722,7 +907,7 @@
       if (!regionOnly) { n.setErase(v.tool === 'eraser'); n.setWidth?.(v.width * v.scale); n.setEnabled(true); }
     } catch {}
   }
-  // A stroke the app drew: "x,y[,pressure[,ms]] …" in the page's css pixels.
+  // A line the app drew: "x,y[,pressure[,ms]] …" in the page's css pixels.
   function acceptPacked(packed, erase) {
     const v = view;
     if (!v || v.disposed || !v.note) return;
@@ -744,17 +929,19 @@
         for (let k = 1; k <= steps; k++) eraseNear(v, i, lx + (x - lx) * k / steps, ly + (y - ly) * k / steps, items);
         last = [x, y];
       }
-      if (items.length) commit(v, { type: 'erase', page: i, items });
+      finishErase(v, i, items);
     } else {
       const flat = [];
       for (const [cx, cy, p] of pts) { const [x, y] = toPage(rect, cx, cy); flat.push(x, y, Number.isFinite(p) && p > 0 ? Math.min(1, p) : 0.5); }
       const t = pts[pts.length - 1][3];
-      const stroke = { pts: flat.length > 9 ? F.simplify(flat, 0.3) : flat, w: v.width, t0: Date.now() - (Number.isFinite(t) ? t : 0), dur: Number.isFinite(t) ? t : 0, color: '' };
+      const stroke = { pts: F.settle(flat, { minStep: 0.6 / v.scale }), w: v.width, t0: Date.now() - (Number.isFinite(t) ? t : 0), dur: Number.isFinite(t) ? t : 0, color: '' };
       addStroke(v, i, stroke);
     }
-    // The app's line goes once the page has drawn its own (no blink on e-ink).
-    clearTimeout(v.nativeClear);
-    v.nativeClear = setTimeout(() => { try { nativeInk()?.clearAll(); } catch {} }, 140);
+    // Once the page has shown it, the app may wipe its own copy.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const n = nativeInk();
+      try { if (n && typeof n.strokeDrawn === 'function') n.strokeDrawn(); else n?.clearAll(); } catch {}
+    }));
   }
   window.fileInkAcceptPacked = acceptPacked;
 

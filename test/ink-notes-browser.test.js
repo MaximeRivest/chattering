@@ -43,8 +43,12 @@ test('handwritten notes: make, write, erase, undo, save, merge, reopen', { timeo
   const at = (fx, fy) => [box.x + box.w * fx, box.y + box.h * fy];
   const line = (fx0, fy, fx1, n = 12) => Array.from({ length: n }, (_, i) => [...at(fx0 + (fx1 - fx0) * i / (n - 1), fy + Math.sin(i) * 0.004), 0.2 + 0.06 * i]);
   await pen(line(0.1, 0.1, 0.6));
-  await until(`document.querySelectorAll('.ink-s').length===1`, 'the stroke is on the page');
+  await until(`InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)===1`, 'the stroke is on the page');
   assert.equal(await run(`$('sideInk').hidden`), false, 'after a pen: the ✎ shortcut is there');
+  // The line is pixels on the page's canvas, and the live layer is empty again.
+  const inkPixels = `(()=>{const c=document.querySelector('.ink-page .ink-layer');const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let n=0;for(let i=3;i<d.length;i+=4)if(d[i]>128)n++;return n})()`;
+  await until(`${inkPixels}>200`, 'the line is painted on its page');
+  await until(`(()=>{const c=document.querySelector('.ink-live');const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;for(let i=3;i<d.length;i+=4)if(d[i])return false;return true})()`, 'the live layer is cleared once the page shows the line');
   await until(`$('docStatus').textContent==='Saved'`, 'saved by itself');
   let note = read(file);
   assert.equal(note.pages[0].strokes.length, 1);
@@ -54,9 +58,23 @@ test('handwritten notes: make, write, erase, undo, save, merge, reopen', { timeo
   assert.ok(s0.t0 > 1.7e12, 'the time it was written');
   assert.equal(await run(`document.querySelectorAll('.ink-page').length`), 2, 'a fresh page waits below the written one');
 
+  // On a touch screen the browser first captures the pen to the element
+  // under it; the page taking the capture makes that element report a lost
+  // capture. That is not a lift: the line goes on.
+  {
+    const [sx, sy] = at(0.1, 0.4);
+    await command('Input.dispatchMouseEvent', { type: 'mousePressed', x: sx, y: sy, button: 'left', buttons: 1, clickCount: 1, pointerType: 'pen', force: 0.4 });
+    await run(`(()=>{const d=InkNotes.current.draw;const under=document.querySelector('.ink-page .ink-sheet rect');under.dispatchEvent(new PointerEvent('lostpointercapture',{pointerId:d.id,pointerType:'pen',bubbles:true}));return !!InkNotes.current.draw})()`);
+    for (let i = 1; i <= 10; i++) await command('Input.dispatchMouseEvent', { type: 'mouseMoved', x: sx + i * 20, y: sy + Math.sin(i) * 4, button: 'left', buttons: 1, pointerType: 'pen', force: 0.5 });
+    await command('Input.dispatchMouseEvent', { type: 'mouseReleased', x: sx + 200, y: sy, button: 'left', buttons: 0, clickCount: 1, pointerType: 'pen' });
+    const last = await run(`(()=>{const s=InkNotes.current.note.pages[0].strokes.at(-1);let len=0;for(let j=3;j<s.pts.length;j+=3)len+=Math.hypot(s.pts[j]-s.pts[j-3],s.pts[j+1]-s.pts[j-2]);return len})()`);
+    assert.ok(last > 150, 'the whole line was kept, not only its first point: ' + last);
+    await run(`InkNotes.current.note.pages[0].strokes.pop(); InkNotes.current.undo.pop();`);
+  }
   // The mouse writes too; the finger scrolls and never writes.
   await pen(line(0.1, 0.2, 0.4), { type: 'mouse' });
-  await until(`document.querySelectorAll('.ink-s').length===2`);
+  await until(`InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)===2`);
+  await run(`new Promise(r=>setTimeout(r,1000))`); // a touch right after the pen is a resting palm
   const before = await run(`document.querySelector('.ink-scroll').scrollTop`);
   await size(1440, 1000, true);
   const tbox = await run(`(()=>{const r=document.querySelector('.ink-scroll').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height*0.6}})()`);
@@ -64,21 +82,23 @@ test('handwritten notes: make, write, erase, undo, save, merge, reopen', { timeo
   for (let i = 1; i <= 8; i++) await command('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: tbox.x, y: tbox.y - i * 40 }] });
   await command('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
   await until(`document.querySelector('.ink-scroll').scrollTop>${before}+200`, 'one finger scrolls the note');
-  assert.equal(await run(`document.querySelectorAll('.ink-s').length`), 2, 'the finger wrote nothing');
+  assert.equal(await run(`InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)`), 2, 'the finger wrote nothing');
   // A flick coasts on; once it has stopped, back to the top.
   await run(`new Promise(ok=>{const sc=document.querySelector('.ink-scroll');let last=-1;const tick=()=>{if(sc.scrollTop===last)return ok();last=sc.scrollTop;setTimeout(tick,150)};tick()})`);
   await run(`document.querySelector('.ink-scroll').scrollTop=0`);
   await size(1440, 1000);
 
   // The eraser removes the line it touches; undo brings it back; redo again.
+  const beforeErase = await run(inkPixels);
   await run(`document.querySelector('[data-ink-tool=eraser]').click()`);
   await pen([at(0.35, 0.08), at(0.35, 0.12)]);
-  await until(`document.querySelectorAll('.ink-s').length===1`, () => run(`JSON.stringify({tool:InkNotes.current.tool,top:document.querySelector('.ink-scroll').scrollTop,box:document.querySelector('.ink-page').getBoundingClientRect(),strokes:InkNotes.current.note.pages.map(p=>p.strokes.map(s=>s.pts.slice(0,2).map(Math.round)))})`));
+  await until(`InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)===1`, () => run(`JSON.stringify({tool:InkNotes.current.tool,top:document.querySelector('.ink-scroll').scrollTop,box:document.querySelector('.ink-page').getBoundingClientRect(),strokes:InkNotes.current.note.pages.map(p=>p.strokes.map(s=>s.pts.slice(0,2).map(Math.round)))})`));
   await run(`document.querySelector('[data-ink-tool=pen]').click()`);
+  await until(`${inkPixels}<${beforeErase}*0.75`, 'the erased line is gone from the page');
   await run(`$('inkUndo').click()`);
-  assert.equal(await run(`document.querySelectorAll('.ink-s').length`), 2, 'undo brings the line back');
+  assert.equal(await run(`InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)`), 2, 'undo brings the line back');
   await run(`$('inkRedo').click()`);
-  assert.equal(await run(`document.querySelectorAll('.ink-s').length`), 1, 'redo erases it again');
+  assert.equal(await run(`InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)`), 1, 'redo erases it again');
   // (The pen's eraser end, buttons & 32, cannot be sent through DevTools.)
   await until(`$('docStatus').textContent==='Saved'`);
   assert.equal(read(file).pages[0].strokes.length, 1);
@@ -88,7 +108,7 @@ test('handwritten notes: make, write, erase, undo, save, merge, reopen', { timeo
   other.pages[0].strokes.push({ pts: [500, 900, 0.5, 600, 950, 0.7, 700, 900, 0.5], w: 2.6, t0: Date.now() - 1000, dur: 300, color: '' });
   fs.writeFileSync(file, F.serialize(other));
   await pen(line(0.1, 0.5, 0.5));
-  await until(`$('docStatus').textContent==='Saved' && document.querySelectorAll('.ink-s').length===3`, 'merged with the other device');
+  await until(`$('docStatus').textContent==='Saved' && InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)===3`, 'merged with the other device');
   note = read(file);
   assert.equal(note.pages[0].strokes.length, 3, 'nothing lost, nothing doubled');
 
@@ -103,7 +123,7 @@ test('handwritten notes: make, write, erase, undo, save, merge, reopen', { timeo
   await run(`openLiveFile(${JSON.stringify(path.join(work, 'nothing.txt'))}, {project:'work'})`);
   await until(`!document.querySelector('.ink-view')`);
   await run(`openLiveFile(${JSON.stringify(file)}, {project:'work'})`);
-  await until(`document.querySelectorAll('.ink-s').length===4 && !!document.querySelector('.ink-paper-grid')`, 'reopened as it was');
+  await until(`InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)===4 && !!document.querySelector('.ink-paper-grid')`, 'reopened as it was');
   assert.deepEqual(b.exceptions, []);
 
   // A phone: the page fits, the tools stay reachable.
@@ -127,7 +147,7 @@ test('a note never runs code from its file', { timeout: 120000 }, async t => {
 <g data-ink-page="1"><g data-ink-layer="pen"><path d="M10 10l100 100" stroke-width="3"/></g>
 <g data-ink-layer="extra"><script>window.ran=1</script><image href="javascript:window.ran=2" width="10" height="10" onload="window.ran=3"/><rect width="50" height="50" onclick="window.ran=4" fill="url(javascript:alert(1))"/><foreignObject><div xmlns="http://www.w3.org/1999/xhtml"><img src="x" onerror="window.ran=5"/></div></foreignObject><text x="20" y="300">kept text</text></g></g></svg>`);
   await run(`openLiveFile(${JSON.stringify(file)}, {project:'work'})`);
-  await until(`document.querySelectorAll('.ink-s').length===1`);
+  await until(`InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)===1`);
   await new Promise(r => setTimeout(r, 300));
   assert.equal(await run(`window.ran===undefined`), true);
   assert.equal(await run(`!document.querySelector('.ink-extra script, .ink-extra foreignObject, .ink-extra [onclick], .ink-extra [onload]')`), true);

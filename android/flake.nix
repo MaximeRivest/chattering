@@ -26,7 +26,11 @@
         includeSystemImages = true;
         systemImageTypes = [ "google_apis" ];
         abiVersions = [ "x86_64" ];
-        includeNDK = false;
+        # The C pen nib (app/src/main/cpp, design/98): the same NDK the
+        # handwriting keyboard's /dev/ebc work was built with.
+        includeNDK = true;
+        ndkVersions = [ "29.0.14206865" ];
+        cmakeVersions = [ "3.22.1" ];
         includeSources = false;
       };
       sdk = "${android.androidsdk}/libexec/android-sdk";

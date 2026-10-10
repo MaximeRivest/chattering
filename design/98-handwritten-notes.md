@@ -90,25 +90,67 @@ side erased. A stroke is known by its page, start time and end points, which
 survive the file's rounding. Nothing doubles (the MRMD duplication of
 design/collab taught that integrity is the first requirement).
 
-**Rendering.** Finished strokes are SVG paths: sharp at any size, no page
-repaint, erasing removes one element, resizing is free. The line being drawn
-is on a canvas over the page (cheapest to add to); on pen-up it becomes a
-path and the canvas is cleared in the same frame, so nothing blinks on
-e-ink. Pages off screen are skipped by the browser (`content-visibility`).
-The extra layer is built from the parsed tree with an allow-list (shapes,
-text, pictures with data: or relative addresses): a note an agent wrote
-cannot run code in Chattering.
+**How the pen is made fast** (second version, same day; the first felt
+slow and lost lines). It follows the work already done for pens on this
+machine: the AINOTE 2 handwriting keyboard (`~/Projects/iflytek/
+handwriting-ime`: `fastink/`, `research/ebc/README.md`, `CLAUDE.md` "The
+EBC fast-ink layer") and the reMarkable inks (`remarkable_customization/
+meridian/src/ink.rs`, `inkpen/`). Their finding: on e-ink the delay is the
+panel's update, not the app. A browser canvas (tldraw, and the first
+version of this page) takes the slowest path: compositor, full frame, slow
+waveform. What made the keyboard's pen feel fast was a nib drawn straight
+onto the panel's overlay.
 
-**The Android app's pen overlay.** On the app, the native overlay
-(InkOverlay.kt) draws the live line with less delay than the page can, and
-hands each finished stroke to the page (`fileInkAcceptPacked`, now with
-pressure and time). It used to take the pen over the whole screen (it
-served only the old diff annotation); it now writes only inside the
-rectangle the page gives it (`ChatteringInk.setRegion`), so the toolbar and
-menus keep the pen as a pointer, and the page turns it off while its menu is
-open. An app without `setRegion` is left alone: the page then draws by
-itself. Not through the encrypted link either: from inside the relay's
-frame the page cannot tell the app where the frame sits.
+1. **On the Android app, the app's nib draws the live line.** On a Rockchip
+   e-ink panel (`/dev/ebc`, the AINOTE 2) it is the keyboard's C nib
+   (`android/app/src/main/cpp/ebc_nib.c`, from `fastink_ebc.c`): one pen
+   event with its history is one polyline, one small rectangle, one update
+   on the fast overlay waveform, a radius per point for pressure. Every
+   invariant from there is kept: query first (Y8, bounds), rebuild the clip
+   on every pen-down (the window moves without telling), clear and submit
+   before disabling, drop the overlay when the window loses focus, turn
+   coordinates for rotation. Elsewhere (phones, the emulator) the app draws
+   the line as a view with unbuffered input. The page gets the line when the
+   pen lifts, paints it, says so (`strokeDrawn`); the app wipes its copy only
+   once the pen has rested 450 ms, so nothing blinks while writing and the
+   panel never shows two copies (the keyboard's "stroke shadow" lesson).
+2. **Wet, then set** (meridian's ink.rs). While the pen moves, the line is
+   the raw samples, latency first. On lift it settles once
+   (`ink-format.js settle`): samples under 0.6 px apart dropped (a slow pen
+   floods one spot), a follower that goes half way to each sample (kills
+   digitiser jitter), pressure low-passed, then simplified. The file stores
+   the settled line.
+3. **The look** (meridian, inkpen): a Catmull-Rom curve through the stored
+   points, a disc at each joint that turns and the tangent band between
+   neighbours, filled once (no seams, any corner); width from pressure on a
+   sine ease (mid pressures matter most); ends tapered over a short run-in;
+   a tap is a dot a little wider than the line.
+4. **The page in a browser.** `pointerrawupdate` where there is one (the
+   web's unbuffered dispatch), coalesced samples otherwise; the live layer's
+   canvas asks for low latency (`desynchronized`); the browser's predicted
+   points fill the last frame on screens that are not e-ink. Finished lines
+   are painted on a canvas per page, one fill each; the eraser repaints only
+   around what it took; pages far from the screen give their canvas back and
+   are painted again in 5 ms slices when they come near. The paper and any
+   added layer stay SVG under the ink; the added layer is built from the
+   parsed file with an allow-list (shapes, text, pictures with data: or
+   relative addresses), so a note an agent wrote cannot run code here.
+
+**Measured** (headless Chromium, main thread slowed 4×, a note of 3 pages ×
+450 lines; the tablet itself was off): raster work for 10 new lines and a
+scroll fell from 166 ms to 49 ms; main-thread time per line and per pen
+event is the same as before (under 1 ms per event in both); opening the
+note 0.97 s against 0.86 s (the first page is painted before it shows). On
+the Android emulator: stylus lines go through the app's layer, reach the
+file, and a finger scrolls without writing (`test/ink-android-emulator.test.js`,
+opt-in).
+
+**The bug that made the first version feel broken.** Maxime's first note
+from the device held two strokes of one point each, 7 and 9 ms long. On a
+touch screen the browser first gives the pen to the element under it; the
+page taking the pen made that element report a lost capture, which bubbled
+up and was read as the pen lifting. Every line ended after its first point.
+Only the page's own capture counts now; a test reproduces the sequence.
 
 ## What comes next, and where it plugs in
 
@@ -157,9 +199,20 @@ Each of these is a layer on the same file; none needs a format change.
 - **No live co-writing.** Two devices writing at once merge at each save
   (seconds), not stroke by stroke. Enough for one person across devices; a
   shared live canvas would ride on the collaboration server later.
-- **Not validated on the e-ink tablet yet.** The tablet was off when this
-  was built. The page path is tested in Chromium with pen, mouse and touch
-  events; the overlay changes compile but need the next app release (0.3.7)
-  and a session on the device.
+- **Not validated on the e-ink tablet yet.** It was off both times. The C
+  nib is the keyboard's, already proven there, with one change (a radius per
+  point); the app around it is tested on the emulator, which has no e-ink
+  overlay. It needs the next app release (0.3.7) and a session on the device.
+- **`/dev/ebc` is an open door on that firmware, not a public API.** The
+  earlier review advised using it for measurement only. The app uses it only
+  where it opens and answers as the keyboard found it (Y8, bounds), and
+  draws as a view everywhere else; if a firmware update closes it, the pen
+  keeps working, slower.
+- **The live line and the settled line differ slightly**: raw samples while
+  writing, smoothed after. On e-ink the app's copy stays until the pen
+  rests, so the change shows once per pause, not per line.
+- **The page paints from a canvas**: zooming will need repainting at the new
+  size (cheap: each line's shape is kept); a page far away is blank for a few
+  milliseconds when it comes near on a slow device.
 - **A finger never writes by default.** A phone without a pen turns on
   "Draw with a finger" once (remembered on that device).

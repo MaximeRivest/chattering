@@ -117,11 +117,43 @@ test('the eraser finds the strokes it touches', () => {
   assert.equal(F.hits({ pts: [10, 10, 0.5], w: 2 }, 12, 12, 2), true);
 });
 
-test('outlines are closed paths, dots are circles', () => {
-  assert.equal(F.outline({ pts: [10, 10, 0.5], w: 2 }), 'M9 10a1 1 0 1 0 2 0a1 1 0 1 0 -2 0Z');
-  const d = F.outline({ pts: [0, 0, 0.2, 10, 0, 0.5, 20, 5, 0.9], w: 2 });
-  assert.match(d, /^M[\d.-]+ [\d.-]+.*A.*A.*Z$/);
-  assert.ok(!/NaN/.test(d));
+test('settling a line drops jitter, follows the pen, and ends where it lifted', () => {
+  // A slow, shaky horizontal line: 400 samples, half a unit of noise.
+  const raw = [];
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5);
+  for (let i = 0; i < 400; i++) raw.push(100 + i * 0.5, 300 + rnd() * 1.0, 0.5 + rnd() * 0.4);
+  const out = F.settle(raw);
+  assert.ok(out.length / 3 < 60, 'far fewer points: ' + out.length / 3);
+  const ys = out.filter((_, i) => i % 3 === 1);
+  assert.ok(Math.max(...ys) - Math.min(...ys) < 1.0, 'the jitter is smoothed away');
+  assert.deepEqual(out.slice(-3, -1), raw.slice(-3, -1), 'it ends exactly where the pen lifted');
+  assert.deepEqual(out.slice(0, 2), raw.slice(0, 2), 'and starts where it went down');
+  const ps = out.filter((_, i) => i % 3 === 2);
+  assert.ok(Math.max(...ps) - Math.min(...ps) < 0.4, 'pressure is low-passed');
+  // Samples piling up on one spot (a slow corner) do not make a blob of points.
+  const still = [];
+  for (let i = 0; i < 50; i++) still.push(10 + i * 0.01, 10, 0.5);
+  assert.ok(F.settle(still).length / 3 <= 2);
+});
+
+test('a stroke is drawn as discs and bands, tapered at the ends, wider when pressed', () => {
+  assert.match(F.outline({ pts: [10, 10, 0.5], w: 2 }), /^M11\.55 10M8\.45 10a1\.55 1\.55 0 1 0 3\.11 0a1\.55 1\.55 0 1 0 -3\.11 0Z$/, 'a tap is a dot wider than the line');
+  const line = { pts: [0, 0, 0.5, 100, 0, 0.5], w: 4 };
+  const d = F.discs(line);
+  const r = i => d[i * 3 + 2];
+  const n = d.length / 3;
+  assert.ok(r(0) < r(Math.floor(n / 2)) * 0.5, 'the tips are thinner');
+  assert.ok(Math.abs(r(Math.floor(n / 2)) - 2 * F.pressureFactor(0.5)) < 1e-9);
+  assert.ok(F.pressureFactor(1) > F.pressureFactor(0.5) && F.pressureFactor(0.5) > F.pressureFactor(0.05));
+  assert.ok(!/NaN/.test(F.outline({ pts: [0, 0, 0.2, 10, 0, 0.5, 20, 5, 0.9, 20, 5, 0.9], w: 2 })));
+  // Every part winds the same way, so one non-zero fill is their union.
+  const parts = [];
+  F.trace({ moveTo(x, y) { parts.push([[x, y]]); }, lineTo(x, y) { parts.at(-1).push([x, y]); }, arc() { parts.at(-1).push('arc'); }, closePath() {} }, { pts: [0, 0, 0.5, 30, 40, 0.9, 80, 10, 0.1, 20, 90, 0.5], w: 6 });
+  for (const q of parts.filter(p => p.length === 4 && !p.includes('arc'))) {
+    let a = 0; for (let k = 0; k < 4; k++) a += q[k][0] * q[(k + 1) % 4][1] - q[(k + 1) % 4][0] * q[k][1];
+    assert.ok(a > 0, 'band winds like the discs');
+  }
 });
 
 test('note file names sort by time and never collide', () => {

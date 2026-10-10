@@ -4,14 +4,36 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.RectF
 import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.MotionEvent
 import android.view.View
+import android.view.WindowManager
 import java.util.Locale
+import kotlin.math.PI
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
+/**
+ * The pen's live line over a handwritten note (design/98).
+ *
+ * The page asks for it (ChatteringInk.setEnabled) and says where the pen
+ * writes (setRegion, in css pixels): only there does the pen draw here;
+ * elsewhere it stays a pointer for the page. While the pen moves, the line
+ * is drawn as fast as this device can:
+ *   - on an e-ink panel with a Rockchip overlay (/dev/ebc: the AINOTE 2),
+ *     straight onto the panel's overlay (EbcNib, the handwriting keyboard's
+ *     nib): a few pixels in one small rectangle on the fast waveform,
+ *     bypassing the compositor and the panel's slow full-frame update;
+ *   - elsewhere, on this view, with unbuffered input.
+ * When the pen lifts, the line goes to the page (Listener) with its pressure
+ * and timing; the page settles it, paints it and says so (strokeDrawn). This
+ * copy is wiped only once the pen has rested a moment (WIPE_MS), so while
+ * writing nothing blinks, and afterwards the panel shows one copy of a line.
+ */
 class InkOverlay @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
@@ -33,26 +55,49 @@ class InkOverlay @JvmOverloads constructor(
         private set
 
     private val density = resources.displayMetrics.density
-    private val livePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private var widthCss = 2.3f
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
         color = Color.BLACK
-        strokeWidth = 2f * density
         isDither = false
     }
-    private val livePath = Path()
-    private val donePaths = ArrayList<Path>(64)
+
+    // The stroke being drawn, in this view's pixels.
     private var xs = FloatArray(1024)
     private var ys = FloatArray(1024)
     private var ps = FloatArray(1024)
     private var ts = LongArray(1024)
+    private var rs = FloatArray(1024)
     private var n = 0
-    private var lastX = 0f
-    private var lastY = 0f
+    private var t0 = 0L
     private var drawing = false
     private var stylusId = MotionEvent.INVALID_POINTER_ID
-    private val minDist2 = 2.5f * 2.5f * density * density
+    private var pSmooth = -1f
+    private val minDist2 = 0.6f * 0.6f // a sample under 0.6 px from the last adds nothing
+
+    // Lines drawn on this view (when there is no panel overlay), kept until the wipe.
+    private val segX0 = ArrayList<Float>(4096)
+    private val segY0 = ArrayList<Float>(4096)
+    private val segX1 = ArrayList<Float>(4096)
+    private val segY1 = ArrayList<Float>(4096)
+    private val segW = ArrayList<Float>(4096)
+
+    // The panel overlay: its handle, and the screen rectangle and rotation it
+    // was made for (the clip is fixed at creation: rebuilt when they change).
+    private var nib = 0L
+    private var nibL = 0; private var nibT = 0; private var nibR = 0; private var nibB = 0; private var nibRot = -1
+    private var nibFailed = false
+    private var nibDirty = false
+    private val at = IntArray(2)
+    private var ox = 0f
+    private var oy = 0f
+    private var bx = FloatArray(64)
+    private var by = FloatArray(64)
+    private var br = FloatArray(64)
+
+    private val wipe = Runnable { wipeNow() }
 
     init {
         setBackgroundColor(Color.TRANSPARENT)
@@ -63,6 +108,9 @@ class InkOverlay @JvmOverloads constructor(
 
     fun isDrawing() = drawing
 
+    /** Is the panel's own overlay drawing the line (diagnostics). */
+    fun fastNib() = nib != 0L
+
     /** Is this point (overlay pixels) where the page lets the pen write? */
     fun inRegion(x: Float, y: Float): Boolean {
         val r = region ?: return true
@@ -71,29 +119,60 @@ class InkOverlay @JvmOverloads constructor(
         return cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom
     }
 
-    /** The live line's width, in css pixels, to match the page's pen. */
+    /** The page's line width, in css pixels, so the live line matches it. */
     fun setWidthCss(w: Float) {
-        if (w > 0f && w < 40f) livePaint.strokeWidth = w * density
+        if (w > 0f && w < 40f) widthCss = w
     }
 
     fun markStylus() {
         lastStylusMs = SystemClock.uptimeMillis()
     }
 
-    fun clearLive() {
-        if (livePath.isEmpty && n == 0) return
-        livePath.reset()
-        n = 0
-        invalidate()
+    /** The page has painted the last line: wipe this copy once the pen rests. */
+    fun strokeDrawn() {
+        removeCallbacks(wipe)
+        if (!drawing) postDelayed(wipe, WIPE_MS)
     }
 
+    /** Everything this layer shows goes, now (a finger scrolls, the page changes). */
+    fun wipeNow() {
+        removeCallbacks(wipe)
+        if (drawing) return
+        if (nib != 0L && nibDirty) EbcNib.clear(nib)
+        nibDirty = false
+        if (segW.isNotEmpty()) {
+            segX0.clear(); segY0.clear(); segX1.clear(); segY1.clear(); segW.clear()
+            invalidate()
+        }
+    }
+
+    fun clearLive() = wipeNow()
+
+    /** Off: the overlay is cleared and handed back (focus lost, page gone). */
     fun clearAll() {
         drawing = false
         stylusId = MotionEvent.INVALID_POINTER_ID
-        livePath.reset()
-        donePaths.clear()
         n = 0
-        invalidate()
+        wipeNow()
+        stopNib()
+    }
+
+    fun stopNib() {
+        val h = nib
+        nib = 0L
+        nibRot = -1
+        nibDirty = false
+        if (h != 0L) EbcNib.destroy(h)
+    }
+
+    override fun onVisibilityChanged(changedView: View, visibility: Int) {
+        super.onVisibilityChanged(changedView, visibility)
+        if (visibility != VISIBLE) stopNib()
+    }
+
+    override fun onDetachedFromWindow() {
+        stopNib()
+        super.onDetachedFromWindow()
     }
 
     override fun dispatchTouchEvent(event: MotionEvent) = false
@@ -103,6 +182,28 @@ class InkOverlay @JvmOverloads constructor(
         return false
     }
 
+    // The overlay for the writing area as it is now on screen. Checked on
+    // every pen-down: the window moves without telling a view.
+    @Suppress("DEPRECATION")
+    private fun syncNib() {
+        getLocationOnScreen(at)
+        ox = at[0].toFloat()
+        oy = at[1].toFloat()
+        if (nibFailed || !EbcNib.loaded) return
+        val r = region
+        val l = at[0] + (if (r != null) max(0f, r.left * density) else 0f).roundToInt()
+        val t = at[1] + (if (r != null) max(0f, r.top * density) else 0f).roundToInt()
+        val rr = at[0] + (if (r != null) min(width.toFloat(), r.right * density) else width.toFloat()).roundToInt()
+        val b = at[1] + (if (r != null) min(height.toFloat(), r.bottom * density) else height.toFloat()).roundToInt()
+        val rot = (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.rotation
+        if (nib != 0L && l == nibL && t == nibT && rr == nibR && b == nibB && rot == nibRot) return
+        stopNib()
+        if (rr <= l || b <= t) return
+        val h = try { EbcNib.create(l, t, rr, b, rot) } catch (e: Throwable) { 0L }
+        if (h == 0L) { nibFailed = true; return }
+        nib = h; nibL = l; nibT = t; nibR = rr; nibB = b; nibRot = rot
+    }
+
     fun feed(event: MotionEvent): Boolean {
         val stylusIndex = indexOfStylus(event)
         if (stylusIndex >= 0) markStylus()
@@ -110,30 +211,30 @@ class InkOverlay @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                 if (stylusIndex < 0 || drawing) return drawing
                 if (!inRegion(event.getX(stylusIndex), event.getY(stylusIndex))) return false
+                removeCallbacks(wipe)
+                syncNib()
                 stylusId = event.getPointerId(stylusIndex)
                 drawing = true
-                val x = event.getX(stylusIndex)
-                val y = event.getY(stylusIndex)
                 n = 0
-                livePath.reset()
-                livePath.moveTo(x, y)
-                lastX = x
-                lastY = y
+                pSmooth = -1f
                 t0 = event.eventTime
-                addPoint(x, y, event.getPressure(stylusIndex), event.eventTime)
-                invalidate()
+                val erasing = erase || event.getToolType(stylusIndex) == MotionEvent.TOOL_TYPE_ERASER
+                // The eraser's work is the page's; lines still shown here go first.
+                if (erasing && nibDirty) { EbcNib.clear(nib); nibDirty = false }
+                add(event.getX(stylusIndex), event.getY(stylusIndex), event.getPressure(stylusIndex), event.eventTime)
+                draw(0, erasing)
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
                 if (!drawing) return false
                 val index = event.findPointerIndex(stylusId)
                 if (index < 0) return true
-                var changed = false
+                val from = max(0, n - 1)
                 for (h in 0 until event.historySize) {
-                    if (maybeAdd(event.getHistoricalX(index, h), event.getHistoricalY(index, h), event.getHistoricalPressure(index, h), event.getHistoricalEventTime(h))) changed = true
+                    add(event.getHistoricalX(index, h), event.getHistoricalY(index, h), event.getHistoricalPressure(index, h), event.getHistoricalEventTime(h))
                 }
-                if (maybeAdd(event.getX(index), event.getY(index), event.getPressure(index), event.eventTime)) changed = true
-                if (changed) invalidate()
+                add(event.getX(index), event.getY(index), event.getPressure(index), event.eventTime)
+                draw(from, erase || event.getToolType(index) == MotionEvent.TOOL_TYPE_ERASER)
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
@@ -142,19 +243,18 @@ class InkOverlay @JvmOverloads constructor(
                     return drawing
                 }
                 val index = event.findPointerIndex(stylusId)
-                if (index >= 0) maybeAdd(event.getX(index), event.getY(index), event.getPressure(index), event.eventTime)
                 val erasing = erase || (index >= 0 && event.getToolType(index) == MotionEvent.TOOL_TYPE_ERASER)
+                if (index >= 0) {
+                    val from = max(0, n - 1)
+                    add(event.getX(index), event.getY(index), event.getPressure(index), event.eventTime)
+                    draw(from, erasing)
+                }
                 val packed = pack()
-                val keep = event.actionMasked != MotionEvent.ACTION_CANCEL && n > 0 && !erasing
-                if (keep) donePaths.add(Path(livePath))
-                livePath.reset()
                 n = 0
                 drawing = false
                 stylusId = MotionEvent.INVALID_POINTER_ID
-                invalidate()
-                if (event.actionMasked != MotionEvent.ACTION_CANCEL && packed.isNotEmpty()) {
-                    listener?.onStroke(packed, erasing)
-                }
+                if (event.actionMasked == MotionEvent.ACTION_CANCEL) { wipeNow(); return true }
+                if (packed.isNotEmpty()) listener?.onStroke(packed, erasing)
                 return true
             }
         }
@@ -170,31 +270,52 @@ class InkOverlay @JvmOverloads constructor(
         return -1
     }
 
-    private fun maybeAdd(x: Float, y: Float, p: Float, t: Long): Boolean {
-        val dx = x - lastX
-        val dy = y - lastY
-        if (n > 0 && dx * dx + dy * dy < minDist2) return false
-        livePath.lineTo(x, y)
-        addPoint(x, y, p, t)
-        lastX = x
-        lastY = y
-        return true
-    }
-
-    private var t0 = 0L
-
     // Long strokes grow the buffers instead of being cut short.
-    private fun addPoint(x: Float, y: Float, p: Float, t: Long) {
+    private fun add(x: Float, y: Float, p: Float, t: Long) {
+        if (n > 0) {
+            val dx = x - xs[n - 1]
+            val dy = y - ys[n - 1]
+            if (dx * dx + dy * dy < minDist2) { ps[n - 1] = p; return }
+        }
         if (n >= xs.size) {
             if (xs.size >= 65536) return
             xs = xs.copyOf(xs.size * 2); ys = ys.copyOf(ys.size * 2)
-            ps = ps.copyOf(ps.size * 2); ts = ts.copyOf(ts.size * 2)
+            ps = ps.copyOf(ps.size * 2); ts = ts.copyOf(ts.size * 2); rs = rs.copyOf(rs.size * 2)
         }
-        xs[n] = x
-        ys[n] = y
-        ps[n] = p
-        ts[n] = t
+        xs[n] = x; ys[n] = y; ps[n] = p; ts[n] = t; rs[n] = radius(p)
         n++
+    }
+
+    // Radius in screen pixels for this pressure: the page's own curve
+    // (ink-format.js pressureFactor) on a low-passed pressure.
+    private fun radius(p: Float): Float {
+        pSmooth = if (pSmooth < 0f) p else pSmooth + (p - pSmooth) * 0.35f
+        val q = pSmooth.coerceIn(0f, 1f)
+        return max(0.75f, widthCss * density / 2f * (0.4f + 0.9f * sin(q * PI.toFloat() / 2f)))
+    }
+
+    // Draw points [from, n) joined to the point before them: on the panel
+    // overlay as one polyline and one update, or on this view.
+    private fun draw(from: Int, erasing: Boolean) {
+        if (erasing || n == 0) return
+        val count = n - from
+        if (count <= 0) return
+        if (nib != 0L) {
+            if (bx.size < count) { bx = FloatArray(count * 2); by = FloatArray(count * 2); br = FloatArray(count * 2) }
+            for (k in 0 until count) {
+                val i = from + k
+                bx[k] = ox + xs[i]; by[k] = oy + ys[i]; br[k] = rs[i]
+            }
+            if (EbcNib.polyline(nib, bx, by, br, count, false) == 0) { nibDirty = true; return }
+            stopNib(); nibFailed = true // a refused update: this layer draws from now on
+        }
+        if (count == 1 && from == 0) seg(xs[0], ys[0], xs[0], ys[0], rs[0] * 2f)
+        for (i in max(1, from + 1) until n) seg(xs[i - 1], ys[i - 1], xs[i], ys[i], rs[i - 1] + rs[i])
+        invalidate()
+    }
+
+    private fun seg(x0: Float, y0: Float, x1: Float, y1: Float, w: Float) {
+        segX0.add(x0); segY0.add(y0); segX1.add(x1); segY1.add(y1); segW.add(w)
     }
 
     /** "x,y,pressure,ms …": css pixels, pressure 0–1, ms since the pen went down. */
@@ -210,11 +331,16 @@ class InkOverlay @JvmOverloads constructor(
     }
 
     override fun onDraw(canvas: Canvas) {
-        for (path in donePaths) canvas.drawPath(path, livePaint)
-        if (!livePath.isEmpty) canvas.drawPath(livePath, livePaint)
+        for (i in segW.indices) {
+            paint.strokeWidth = segW[i]
+            canvas.drawLine(segX0[i], segY0[i], segX1[i], segY1[i], paint)
+        }
     }
 
     companion object {
+        /** How long the pen rests before this copy goes and the page's shows alone. */
+        const val WIPE_MS = 450L
+
         fun isStylusTool(tool: Int) =
             tool == MotionEvent.TOOL_TYPE_STYLUS || tool == MotionEvent.TOOL_TYPE_ERASER
     }
