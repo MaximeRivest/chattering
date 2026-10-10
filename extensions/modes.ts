@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, formatSkillsForPrompt } from "@earendil-works/pi-coding-agent";
 import { Editor, type EditorTheme, Input, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -200,6 +200,19 @@ function buildClaudeCodeModeSystemPrompt(mode: ModeDef, event: any): string {
         .map((file: any) => `## ${file.path}\n\n${String(file.content ?? "").trim()}`)
         .join("\n\n");
       if (context.trim()) parts.push("# Project Context\n\nProject-specific instructions and guidelines:\n\n" + context);
+    }
+  }
+
+  // Skills: same rule and same text as pi's own prompt builder, so a skill
+  // is visible to Claude models exactly as it is to every other model.
+  if (!removed.has("skills")) {
+    const options = event.systemPromptOptions ?? {};
+    const skills = Array.isArray(options.skills) ? options.skills : [];
+    const selected: string[] = Array.isArray(options.selectedTools) ? options.selectedTools : [];
+    const readTool = ["read", "bash"].find((tool) => selected.includes(tool));
+    if (readTool && skills.length > 0) {
+      const text = formatSkillsForPrompt(skills, readTool).trim();
+      if (text) parts.push(text);
     }
   }
 
