@@ -28,6 +28,12 @@ test('handwritten notes: make, write, erase, undo, save, merge, reopen', { timeo
   assert.match(path.basename(file), /^\d{4}-\d\d-\d\d-\d{4}\.ink\.svg$/);
   assert.equal(await run(`OpenFiles.isKept(${JSON.stringify(file)})`), true, 'it stays under Open files');
   assert.equal(await run(`viewKind`), 'file');
+  // The ⋯ menu opens over the page, not under it. It hung under the stage on
+  // the AINOTE's WebView (Chrome 119), where the header's container query
+  // still implied layout containment (a stacking context); contain:layout
+  // stands in for that older engine here.
+  assert.equal(await run(`(()=>{const h=document.querySelector('.ink-head');h.style.contain='layout';const m=document.querySelector('.ink-more');m.open=true;const d=m.querySelector(':scope>div').getBoundingClientRect();
+    const hit=document.elementFromPoint(d.left+d.width/2,d.bottom-6);const ok=!!hit&&m.contains(hit);m.open=false;h.style.contain='';return ok})()`), true, 'the note menu is on top of the page');
 
   // A pen stroke, through the browser's own pen events (pressure included).
   const pen = async (points, { type = 'pen', button = 'left' } = {}) => {

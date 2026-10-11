@@ -10,7 +10,7 @@
 }
 :root[data-theme-mode="binary"] .ink-view { --ink-pen: #000; --ink-paper: #fff; --ink-rule: #9a9a9a; --ink-desk: #fff; }
 
-.ink-head { gap: 8px; }
+.ink-head { gap: 8px; } /* above the page: live-file.css .live-file-head */
 .ink-head .ink-title { cursor: text; }
 .ink-tools { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; flex-wrap: wrap; }
 .ink-tools button { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; min-width: 32px; padding: 0 8px; border: 1px solid var(--border); background: transparent; color: var(--text); justify-content: center; }

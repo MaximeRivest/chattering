@@ -6,7 +6,10 @@
    window's: the panel beside a conversation (design/83) or the Files list narrows
    the file without narrowing the window, and the row must not wrap over the
    text. Measured: the full row needs about 780px with the files square. */
-.live-file-head { container:lfhead / inline-size; }
+/* Above the view under it: on older engines (the AINOTE's WebView, Chrome
+   119) a size container implies layout containment, so the header is its own
+   stacking context and a positioned body after it covered the ⋯ menu. */
+.live-file-head { container:lfhead / inline-size; position:relative; z-index:5; }
 @container lfhead (max-width: 780px) {
   .live-file-view .live-file-head .lf-wide { display:none; }
   .live-file-view .live-file-head .lf-narrow { display:block; }
