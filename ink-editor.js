@@ -57,7 +57,8 @@
   const JOIN_PX = 12;
   const TAP_MIN_MS = 20;     // a one-point touch shorter than this is the digitiser, not a dot
   const PEN_LOG = '~/notes/chattering/pen-log.md';
-  const PALM_SIZE = 46;      // css px: a contact wider than this is a hand
+  const PALM_SIZE = 46;
+  const DOUBLE_TAP_MS = 350; // a second two-finger tap this soon is the device's refresh, not a second undo      // css px: a contact wider than this is a hand
   const pref = (k, d) => { try { const v = localStorage.getItem(PREF + k); return v == null ? d : v; } catch { return d; } };
   const setPref = (k, v) => { try { localStorage.setItem(PREF + k, String(v)); } catch {} };
   const e = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -738,7 +739,12 @@
     const now = performance.now();
     let g = v.gesture;
     if (phase === 'down') {
-      if (!g || !g.fingers.size) g = v.gesture = { t0: now, fingers: new Map(), max: 0, bad: false, strokes: v.rev };
+      if (!g || !g.fingers.size) {
+        g = v.gesture = { t0: now, fingers: new Map(), max: 0, bad: false, strokes: v.rev };
+        // A touch while a two-finger tap waits: a double tap (the AINOTE's
+        // e-ink refresh), not an undo, and not one itself either.
+        if (v.pendingUndo) { clearTimeout(v.pendingUndo); v.pendingUndo = 0; g.bad = true; }
+      }
       if (Math.max(ev.width || 0, ev.height || 0) > PALM_SIZE) g.bad = true;
       g.fingers.set(ev.pointerId, [ev.clientX, ev.clientY]);
       g.max = Math.max(g.max, g.fingers.size);
@@ -754,7 +760,9 @@
     v.gesture = null;
     if (g.bad || now - g.t0 > 400 || v.draw || v.rev !== g.strokes || (g.max !== 2 && g.max !== 3)) return;
     if (v.pan) { try { v.scroll.releasePointerCapture(v.pan.id); } catch {} v.pan = null; }
-    gesture(v, g.max === 2 ? 'undo' : 'redo');
+    if (g.max === 3) return gesture(v, 'redo');
+    // Two fingers wait for a second tap that would make it the refresh gesture.
+    v.pendingUndo = setTimeout(() => { v.pendingUndo = 0; gesture(v, 'undo'); }, DOUBLE_TAP_MS);
   }
   function gesture(v, kind) {
     if (!v || v.disposed || !v.note) return;

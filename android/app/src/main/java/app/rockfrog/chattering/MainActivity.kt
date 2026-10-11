@@ -137,7 +137,10 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun setPen(id: String, tone: Int, argb: Int) {
             val safe = if (Regex("^[a-z][a-z0-9-]{0,23}$").matches(id)) id else "ballpoint"
-            runOnUiThread { ink.setPen(safe, tone.coerceIn(-1, 0x1ff), argb) }
+            // Up to 0xfff: the flags above the grey (grain 0x100, dash 0x200,
+            // start 0x400, dots 0x800). Clamped to 0x1ff before 0.3.10, which
+            // turned the lasso's dots into a solid line.
+            runOnUiThread { ink.setPen(safe, tone.coerceIn(-1, 0xfff), argb) }
         }
         /** The page's devicePixelRatio: its css pixel in device pixels. */
         @JavascriptInterface
@@ -845,6 +848,11 @@ class MainActivity : AppCompatActivity() {
     private var tapMax = 0
     private var tapBad = false
     private val tapDown = HashMap<Int, FloatArray>()
+    // A two-finger tap waits DOUBLE_TAP_MS before it undoes: two of them in
+    // quick succession are the AINOTE's own gesture (a full refresh of the
+    // e-ink screen), and must not undo. Any touch in that wait cancels it.
+    private var pendingUndo: Runnable? = null
+    private val DOUBLE_TAP_MS = 350L
 
     private fun watchTap(ev: MotionEvent) {
         val d = resources.displayMetrics.density
@@ -853,7 +861,11 @@ class MainActivity : AppCompatActivity() {
             if (InkOverlay.isStylusTool(ev.getToolType(i))) { tapBad = true; return }
         }
         when (ev.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { tapDown.clear(); tapT0 = ev.eventTime; tapMax = 0; tapBad = ink.isDrawing() }
+            MotionEvent.ACTION_DOWN -> {
+                tapDown.clear(); tapT0 = ev.eventTime; tapMax = 0; tapBad = ink.isDrawing()
+                // A touch while a two-finger tap waits: a double tap (the refresh), not an undo.
+                pendingUndo?.let { web.removeCallbacks(it); pendingUndo = null; tapBad = true }
+            }
             MotionEvent.ACTION_CANCEL -> { tapBad = true; tapDown.clear(); return }
         }
         if (ev.actionMasked == MotionEvent.ACTION_DOWN || ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
@@ -871,7 +883,12 @@ class MainActivity : AppCompatActivity() {
             // a pen only hovering, held in the tapping hand, does not count.
             val ok = !tapBad && ev.eventTime - tapT0 <= 400 && (tapMax == 2 || tapMax == 3) && !ink.isDrawing()
             tapDown.clear()
-            if (ok) PageCall.run(web, "w.fileInkGesture&&w.fileInkGesture('${if (tapMax == 2) "undo" else "redo"}')")
+            if (ok && tapMax == 3) PageCall.run(web, "w.fileInkGesture&&w.fileInkGesture('redo')")
+            if (ok && tapMax == 2) {
+                val r = Runnable { pendingUndo = null; PageCall.run(web, "w.fileInkGesture&&w.fileInkGesture('undo')") }
+                pendingUndo = r
+                web.postDelayed(r, DOUBLE_TAP_MS)
+            }
         }
     }
 

@@ -195,6 +195,21 @@ hangs over the note, and the pen drew a line there instead.
   page right after the pen) and calls `fileInkGesture`; the page watches
   only when that layer is off, so a tap never counts twice.
 
+### Taps that compete (2026-10-11, app 0.3.10)
+
+- The e-ink theme's **tap on quiet space turning a screen**, with a dashed
+  line where the old screen ended, is gone (asked: "I don't like it
+  anymore"). A tap is a tap, as on every device; two-finger scrolling, the
+  swipe between levels and the long press on a message stay.
+- **Two quick two-finger taps are the AINOTE's own full refresh.** A
+  two-finger tap now waits 350 ms before it undoes, and any touch in that
+  wait cancels it: the refresh never undoes. Three fingers still redo at
+  once. (Assumes the firmware lets the app see both taps; if it swallowed
+  the second, the first would still undo.)
+- **The lasso was never dotted on the e-ink layer**: the app clamped the
+  pen's tone to 0x1ff, which dropped the dash (0.3.8) and dot (0.3.9) flags
+  and drew a solid line. Clamped to 0xfff now.
+
 Not yet: reading the handwriting into text (the next step: "Ask" should
 send the words too, and a note should be searchable), resizing a
 selection, a partial eraser, a full refresh against

@@ -23,13 +23,13 @@ test('two fingers undo, three redo; the toolbar stays off the page', { timeout: 
   };
   for (const fy of [0.1, 0.15]) await pen(Array.from({ length: 8 }, (_, i) => at(0.2 + 0.05 * i, fy)));
   await until(`${count}===2`);
-  const fingers = async (n, { move = 0, radius = 8, hold = 60 } = {}) => {
+  const fingers = async (n, { move = 0, radius = 8, hold = 60, after = 500 } = {}) => {
     const pts = Array.from({ length: n }, (_, i) => ({ x: box.x + box.w * (0.3 + 0.1 * i), y: box.y + box.h * 0.3, radiusX: radius, radiusY: radius, id: i + 1 }));
     await command('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: pts });
     if (move) await command('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: pts.map(p => ({ ...p, y: p.y + move })) });
     await run(`new Promise(r=>setTimeout(r,${hold}))`);
     await command('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-    await run(`new Promise(r=>setTimeout(r,120))`);
+    await run(`new Promise(r=>setTimeout(r,${after}))`); // past the wait for a second tap
   };
   await fingers(2);
   await until(`${count}===1`, 'two fingers undo');
@@ -37,6 +37,11 @@ test('two fingers undo, three redo; the toolbar stays off the page', { timeout: 
   await until(`${count}===0`, 'and again');
   await fingers(3);
   await until(`${count}===1`, 'three fingers redo');
+  // Two quick two-finger taps are the AINOTE's e-ink refresh: no undo at all.
+  await fingers(2, { hold: 40, after: 120 });
+  await fingers(2, { hold: 40, after: 120 });
+  await run(`new Promise(r=>setTimeout(r,600))`);
+  assert.equal(await run(count), 1, 'a double two-finger tap (the refresh) undoes nothing');
   await fingers(2, { move: 80 });
   assert.equal(await run(count), 1, 'two fingers moving scroll, they do not undo');
   await fingers(2, { radius: 40 });

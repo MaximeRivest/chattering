@@ -1926,9 +1926,6 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
 #einkFlash[hidden] { display: none; }
 /* E-ink page-turn marker: a dashed line at the previous page edge, so the
    eye finds the last-read line after the jump. It tracks the content. */
-#einkEdge { position: fixed; z-index: 74; height: 0; border-top: 1px dashed var(--text); pointer-events: none; }
-#einkEdge::after { content: "▸"; position: absolute; right: 2px; top: -9px; font-size: 11px; color: var(--text); }
-#einkEdge[hidden] { display: none; }
 #helpMini { background: var(--surface-1); border: 1px solid var(--border-strong); padding: 6px 9px; font-size: var(--fs-micro); color: var(--text-dim); max-width: 260px; max-height: 45vh; overflow-y: auto; cursor: pointer; pointer-events: auto; }
 #helpMini .hm-head { display: flex; align-items: center; gap: 8px; color: var(--text-faint); margin-bottom: 2px; }
 #helpMini .hm-head b { font-weight: 600; color: var(--text-dim); margin-right: auto; }
@@ -18046,11 +18043,11 @@ function cornerStack() {
 // · one-finger horizontal swipe moves between levels: left→right goes up
 //   (transcript → project → home), right→left goes back down.
 // · a long press (500 ms, still) on a message opens its action bar
-//   (copy, edit, regenerate) — the tap itself pages, so the press takes
-//   over the toggle role that a plain tap has on other devices.
-// Buttons, links, marks, rows, and form fields keep their normal taps.
+//   (copy, edit, regenerate).
+// A tap is a tap, as on every other device. (A tap on quiet space used to
+// turn a screen, with a dashed line where the old one ended; removed on
+// 2026-10-11 at Maxime's request: it got in the way.)
 // Timeline surfaces keep their own pan/pinch handlers on every device.
-const einkTapSkip = 'button, a, input, select, textarea, summary, label, .more, .tmark, .item, .ag-row, .sr-hit, [data-close], .job, .fg-mark, .mgantt';
 
 function einkFlash(text) {
   let el = $('einkFlash');
@@ -18059,38 +18056,6 @@ function einkFlash(text) {
   el.hidden = false;
   clearTimeout(el._t);
   el._t = setTimeout(() => { el.hidden = true; }, 700);
-}
-
-// Page-turn marker: after a tap page, a dashed line shows where the old
-// page ended. It is glued to the content — later scrolls move it, and it
-// hides once its spot leaves the screen or the scroller changes.
-let einkEdge = null; // { scroller, y, top } — y is the clientY at mark time, top the scrollTop then
-function einkEdgePlace() {
-  const el = $('einkEdge');
-  if (!el || !einkEdge) return;
-  const sc = einkEdge.scroller;
-  if (!sc.isConnected) { el.hidden = true; einkEdge = null; return; }
-  const rect = sc.getBoundingClientRect();
-  const y = einkEdge.y - (sc.scrollTop - einkEdge.top);
-  if (y < rect.top + 4 || y > rect.bottom - 4) { el.hidden = true; return; }
-  el.style.left = rect.left + 'px';
-  el.style.width = rect.width + 'px';
-  el.style.top = y + 'px';
-  el.hidden = false;
-}
-window.addEventListener('chattering:route', () => {
-  if ($('einkEdge')) $('einkEdge').hidden = true;
-  einkEdge = null;
-});
-function einkMarkEdge(sc, clientY) {
-  let el = $('einkEdge');
-  if (!el) { el = document.createElement('div'); el.id = 'einkEdge'; document.body.appendChild(el); }
-  if (!einkEdge || einkEdge.scroller !== sc) {
-    if (einkEdge) einkEdge.scroller.removeEventListener('scroll', einkEdgePlace);
-    sc.addEventListener('scroll', einkEdgePlace, { passive: true });
-  }
-  einkEdge = { scroller: sc, y: clientY, top: sc.scrollTop };
-  einkEdgePlace();
 }
 
 // The nearest scrollable ancestor; the reading overlay and the two main
@@ -18175,30 +18140,11 @@ document.addEventListener('touchend', e => {
     if (['home', 'project', 'conversation'].includes(viewKind) && !readOverlayOpen()) {
       e.preventDefault();
       const before = viewKind;
-      if ($('einkEdge')) { $('einkEdge').hidden = true; einkEdge = null; } // new content, stale mark
       moveViewLevel(dx > 0 ? -1 : 1);
       const short = { home: 'home', project: 'project', conversation: 'transcript' };
       if (viewKind !== before) einkFlash(dx > 0 ? '◀ ' + (short[viewKind] || viewKind) : (short[viewKind] || viewKind) + ' ▶');
     }
     return;
-  }
-  // Tap on quiet space: page by screen half. Interactive targets and an
-  // active text selection keep their normal behavior.
-  if (st.moved < 12 && Date.now() - st.t < 500) {
-    if (e.target.closest && e.target.closest(einkTapSkip)) return;
-    const selection = window.getSelection();
-    if (selection && !selection.isCollapsed) return;
-    const sc = st.scroller;
-    if (!sc || sc.scrollHeight <= sc.clientHeight + 4) return;
-    e.preventDefault(); // the synthesized click must not fire (no action toggles)
-    const rect = sc.getBoundingClientRect();
-    const up = t.clientY < rect.top + rect.height / 2;
-    const before = sc.scrollTop;
-    sc.scrollBy({ top: (up ? -1 : 1) * Math.max(120, sc.clientHeight * 0.9), behavior: 'auto' });
-    const jumped = sc.scrollTop - before; // the clamped, real distance
-    // Mark the old page edge: after page down the old bottom edge sits near
-    // the top; after page up the old top edge sits near the bottom.
-    if (jumped) einkMarkEdge(sc, up ? rect.top + Math.abs(jumped) : rect.bottom - jumped);
   }
 }, { passive: false });
 
