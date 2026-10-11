@@ -430,9 +430,22 @@
     setMinR(v);
     v.pagesEl.style.setProperty('--ink-page-w', w + 'px');
     v.pagesEl.style.setProperty('--ink-page-h', Math.round(w * F.PAGE_H / F.PAGE_W) + 'px');
+    clearCorner(v);
     sizeLive(v);
     if (changed) for (let i = 0; i < v.pages.length; i++) if (v.pages[i]?.backed) back(v, i);
     if (changed && v.sel) showSel(v);
+  }
+  // The app's ▤ button floats over the window's top-right corner: when the
+  // note's header reaches that corner, its tools keep clear of it.
+  function clearCorner(v) {
+    const head = v.root.querySelector('.ink-head'), btn = document.getElementById('filesToggle');
+    if (!head) return;
+    let on = false;
+    if (btn && getComputedStyle(btn).display !== 'none') {
+      const a = head.getBoundingClientRect(), b = btn.getBoundingClientRect();
+      on = b.width > 0 && b.left < a.right && b.right > a.left && b.top < a.bottom && b.bottom > a.top;
+    }
+    if (head.classList.contains('ink-clear-corner') !== on) head.classList.toggle('ink-clear-corner', on);
   }
   // The live layers cover the stage. Their context asks for low latency
   // (desynchronized): where the browser can, it draws straight to the screen
@@ -699,7 +712,7 @@
     on(sc, 'dragstart', ev => ev.preventDefault());
     on(sc, 'scroll', () => { if (!v.draw) settleLive(v, true); rememberPlace(v); }, { passive: true });
     on(v.root, 'keydown', ev => keyDown(v, ev));
-    const ro = new ResizeObserver(() => { if (!v.disposed && !v.draw) { layout(v); native(v, true, { regionOnly: true }); } });
+    const ro = new ResizeObserver(() => { if (!v.disposed && !v.draw) { layout(v); native(v, true, { regionOnly: true }); v.seedCovers?.(); holesSoon(v, 120); } });
     ro.observe(sc);
     v.cleanups.push(() => ro.disconnect());
   }
@@ -715,8 +728,46 @@
   }
   function toPage(rect, x, y) { return [(x - rect.left) / rect.width * F.PAGE_W, (y - rect.top) / rect.height * F.PAGE_H]; }
 
+  // ---- finger taps: two fingers undo, three redo ----
+  // A tap of two (three) fingers: all down and up again within 400 ms,
+  // none moving more than 20 px, no hand-sized contact, no pen meanwhile.
+  // Where the app's layer has the note, the app sees the fingers first and
+  // says so (fileInkGesture); here only when it does not.
+  function tapTrack(v, ev, phase) {
+    if (ev.pointerType !== 'touch' || v.nativeOn) return;
+    const now = performance.now();
+    let g = v.gesture;
+    if (phase === 'down') {
+      if (!g || !g.fingers.size) g = v.gesture = { t0: now, fingers: new Map(), max: 0, bad: false, strokes: v.rev };
+      if (Math.max(ev.width || 0, ev.height || 0) > PALM_SIZE) g.bad = true;
+      g.fingers.set(ev.pointerId, [ev.clientX, ev.clientY]);
+      g.max = Math.max(g.max, g.fingers.size);
+      return;
+    }
+    if (!g || !g.fingers.has(ev.pointerId)) return;
+    const [x0, y0] = g.fingers.get(ev.pointerId);
+    if (Math.hypot(ev.clientX - x0, ev.clientY - y0) > 20) g.bad = true;
+    if (phase === 'move') return;
+    g.fingers.delete(ev.pointerId);
+    if (phase === 'cancel') g.bad = true;
+    if (g.fingers.size) return;
+    v.gesture = null;
+    if (g.bad || now - g.t0 > 400 || v.draw || v.rev !== g.strokes || (g.max !== 2 && g.max !== 3)) return;
+    if (v.pan) { try { v.scroll.releasePointerCapture(v.pan.id); } catch {} v.pan = null; }
+    gesture(v, g.max === 2 ? 'undo' : 'redo');
+  }
+  function gesture(v, kind) {
+    if (!v || v.disposed || !v.note) return;
+    const list = kind === 'undo' ? v.undo : v.redo;
+    if (!list.length) return toastSafe(kind === 'undo' ? 'Nothing to undo.' : 'Nothing to redo.');
+    kind === 'undo' ? undo(v) : redo(v);
+    logLine(v, { event: 'gesture', kind });
+  }
+  window.fileInkGesture = kind => { if (kind === 'undo' || kind === 'redo') gesture(view, kind); };
+
   function pointerDown(v, ev) {
     if (v.disposed || !v.note) return;
+    tapTrack(v, ev, 'down');
     if (ev.target.closest && ev.target.closest('.ink-sel-bar')) return; // the selection's buttons
     if (v.tool === 'lasso' && lassoDown(v, ev)) return;
     const now = performance.now();
@@ -887,6 +938,7 @@
   }
   function pointerMove(v, ev) {
     if (ev.pointerType === 'pen') v.lastPen = performance.now();
+    if (v.gesture) tapTrack(v, ev, 'move');
     if (v.pan && ev.pointerId === v.pan.id) return panMove(v, ev);
     if (v.lasso && ev.pointerId === v.lasso.id) return lassoMove(v, ev);
     if (v.drag && ev.pointerId === v.drag.id) return dragMove(v, ev);
@@ -895,6 +947,7 @@
     addPoint(v, ev);
   }
   function pointerUp(v, ev, cancelled = false) {
+    if (v.gesture) tapTrack(v, ev, cancelled ? 'cancel' : 'up');
     if (v.pan && ev.pointerId === v.pan.id) return panEnd(v, ev);
     if (v.lasso && ev.pointerId === v.lasso.id) return lassoUp(v, ev, cancelled);
     if (v.drag && ev.pointerId === v.drag.id) return dragUp(v, ev, cancelled);
@@ -1351,8 +1404,10 @@
       L.pts.push(...toPage(L.rect, e2.clientX, e2.clientY));
       const x = e2.clientX - L.stage.left, y = e2.clientY - L.stage.top;
       if (L.last && c) {
-        c.save(); c.setLineDash([6, 5]); c.lineWidth = einkNow() ? 2 : 1.5; c.strokeStyle = inkColor(v);
+        // Dots, not a line: what is being drawn is a selection, not ink.
+        c.save(); c.setLineDash([0, 7]); c.lineCap = 'round'; c.lineWidth = einkNow() ? 3.2 : 2.6; c.strokeStyle = inkColor(v); c.lineDashOffset = -(L.dist || 0);
         c.beginPath(); c.moveTo(L.last[0], L.last[1]); c.lineTo(x, y); c.stroke(); c.restore();
+        L.dist = (L.dist || 0) + Math.hypot(x - L.last[0], y - L.last[1]); // dots keep their spacing across moves
         v.liveDirty = true;
       }
       L.last = [x, y];
@@ -1769,7 +1824,19 @@
     const opts = { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'hidden', 'open', 'style', 'aria-expanded'] };
     mo.observe(document.body, opts);
     try { if (window.top !== window && window.top.document.body) mo.observe(window.top.document.body, opts); } catch {}
-    const resize = () => holesSoon(v, 120);
+    // From the start, not only after a change: the note's own header (its
+    // tools can wrap over the note's top edge) and whatever floats over the
+    // page (the ▤ button, a drawer left open).
+    const seed = () => {
+      const into = v.coverCands ||= new Set();
+      const head = v.root.querySelector('.ink-head');
+      if (head) into.add(head);
+      candidates(v, document.body, into);
+      try { if (window.top !== window) candidates(v, window.top.document.body, into); } catch {}
+    };
+    seed();
+    v.seedCovers = seed;
+    const resize = () => { clearCorner(v); seed(); holesSoon(v, 120); };
     window.addEventListener('resize', resize);
     v.cleanups.push(() => { mo.disconnect(); window.removeEventListener('resize', resize); clearTimeout(v.holesTimer); });
     holesSoon(v, 0);
@@ -1832,7 +1899,7 @@
       n.setPixelRatio?.(devicePixelRatio);
       n.setRegion(Math.round(r.left + ox), Math.round(r.top + oy), Math.round(r.right + ox), Math.round(r.bottom + oy));
       if (precise) n.setHoles(holesText(v, ox, oy));
-      if (!regionOnly) { n.setErase(v.tool === 'eraser'); n.setWidth?.(v.tool === 'lasso' ? 1.4 : v.width * v.scale); nativePen(v, n); if (typicalP) n.setPressureTypical?.(typicalP); n.setEnabled(true); }
+      if (!regionOnly) { n.setErase(v.tool === 'eraser'); n.setWidth?.(v.tool === 'lasso' ? 1.6 : v.width * v.scale); nativePen(v, n); if (typicalP) n.setPressureTypical?.(typicalP); n.setEnabled(true); }
     } catch {}
   }
   // The pen in hand, for the app's live line (app 0.3.7+; an older app draws
@@ -1844,7 +1911,9 @@
   // the line as a view (phones).
   function nativePen(v, n) {
     if (typeof n.setPen !== 'function') return;
-    if (v.tool === 'lasso') { try { n.setPen('lasso', 0x200, 0xff000000 | 0); } catch {} return; } // dashed (ebc_nib.c TONE_DASH)
+    // Dotted (ebc_nib.c TONE_DOT): a loop never looks like ink. An app
+    // before 0.3.9 does not know dots and draws its dashes.
+    if (v.tool === 'lasso') { try { n.setPen('lasso', 0x200 | 0x800, 0xff000000 | 0); } catch {} return; }
     const pen = F.PENS[v.penId] || F.PENS.ballpoint;
     const c = v.color;
     const grey = c === '#5c5c5c' ? 10 : c === '#a0a0a0' ? 5 : 16;

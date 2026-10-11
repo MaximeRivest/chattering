@@ -104,6 +104,10 @@ static void clear_memory(struct nib *n) {
  * counted along the whole line across calls; TONE_START begins a new line. */
 #define TONE_DASH 0x200
 #define TONE_START 0x400
+/* A dotted line (the lasso's loop since 0.3.9: dashes read as ink): a dot
+ * every DOT_PERIOD panel pixels along the whole line. */
+#define TONE_DOT 0x800
+#define DOT_PERIOD 15.0f
 #define DASH_ON 14.0f
 #define DASH_PERIOD 24.0f
 static const uint8_t BAYER[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
@@ -170,6 +174,19 @@ static void segment(struct nib *n, float x1, float y1, float ra, float x2, float
     to_panel(n, x1, y1, &ax, &ay);
     to_panel(n, x2, y2, &bx, &by);
     float len = hypotf(bx - ax, by - ay);
+    if (tone & TONE_DOT) {
+        float p = ceilf(n->dash / DOT_PERIOD) * DOT_PERIOD;
+        for (; p <= n->dash + len; p += DOT_PERIOD) {
+            float t = len > 1e-3f ? (p - n->dash) / len : 0.0f;
+            disc(n, (int)lroundf(ax + (bx - ax) * t), (int)lroundf(ay + (by - ay) * t), ra + (rb - ra) * t, value);
+        }
+        n->dash += len;
+        float r = ra > rb ? ra : rb;
+        int pad = (int)ceilf(r) + 2;
+        grow(d, (int)floorf(fminf(ax, bx)) - pad, (int)floorf(fminf(ay, by)) - pad,
+             (int)ceilf(fmaxf(ax, bx)) + pad, (int)ceilf(fmaxf(ay, by)) + pad);
+        return;
+    }
     int steps = (int)ceilf(len);
     if (steps < 1) steps = 1;
     for (int i = 0; i <= steps; i++) {

@@ -97,7 +97,7 @@ test('the app leaves covered parts of the note to the page; the lasso is fast', 
 
   // The lasso: drawn by the app, dashed; its loop comes back marked as such.
   await run(`document.querySelector('[data-ink-tool=lasso]').click()`);
-  assert.deepEqual(await last('pen'), ['pen', 'lasso', 0x200], 'the app draws the loop dashed');
+  assert.deepEqual(await last('pen'), ['pen', 'lasso', 0xa00], 'the app draws the loop dotted (dashed on an app without dots)');
   assert.deepEqual(await last('enabled'), ['enabled', true], 'the app keeps the pen in Select');
   await run(`(()=>{const n=InkNotes.current.note;n.pages[0].strokes.push({pts:[200,200,.5,260,205,.5,320,200,.5],w:2.6,t0:1,dur:1,color:''});return 1})()`);
   const page = await run(`(()=>{const r=document.querySelector('.ink-page').getBoundingClientRect();return {x:r.left,y:r.top,w:r.width,h:r.height}})()`);

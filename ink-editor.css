@@ -10,7 +10,12 @@
 }
 :root[data-theme-mode="binary"] .ink-view { --ink-pen: #000; --ink-paper: #fff; --ink-rule: #9a9a9a; --ink-desk: #fff; }
 
-.ink-head { gap: 8px; } /* above the page: live-file.css .live-file-head */
+/* above the page: live-file.css .live-file-head. Never a fixed height: a
+   narrow header puts the tools on a row of their own, under the title, and
+   grows to hold them (a fixed height let the tools spill over the note). */
+.ink-head { gap: 8px; row-gap: 6px; height: auto !important; min-height: 44px; }
+/* The app's floating ▤ button sits over the top-right corner: the tools keep clear of it. */
+.ink-head.ink-clear-corner { padding-right: 60px; }
 .ink-head .ink-title { cursor: text; }
 .ink-tools { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; flex-wrap: wrap; }
 .ink-tools button { display: inline-flex; align-items: center; gap: 5px; min-height: 38px; min-width: 40px; padding: 0 9px; border: 1px solid var(--border); background: transparent; color: var(--text); justify-content: center; }
@@ -18,7 +23,8 @@
 .ink-tools button:disabled { opacity: .4; }
 .ink-icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
 .ink-head { container: inkhead / inline-size; }
-@container inkhead (max-width: 620px) { .ink-label { display: none; } }
+@container inkhead (max-width: 1100px) { .ink-tools { flex: 1 0 100%; margin-left: 0; justify-content: flex-end; } }
+@container inkhead (max-width: 620px) { .ink-label { display: none; } .ink-tools { justify-content: space-between; } }
 
 /* The pens at hand: each slot shows a stroke of its pen, as it will look.
    The slot in hand is framed in ink, not filled, so its sample stays legible. */

@@ -389,7 +389,7 @@ class InkOverlay @JvmOverloads constructor(
         pSmooth = if (pSmooth < 0f) p else pSmooth + (p - pSmooth) * 0.35f
         val t = if (typicalP > 0f) typicalP else 0.5f
         val q = (0.5f * pSmooth / t).coerceIn(0.03f, 1f)
-        if (strokePen == "lasso") return 1.4f * cssPx
+        if (strokePen == "lasso") return 1.6f * cssPx
         return max(0.75f, widthCss * cssPx / 2f * penFactor(strokePen, q, angle))
     }
 
@@ -406,7 +406,7 @@ class InkOverlay @JvmOverloads constructor(
                 bx[k] = ox + xs[i]; by[k] = oy + ys[i]; br[k] = rs[i]
             }
             // A dashed line starts its dashes with the line (TONE_START).
-            val t = if (from == 0 && (strokeTone and 0x200) != 0) strokeTone or 0x400 else strokeTone
+            val t = if (from == 0 && (strokeTone and 0xa00) != 0) strokeTone or 0x400 else strokeTone
             val rc = if (t == 0) EbcNib.polyline(nib, bx, by, br, count, false) else EbcNib.polylineTone(nib, bx, by, br, count, t)
             if (rc == 0) { nibDirty = true; return }
             stopNib(); nibFailed = true // a refused update: this layer draws from now on

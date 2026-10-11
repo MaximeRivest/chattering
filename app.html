@@ -142,14 +142,17 @@ html, body { overscroll-behavior: none; }
    no safe area: the page around it passes its own in --anywhere-inset-*
    and marks the frame data-anywhere-inset (anywhere/public/shell.js). */
 :root { --sai-top: max(env(safe-area-inset-top), var(--anywhere-inset-top, 0px)); --sai-bottom: max(env(safe-area-inset-bottom), var(--anywhere-inset-bottom, 0px)); }
-html[data-anywhere-inset] body header { padding-top: var(--sai-top); height: calc(var(--header-h) + var(--sai-top)); }
+/* The app's own bar only (body > header): a file view's header (a note's
+   toolbar) is a header too, and a fixed height made its wrapped second row
+   spill over the note, where the pen drew instead of pressing the buttons. */
+html[data-anywhere-inset] body > header { padding-top: var(--sai-top); height: calc(var(--header-h) + var(--sai-top)); }
 /* Home hides the header: the page itself keeps clear of the top. */
 html[data-anywhere-inset] body.home { padding-top: var(--sai-top); }
 body { margin: 0; font: var(--fs-body)/1.5 var(--font); background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow-x: clip; }
 @media (display-mode: standalone) {
   body { height: 100dvh; }
   /* Specific enough to win over the phone layout's own header padding. */
-  html:root body header { padding-top: var(--sai-top); height: calc(var(--header-h) + var(--sai-top)); }
+  html:root body > header { padding-top: var(--sai-top); height: calc(var(--header-h) + var(--sai-top)); }
   html:root body.home { padding-top: var(--sai-top); }
 }
 /* Systematic: no fixed height on the base button. A label that wraps grows

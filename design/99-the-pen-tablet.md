@@ -174,6 +174,27 @@ hangs over the note, and the pen drew a line there instead.
   restored. Nothing in the records says whether it was a Delete he meant;
   a test of Ask then back to the note loses nothing.
 
+### Toolbar, dotted lasso, finger taps (2026-10-11, app 0.3.9)
+
+- **The toolbar spilled over the note** on the tablet only: the rule that
+  pads the app's bar under a phone's clock through the encrypted link
+  (`html[data-anywhere-inset] body header`) matched every header, the
+  note's too, and gave it a fixed height; the tools' wrapped second row hung
+  over the page, where the upper half of a button took the tap and the
+  lower half drew. The rule is now `body > header`, a note's header can
+  never be given a height (`height: auto !important`), a narrow header puts
+  the tools on their own row, and they keep clear of the floating ▤ button
+  when they reach it. The app is also told about the header and floating
+  elements from the start, not only after a change.
+- **The lasso is dotted** while it is drawn (`TONE_DOT`: a dot every 15
+  panel pixels; the page's own lasso draws dots too): dashes read as ink.
+- **Two fingers tap: undo; three: redo.** All fingers down and up within
+  400 ms, none moving more than 20 px, no hand-sized contact, no pen
+  touching meanwhile (a pen hovering in the tapping hand is fine). The app
+  watches when its layer has the note (it may hold fingers back from the
+  page right after the pen) and calls `fileInkGesture`; the page watches
+  only when that layer is off, so a tap never counts twice.
+
 Not yet: reading the handwriting into text (the next step: "Ask" should
 send the words too, and a note should be searchable), resizing a
 selection, a partial eraser, a full refresh against

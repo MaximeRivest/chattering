@@ -1,5 +1,6 @@
 package app.rockfrog.chattering
 
+import kotlin.math.max
 import android.annotation.SuppressLint
 import android.Manifest
 import android.app.DownloadManager
@@ -835,8 +836,48 @@ class MainActivity : AppCompatActivity() {
         return super.dispatchGenericMotionEvent(ev)
     }
 
+    // Finger taps on a note (design/99): two fingers undo, three redo. All
+    // down and up within 400 ms, none moving more than 20 dp, no hand-sized
+    // contact, no pen meanwhile. Watched here because this layer may keep
+    // fingers from the page (a palm right after the pen); the page watches
+    // only when this layer is off.
+    private var tapT0 = 0L
+    private var tapMax = 0
+    private var tapBad = false
+    private val tapDown = HashMap<Int, FloatArray>()
+
+    private fun watchTap(ev: MotionEvent) {
+        val d = resources.displayMetrics.density
+        if (ev.actionMasked == MotionEvent.ACTION_HOVER_MOVE) return
+        for (i in 0 until ev.pointerCount) {
+            if (InkOverlay.isStylusTool(ev.getToolType(i))) { tapBad = true; return }
+        }
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> { tapDown.clear(); tapT0 = ev.eventTime; tapMax = 0; tapBad = ink.isDrawing() }
+            MotionEvent.ACTION_CANCEL -> { tapBad = true; tapDown.clear(); return }
+        }
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN || ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
+            val i = ev.actionIndex
+            if (ev.getTouchMajor(i) > 46f * d) tapBad = true
+            tapDown[ev.getPointerId(i)] = floatArrayOf(ev.getX(i), ev.getY(i))
+            tapMax = max(tapMax, ev.pointerCount)
+        }
+        for (i in 0 until ev.pointerCount) {
+            val at = tapDown[ev.getPointerId(i)] ?: continue
+            if (Math.hypot((ev.getX(i) - at[0]).toDouble(), (ev.getY(i) - at[1]).toDouble()) > 20.0 * d) tapBad = true
+        }
+        if (ev.actionMasked == MotionEvent.ACTION_UP) {
+            // A pen touching meanwhile is in this same stream (marked bad above);
+            // a pen only hovering, held in the tapping hand, does not count.
+            val ok = !tapBad && ev.eventTime - tapT0 <= 400 && (tapMax == 2 || tapMax == 3) && !ink.isDrawing()
+            tapDown.clear()
+            if (ok) PageCall.run(web, "w.fileInkGesture&&w.fileInkGesture('${if (tapMax == 2) "undo" else "redo"}')")
+        }
+    }
+
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (ink.visibility != View.VISIBLE) return super.dispatchTouchEvent(ev)
+        watchTap(ev)
         var stylus = false
         for (i in 0 until ev.pointerCount) {
             if (InkOverlay.isStylusTool(ev.getToolType(i))) {
