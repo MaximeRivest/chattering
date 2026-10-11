@@ -93,6 +93,43 @@ static void clear_memory(struct nib *n) {
         memset(n->pixels + (size_t)y * n->width + n->left, TRANSPARENT_Y8, (size_t)(n->right - n->left));
 }
 
+/* A pen's tone on a panel that shows black or nothing while the pen moves:
+ * a share of the pixels, in sixteenths. 0 (or 16): all of them. An even
+ * 4x4 screen (Bayer) for a grey or a highlighter; with TONE_GRAIN a fixed
+ * random speckle, a pencil's grain. The mask is the panel's pixel, so a
+ * line drawn over itself stays the same and never fills in. */
+#define TONE_GRAIN 0x100
+static const uint8_t BAYER[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
+static int tone_on(int tone, int x, int y) {
+    int density = tone & 0xff;
+    if (density <= 0 || density >= 16) return 1;
+    if (tone & TONE_GRAIN) {
+        uint32_t h = (uint32_t)x * 374761393u + (uint32_t)y * 668265263u;
+        h = (h ^ (h >> 13)) * 1274126177u;
+        return (int)((h >> 24) & 15) < density;
+    }
+    return BAYER[(y & 3) * 4 + (x & 3)] < density;
+}
+
+static void disc_tone(struct nib *n, int cx, int cy, float r, uint8_t value, int tone) {
+    int ri = (int)ceilf(r);
+    int y0 = cy - ri, y1 = cy + ri;
+    if (y0 < n->top) y0 = n->top;
+    if (y1 >= n->bottom) y1 = n->bottom - 1;
+    float r2 = r * r;
+    for (int y = y0; y <= y1; y++) {
+        float dy = (float)(y - cy);
+        float h = r2 - dy * dy;
+        if (h < 0) continue;
+        int span = (int)sqrtf(h);
+        int x0 = cx - span, x1 = cx + span;
+        if (x0 < n->left) x0 = n->left;
+        if (x1 >= n->right) x1 = n->right - 1;
+        uint8_t *row = n->pixels + (size_t)y * n->width;
+        for (int x = x0; x <= x1; x++) if (tone_on(tone, x, y)) row[x] = value;
+    }
+}
+
 static void disc(struct nib *n, int cx, int cy, float r, uint8_t value) {
     int ri = (int)ceilf(r);
     int y0 = cy - ri, y1 = cy + ri;
@@ -121,7 +158,7 @@ static void grow(struct dirty *d, int l, int t, int r, int b) {
 
 /* Discs along the segment, one per panel pixel of travel, the radius
  * going from ra to rb. */
-static void segment(struct nib *n, float x1, float y1, float ra, float x2, float y2, float rb, uint8_t value, struct dirty *d) {
+static void segment(struct nib *n, float x1, float y1, float ra, float x2, float y2, float rb, uint8_t value, int tone, struct dirty *d) {
     float ax, ay, bx, by;
     to_panel(n, x1, y1, &ax, &ay);
     to_panel(n, x2, y2, &bx, &by);
@@ -130,7 +167,10 @@ static void segment(struct nib *n, float x1, float y1, float ra, float x2, float
     if (steps < 1) steps = 1;
     for (int i = 0; i <= steps; i++) {
         float t = (float)i / (float)steps;
-        disc(n, (int)lroundf(ax + (bx - ax) * t), (int)lroundf(ay + (by - ay) * t), ra + (rb - ra) * t, value);
+        int cx = (int)lroundf(ax + (bx - ax) * t), cy = (int)lroundf(ay + (by - ay) * t);
+        float r = ra + (rb - ra) * t;
+        if ((tone & 0xff) > 0 && (tone & 0xff) < 16) disc_tone(n, cx, cy, r, value, tone);
+        else disc(n, cx, cy, r, value);
     }
     float r = ra > rb ? ra : rb;
     int pad = (int)ceilf(r) + 2;
@@ -191,9 +231,7 @@ fail:
 }
 
 /* One MotionEvent's points (screen pixels) and radii: one rectangle, one ioctl. */
-JNIEXPORT jint JNICALL
-Java_app_rockfrog_chattering_EbcNib_polyline(JNIEnv *env, jclass clazz, jlong handle, jfloatArray xs, jfloatArray ys, jfloatArray rs, jint count, jboolean erase) {
-    (void)clazz;
+static jint polyline(JNIEnv *env, jlong handle, jfloatArray xs, jfloatArray ys, jfloatArray rs, jint count, jboolean erase, jint tone) {
     struct nib *n = (struct nib *)(uintptr_t)handle;
     if (!n || !xs || !ys || !rs || count < 1) return -EINVAL;
     if ((*env)->GetArrayLength(env, xs) < count || (*env)->GetArrayLength(env, ys) < count || (*env)->GetArrayLength(env, rs) < count) return -EINVAL;
@@ -203,15 +241,29 @@ Java_app_rockfrog_chattering_EbcNib_polyline(JNIEnv *env, jclass clazz, jlong ha
     int result = -ENOMEM;
     if (px && py && pr) {
         uint8_t value = erase ? TRANSPARENT_Y8 : BLACK_Y8;
+        if (erase) tone = 0;
         struct dirty d = {0, 0, 0, 0, 0};
-        if (count == 1) segment(n, px[0], py[0], pr[0], px[0], py[0], pr[0], value, &d);
-        for (jint i = 1; i < count; i++) segment(n, px[i - 1], py[i - 1], pr[i - 1], px[i], py[i], pr[i], value, &d);
+        if (count == 1) segment(n, px[0], py[0], pr[0], px[0], py[0], pr[0], value, tone, &d);
+        for (jint i = 1; i < count; i++) segment(n, px[i - 1], py[i - 1], pr[i - 1], px[i], py[i], pr[i], value, tone, &d);
         result = d.valid ? submit(n, d.left, d.top, d.right, d.bottom) : 0;
     }
     if (pr) (*env)->ReleasePrimitiveArrayCritical(env, rs, pr, JNI_ABORT);
     if (py) (*env)->ReleasePrimitiveArrayCritical(env, ys, py, JNI_ABORT);
     if (px) (*env)->ReleasePrimitiveArrayCritical(env, xs, px, JNI_ABORT);
     return result;
+}
+
+JNIEXPORT jint JNICALL
+Java_app_rockfrog_chattering_EbcNib_polyline(JNIEnv *env, jclass clazz, jlong handle, jfloatArray xs, jfloatArray ys, jfloatArray rs, jint count, jboolean erase) {
+    (void)clazz;
+    return polyline(env, handle, xs, ys, rs, count, erase, 0);
+}
+
+/* The same, in a pen's tone (tone_on): a grey, a pencil, a highlighter. */
+JNIEXPORT jint JNICALL
+Java_app_rockfrog_chattering_EbcNib_polylineTone(JNIEnv *env, jclass clazz, jlong handle, jfloatArray xs, jfloatArray ys, jfloatArray rs, jint count, jint tone) {
+    (void)clazz;
+    return polyline(env, handle, xs, ys, rs, count, JNI_FALSE, tone);
 }
 
 JNIEXPORT jint JNICALL

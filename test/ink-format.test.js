@@ -138,7 +138,7 @@ test('settling a line drops jitter, follows the pen, and ends where it lifted', 
 });
 
 test('a stroke is drawn as discs and bands, tapered at the ends, wider when pressed', () => {
-  assert.match(F.outline({ pts: [10, 10, 0.5], w: 2 }), /^M11\.55 10M8\.45 10a1\.55 1\.55 0 1 0 3\.11 0a1\.55 1\.55 0 1 0 -3\.11 0Z$/, 'a tap is a dot wider than the line');
+  assert.match(F.outline({ pts: [10, 10, 0.5], w: 2 }), /^M11\.55 10M8\.45 10a1\.55 1\.55 0 1 1 3\.11 0a1\.55 1\.55 0 1 1 -3\.11 0Z$/, 'a tap is a dot wider than the line');
   const line = { pts: [0, 0, 0.5, 100, 0, 0.5], w: 4 };
   const d = F.discs(line);
   const r = i => d[i * 3 + 2];
@@ -162,4 +162,44 @@ test('note file names sort by time and never collide', () => {
   assert.equal(F.fileName(d, 2), '2026-10-10-1405-2.ink.svg');
   assert.ok(F.isInkPath('/a/b/' + F.fileName(d)));
   assert.ok(!F.isInkPath('/a/b/c.svg'));
+});
+
+test('pens: each has its own shape, kept in the file, and an unknown pen survives', () => {
+  const straight = (dx, dy, p = 0.5) => Array.from({ length: 30 }, (_, i) => [100 + dx * i, 100 + dy * i, p]).flat();
+  const mid = (stroke) => { const d = F.discs(stroke); const n = d.length / 3; return d[Math.floor(n / 2) * 3 + 2]; };
+  // Calligraphy: a flat nib at 45°, wide across it, a hairline along it.
+  const across = mid({ pts: straight(3, -3), w: 10, pen: 'calligraphy' }), along = mid({ pts: straight(3, 3), w: 10, pen: 'calligraphy' });
+  assert.ok(across > along * 4, `across ${across} along ${along}`);
+  // The highlighter's chisel: tall across a line of text, narrow up it.
+  assert.ok(mid({ pts: straight(4, 0), w: 20, pen: 'highlighter' }) > mid({ pts: straight(0, 4), w: 20, pen: 'highlighter' }) * 2);
+  // The brush answers pressure far more than the fineliner.
+  const ratio = pen => mid({ pts: straight(4, 0, 0.9), w: 8, pen }) / mid({ pts: straight(4, 0, 0.15), w: 8, pen });
+  assert.ok(ratio('brush') > 4 && ratio('fineliner') < 1.3, `brush ${ratio('brush')} fineliner ${ratio('fineliner')}`);
+  // A ballpoint written before there were pens draws as it did (no pen field).
+  assert.equal(F.penOf({}).label, 'Ballpoint');
+  // Every pen has five sizes, growing.
+  for (const id of F.PEN_ORDER) assert.ok(F.PENS[id].sizes.length === 5 && F.PENS[id].sizes.every((w, k, a) => !k || w > a[k - 1]), id);
+  // In the file: data-pen, and what other viewers need; read back the same.
+  const note = F.empty();
+  note.pages[0].strokes.push({ pts: straight(3, 0), w: 19, t0: 1, dur: 1, color: '', pen: 'highlighter' },
+    { pts: straight(3, 1), w: 3, t0: 2, dur: 1, color: '#5c5c5c', pen: 'pencil' },
+    { pts: straight(3, 2), w: 3, t0: 3, dur: 1, color: '', pen: 'quill-of-the-future' });
+  const text = F.serialize(note), back = F.parse(text);
+  assert.match(text, /data-pen="highlighter" stroke="#f4c430" stroke-opacity="0.4"/, 'a pale band in an image viewer');
+  assert.deepEqual(back.pages[0].strokes.map(s => [s.pen, s.color]), [['highlighter', ''], ['pencil', '#5c5c5c'], ['quill-of-the-future', '']]);
+  assert.equal(F.serialize(back), text, 'byte for byte');
+});
+
+test('a thick line has a disc wherever a bend would open a gap between its bands', () => {
+  // A wide marker around a gentle curve: the bend between steps is small,
+  // but at this radius it would leave a visible wedge without a disc.
+  const pts = [];
+  for (let i = 0; i <= 120; i++) { const a = i / 120 * Math.PI; pts.push(500 + 200 * Math.cos(a), 500 - 200 * Math.sin(a), 0.5); }
+  let discs = 0;
+  F.trace({ moveTo() {}, lineTo() {}, closePath() {}, arc() { discs++; } }, { pts, w: 24, pen: 'marker' });
+  const steps = F.discs({ pts, w: 24, pen: 'marker' }).length / 3;
+  assert.ok(discs > steps * 0.9, `${discs} discs for ${steps} steps`);
+  let thin = 0;
+  F.trace({ moveTo() {}, lineTo() {}, closePath() {}, arc() { thin++; } }, { pts, w: 2, pen: 'ballpoint' });
+  assert.ok(thin < discs / 3, 'a thin line still skips the discs it does not need: ' + thin);
 });

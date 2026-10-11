@@ -140,7 +140,9 @@
 
   // ---- strokes ----
   // { pts: [x, y, p, x, y, p, …] page units and pressure 0–1, w: width,
-  //   t0: start ms, dur: ms, color: '' for the ink colour, else a CSS colour }
+  //   t0: start ms, dur: ms, color: '' for the ink colour, else a CSS colour,
+  //   pen: '' for the ballpoint, else a name from PENS (or one a later
+  //   version made, kept as it is and drawn as a ballpoint) }
   const round1 = n => Math.round(n * 10);
   const tenth = n => { const s = (n / 10).toString(); return s.replace(/^(-?)0\./, '$1.'); };
   // Numbers joined the way SVG lets them: a minus sign separates, and so
@@ -204,13 +206,24 @@
       pts.push(xy[i], xy[i + 1], digit >= 0 && digit <= 9 ? digit / 9 : 0.5);
     }
     const [t0, dur] = String(node.attrs['data-t'] || '').split(/\s+/).map(Number);
-    const color = node.attrs.stroke && node.attrs.stroke !== 'currentColor' ? node.attrs.stroke : '';
+    const pen = /^[a-z][a-z0-9-]{0,23}$/.test(node.attrs['data-pen'] || '') && node.attrs['data-pen'] !== 'ballpoint' ? node.attrs['data-pen'] : '';
+    let color = node.attrs.stroke && node.attrs.stroke !== 'currentColor' ? node.attrs.stroke : '';
+    if (PENS[pen] && PENS[pen].outside && color === PENS[pen].outside.stroke) color = ''; // the default, written for other viewers
     const w = Number(node.attrs['stroke-width']);
-    return { pts, w: Number.isFinite(w) && w > 0 ? w : 2.4, t0: Number.isFinite(t0) ? t0 : 0, dur: Number.isFinite(dur) ? dur : 0, color };
+    const out = { pts, w: Number.isFinite(w) && w > 0 ? w : 2.4, t0: Number.isFinite(t0) ? t0 : 0, dur: Number.isFinite(dur) ? dur : 0, color };
+    if (pen) out.pen = pen;
+    return out;
   }
   function pathNode(stroke) {
     const attrs = { d: pathData(stroke.pts), 'stroke-width': String(Math.round((stroke.w || 2.4) * 10) / 10) };
+    const pen = stroke.pen && stroke.pen !== 'ballpoint' ? stroke.pen : '';
+    if (pen) attrs['data-pen'] = pen;
+    // Seen outside Chattering (an image viewer, GitHub): a plain line, as
+    // near the pen as a line gets (a highlighter is a pale wide band).
+    const outside = PENS[pen] && PENS[pen].outside;
     if (stroke.color) attrs.stroke = stroke.color;
+    else if (outside && outside.stroke) attrs.stroke = outside.stroke;
+    if (outside && outside.opacity) attrs['stroke-opacity'] = String(outside.opacity);
     let press = '';
     for (let i = 2; i < stroke.pts.length; i += 3) press += String(Math.max(0, Math.min(9, Math.round(stroke.pts[i] * 9))));
     if (!/^5*$/.test(press)) attrs['data-p'] = press;
@@ -414,6 +427,39 @@
   // over a short run-in. Width follows pressure on a sine ease: mid pressures
   // matter most, as a real nib.
   const pressureFactor = p => 0.4 + 0.9 * Math.sin(Math.max(0, Math.min(1, p)) * Math.PI / 2);
+
+  // ---- pens ----
+  // Each pen is a width curve over pressure (normalised: this pen's typical
+  // pressure is 0.5) and, for the flat nibs, over the direction of travel;
+  // a taper at the ends; five sizes (page units: 1000 is an A4 page's width,
+  // so 1 ≈ 0.2 mm); and how it is filled (the page: ink-editor.js paint).
+  // The Android app draws the live line with the same curves
+  // (InkOverlay.kt penFactor): change both together.
+  //   taper: run-in at each end, page units (0: none) · tip: width there
+  //   tap: a tap leaves a dot this much wider than the line
+  //   fill: 'ink' solid · 'grain' a pencil's paper grain, darker when pressed
+  //         · 'highlight' under the writing (multiplied), pale
+  const DIAG = Math.PI / 4;
+  const PENS = {
+    ballpoint: { label: 'Ballpoint', sizes: [1.3, 1.9, 2.6, 3.6, 5], taper: 8, tip: 0.35, tap: 1.5, fill: 'ink',
+      factor: q => pressureFactor(q) },
+    fineliner: { label: 'Fineliner', sizes: [1.2, 1.8, 2.6, 3.8, 5.5], taper: 2, tip: 0.7, tap: 1.15, fill: 'ink',
+      factor: q => 0.9 + 0.2 * q },
+    pencil: { label: 'Pencil', sizes: [1.4, 2.2, 3.2, 4.6, 6.5], taper: 5, tip: 0.5, tap: 1.2, fill: 'grain',
+      factor: q => 0.7 + 0.5 * q, outside: { opacity: 0.75 } },
+    brush: { label: 'Brush', sizes: [3, 5, 8, 12, 18], taper: 18, tip: 0.08, tap: 1.1, fill: 'ink',
+      factor: q => 0.1 + 1.45 * Math.pow(q, 1.35) },
+    calligraphy: { label: 'Calligraphy', sizes: [3, 5, 7.5, 11, 15], taper: 3, tip: 0.6, tap: 1, fill: 'ink',
+      // A flat nib held at 45°: full width across it, a hairline along it.
+      factor: (q, a) => (0.16 + 0.84 * Math.abs(Math.sin(a - DIAG))) * (0.8 + 0.4 * q) },
+    marker: { label: 'Marker', sizes: [5, 8, 12, 17, 24], taper: 2, tip: 0.85, tap: 1, fill: 'ink',
+      factor: q => 0.9 + 0.15 * q },
+    highlighter: { label: 'Highlighter', sizes: [10, 14, 19, 25, 32], taper: 0, tip: 1, tap: 1, fill: 'highlight',
+      // A chisel: tall moving across the line of text, narrow up and down it.
+      factor: (q, a) => 0.42 + 0.58 * Math.abs(Math.cos(a)), outside: { stroke: '#f4c430', opacity: 0.4 } },
+  };
+  const PEN_ORDER = ['ballpoint', 'fineliner', 'pencil', 'brush', 'calligraphy', 'marker', 'highlighter'];
+  const penOf = stroke => PENS[stroke && stroke.pen] || PENS.ballpoint;
   const FOLLOW = 0.5;   // centre-line follower: part of the way to each sample
   const P_EMA = 0.35;   // pressure low-pass
   function settle(raw, { minStep = 0.6, tolerance = 0.3 } = {}) {
@@ -437,22 +483,34 @@
   }
   // The discs a stroke is made of: [x, y, r, …] in page units.
   function discs(stroke, { minR = 0.3 } = {}) {
-    const p = densify(stroke.pts, 2), n = p.length / 3;
+    const pen = penOf(stroke);
+    // A flat nib's width changes with direction: points closer together, so
+    // a turn reads as a turn and not as steps.
+    const p = densify(stroke.pts, pen.factor.length > 1 ? 1 : 2), n = p.length / 3;
     const half = (stroke.w || 2.4) / 2;
     const arc = new Float64Array(n);
     for (let i = 1; i < n; i++) arc[i] = arc[i - 1] + Math.hypot(p[i * 3] - p[i * 3 - 3], p[i * 3 + 1] - p[i * 3 - 2]);
     const total = n ? arc[n - 1] : 0;
-    const taper = Math.min(total / 3, 8);
+    const taper = Math.min(total / 3, pen.taper);
     const out = new Float64Array(n * 3);
+    // Direction of travel at each point, from its neighbours, low-passed so
+    // the digitiser's jitter does not flicker a flat nib's width.
+    let ang = 0, ax = 0, ay = 0;
     for (let i = 0; i < n; i++) {
       let k = 1;
       const fromEnd = Math.min(arc[i], total - arc[i]);
-      if (taper > 0 && fromEnd < taper) { const t = fromEnd / taper; k = 0.35 + 0.65 * t * t * (3 - 2 * t); }
+      if (taper > 0 && fromEnd < taper) { const t = fromEnd / taper; k = pen.tip + (1 - pen.tip) * t * t * (3 - 2 * t); }
+      if (pen.factor.length > 1 && n > 1) {
+        const a = Math.max(0, i - 2), b = Math.min(n - 1, i + 2);
+        const dx = p[b * 3] - p[a * 3], dy = p[b * 3 + 1] - p[a * 3 + 1], len = Math.hypot(dx, dy);
+        if (len > 1e-6) { ax = ax * 0.6 + dx / len * 0.4; ay = ay * 0.6 + dy / len * 0.4; if (!i) { ax = dx / len; ay = dy / len; } }
+        ang = Math.atan2(ay, ax);
+      }
       out[i * 3] = p[i * 3]; out[i * 3 + 1] = p[i * 3 + 1];
-      out[i * 3 + 2] = Math.max(minR, half * pressureFactor(p[i * 3 + 2]) * k);
+      out[i * 3 + 2] = Math.max(minR, half * pen.factor(p[i * 3 + 2], ang) * k);
     }
     // A tap is a dot, as a resting nib leaves one: a little wider than the line.
-    if (total < half * 2) for (let i = 0; i < n; i++) out[i * 3 + 2] = Math.max(out[i * 3 + 2], half * 1.5 * pressureFactor(p[i * 3 + 2]));
+    if (total < half * 2) for (let i = 0; i < n; i++) out[i * 3 + 2] = Math.max(out[i * 3 + 2], half * pen.tap * pen.factor(p[i * 3 + 2], DIAG + Math.PI / 2));
     return out;
   }
   // Trace a stroke's shape into anything with moveTo/lineTo/arc/closePath
@@ -467,7 +525,12 @@
     const bx = d[i * 3 + 3] - d[i * 3], by = d[i * 3 + 4] - d[i * 3 + 1];
     const la = Math.hypot(ax, ay), lb = Math.hypot(bx, by);
     if (la < 1e-6 || lb < 1e-6) return true;
-    if ((ax * bx + ay * by) / (la * lb) < 0.992) return true; // about 7 degrees
+    // Without a disc, the bands on either side of a bend leave a wedge open
+    // on its outer side, as wide as the radius times the angle: invisible
+    // on a thin line, pale hairlines across a marker. The bend allowed
+    // shrinks with the radius, so the wedge stays under a tenth of a unit.
+    const r = Math.max(d[i * 3 + 2], 1e-6), maxTurn = Math.min(0.125, 0.1 / r);
+    if ((ax * bx + ay * by) / (la * lb) < Math.cos(maxTurn)) return true;
     return Math.abs(d[i * 3 + 2] - d[i * 3 - 1]) > 0.08 || Math.abs(d[i * 3 + 5] - d[i * 3 + 2]) > 0.08;
   }
   function trace(path, stroke, opts) {
@@ -499,13 +562,22 @@
     trace({
       moveTo(x, y) { d += `M${f(x)} ${f(y)}`; },
       lineTo(x, y) { d += `L${f(x)} ${f(y)}`; },
-      arc(x, y, r) { d += `M${f(x - r)} ${f(y)}a${f(r)} ${f(r)} 0 1 0 ${f(2 * r)} 0a${f(r)} ${f(r)} 0 1 0 ${f(-2 * r)} 0`; },
+      // Clockwise on screen (sweep 1), as the bands are wound: drawn the
+      // other way, a disc cancels the bands it overlaps and leaves holes.
+      arc(x, y, r) { d += `M${f(x - r)} ${f(y)}a${f(r)} ${f(r)} 0 1 1 ${f(2 * r)} 0a${f(r)} ${f(r)} 0 1 1 ${f(-2 * r)} 0`; },
       closePath() { d += 'Z'; },
     }, stroke);
     return d;
   }
 
   // Strokes near a point (page units): what an eraser at (x, y) touches.
+  // A stroke's typical pressure (its median), for a pencil's darkness.
+  function medianPressure(stroke) {
+    const list = [];
+    for (let i = 2; i < stroke.pts.length; i += 3) list.push(stroke.pts[i]);
+    list.sort((a, b) => a - b);
+    return list.length ? list[list.length >> 1] : 0.5;
+  }
   function hits(stroke, x, y, radius) {
     const p = stroke.pts, r = radius + (stroke.w || 2.4) / 2, r2 = r * r;
     if (p.length === 3) return (p[0] - x) ** 2 + (p[1] - y) ** 2 <= r2;
@@ -534,5 +606,5 @@
   function isInkPath(p) { return INK_PATH.test(String(p || '')); }
 
   return { FORMAT, PAGE_W, PAGE_H, PAGE_GAP, PAPERS, DEFAULT_PAPER, empty, blankPage, isBlankPage, parse, serialize, merge, strokeKey,
-    simplify, densify, settle, discs, trace, outline, pressureFactor, hits, bounds, pathData, pathPoints, fileName, isInkPath, parseXml, writeXml };
+    simplify, densify, settle, discs, trace, outline, pressureFactor, PENS, PEN_ORDER, penOf, medianPressure, hits, bounds, pathData, pathPoints, fileName, isInkPath, parseXml, writeXml };
 });

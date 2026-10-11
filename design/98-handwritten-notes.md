@@ -67,6 +67,8 @@ server with the same code):
   point, `data-t` start time (ms) and duration. Outside Chattering the path
   is drawn as a plain line in `currentColor`; inside, as a filled outline
   whose width follows the pressure;
+- `data-pen` on a stroke: which pen drew it (design/99; absent = the
+  ballpoint), with `stroke`/`stroke-opacity` written for other viewers only;
 - `<desc data-ink-text>` per page: the page as text, once something reads it
   (reserved now, see below);
 - **anything else is kept verbatim**: a page's other elements go to its

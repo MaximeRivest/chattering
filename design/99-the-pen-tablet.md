@@ -68,12 +68,61 @@ What remains for the pen, in order:
 3. **Ghosting**: a page with many partial updates gets grey residue. A
    full refresh on demand (two-finger tap) and automatically after N lines
    or on page change, as the keyboard does.
-4. **Lasso** (select strokes, move, delete, "ask about this", "turn into
+4. ~~A palette of pens~~ (done, below). **Lasso** (select strokes, move, delete, "ask about this", "turn into
    text"): the same gesture becomes the bridge to every AI command (§ Prompt).
 5. **The pen outside notes**: the pen taps and scrolls like a finger
    everywhere else (it does: the app only takes it inside a note's region),
    and writing *on* a conversation, an answer or an artifact (§ Read, Try)
    uses the same layer with a transparent page.
+
+### Pens and the toolbar (2026-10-11)
+
+Asked after the first session with the fast pen: "a palette of pens", menus
+that are not hidden, "more like reMarkable or good painting apps", "sketch
+very delightfully". Done (app 0.3.7 for the live line; the page for the rest):
+
+- **Seven pens** (`ink-format.js PENS`): ballpoint (the old pen, unchanged),
+  fineliner (even), pencil (grain, darker when pressed), brush (strong
+  pressure, long taper), calligraphy (a flat nib at 45°: wide across it, a
+  hairline along it), marker, highlighter (a chisel, multiplied under the
+  writing so black stays black). Five sizes each. Greys on every screen
+  (ink, dark grey, light grey, white); blue, red, green and highlighter
+  colours only where the screen has colour.
+- **In the file** a stroke carries `data-pen` (absent: ballpoint, so every
+  older note reads the same) and, for other viewers, what a plain line can
+  show (a highlighter is a pale yellow band). A pen this version does not
+  know is kept and drawn as a ballpoint.
+- **Toolbar**: three pens at hand, each shown as a stroke of itself; a tap
+  takes one, a tap on the one in hand opens the palette (every pen as a
+  sample drawn by the page's own shape, sizes, colours, a preview). 1 2 3 on
+  a keyboard. Eraser, tapped again: "Clear this page" (undoable). The ⋯
+  became a labelled **Page** button. A pop-up closes at the first touch
+  outside it, and that touch draws nothing; while one is open the app's
+  layer lets the pen go to the page.
+- **The live line on e-ink** follows the pen's width curve and direction
+  (`InkOverlay.penFactor`, the same curves) and its tone: the overlay shows
+  black or nothing, so a grey is an even 4×4 screen of black dots, a pencil a
+  fixed random grain, a highlighter a light screen (`ebc_nib.c tone_on`).
+  White ink has no live line (the overlay cannot show white).
+- A line keeps the pen it was started with (a test caught a pen switched in
+  the 40 ms the page waits for a broken line to rejoin, which changed it).
+- The picture of a page (download, and what a model will read) is drawn
+  with the real pens, not as centre lines.
+- **Pressure** is learned as the middle of the last 15 lines, not a running
+  average: one hard brush stroke (or injected input at full force, which
+  moved it from 0.11 to 0.29 during testing) no longer thins the next ten.
+
+Fixed on the way: thick lines showed pale hairlines across them (bands left
+a wedge open at bends where the joint's disc was skipped; the bend allowed
+now shrinks with the radius), and the outline used for SVG samples drew its
+discs the other way round from its bands, which cancelled into holes.
+Seen in Chromium's software raster only, and not on the AINOTE: tiny
+horizontal ticks inside very thick loops, where a shape overlaps itself many
+times (GPU raster, and the tablet's screenshot, show none).
+
+Not yet: lasso (select, move, ask), a partial eraser, a full refresh against
+ghosting, tilt and speed (the AINOTE reports no tilt; speed would need the
+point times the file does not keep).
 
 ## Order of work, and why
 

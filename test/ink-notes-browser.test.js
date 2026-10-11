@@ -32,8 +32,8 @@ test('handwritten notes: make, write, erase, undo, save, merge, reopen', { timeo
   // the AINOTE's WebView (Chrome 119), where the header's container query
   // still implied layout containment (a stacking context); contain:layout
   // stands in for that older engine here.
-  assert.equal(await run(`(()=>{const h=document.querySelector('.ink-head');h.style.contain='layout';const m=document.querySelector('.ink-more');m.open=true;const d=m.querySelector(':scope>div').getBoundingClientRect();
-    const hit=document.elementFromPoint(d.left+d.width/2,d.bottom-6);const ok=!!hit&&m.contains(hit);m.open=false;h.style.contain='';return ok})()`), true, 'the note menu is on top of the page');
+  assert.equal(await run(`(()=>{const h=document.querySelector('.ink-head');h.style.contain='layout';$('inkPageBtn').click();const m=$('inkPageMenu');const d=m.getBoundingClientRect();
+    const hit=document.elementFromPoint(d.left+d.width/2,d.bottom-6);const ok=!m.hidden&&!!hit&&m.contains(hit);$('inkPageBtn').click();h.style.contain='';return ok&&m.hidden})()`), true, 'the page menu is on top of the page, and closes again');
 
   // A pen stroke, through the browser's own pen events (pressure included).
   const pen = async (points, { type = 'pen', button = 'left' } = {}) => {
@@ -100,7 +100,7 @@ test('handwritten notes: make, write, erase, undo, save, merge, reopen', { timeo
   await run(`document.querySelector('[data-ink-tool=eraser]').click()`);
   await pen([at(0.35, 0.08), at(0.35, 0.12)]);
   await until(`InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)===1`, () => run(`JSON.stringify({tool:InkNotes.current.tool,top:document.querySelector('.ink-scroll').scrollTop,box:document.querySelector('.ink-page').getBoundingClientRect(),strokes:InkNotes.current.note.pages.map(p=>p.strokes.map(s=>s.pts.slice(0,2).map(Math.round)))})`));
-  await run(`document.querySelector('[data-ink-tool=pen]').click()`);
+  await run(`document.querySelector('[data-ink-slot="0"]').click()`);
   await until(`${inkPixels}<${beforeErase}*0.75`, 'the erased line is gone from the page');
   await run(`$('inkUndo').click()`);
   assert.equal(await run(`InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)`), 2, 'undo brings the line back');
@@ -120,17 +120,59 @@ test('handwritten notes: make, write, erase, undo, save, merge, reopen', { timeo
   assert.equal(note.pages[0].strokes.length, 3, 'nothing lost, nothing doubled');
 
   // Paper, width and reopening: the note comes back as it was.
-  await run(`document.querySelector('.ink-more').open=true;document.querySelector('[data-ink-paper=grid]').click();document.querySelector('[data-ink-width="4.2"]').click()`);
+  await run(`$('inkPageBtn').click();document.querySelector('[data-ink-paper=grid]').click()`);
+  // The slot in hand, tapped again, opens the palette; the biggest ballpoint.
+  await run(`document.querySelector('[data-ink-slot="0"]').click()`);
+  assert.equal(await run(`$('inkPageMenu').hidden && !$('inkPalette').hidden`), true, 'one pop-up at a time: the palette');
+  await run(`document.querySelector('[data-ink-size="4"]').click();document.querySelector('[data-ink-slot="0"]').click()`);
+  assert.equal(await run(`$('inkPalette').hidden`), true, 'the slot closes its palette again');
   await pen(line(0.1, 0.6, 0.5));
   await until(`$('docStatus').textContent==='Saved'`);
   note = read(file);
   assert.equal(note.paper, 'grid');
-  assert.equal(note.pages[0].strokes.at(-1).w, 4.2);
+  assert.equal(note.pages[0].strokes.at(-1).w, F.PENS.ballpoint.sizes[4]);
   fs.writeFileSync(path.join(work, 'nothing.txt'), 'x');
   await run(`openLiveFile(${JSON.stringify(path.join(work, 'nothing.txt'))}, {project:'work'})`);
   await until(`!document.querySelector('.ink-view')`);
   await run(`openLiveFile(${JSON.stringify(file)}, {project:'work'})`);
   await until(`InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)===4 && !!document.querySelector('.ink-paper-grid')`, 'reopened as it was');
+
+  // Pens. The palette lists every pen with a sample stroke drawn by the
+  // page's own shape; choosing one changes the slot in hand.
+  const strokes = `InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)`;
+  await run(`document.querySelector('.ink-scroll').scrollTop=0`);
+  Object.assign(box, await run(`(()=>{const r=document.querySelector('.ink-page').getBoundingClientRect();return {x:r.left,y:r.top,w:r.width,h:r.height}})()`));
+  await run(`document.querySelector('[data-ink-slot="0"]').click()`);
+  assert.equal(await run(`$('inkPalette').hidden`), false);
+  assert.equal(await run(`[...document.querySelectorAll('[data-ink-pen] path')].filter(p=>p.getAttribute('d').length>50).length`), F.PEN_ORDER.length, 'a sample of every pen');
+  await run(`document.querySelector('[data-ink-pen=calligraphy]').click();document.querySelector('[data-ink-size="2"]').click()`);
+  await run(`document.querySelector('[data-ink-colour="#5c5c5c"]').click()`);
+  assert.equal(await run(`$('inkPalette').hidden`), false, 'the palette stays open while choosing');
+  // A pen touching the page closes the palette and draws nothing.
+  await pen(line(0.1, 0.2, 0.5));
+  assert.equal(await run(`$('inkPalette').hidden`), true, 'the first touch outside closes the palette');
+  assert.equal(await run(strokes), 4, 'and draws nothing');
+  await pen(line(0.1, 0.2, 0.5));
+  await until(`${strokes}===5`, () => run(`JSON.stringify({n:${strokes},draw:!!InkNotes.current.draw,pending:!!InkNotes.current.pending,tool:InkNotes.current.tool,pop:[...document.querySelectorAll(".ink-pop")].map(p=>p.hidden)})`).then(x => x + " " + JSON.stringify(b.exceptions)));
+  // Slot 2 is the pencil, slot 3 the highlighter, by default; 1 2 3 on the keyboard.
+  await run(`document.querySelector('[data-ink-slot="1"]').click()`);
+  await pen(line(0.1, 0.27, 0.5));
+  await run(`document.querySelector('.ink-scroll').dispatchEvent(new KeyboardEvent('keydown',{key:'3',bubbles:true}))`);
+  assert.equal(await run(`InkNotes.current.penId`), 'highlighter', 'the 3 key takes the third pen');
+  await pen(line(0.1, 0.34, 0.5));
+  await until(`${strokes}===7 && $('docStatus').textContent==='Saved'`, 'three pens on the page, saved');
+  note = read(file);
+  const last3 = note.pages[0].strokes.slice(-3);
+  assert.deepEqual(last3.map(s => [s.pen || '', s.color]), [['calligraphy', '#5c5c5c'], ['pencil', ''], ['highlighter', '']], 'each line keeps its pen and colour');
+  assert.deepEqual(last3.map(s => s.w), [F.PENS.calligraphy.sizes[2], F.PENS.pencil.sizes[1], F.PENS.highlighter.sizes[2]]);
+  // The slots are remembered on this device.
+  assert.deepEqual(JSON.parse(await run(`localStorage.getItem('chattering.ink.slots')`)).map(x => x.pen), ['calligraphy', 'pencil', 'highlighter']);
+  // A highlighter goes under the writing: where it crosses a black line, the line stays black.
+  const under = await run(`(()=>{const pg=document.querySelector('.ink-page');const c=pg.querySelector('.ink-layer');const x=c.getContext('2d');
+    const r=pg.getBoundingClientRect();const k=c.width/r.width;const s=InkNotes.current.note.pages[0].strokes;const hl=s.at(-1);
+    let dark=0,pale=0;for(let i=0;i<hl.pts.length;i+=3){const px=Math.round(hl.pts[i]/1000*c.width),py=Math.round(hl.pts[i+1]/1414*c.height);const d=x.getImageData(px,py,1,1).data;if(d[3]>0&&d[0]>150&&d[2]<160)pale++;}
+    return {pale,n:hl.pts.length/3}})()`);
+  assert.ok(under.pale > under.n * 0.6, 'the highlighter is a pale yellow band: ' + JSON.stringify(under));
   assert.deepEqual(b.exceptions, []);
 
   // The pen flickers off the glass for a few ms (light pressure): one line, not two.
@@ -153,13 +195,24 @@ test('handwritten notes: make, write, erase, undo, save, merge, reopen', { timeo
     await mv('mousePressed', sx, sy + 60, 1); await mv('mouseReleased', sx, sy + 60, 0);
     await run(`new Promise(r=>setTimeout(r,120))`);
     assert.equal(await run(total), before + 1, 'a 1 ms tap left no dot');
-    // A light pen's pressure is learned: its ordinary writing counts as normal.
-    assert.ok(await run(`+localStorage.getItem('chattering.ink.pressure')`) < typicalBefore - 0.05, 'the typical pressure follows this pen');
+    // A light pen's pressure is learned: its ordinary writing counts as
+    // normal once it is most of the recent lines...
+    const stroke = async (y, force) => {
+      const m = (type, x, buttons) => command('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons, clickCount: 1, pointerType: 'pen', force });
+      await m('mousePressed', sx, 1); for (let i = 1; i <= 6; i++) await m('mouseMoved', sx + i * 12, 1); await m('mouseReleased', sx + 72, 0);
+      await run(`new Promise(r=>setTimeout(r,80))`);
+    };
+    for (let k = 0; k < 8; k++) await stroke(sy + 90 + k * 14, 0.12);
+    const light = await run(`+localStorage.getItem('chattering.ink.pressure')`);
+    assert.ok(light < typicalBefore - 0.05 && light < 0.2, `the typical pressure follows this pen: ${typicalBefore} → ${light}`);
+    // ...and one hard-pressed line does not thin the lines after it.
+    await stroke(sy + 220, 0.9);
+    assert.equal(await run(`+localStorage.getItem('chattering.ink.pressure')`), light, 'one unusual line leaves it where it was');
   }
   // A phone: the page fits, the tools stay reachable.
   await size(390, 844, true);
   await until(`document.querySelector('.ink-page').getBoundingClientRect().width<=390`);
-  assert.equal(await run(`document.documentElement.scrollWidth<=innerWidth && document.querySelector('[data-ink-tool=pen]').getBoundingClientRect().right<=innerWidth`), true);
+  assert.equal(await run(`document.documentElement.scrollWidth<=innerWidth && $('inkPageBtn').getBoundingClientRect().right<=innerWidth`), true);
   await b.screenshot('ink-note-phone.png');
   await run(`document.documentElement.dataset.themeMode='binary'`);
   await size(1404, 1872, true);

@@ -42,7 +42,15 @@
   if (!F) return;
   const SVGNS = 'http://www.w3.org/2000/svg';
   const PREF = 'chattering.ink.';
-  const WIDTHS = [{ w: 1.7, label: 'Fine' }, { w: 2.6, label: 'Medium' }, { w: 4.2, label: 'Bold' }];
+  // The pens a person keeps at hand: three slots in the toolbar, each a pen,
+  // a size (an index into its sizes) and a colour ('' = the theme's ink).
+  // Tapping a slot takes it; tapping the slot in hand opens the palette.
+  const DEFAULT_SLOTS = [{ pen: 'ballpoint', size: 2, color: '' }, { pen: 'pencil', size: 1, color: '' }, { pen: 'highlighter', size: 2, color: '' }];
+  // Greys for every screen; colours only where the screen has them.
+  const INKS = [{ c: '', label: 'Ink' }, { c: '#5c5c5c', label: 'Dark grey' }, { c: '#a0a0a0', label: 'Light grey' }, { c: '#ffffff', label: 'White' }];
+  const COLOURS = [{ c: '#1f5fbf', label: 'Blue' }, { c: '#c62828', label: 'Red' }, { c: '#2e7d32', label: 'Green' }];
+  const HIGHLIGHTS = [{ c: '', label: 'Yellow' }, { c: '#8ee08e', label: 'Green' }, { c: '#ffa3cf', label: 'Pink' }, { c: '#8fd2ff', label: 'Blue' }];
+  const HIGHLIGHT = '#ffe04a', HIGHLIGHT_EINK = '#c8c8c8';
   const SAVE_AFTER_MS = 1400;
   const PALM_MS = 1500;      // a touch this soon after the pen was near is a hand
   const JOIN_MS = 40;        // a pen that lifts and lands again this fast, this close, never left
@@ -88,31 +96,42 @@
     if (!host || fileWs !== ws) return;
     ws.inkView?.dispose();
     ws.readOnly = false;
-    const width = Number(pref('width', WIDTHS[1].w)) || WIDTHS[1].w;
+    const slots = loadSlots();
+    const slotNow = Math.max(0, Math.min(2, Number(pref('slot', '0')) || 0));
     host.innerHTML = `<div class="doc-view ink-view" data-tool="pen">
       <header class="live-file-head ink-head">
         <button id="liveBack" title="${e(liveBackLabel(ws).slice(2))}: return to the previous view"><span class="lf-back-arrow">←</span><span class="lf-wide">${e(liveBackLabel(ws).slice(2))}</span></button>
         ${liveFileNameHtml(ws)}
         <span id="docStatus" role="status">Opening…</span>
         <div class="ink-tools" role="toolbar" aria-label="Writing tools">
-          <button type="button" data-ink-tool="pen" aria-pressed="true" title="Pen (P): write and draw">${icon('pen')}<span class="ink-label">Pen</span></button>
-          <button type="button" data-ink-tool="eraser" aria-pressed="false" title="Eraser (E): touch a line to remove it. The pen's eraser end works too">${icon('eraser')}<span class="ink-label">Eraser</span></button>
-          <span class="ink-widths" role="group" aria-label="Line width">${WIDTHS.map(o => `<button type="button" data-ink-width="${o.w}" aria-pressed="${o.w === width}" title="${o.label} line">${widthDot(o.w)}</button>`).join('')}</span>
-          <button type="button" id="inkUndo" disabled title="Undo (${e(modKey('Z'))})">${icon('undo')}</button>
-          <button type="button" id="inkRedo" disabled title="Redo (${e(modKey('Shift+Z'))})">${icon('redo')}</button>
+          <span class="ink-slots" role="group" aria-label="Your pens">${[0, 1, 2].map(i => `<button type="button" class="ink-slot" data-ink-slot="${i}" aria-pressed="false"></button>`).join('')}</span>
+          <button type="button" class="ink-tool" data-ink-tool="eraser" aria-pressed="false" title="Eraser (E): touch a line to remove it. The pen's eraser end works too. Tap again for more">${icon('eraser')}<span class="ink-label">Eraser</span></button>
+          <button type="button" class="ink-tool" id="inkUndo" disabled title="Undo (${e(modKey('Z'))})">${icon('undo')}</button>
+          <button type="button" class="ink-tool" id="inkRedo" disabled title="Redo (${e(modKey('Shift+Z'))})">${icon('redo')}</button>
+          <button type="button" class="ink-tool" id="inkPageBtn" aria-haspopup="dialog" aria-expanded="false" title="Paper, pages, picture, finger">${icon('page')}<span class="ink-label">Page</span></button>
         </div>
-        <details class="live-more ink-more"><summary aria-label="Note options">⋯</summary><div>
-          <span class="ink-menu-label">Paper</span>
+        <div class="ink-pop ink-palette" id="inkPalette" role="dialog" aria-label="Pen" hidden>
+          <div class="ink-pens" role="group" aria-label="Pen">${F.PEN_ORDER.map(id => `<button type="button" class="ink-pen" data-ink-pen="${id}" aria-pressed="false"><svg class="ink-sample" viewBox="0 0 120 56" aria-hidden="true"></svg><span>${e(F.PENS[id].label)}</span></button>`).join('')}</div>
+          <div class="ink-pop-row"><span class="ink-pop-label">Size</span><div class="ink-sizes" role="group" aria-label="Size">${[0, 1, 2, 3, 4].map(k => `<button type="button" class="ink-size" data-ink-size="${k}" aria-pressed="false" title="Size ${k + 1}"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/></svg></button>`).join('')}</div></div>
+          <div class="ink-pop-row"><span class="ink-pop-label">Colour</span><div class="ink-colours" role="group" aria-label="Colour"></div></div>
+          <svg class="ink-preview" viewBox="0 0 360 70" aria-hidden="true"></svg>
+        </div>
+        <div class="ink-pop ink-erasemenu" id="inkEraseMenu" role="dialog" aria-label="Eraser" hidden>
+          <span class="ink-menu-hint">Touch a line to remove the whole line. The pen's eraser end does the same.</span>
+          <button type="button" id="inkClearPage">Clear this page</button>
+        </div>
+        <div class="ink-pop ink-pagemenu" id="inkPageMenu" role="dialog" aria-label="Page" hidden>
+          <span class="ink-pop-label">Paper</span>
           <div class="ink-papers" role="group" aria-label="Paper">${F.PAPERS.map(p => `<button type="button" data-ink-paper="${p}">${p[0].toUpperCase() + p.slice(1)}</button>`).join('')}</div>
-          <button type="button" id="inkFinger" aria-pressed="false">Draw with a finger</button>
           <button type="button" id="inkAddPage">Add a page</button>
           <button type="button" id="inkPng">Download this page as a picture</button>
+          <button type="button" id="inkFinger" aria-pressed="false">Draw with a finger</button>
           ${typeof OpenFiles !== 'undefined' ? `<button type="button" data-keep-menu="${e(ws.path)}">${e(OpenFiles.menuLabel(ws.path))}</button>` : ''}
           ${typeof Pair !== 'undefined' && ws.placement !== 'beside' ? '<button type="button" id="inkBeside">☷ A conversation beside</button>' : ''}
           ${ws.project ? '<button type="button" id="liveBrowse">Browse this folder</button>' : ''}
-          <span class="ink-menu-hint">Pen writes · finger scrolls · ${e(modKey('Z'))} undoes</span>
+          <span class="ink-menu-hint">Pen writes · finger scrolls · 1 2 3 pick a pen · ${e(modKey('Z'))} undoes</span>
           <span class="ink-menu-hint" id="inkPenMode"></span>
-        </div></details>
+        </div>
       </header>
       <div class="fw-banner" id="fwBanner" hidden></div>
       <div class="ink-stage">
@@ -124,12 +143,13 @@
     const root = host.querySelector('.ink-view');
     const v = view = ws.inkView = {
       ws, root, disposed: false, note: null, base: null, baseSha: '', rev: 0, savedRev: 0, saving: false, again: false, timer: 0,
-      tool: 'pen', width, finger: pref('finger', '0') === '1', undo: [], redo: [], pages: [], pageW: 0,
+      tool: 'pen', slots, slot: slotNow, width: 2.6, penId: 'ballpoint', color: '', finger: pref('finger', '0') === '1', undo: [], redo: [], pages: [], pageW: 0,
       scroll: root.querySelector('.ink-scroll'), pagesEl: root.querySelector('.ink-pages'), canvas: root.querySelector('.ink-live:not(.ink-predict)'), predict: root.querySelector('.ink-predict'),
       status: $('docStatus'), cleanups: [], draw: null, pan: null, lastPen: 0, scale: 1,
       dispose() { disposeView(v); },
     };
     $('liveBack').onclick = () => liveFileGoBack(ws);
+    applySlot(v);
     wireHeader(v);
     let d;
     try { d = await (await fetch('/api/file/read?' + new URLSearchParams({ path: ws.path }))).json(); }
@@ -191,26 +211,159 @@
       eraser: '<path d="M6 13h7"/><path d="M2.5 9.5l6-6 4 4-5.5 5.5H5z"/><path d="M5.5 6.5l4 4"/>',
       undo: '<path d="M5 3L2 6l3 3"/><path d="M2 6h7a4 4 0 010 8H6"/>',
       redo: '<path d="M11 3l3 3-3 3"/><path d="M14 6H7a4 4 0 000 8h3"/>',
+      page: '<path d="M4 2h6l3 3v9H4z"/><path d="M10 2v3h3"/><path d="M6 8h5M6 10.5h5"/>',
     };
     return `<svg class="ink-icon" viewBox="0 0 16 16" aria-hidden="true">${paths[name]}</svg>`;
   }
-  function widthDot(w) { const r = Math.min(5.5, 1 + w); return `<svg class="ink-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="${r}" class="ink-dot"/></svg>`; }
+
+  // ---- pens at hand ----
+  function loadSlots() {
+    let list = null;
+    try { list = JSON.parse(pref('slots', '')); } catch {}
+    if (!Array.isArray(list) || list.length !== 3) {
+      list = DEFAULT_SLOTS.map(x => ({ ...x }));
+      // The width chosen before there were pens: the ballpoint's nearest size.
+      const old = Number(pref('width', ''));
+      if (old > 0) { const sz = F.PENS.ballpoint.sizes; list[0].size = sz.reduce((b, w, k) => Math.abs(w - old) < Math.abs(sz[b] - old) ? k : b, 0); }
+    }
+    return list.map((x, i) => ({
+      pen: F.PENS[x && x.pen] ? x.pen : DEFAULT_SLOTS[i].pen,
+      size: Math.max(0, Math.min(4, Math.round(Number(x && x.size)))) || 0,
+      color: typeof (x && x.color) === 'string' && /^(#[0-9a-f]{6})?$/i.test(x.color) ? x.color : '',
+    }));
+  }
+  function saveSlots(v) { setPref('slots', JSON.stringify(v.slots)); setPref('slot', v.slot); }
+  // The slot in hand becomes the pen: its width, its look, and the app's nib.
+  function applySlot(v) {
+    const sl = v.slots[v.slot], pen = F.PENS[sl.pen];
+    v.penId = sl.pen; v.color = sl.color; v.width = pen.sizes[sl.size];
+  }
+  function colourChoices(penId) {
+    if (penId === 'highlighter') return einkNow() ? [{ c: '', label: 'Grey' }] : HIGHLIGHTS;
+    return einkNow() ? INKS : INKS.concat(COLOURS);
+  }
+  // A sample of a pen: an S across the box, pressure rising then falling,
+  // drawn with the page's own shape (the same function the page fills).
+  function sampleStroke(penId, w, width = 120, height = 56) {
+    const pts = [], n = 28;
+    for (let i = 0; i < n; i++) {
+      const t = i / (n - 1);
+      pts.push(10 + t * (width - 20), height / 2 - Math.sin(t * Math.PI * 2) * height * 0.24, 0.25 + 0.55 * Math.sin(t * Math.PI));
+    }
+    return { pts, w, pen: penId === 'ballpoint' ? '' : penId, color: '' };
+  }
+  function sampleSvg(svg, penId, w, color) {
+    const box = svg.viewBox.baseVal;
+    const s = sampleStroke(penId, w, box.width, box.height);
+    const kind = F.PENS[penId].fill;
+    const fill = kind === 'highlight' ? (color || (einkNow() ? HIGHLIGHT_EINK : HIGHLIGHT)) : (color || 'currentColor');
+    const op = kind === 'grain' ? 0.6 + 0.4 * F.medianPressure(s) : 1;
+    svg.innerHTML = `<path d="${F.outline(s)}" fill="${fill}" fill-opacity="${op.toFixed(2)}"${color === '#ffffff' ? ' stroke="currentColor" stroke-width="0.6"' : ''}/>`;
+  }
 
   function wireHeader(v) {
     const root = v.root;
-    root.querySelectorAll('[data-ink-tool]').forEach(b => b.onclick = () => setTool(v, b.dataset.inkTool));
-    root.querySelectorAll('[data-ink-width]').forEach(b => b.onclick = () => { v.width = Number(b.dataset.inkWidth); setPref('width', v.width); if (v.tool !== 'pen') setTool(v, 'pen'); paintTools(v); });
+    root.querySelectorAll('[data-ink-slot]').forEach(b => b.onclick = () => {
+      const i = Number(b.dataset.inkSlot);
+      if (v.tool === 'pen' && v.slot === i) return togglePop(v, 'inkPalette');
+      pickSlot(v, i);
+    });
+    root.querySelector('[data-ink-tool=eraser]').onclick = () => {
+      if (v.tool === 'eraser') return togglePop(v, 'inkEraseMenu');
+      setTool(v, 'eraser');
+    };
+    $('inkPageBtn').onclick = () => togglePop(v, 'inkPageMenu');
+    root.querySelectorAll('[data-ink-pen]').forEach(b => b.onclick = () => {
+      const sl = v.slots[v.slot];
+      if (sl.pen === b.dataset.inkPen) return;
+      sl.pen = b.dataset.inkPen;
+      if (!colourChoices(sl.pen).some(c => c.c === sl.color)) sl.color = '';
+      choose(v);
+    });
+    root.querySelectorAll('[data-ink-size]').forEach(b => b.onclick = () => { v.slots[v.slot].size = Number(b.dataset.inkSize); choose(v); });
     $('inkUndo').onclick = () => undo(v);
     $('inkRedo').onclick = () => redo(v);
     root.querySelectorAll('[data-ink-paper]').forEach(b => b.onclick = () => setPaper(v, b.dataset.inkPaper));
-    $('inkFinger').onclick = () => { v.finger = !v.finger; setPref('finger', v.finger ? '1' : '0'); paintTools(v); closeMenu(v); };
-    $('inkAddPage').onclick = () => { closeMenu(v); addPage(v); };
-    $('inkPng').onclick = () => { closeMenu(v); downloadPage(v); };
-    if ($('inkBeside')) $('inkBeside').onclick = () => { closeMenu(v); Pair.withConversation(v.ws); };
+    $('inkFinger').onclick = () => { v.finger = !v.finger; setPref('finger', v.finger ? '1' : '0'); paintTools(v); closePops(v); };
+    $('inkAddPage').onclick = () => { closePops(v); addPage(v); };
+    $('inkPng').onclick = () => { closePops(v); downloadPage(v); };
+    $('inkClearPage').onclick = () => { closePops(v); clearPage(v); };
+    if ($('inkBeside')) $('inkBeside').onclick = () => { closePops(v); Pair.withConversation(v.ws); };
     if ($('liveBrowse')) $('liveBrowse').onclick = () => liveFileBrowseFolder(v.ws);
-    const more = root.querySelector('.ink-more');
-    // The app's pen overlay must not take the pen while the menu is over the page.
-    more.addEventListener('toggle', () => { native(v, !more.open); if (more.open) paintPenMode(); });
+    // A pop-up over the page closes at the first touch outside it, and that
+    // touch draws nothing (as on a reMarkable: the pen lands, the menu goes).
+    const outside = ev => {
+      const open = v.root.querySelector('.ink-pop:not([hidden])');
+      if (!open || v.disposed) return;
+      if (open.contains(ev.target) || ev.target.closest?.('.ink-tools')) return;
+      closePops(v);
+      if (v.root.querySelector('.ink-stage')?.contains(ev.target)) { ev.preventDefault(); ev.stopPropagation(); }
+    };
+    window.addEventListener('pointerdown', outside, true);
+    v.cleanups.push(() => window.removeEventListener('pointerdown', outside, true));
+  }
+  function pickSlot(v, i) {
+    if (v.disposed) return;
+    v.slot = i; saveSlots(v); applySlot(v);
+    closePops(v);
+    setTool(v, 'pen');
+  }
+  // A choice in the palette changes the slot in hand; the palette stays open
+  // for the next choice (size after pen), and shows what the pen will do.
+  function choose(v) {
+    saveSlots(v); applySlot(v);
+    if (v.tool !== 'pen') setTool(v, 'pen'); else paintTools(v);
+  }
+  function togglePop(v, id) {
+    const el = $(id);
+    const open = el && el.hidden;
+    closePops(v);
+    if (!open) return;
+    el.hidden = false;
+    if (id === 'inkPageMenu') { $('inkPageBtn').setAttribute('aria-expanded', 'true'); paintPenMode(); }
+    if (id === 'inkPalette') paintPalette(v);
+    // The app's pen layer must not take the pen while a pop-up is over the page.
+    native(v, false);
+  }
+  function closePops(v) {
+    let was = false;
+    v.root.querySelectorAll('.ink-pop').forEach(p => { if (!p.hidden) was = true; p.hidden = true; });
+    $('inkPageBtn')?.setAttribute('aria-expanded', 'false');
+    if (was && !v.disposed) native(v, true);
+    return was;
+  }
+  function paintPalette(v) {
+    const pal = $('inkPalette');
+    if (!pal || pal.hidden) return;
+    const sl = v.slots[v.slot], pen = F.PENS[sl.pen];
+    pal.querySelectorAll('[data-ink-pen]').forEach(b => {
+      const id = b.dataset.inkPen;
+      b.setAttribute('aria-pressed', String(id === sl.pen));
+      sampleSvg(b.querySelector('svg'), id, F.PENS[id].sizes[id === sl.pen ? sl.size : 2] * 1.2, id === sl.pen ? sl.color : '');
+    });
+    pal.querySelectorAll('[data-ink-size]').forEach(b => {
+      const k = Number(b.dataset.inkSize);
+      b.setAttribute('aria-pressed', String(k === sl.size));
+      b.querySelector('circle').setAttribute('r', String(Math.min(10, 1.5 + k * 2)));
+      b.title = pen.label + ', size ' + (k + 1) + ' of 5';
+    });
+    const box = pal.querySelector('.ink-colours');
+    box.innerHTML = colourChoices(sl.pen).map(o => {
+      const shown = o.c || (sl.pen === 'highlighter' ? (einkNow() ? HIGHLIGHT_EINK : HIGHLIGHT) : 'var(--ink-pen)');
+      return `<button type="button" class="ink-colour" data-ink-colour="${o.c}" aria-pressed="${o.c === sl.color}" title="${e(o.label)}" aria-label="${e(o.label)}"><span style="background:${shown}"></span></button>`;
+    }).join('');
+    box.querySelectorAll('[data-ink-colour]').forEach(b => b.onclick = () => { sl.color = b.dataset.inkColour; choose(v); });
+    sampleSvg(pal.querySelector('.ink-preview'), sl.pen, pen.sizes[sl.size] * 1.6, sl.color);
+  }
+  function clearPage(v) {
+    const i = visiblePage(v);
+    const list = v.note.pages[i].strokes;
+    if (!list.length) return;
+    const gone = list.slice();
+    const items = gone.map((stroke, index) => ({ stroke, index })).reverse(); // as the eraser records them: last first
+    list.length = 0;
+    repaint(v, i, unionBox(gone));
+    commit(v, { type: 'erase', page: i, items });
   }
   // Which pen draws here, said plainly: the way to tell an app update took.
   function paintPenMode() {
@@ -224,12 +377,19 @@
       : typeof n.fastNib === 'function' ? 'Pen drawn by the app (on e-ink, the fast layer starts with your first line)'
       : 'Pen drawn by the app';
   }
-  function closeMenu(v) { const m = v.root.querySelector('.ink-more'); if (m && m.open) m.open = false; }
-  function setTool(v, tool) { v.tool = tool; v.root.dataset.tool = tool; paintTools(v); native(v, true); }
+  function setTool(v, tool) { v.tool = tool; v.root.dataset.tool = tool; paintTools(v); if (!v.root.querySelector('.ink-pop:not([hidden])')) native(v, true); }
   function paintTools(v) {
     if (v.disposed) return;
     v.root.querySelectorAll('[data-ink-tool]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.inkTool === v.tool)));
-    v.root.querySelectorAll('[data-ink-width]').forEach(b => b.setAttribute('aria-pressed', String(Number(b.dataset.inkWidth) === v.width && v.tool === 'pen')));
+    v.root.querySelectorAll('[data-ink-slot]').forEach(b => {
+      const i = Number(b.dataset.inkSlot), sl = v.slots[i], pen = F.PENS[sl.pen], on = v.tool === 'pen' && i === v.slot;
+      b.setAttribute('aria-pressed', String(on));
+      b.title = `${pen.label}, size ${sl.size + 1} (${i + 1})` + (on ? ': tap again for pens, sizes and colours' : '');
+      b.setAttribute('aria-label', b.title);
+      if (!b.firstChild) b.innerHTML = '<svg class="ink-sample" viewBox="0 0 64 30" aria-hidden="true"></svg>';
+      sampleSvg(b.firstChild, sl.pen, Math.min(9, pen.sizes[sl.size] * 0.75), sl.color);
+    });
+    paintPalette(v);
     v.root.querySelectorAll('[data-ink-paper]').forEach(b => b.setAttribute('aria-pressed', String(v.note && b.dataset.inkPaper === v.note.paper)));
     const f = $('inkFinger'); if (f) { f.setAttribute('aria-pressed', String(v.finger)); f.textContent = v.finger ? 'Draw with a finger: on' : 'Draw with a finger: off'; }
     if ($('inkUndo')) $('inkUndo').disabled = !v.undo.length;
@@ -371,8 +531,73 @@
   function paintStroke(v, i, s) {
     const pg = v.pages[i];
     if (!pg || !pg.backed) return;
-    pg.ctx.fillStyle = s.color || inkColor(v);
-    pg.ctx.fill(shapeOf(s), 'nonzero');
+    fillStroke(v, pg.ctx, s);
+  }
+  // One stroke, one fill, as its pen looks:
+  //   ink        solid;
+  //   grain      a pencil: the colour through a paper grain, at the
+  //              darkness of how hard it was pressed;
+  //   highlight  pale, multiplied into the page, so the writing under it
+  //              stays black (on dark paper: a see-through band).
+  // look: { ink, light, highlight } to draw for paper whatever the theme
+  // (a picture of the page).
+  function fillStroke(v, c, s, look = null) {
+    const kind = F.penOf(s).fill;
+    const ink = look ? look.ink : inkColor(v);
+    if (kind === 'ink') { c.fillStyle = s.color || ink; c.fill(shapeOf(s), 'nonzero'); return; }
+    c.save();
+    if (kind === 'grain') {
+      c.globalAlpha = Math.min(1, 0.62 + 0.5 * F.medianPressure(s));
+      c.fillStyle = grain(c, s.color || ink);
+    } else {
+      c.fillStyle = s.color || (look ? look.highlight : highlightColor(v));
+      if (look ? look.light : lightPaper(v)) c.globalCompositeOperation = 'multiply'; else c.globalAlpha = 0.4;
+    }
+    c.fill(shapeOf(s), 'nonzero');
+    c.restore();
+  }
+  function highlightColor(v) { return einkNow() ? HIGHLIGHT_EINK : HIGHLIGHT; }
+  // Is the paper light (multiply a highlighter into it) or dark? The
+  // paper's colour as the browser paints it, read back from one pixel:
+  // right for any way a theme writes a colour.
+  function lightPaper(v) {
+    if (v.light == null) {
+      const probe = document.createElement('div');
+      probe.style.cssText = 'position:absolute;width:1px;height:1px;background:var(--ink-paper)';
+      v.root.appendChild(probe);
+      const bg = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      const c = document.createElement('canvas'); c.width = c.height = 1;
+      const x = c.getContext('2d', { willReadFrequently: true });
+      x.fillStyle = '#ffffff'; x.fillRect(0, 0, 1, 1); x.fillStyle = bg; x.fillRect(0, 0, 1, 1);
+      const [r, g, bl] = x.getImageData(0, 0, 1, 1).data;
+      v.light = 0.2126 * r + 0.7152 * g + 0.0722 * bl > 140;
+    }
+    return v.light;
+  }
+  // A pencil's grain: a fixed tile of specks, one per device pixel, the
+  // same on every repaint (a seeded noise), so a line never shimmers.
+  const grains = new WeakMap();
+  function grain(c, color) {
+    const k = Math.abs(c.getTransform().a) || 1;
+    let byCtx = grains.get(c);
+    if (!byCtx) grains.set(c, byCtx = new Map());
+    const key = color + '|' + k.toFixed(3);
+    let pat = byCtx.get(key);
+    if (pat) return pat;
+    const N = 64, tile = document.createElement('canvas');
+    tile.width = tile.height = N;
+    const t = tile.getContext('2d');
+    t.fillStyle = color; t.fillRect(0, 0, N, N);
+    const img = t.getImageData(0, 0, N, N);
+    let seed = 0x9e3779b9;
+    const rnd = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return (seed >>> 0) / 4294967296; };
+    for (let i = 3; i < img.data.length; i += 4) { const r = rnd(); img.data[i] = r < 0.1 ? 0 : Math.round(255 * (0.6 + 0.4 * r)); }
+    t.putImageData(img, 0, 0);
+    pat = c.createPattern(tile, 'repeat');
+    try { pat.setTransform(new DOMMatrix([1 / k, 0, 0, 1 / k, 0, 0])); } catch {}
+    byCtx.set(key, pat);
+    return pat;
   }
   function boxOf(s) { return s.box || (s.box = F.bounds(s)); }
   // Paint again only where something changed (an erased line, an undo).
@@ -388,8 +613,7 @@
     for (const s of v.note.pages[i].strokes) {
       const b = boxOf(s);
       if (b.x1 + 10 < x0 || b.x0 - 10 > x1 || b.y1 + 10 < y0 || b.y0 - 10 > y1) continue;
-      c.fillStyle = s.color || inkColor(v);
-      c.fill(shapeOf(s), 'nonzero');
+      fillStroke(v, c, s);
     }
     c.restore();
   }
@@ -512,7 +736,9 @@
     const stage = v.scroll.getBoundingClientRect();
     clearTimeout(v.settleTimer);
     finishPending(v);
+    // The line keeps the pen it was started with, whatever is picked before it is finished.
     v.draw = { id: ev.pointerId, page: i, rect, stage, erase, pts: [], t0: Date.now(), start: now, erased: [], last: null, kind: ev.pointerType, p: -1,
+      pen: v.penId, color: v.color, width: v.width,
       box: { x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity } };
     try { v.scroll.setPointerCapture(ev.pointerId); } catch {}
     addPoint(v, ev);
@@ -524,13 +750,23 @@
   // Pens differ: the AINOTE's reports about 0.1 for ordinary writing, which
   // the width curve read as barely touching. This device's typical pressure
   // (the median of its recent lines) is learned and counts as 0.5.
+  //
+  // The middle of the last 15 lines' own medians, not a running average:
+  // one unusual line (a hard-pressed brush stroke, a test that presses at
+  // full force) must not thin the next ten. 0.5 and 1 exactly are what a
+  // device without pressure, or injected input, reports: not a hand.
   let typicalP = Number(pref('pressure', '')) || 0;
+  let pressHist = (() => { try { const a = JSON.parse(pref('pressures', '[]')); return Array.isArray(a) ? a.filter(x => x > 0 && x < 1).slice(-15) : []; } catch { return []; } })();
+  if (!pressHist.length && typicalP) pressHist = [typicalP];
   function normP(p) { return Math.max(0.03, Math.min(1, 0.5 * p / (typicalP || 0.5))); }
   function learnP(raw) {
-    const list = raw.filter(p => p > 0 && p !== 0.5).sort((a, b) => a - b);
+    const list = raw.filter(p => p > 0 && p < 0.999 && p !== 0.5).sort((a, b) => a - b);
     if (list.length < 3) return;
-    const med = list[list.length >> 1];
-    typicalP = Math.max(0.02, typicalP ? typicalP * 0.8 + med * 0.2 : med);
+    pressHist.push(list[list.length >> 1]);
+    if (pressHist.length > 15) pressHist.shift();
+    const sorted = pressHist.slice().sort((a, b) => a - b);
+    typicalP = Math.max(0.02, sorted[sorted.length >> 1]);
+    setPref('pressures', JSON.stringify(pressHist.map(x => +x.toFixed(4))));
     setPref('pressure', typicalP.toFixed(4));
   }
   function normalise(pts, kind) {
@@ -571,9 +807,11 @@
     const ctx = v.ctx;
     if (!ctx) return;
     d.p = d.p < 0 ? p : d.p + (p - d.p) * 0.35;
-    const w = Math.max(einkNow() ? 1.6 : 1, v.width * v.scale * F.pressureFactor(d.kind === 'mouse' ? 0.5 : normP(d.p)));
     const x = cx - d.stage.left, y = cy - d.stage.top;
-    ctx.fillStyle = ctx.strokeStyle = inkColor(v);
+    if (d.last) { const dx = x - (d.last[2] - d.stage.left), dy = y - (d.last[3] - d.stage.top); if (dx * dx + dy * dy > 1) d.ang = Math.atan2(dy, dx); }
+    const w = liveWidth(v, d);
+    if (!d.styled) { d.styled = true; liveStyle(v, d); }
+    ctx.fillStyle = ctx.strokeStyle = liveColor(v, d);
     if (!d.last) { ctx.beginPath(); ctx.arc(x, y, w / 2, 0, Math.PI * 2); ctx.fill(); }
     else {
       ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = w;
@@ -591,10 +829,10 @@
     v.tail = null;
     const pred = ev.getPredictedEvents();
     if (!pred.length) return;
-    const w = Math.max(einkNow() ? 1.6 : 1, v.width * v.scale * F.pressureFactor(d.kind === 'mouse' ? 0.5 : normP(d.p)));
+    const w = liveWidth(v, d);
     let lx = d.last[2] - d.stage.left, ly = d.last[3] - d.stage.top;
     const box = { x0: lx, y0: ly, x1: lx, y1: ly };
-    c.strokeStyle = inkColor(v); c.lineCap = 'round'; c.lineJoin = 'round'; c.lineWidth = w;
+    c.strokeStyle = liveColor(v, d); c.lineCap = 'round'; c.lineJoin = 'round'; c.lineWidth = w;
     c.beginPath(); c.moveTo(lx, ly);
     for (const pe of pred.slice(0, 3)) {
       lx = pe.clientX - d.stage.left; ly = pe.clientY - d.stage.top;
@@ -607,6 +845,25 @@
   function clearTail(v) {
     if (v.tail && v.pctx) v.pctx.clearRect(v.tail.x0, v.tail.y0, v.tail.x1 - v.tail.x0, v.tail.y1 - v.tail.y0);
     v.tail = null;
+  }
+  // The live line as the pen will look: its width curve (and a flat nib's
+  // direction), its colour; a pencil or a highlighter see-through on the
+  // live layer as a whole, so overlapping steps do not darken.
+  function liveWidth(v, d) {
+    const pen = F.PENS[d.pen] || F.PENS.ballpoint;
+    return Math.max(einkNow() ? 1.6 : 1, d.width * v.scale * pen.factor(d.kind === 'mouse' ? 0.5 : normP(d.p), d.ang || 0));
+  }
+  function liveColor(v, d = v) {
+    const pen = F.PENS[d.pen || d.penId] || F.PENS.ballpoint;
+    return d.color || (pen.fill === 'highlight' ? highlightColor(v) : inkColor(v));
+  }
+  function liveStyle(v, d) {
+    const pen = F.PENS[d.pen] || F.PENS.ballpoint;
+    const hl = pen.fill === 'highlight', light = lightPaper(v);
+    for (const c of [v.canvas, v.predict]) {
+      c.style.opacity = pen.fill === 'grain' ? '0.8' : hl && !light ? '0.4' : '';
+      c.style.mixBlendMode = hl && light ? 'multiply' : '';
+    }
   }
   function inkColor(v) {
     if (!v.inkColor) v.inkColor = getComputedStyle(v.root).getPropertyValue('--ink-pen').trim() || '#1d1f21';
@@ -640,12 +897,19 @@
     clearTimeout(j.timer); v.pending = null;
     finishStroke(v, j.d);
   }
+  // pen: the line's own pen (v.draw), or the view's (a line the app drew).
+  function penStroke(pen, s) {
+    const id = pen.pen || pen.penId;
+    s.color = pen.color || '';
+    if (id && id !== 'ballpoint') s.pen = id;
+    return s;
+  }
   function finishStroke(v, d) {
     const dur = Math.round((d.end || performance.now()) - d.start);
     // One point, shorter than a person can tap: the digitiser's, not the hand's.
     if (d.pts.length === 3 && dur < TAP_MIN_MS) { logStroke(v, d, 'page', { dropped: 'tap ' + dur + ' ms' }); settleLive(v, true); return; }
     const raw = d.pts.filter((_, i) => i % 3 === 2);
-    const stroke = { pts: F.settle(normalise(d.pts, d.kind), { minStep: 0.6 / v.scale }), w: v.width, t0: d.t0, dur, color: '' };
+    const stroke = penStroke(d, { pts: F.settle(normalise(d.pts, d.kind), { minStep: 0.6 / v.scale }), w: d.width, t0: d.t0, dur });
     addStroke(v, d.page, stroke);
     logStroke(v, d, 'page', { raw, dur });
     settleLive(v);
@@ -791,7 +1055,9 @@
     if (mod && k === 'z' && !ev.shiftKey) undo(v);
     else if (mod && ((k === 'z' && ev.shiftKey) || k === 'y')) redo(v);
     else if (mod && k === 's') save(v);
-    else if (!mod && !ev.altKey && k === 'p') setTool(v, 'pen');
+    else if (!mod && !ev.altKey && k === 'p') pickSlot(v, v.slot);
+    else if (!mod && !ev.altKey && (k === '1' || k === '2' || k === '3')) pickSlot(v, Number(k) - 1);
+    else if (k === 'escape' && closePops(v)) {}
     else if (!mod && !ev.altKey && k === 'e') setTool(v, 'eraser');
     else if (!mod && !ev.altKey && (k === 'pagedown' || k === 'pageup')) { v.scroll.scrollBy({ top: (k === 'pagedown' ? 1 : -1) * v.scroll.clientHeight * 0.9 }); }
     else done = false;
@@ -974,7 +1240,11 @@
 
   // ---- the page as a picture (download now; reading and AI later) ----
   async function pageImage(v, i, { scale = 2, background = '#ffffff' } = {}) {
-    const one = { ...v.note, pages: [v.note.pages[i]] };
+    // The paper and anything added, as the file shows them; the pen's lines
+    // then as the page draws them (each pen's shape, grain and highlight),
+    // so a picture shows what the person saw, not plain centre lines.
+    const page = v.note.pages[i];
+    const one = { ...v.note, pages: [{ ...page, strokes: [] }] };
     const svg = F.serialize(one);
     const img = new Image();
     const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
@@ -985,6 +1255,9 @@
       const ctx = c.getContext('2d');
       ctx.fillStyle = background; ctx.fillRect(0, 0, c.width, c.height);
       ctx.drawImage(img, 0, 0, c.width, c.height);
+      ctx.setTransform(scale, 0, 0, scale, 0, 0);
+      const look = { ink: '#1d1f21', light: true, highlight: einkNow() ? HIGHLIGHT_EINK : HIGHLIGHT };
+      for (const s of page.strokes) if (s.pts.length >= 3) fillStroke(v, ctx, s, look);
       return await new Promise(ok => c.toBlob(ok, 'image/png'));
     } finally { URL.revokeObjectURL(url); }
   }
@@ -1052,8 +1325,28 @@
       // the lines with the page's own ratio, not one it assumes.
       n.setPixelRatio?.(devicePixelRatio);
       n.setRegion(Math.round(r.left + ox), Math.round(r.top + oy), Math.round(r.right + ox), Math.round(r.bottom + oy));
-      if (!regionOnly) { n.setErase(v.tool === 'eraser'); n.setWidth?.(v.width * v.scale); if (typicalP) n.setPressureTypical?.(typicalP); n.setEnabled(true); }
+      if (!regionOnly) { n.setErase(v.tool === 'eraser'); n.setWidth?.(v.width * v.scale); nativePen(v, n); if (typicalP) n.setPressureTypical?.(typicalP); n.setEnabled(true); }
     } catch {}
+  }
+  // The pen in hand, for the app's live line (app 0.3.7+; an older app draws
+  // every pen as a ballpoint while the pen moves, and the page shows the
+  // real pen once it lifts). tone: how the e-ink nib fills it, as black
+  // dots: 0 solid; else a density in sixteenths, + 256 for a pencil's
+  // random grain instead of an even screen; -1: no live line (white ink,
+  // which the overlay cannot show). argb: the colour where the app draws
+  // the line as a view (phones).
+  function nativePen(v, n) {
+    if (typeof n.setPen !== 'function') return;
+    const pen = F.PENS[v.penId] || F.PENS.ballpoint;
+    const c = v.color;
+    const grey = c === '#5c5c5c' ? 10 : c === '#a0a0a0' ? 5 : 16;
+    let tone = grey === 16 ? 0 : grey;
+    if (c === '#ffffff') tone = -1;
+    else if (pen.fill === 'grain') tone = 256 + Math.round(grey * 0.6);
+    else if (pen.fill === 'highlight') tone = 4;
+    const hex = (c || (pen.fill === 'highlight' ? highlightColor(v) : '#000000')).replace('#', '');
+    const alpha = pen.fill === 'highlight' ? 0x66 : pen.fill === 'grain' ? 0xcc : 0xff;
+    try { n.setPen(v.penId || 'ballpoint', tone, (alpha * 0x1000000 + parseInt(hex, 16)) | 0); } catch {}
   }
   // A line the app drew: "x,y[,pressure[,ms]] …" in the page's css pixels.
   function acceptPacked(packed, erase) {
@@ -1087,7 +1380,7 @@
       if (flat.length === 3 && dur < TAP_MIN_MS) logStroke(v, d, 'app', { dropped: 'tap ' + dur + ' ms', dur });
       else {
         const raw = flat.filter((_, k) => k % 3 === 2);
-        const stroke = { pts: F.settle(normalise(flat.slice(), 'pen'), { minStep: 0.6 / v.scale }), w: v.width, t0: Date.now() - dur, dur, color: '' };
+        const stroke = penStroke(v, { pts: F.settle(normalise(flat.slice(), 'pen'), { minStep: 0.6 / v.scale }), w: v.width, t0: Date.now() - dur, dur });
         addStroke(v, i, stroke);
         logStroke(v, d, 'app', { raw, dur });
         try { nativeInk()?.setPressureTypical?.(typicalP); } catch {}

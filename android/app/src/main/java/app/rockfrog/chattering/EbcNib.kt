@@ -15,6 +15,8 @@ object EbcNib {
 
     @JvmStatic external fun create(left: Int, top: Int, right: Int, bottom: Int, rotation: Int): Long
     @JvmStatic external fun polyline(handle: Long, xs: FloatArray, ys: FloatArray, rs: FloatArray, count: Int, erase: Boolean): Int
+    /** tone: a share of the pixels in sixteenths (0 = all), + 256 for a pencil's grain (ebc_nib.c tone_on). */
+    @JvmStatic external fun polylineTone(handle: Long, xs: FloatArray, ys: FloatArray, rs: FloatArray, count: Int, tone: Int): Int
     @JvmStatic external fun clear(handle: Long): Int
     @JvmStatic external fun destroy(handle: Long)
 }

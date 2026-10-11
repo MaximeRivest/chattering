@@ -13,20 +13,47 @@
 .ink-head { gap: 8px; } /* above the page: live-file.css .live-file-head */
 .ink-head .ink-title { cursor: text; }
 .ink-tools { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; flex-wrap: wrap; }
-.ink-tools button { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; min-width: 32px; padding: 0 8px; border: 1px solid var(--border); background: transparent; color: var(--text); justify-content: center; }
-.ink-tools button[aria-pressed="true"] { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--accent-ink); }
+.ink-tools button { display: inline-flex; align-items: center; gap: 5px; min-height: 38px; min-width: 40px; padding: 0 9px; border: 1px solid var(--border); background: transparent; color: var(--text); justify-content: center; }
+.ink-tools button[aria-pressed="true"], .ink-tools button[aria-expanded="true"] { background: var(--accent-strong); border-color: var(--accent-strong); color: var(--accent-ink); }
 .ink-tools button:disabled { opacity: .4; }
-.ink-widths { display: inline-flex; gap: 2px; padding: 0 4px; border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
-.ink-widths button { min-width: 30px; padding: 0 4px; border-color: transparent; }
-.ink-icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
-.ink-icon .ink-dot { fill: currentColor; stroke: none; }
+.ink-icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
 .ink-head { container: inkhead / inline-size; }
 @container inkhead (max-width: 620px) { .ink-label { display: none; } }
-.ink-more .ink-menu-label { margin-top: 2px; }
+
+/* The pens at hand: each slot shows a stroke of its pen, as it will look.
+   The slot in hand is framed in ink, not filled, so its sample stays legible. */
+.ink-slots { display: inline-flex; gap: 3px; padding-right: 4px; margin-right: 2px; border-right: 1px solid var(--border); }
+.ink-tools .ink-slot { width: 58px; padding: 0 3px; color: var(--ink-pen); }
+.ink-tools .ink-slot[aria-pressed="true"] { background: var(--surface-2); color: var(--ink-pen); border: 2px solid var(--text); }
+.ink-sample { display: block; width: 100%; height: 100%; overflow: visible; }
+.ink-slot .ink-sample { height: 28px; }
+
+/* Pop-ups under the toolbar: the palette, the eraser, the page. Large
+   targets for a pen; on e-ink, black lines on white, no shadow. */
+.ink-pop { position: absolute; right: 8px; top: 100%; margin-top: 4px; z-index: 30; width: min(380px, calc(100vw - 16px)); max-height: calc(100dvh - 120px); overflow: auto;
+  display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border); background: var(--bg); color: var(--text); box-shadow: 0 8px 24px #0003; border-radius: var(--r-md, 8px); }
+.ink-pop[hidden] { display: none; }
+:root[data-theme-mode="binary"] .ink-pop { box-shadow: none; border: 2px solid #000; border-radius: 0; }
+.ink-pop button { min-height: 40px; padding: 6px 10px; border: 1px solid var(--border); background: transparent; color: var(--text); text-align: left; font: inherit; }
+.ink-pop-label { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-dim); }
+.ink-pop-row { display: flex; align-items: center; gap: 10px; }
+.ink-pop-row .ink-pop-label { width: 52px; flex-shrink: 0; }
+.ink-pens { display: grid; grid-template-columns: repeat(auto-fill, minmax(82px, 1fr)); gap: 6px; }
+.ink-pop .ink-pen { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 4px 4px; color: var(--ink-pen); text-align: center; }
+.ink-pen .ink-sample { height: 40px; }
+.ink-pen span { font-size: 12px; color: var(--text); }
+.ink-pop .ink-pen[aria-pressed="true"], .ink-pop .ink-size[aria-pressed="true"] { border: 2px solid var(--text); background: var(--surface-2); }
+.ink-sizes, .ink-colours { display: flex; gap: 6px; flex-wrap: wrap; }
+.ink-pop .ink-size { width: 44px; min-width: 44px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+.ink-size svg { width: 24px; height: 24px; fill: var(--ink-pen); }
+.ink-pop .ink-colour { width: 44px; min-width: 44px; padding: 0; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; }
+.ink-colour span { width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--border-strong, var(--border)); }
+.ink-pop .ink-colour[aria-pressed="true"] { border: 2px solid var(--text); }
+.ink-preview { width: 100%; height: 64px; color: var(--ink-pen); background: var(--ink-paper); border: 1px solid var(--border); }
 .ink-papers { display: flex; gap: 4px; flex-wrap: wrap; }
-.ink-papers button { flex: 1 1 auto; text-align: center; border: 1px solid var(--border); padding: 4px 6px; }
-.ink-papers button[aria-pressed="true"], .ink-more #inkFinger[aria-pressed="true"] { background: var(--accent-strong); color: var(--accent-ink); border-color: var(--accent-strong); }
-.ink-more .ink-menu-hint { font-size: 11px; color: var(--text-dim); }
+.ink-pop .ink-papers button { flex: 1 1 auto; text-align: center; }
+.ink-papers button[aria-pressed="true"], .ink-pop #inkFinger[aria-pressed="true"] { background: var(--accent-strong); color: var(--accent-ink); border-color: var(--accent-strong); }
+.ink-menu-hint { font-size: 11px; color: var(--text-dim); }
 
 /* The desk: a scroller that owns every touch (the page decides what a
    finger, a pen and a mouse do), and the live line's canvas over it. */

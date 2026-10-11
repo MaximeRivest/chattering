@@ -120,6 +120,12 @@ class MainActivity : AppCompatActivity() {
         fun setRegion(left: Float, top: Float, right: Float, bottom: Float) {
             runOnUiThread { ink.region = if (right > left && bottom > top) RectF(left, top, right, bottom) else null }
         }
+        /** The pen in hand (design/99): its name, its e-ink tone and its colour (ARGB). */
+        @JavascriptInterface
+        fun setPen(id: String, tone: Int, argb: Int) {
+            val safe = if (Regex("^[a-z][a-z0-9-]{0,23}$").matches(id)) id else "ballpoint"
+            runOnUiThread { ink.setPen(safe, tone.coerceIn(-1, 0x1ff), argb) }
+        }
         /** The page's devicePixelRatio: its css pixel in device pixels. */
         @JavascriptInterface
         fun setPixelRatio(ratio: Float) {

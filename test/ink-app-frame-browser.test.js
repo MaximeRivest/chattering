@@ -26,7 +26,7 @@ test('a note in the shell\'s frame hands the pen to the app, in window coordinat
   await until(`typeof ${W}.InkNotes!=='undefined' && typeof ${W}.load==='function'`, 'Chattering loads in the frame');
   // The app's bridge exists in every frame of its WebView.
   await run(`(()=>{const calls=[];${W}.ChatteringInk={calls,drawn:0,
-    setEnabled(on){calls.push(['enabled',on])},setRegion(l,t,r,b){calls.push(['region',l,t,r,b])},setPixelRatio(x){calls.push(['ratio',x])},
+    setEnabled(on){calls.push(['enabled',on])},setRegion(l,t,r,b){calls.push(['region',l,t,r,b])},setPixelRatio(x){calls.push(['ratio',x])},setPen(id,tone,argb){calls.push(['pen',id,tone,argb])},
     setErase(){},setWidth(){},setPressureTypical(){},clearLive(){},clearAll(){},fastNib(){return true},strokeDrawn(){this.drawn++}};return 1})()`);
   const file = await run(`${W}.InkNotes.create('')`);
   await until(`!!${W}.document.querySelector('.ink-view .ink-page') && ${W}.document.getElementById('docStatus').textContent==='Saved'`, () => run(`JSON.stringify({file:${JSON.stringify(String(file))},page:!!${W}.document.querySelector('.ink-page'),status:${W}.document.getElementById('docStatus')?.textContent,hash:${W}.location.hash,view:${W}.eval('typeof viewKind==="undefined"?null:viewKind')})`));
@@ -34,6 +34,17 @@ test('a note in the shell\'s frame hands the pen to the app, in window coordinat
   const calls = await run(`${W}.ChatteringInk.calls`);
   assert.ok(calls.some(c => c[0] === 'enabled' && c[1] === true), 'the app\'s pen is turned on in the frame: ' + JSON.stringify(calls));
   assert.ok(calls.some(c => c[0] === 'ratio' && c[1] > 0), 'the page says its pixel ratio');
+  assert.deepEqual(calls.filter(c => c[0] === 'pen').pop().slice(0, 3), ['pen', 'ballpoint', 0], 'the app is told the pen in hand');
+  // The pencil, from the second slot: the app's nib gets its grain.
+  await run(`${W}.document.querySelector('[data-ink-slot="1"]').click()`);
+  const pencil = (await run(`${W}.ChatteringInk.calls`)).filter(c => c[0] === 'pen').pop();
+  assert.equal(pencil[1], 'pencil'); assert.ok(pencil[2] > 256, 'a grain tone: ' + pencil[2]);
+  // A pop-up over the page hands the pen back to the page.
+  await run(`${W}.document.querySelector('[data-ink-slot="1"]').click()`);
+  assert.deepEqual((await run(`${W}.ChatteringInk.calls`)).filter(c => c[0] === 'enabled').pop(), ['enabled', false], 'the palette is open: the app does not take the pen');
+  await run(`${W}.document.querySelector('[data-ink-slot="1"]').click()`);
+  assert.deepEqual((await run(`${W}.ChatteringInk.calls`)).filter(c => c[0] === 'enabled').pop(), ['enabled', true], 'closed: the app takes it again');
+  await run(`${W}.document.querySelector('[data-ink-slot="0"]').click()`);
   const region = calls.filter(c => c[0] === 'region').pop();
   const scroll = await run(`(()=>{const r=${W}.document.querySelector('.ink-scroll').getBoundingClientRect();return [r.left,r.top,r.right,r.bottom]})()`);
   assert.deepEqual(region.slice(1), [Math.round(scroll[0] + 43), Math.round(scroll[1] + 73), Math.round(scroll[2] + 43), Math.round(scroll[3] + 73)],

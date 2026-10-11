@@ -12,7 +12,11 @@ import android.view.View
 import android.view.WindowManager
 import java.util.Locale
 import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.max
+import kotlin.math.pow
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -118,6 +122,22 @@ class InkOverlay @JvmOverloads constructor(
      * (setPressureTypical); until then it is learned here from each line.
      */
     var typicalP = 0f
+
+    /**
+     * The pen in hand (the page's setPen, design/99): its width curve, its
+     * tone on the e-ink overlay (sixteenths of the pixels, + 256 for a
+     * pencil's grain; -1 no live line), and its colour where this view draws.
+     */
+    private var penId = "ballpoint"
+    private var tone = 0
+    fun setPen(id: String, tone: Int, argb: Int) {
+        penId = id
+        this.tone = tone
+        paint.color = argb
+    }
+    // The direction of travel, low-passed (a flat nib's width follows it).
+    private var dirX = 1f
+    private var dirY = 0f
 
     init {
         setBackgroundColor(Color.TRANSPARENT)
@@ -338,23 +358,31 @@ class InkOverlay @JvmOverloads constructor(
             xs = xs.copyOf(xs.size * 2); ys = ys.copyOf(ys.size * 2)
             ps = ps.copyOf(ps.size * 2); ts = ts.copyOf(ts.size * 2); rs = rs.copyOf(rs.size * 2)
         }
-        xs[n] = x; ys[n] = y; ps[n] = p; ts[n] = t; rs[n] = radius(p)
+        if (n > 0) {
+            val dx = x - xs[n - 1]
+            val dy = y - ys[n - 1]
+            val len = Math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
+            if (len > 1e-3f) {
+                if (n == 1) { dirX = dx / len; dirY = dy / len } else { dirX = dirX * 0.6f + dx / len * 0.4f; dirY = dirY * 0.6f + dy / len * 0.4f }
+            }
+        } else { dirX = 1f; dirY = 0f }
+        xs[n] = x; ys[n] = y; ps[n] = p; ts[n] = t; rs[n] = radius(p, atan2(dirY, dirX))
         n++
     }
 
-    // Radius in screen pixels for this pressure: the page's own curve
-    // (ink-format.js pressureFactor) on a low-passed pressure.
-    private fun radius(p: Float): Float {
+    // Radius in screen pixels for this pressure and direction: the pen's own
+    // curve (ink-format.js PENS, factor) on a low-passed pressure.
+    private fun radius(p: Float, angle: Float): Float {
         pSmooth = if (pSmooth < 0f) p else pSmooth + (p - pSmooth) * 0.35f
         val t = if (typicalP > 0f) typicalP else 0.5f
         val q = (0.5f * pSmooth / t).coerceIn(0.03f, 1f)
-        return max(0.75f, widthCss * cssPx / 2f * (0.4f + 0.9f * sin(q * PI.toFloat() / 2f)))
+        return max(0.75f, widthCss * cssPx / 2f * penFactor(penId, q, angle))
     }
 
     // Draw points [from, n) joined to the point before them: on the panel
     // overlay as one polyline and one update, or on this view.
     private fun draw(from: Int, erasing: Boolean) {
-        if (erasing || n == 0) return
+        if (erasing || n == 0 || tone < 0) return
         val count = n - from
         if (count <= 0) return
         if (nib != 0L) {
@@ -363,7 +391,8 @@ class InkOverlay @JvmOverloads constructor(
                 val i = from + k
                 bx[k] = ox + xs[i]; by[k] = oy + ys[i]; br[k] = rs[i]
             }
-            if (EbcNib.polyline(nib, bx, by, br, count, false) == 0) { nibDirty = true; return }
+            val rc = if (tone == 0) EbcNib.polyline(nib, bx, by, br, count, false) else EbcNib.polylineTone(nib, bx, by, br, count, tone)
+            if (rc == 0) { nibDirty = true; return }
             stopNib(); nibFailed = true // a refused update: this layer draws from now on
         }
         if (count == 1 && from == 0) seg(xs[0], ys[0], xs[0], ys[0], rs[0] * 2f)
@@ -395,6 +424,19 @@ class InkOverlay @JvmOverloads constructor(
     }
 
     companion object {
+        private const val DIAG = (PI / 4).toFloat()
+
+        /** The pens' width curves: the same as ink-format.js PENS (change both). */
+        fun penFactor(pen: String, q: Float, a: Float): Float = when (pen) {
+            "fineliner" -> 0.9f + 0.2f * q
+            "pencil" -> 0.7f + 0.5f * q
+            "brush" -> 0.1f + 1.45f * q.pow(1.35f)
+            "calligraphy" -> (0.16f + 0.84f * abs(sin(a - DIAG))) * (0.8f + 0.4f * q)
+            "marker" -> 0.9f + 0.15f * q
+            "highlighter" -> 0.42f + 0.58f * abs(cos(a))
+            else -> 0.4f + 0.9f * sin(q * PI.toFloat() / 2f)
+        }
+
         /** How long the pen rests before this copy goes and the page's shows alone. */
         const val WIPE_MS = 450L
         const val JOIN_MS = 40L
