@@ -106,6 +106,7 @@
         <div class="ink-tools" role="toolbar" aria-label="Writing tools">
           <span class="ink-slots" role="group" aria-label="Your pens">${[0, 1, 2].map(i => `<button type="button" class="ink-slot" data-ink-slot="${i}" aria-pressed="false"></button>`).join('')}</span>
           <button type="button" class="ink-tool" data-ink-tool="eraser" aria-pressed="false" title="Eraser (E): touch a line to remove it. The pen's eraser end works too. Tap again for more">${icon('eraser')}<span class="ink-label">Eraser</span></button>
+          <button type="button" class="ink-tool" data-ink-tool="lasso" aria-pressed="false" title="Select (L): circle lines to move them, delete them, or ask about them">${icon('lasso')}<span class="ink-label">Select</span></button>
           <button type="button" class="ink-tool" id="inkUndo" disabled title="Undo (${e(modKey('Z'))})">${icon('undo')}</button>
           <button type="button" class="ink-tool" id="inkRedo" disabled title="Redo (${e(modKey('Shift+Z'))})">${icon('redo')}</button>
           <button type="button" class="ink-tool" id="inkPageBtn" aria-haspopup="dialog" aria-expanded="false" title="Paper, pages, picture, finger">${icon('page')}<span class="ink-label">Page</span></button>
@@ -212,6 +213,7 @@
       undo: '<path d="M5 3L2 6l3 3"/><path d="M2 6h7a4 4 0 010 8H6"/>',
       redo: '<path d="M11 3l3 3-3 3"/><path d="M14 6H7a4 4 0 000 8h3"/>',
       page: '<path d="M4 2h6l3 3v9H4z"/><path d="M10 2v3h3"/><path d="M6 8h5M6 10.5h5"/>',
+      lasso: '<path d="M8 2.5c3.3 0 5.5 1.7 5.5 3.8S11.3 10 8 10 2.5 8.4 2.5 6.3 4.7 2.5 8 2.5z" stroke-dasharray="2.2 1.8"/><path d="M4.6 9.2c-.9 1.1-.6 2.6.7 3l-.6 2.3"/>',
     };
     return `<svg class="ink-icon" viewBox="0 0 16 16" aria-hidden="true">${paths[name]}</svg>`;
   }
@@ -273,6 +275,7 @@
       setTool(v, 'eraser');
     };
     $('inkPageBtn').onclick = () => togglePop(v, 'inkPageMenu');
+    root.querySelector('[data-ink-tool=lasso]').onclick = () => { closePops(v); setTool(v, 'lasso'); };
     root.querySelectorAll('[data-ink-pen]').forEach(b => b.onclick = () => {
       const sl = v.slots[v.slot];
       if (sl.pen === b.dataset.inkPen) return;
@@ -377,7 +380,11 @@
       : typeof n.fastNib === 'function' ? 'Pen drawn by the app (on e-ink, the fast layer starts with your first line)'
       : 'Pen drawn by the app';
   }
-  function setTool(v, tool) { v.tool = tool; v.root.dataset.tool = tool; paintTools(v); if (!v.root.querySelector('.ink-pop:not([hidden])')) native(v, true); }
+  function setTool(v, tool) {
+    if (tool !== 'lasso') clearSel(v);
+    v.tool = tool; v.root.dataset.tool = tool; paintTools(v);
+    if (!v.root.querySelector('.ink-pop:not([hidden])')) native(v, true);
+  }
   function paintTools(v) {
     if (v.disposed) return;
     v.root.querySelectorAll('[data-ink-tool]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.inkTool === v.tool)));
@@ -422,6 +429,7 @@
     v.pagesEl.style.setProperty('--ink-page-h', Math.round(w * F.PAGE_H / F.PAGE_W) + 'px');
     sizeLive(v);
     if (changed) for (let i = 0; i < v.pages.length; i++) if (v.pages[i]?.backed) back(v, i);
+    if (changed && v.sel) showSel(v);
   }
   // The live layers cover the stage. Their context asks for low latency
   // (desynchronized): where the browser can, it draws straight to the screen
@@ -441,6 +449,7 @@
     v.liveDirty = false; v.tail = null;
   }
   function renderAll(v) {
+    v.sel = null;
     v.observer?.disconnect();
     v.pagesEl.replaceChildren();
     v.pages = [];
@@ -528,9 +537,10 @@
     if (!e || e.minR !== minR) { e = { minR, path: F.trace(new Path2D(), s, { minR }) }; shapes.set(s, e); }
     return e.path;
   }
+  const selected = (v, i, s) => !!(v.sel && v.sel.page === i && v.sel.set.has(s));
   function paintStroke(v, i, s) {
     const pg = v.pages[i];
-    if (!pg || !pg.backed) return;
+    if (!pg || !pg.backed || selected(v, i, s)) return;
     fillStroke(v, pg.ctx, s);
   }
   // One stroke, one fill, as its pen looks:
@@ -613,6 +623,7 @@
     for (const s of v.note.pages[i].strokes) {
       const b = boxOf(s);
       if (b.x1 + 10 < x0 || b.x0 - 10 > x1 || b.y1 + 10 < y0 || b.y0 - 10 > y1) continue;
+      if (selected(v, i, s)) continue;
       fillStroke(v, c, s);
     }
     c.restore();
@@ -671,7 +682,7 @@
     const on = (el, type, fn, opts) => { el.addEventListener(type, fn, opts); v.cleanups.push(() => el.removeEventListener(type, fn, opts)); };
     on(sc, 'pointerdown', ev => pointerDown(v, ev));
     on(sc, RAW ? 'pointerrawupdate' : 'pointermove', ev => pointerMove(v, ev));
-    if (RAW) on(sc, 'pointermove', ev => { if (v.draw || v.pan) ev.preventDefault(); });
+    if (RAW) on(sc, 'pointermove', ev => { if (v.draw || v.pan || v.lasso || v.drag) ev.preventDefault(); });
     on(sc, 'pointerup', ev => pointerUp(v, ev));
     on(sc, 'pointercancel', ev => pointerUp(v, ev, true));
     // Only our own capture ending counts. On a touch screen the browser first
@@ -679,7 +690,7 @@
     // that element report a lost capture, which bubbles here: read as a
     // lift, it ended every line after its first point (a note from the
     // tablet held only one-point strokes of 7 ms).
-    on(sc, 'lostpointercapture', ev => { if (ev.target === sc && v.draw && v.draw.id === ev.pointerId) pointerUp(v, ev); });
+    on(sc, 'lostpointercapture', ev => { if (ev.target === sc && [v.draw, v.lasso, v.drag].some(d => d && d.id === ev.pointerId)) pointerUp(v, ev); });
     // No long-press menu, no text selection, no drag of the page's pictures.
     on(sc, 'contextmenu', ev => { if (v.draw || ev.pointerType === 'pen' || ev.pointerType === 'touch') ev.preventDefault(); });
     on(sc, 'dragstart', ev => ev.preventDefault());
@@ -703,6 +714,8 @@
 
   function pointerDown(v, ev) {
     if (v.disposed || !v.note) return;
+    if (ev.target.closest && ev.target.closest('.ink-sel-bar')) return; // the selection's buttons
+    if (v.tool === 'lasso' && lassoDown(v, ev)) return;
     const now = performance.now();
     if (ev.pointerType === 'pen') {
       v.lastPen = now; notePen();
@@ -872,12 +885,16 @@
   function pointerMove(v, ev) {
     if (ev.pointerType === 'pen') v.lastPen = performance.now();
     if (v.pan && ev.pointerId === v.pan.id) return panMove(v, ev);
+    if (v.lasso && ev.pointerId === v.lasso.id) return lassoMove(v, ev);
+    if (v.drag && ev.pointerId === v.drag.id) return dragMove(v, ev);
     if (!v.draw || ev.pointerId !== v.draw.id) return;
     if (ev.cancelable) ev.preventDefault();
     addPoint(v, ev);
   }
   function pointerUp(v, ev, cancelled = false) {
     if (v.pan && ev.pointerId === v.pan.id) return panEnd(v, ev);
+    if (v.lasso && ev.pointerId === v.lasso.id) return lassoUp(v, ev, cancelled);
+    if (v.drag && ev.pointerId === v.drag.id) return dragUp(v, ev, cancelled);
     const d = v.draw;
     if (!d || ev.pointerId !== d.id) return;
     if (!cancelled && !d.erase && ev.type === 'pointerup') addPoint(v, ev);
@@ -1059,6 +1076,9 @@
     else if (!mod && !ev.altKey && (k === '1' || k === '2' || k === '3')) pickSlot(v, Number(k) - 1);
     else if (k === 'escape' && closePops(v)) {}
     else if (!mod && !ev.altKey && k === 'e') setTool(v, 'eraser');
+    else if (!mod && !ev.altKey && k === 'l') setTool(v, 'lasso');
+    else if (!mod && v.sel && (k === 'delete' || k === 'backspace')) deleteSel(v);
+    else if (k === 'escape' && v.sel) clearSel(v);
     else if (!mod && !ev.altKey && (k === 'pagedown' || k === 'pageup')) { v.scroll.scrollBy({ top: (k === 'pagedown' ? 1 : -1) * v.scroll.clientHeight * 0.9 }); }
     else done = false;
     if (done) { ev.preventDefault(); ev.stopPropagation(); }
@@ -1081,6 +1101,15 @@
       if (back) for (const it of op.items.slice().reverse()) { list.splice(Math.min(it.index, list.length), 0, it.stroke); }
       else for (const it of op.items) { const i = list.indexOf(it.stroke); if (i >= 0) list.splice(i, 1); }
       repaint(v, op.page, unionBox(op.items.map(it => it.stroke)));
+    } else if (op.type === 'move') {
+      // A move is the old lines out and new ones in (strokes are never
+      // changed, design/98, so two devices still merge as sets).
+      const list = v.note.pages[op.page].strokes;
+      const out = back ? op.to : op.from.map(it => it.stroke);
+      for (const st of out) { const i = list.indexOf(st); if (i >= 0) list.splice(i, 1); }
+      if (back) for (const it of op.from) list.splice(Math.min(it.index, list.length), 0, it.stroke);
+      else list.push(...op.to);
+      repaint(v, op.page, unionBox([...op.to, ...op.from.map(it => it.stroke)]));
     } else if (op.type === 'paper') {
       v.note.paper = back ? op.from : op.to;
       renderAll(v);
@@ -1089,8 +1118,8 @@
       showTitle(v);
     }
   }
-  function undo(v) { const op = v.undo.pop(); if (!op) return; apply(v, op, true); v.redo.push(op); changed(v); }
-  function redo(v) { const op = v.redo.pop(); if (!op) return; apply(v, op, false); v.undo.push(op); changed(v); }
+  function undo(v) { const op = v.undo.pop(); if (!op) return; clearSel(v); apply(v, op, true); v.redo.push(op); changed(v); }
+  function redo(v) { const op = v.redo.pop(); if (!op) return; clearSel(v); apply(v, op, false); v.undo.push(op); changed(v); }
   function setPaper(v, paper) {
     if (!v.note || v.note.paper === paper) return;
     commit(v, { type: 'paper', from: v.note.paper, to: paper });
@@ -1277,6 +1306,220 @@
     } catch (err) { errToast(err.message); }
   }
 
+  // ---- the lasso (design/99) ----
+  // Circle lines with the pen (or the mouse) to select them. A selection
+  // floats in its own layer over the page, framed, with its buttons: Ask
+  // (the circled lines as a picture, to the conversation beside the note or
+  // a new one in its project), Delete, Done. Drag it with the pen or a
+  // finger to move it. Selected lines are lines of at least half their
+  // points inside the loop.
+  const SEL_PAD = 8; // page units around a selection's lines
+  function lassoDown(v, ev) {
+    const touch = ev.pointerType === 'touch';
+    if (ev.pointerType === 'mouse' && ev.button !== 0) return false;
+    // In the selection: drag it (a finger too, unless it is a palm).
+    if (v.sel && inSel(v, ev) && !(touch && Math.max(ev.width || 0, ev.height || 0) > PALM_SIZE)) {
+      ev.preventDefault();
+      const rect = v.pages[v.sel.page].el.getBoundingClientRect();
+      v.drag = { id: ev.pointerId, rect, at: toPage(rect, ev.clientX, ev.clientY), dx: 0, dy: 0 };
+      v.sel.bar.hidden = true;
+      try { v.scroll.setPointerCapture(ev.pointerId); } catch {}
+      return true;
+    }
+    if (touch) return false; // a finger outside it scrolls, as everywhere
+    ev.preventDefault();
+    if (ev.pointerType === 'pen') { v.lastPen = performance.now(); notePen(); }
+    clearSel(v);
+    const i = pageAt(v, ev.clientY);
+    const rect = v.pages[i].el.getBoundingClientRect(), stage = v.scroll.getBoundingClientRect();
+    v.lasso = { id: ev.pointerId, page: i, rect, stage, pts: [], last: null };
+    try { v.scroll.setPointerCapture(ev.pointerId); } catch {}
+    lassoMove(v, ev);
+    return true;
+  }
+  function lassoMove(v, ev) {
+    const L = v.lasso, c = v.ctx;
+    if (ev.cancelable) ev.preventDefault();
+    const list = typeof ev.getCoalescedEvents === 'function' && ev.getCoalescedEvents().length ? ev.getCoalescedEvents() : [ev];
+    for (const e2 of list) {
+      L.pts.push(...toPage(L.rect, e2.clientX, e2.clientY));
+      const x = e2.clientX - L.stage.left, y = e2.clientY - L.stage.top;
+      if (L.last && c) {
+        c.save(); c.setLineDash([6, 5]); c.lineWidth = einkNow() ? 2 : 1.5; c.strokeStyle = inkColor(v);
+        c.beginPath(); c.moveTo(L.last[0], L.last[1]); c.lineTo(x, y); c.stroke(); c.restore();
+        v.liveDirty = true;
+      }
+      L.last = [x, y];
+    }
+  }
+  function lassoUp(v, ev, cancelled) {
+    const L = v.lasso;
+    v.lasso = null;
+    settleLive(v, true);
+    if (cancelled || L.pts.length < 6) return;
+    const poly = L.pts, list = v.note.pages[L.page].strokes;
+    const chosen = list.filter(st => {
+      const p = st.pts, n = p.length / 3;
+      let inside = 0;
+      for (let k = 0; k < p.length; k += 3) if (inPoly(poly, p[k], p[k + 1])) inside++;
+      return inside * 2 >= n && inside > 0;
+    });
+    if (!chosen.length) { toastSafe('Nothing inside the loop: circle the lines to select.'); return; }
+    selectStrokes(v, L.page, chosen);
+  }
+  function inPoly(poly, x, y) {
+    let inside = false;
+    for (let i = 0, j = poly.length - 2; i < poly.length; j = i, i += 2) {
+      const xi = poly[i], yi = poly[i + 1], xj = poly[j], yj = poly[j + 1];
+      if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+  }
+  function toastSafe(text) { try { if (typeof toast === 'function') toast(text); } catch {} }
+  function selectStrokes(v, page, strokes) {
+    clearSel(v);
+    const set = new Set(strokes);
+    v.sel = { page, set, list: strokes, box: unionBox(strokes), el: null, bar: null };
+    repaint(v, page, v.sel.box); // the page without them: they show in the selection's layer
+    showSel(v);
+  }
+  // The selection's layer: its lines drawn as they look, a dashed frame, and
+  // its buttons above (below when the selection is at the top of the page).
+  function showSel(v) {
+    const S = v.sel;
+    if (!S) return;
+    S.el?.remove(); S.bar?.remove();
+    const pg = v.pages[S.page];
+    if (!pg) return;
+    const k = v.pageW / F.PAGE_W, dpr = dprOf();
+    const x0 = S.box.x0 - SEL_PAD, y0 = S.box.y0 - SEL_PAD, w = S.box.x1 - S.box.x0 + 2 * SEL_PAD, h = S.box.y1 - S.box.y0 + 2 * SEL_PAD;
+    const el = document.createElement('div');
+    el.className = 'ink-sel';
+    el.style.cssText = `left:${x0 * k}px;top:${y0 * k}px;width:${w * k}px;height:${h * k}px`;
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(w * k * dpr)); c.height = Math.max(1, Math.round(h * k * dpr));
+    const ctx = c.getContext('2d');
+    ctx.setTransform(k * dpr, 0, 0, k * dpr, -x0 * k * dpr, -y0 * k * dpr);
+    for (const st of S.list) fillStroke(v, ctx, st);
+    el.appendChild(c);
+    const bar = document.createElement('div');
+    bar.className = 'ink-sel-bar';
+    bar.innerHTML = `<button type="button" data-sel="ask" title="Send these lines, as a picture, to a conversation">✦ Ask</button><button type="button" data-sel="delete">Delete</button><button type="button" data-sel="done">Done</button>`;
+    const above = y0 * k > 56;
+    bar.style.cssText = `left:${Math.max(4, Math.min(x0 * k, v.pageW - 260))}px;top:${above ? y0 * k - 50 : (y0 + h) * k + 8}px`;
+    bar.querySelector('[data-sel=ask]').onclick = () => askSel(v);
+    bar.querySelector('[data-sel=delete]').onclick = () => deleteSel(v);
+    bar.querySelector('[data-sel=done]').onclick = () => clearSel(v);
+    pg.el.append(el, bar);
+    S.el = el; S.bar = bar;
+  }
+  function inSel(v, ev) {
+    const S = v.sel;
+    if (!S || !S.el) return false;
+    const r = S.el.getBoundingClientRect();
+    return ev.clientX >= r.left - 6 && ev.clientX <= r.right + 6 && ev.clientY >= r.top - 6 && ev.clientY <= r.bottom + 6;
+  }
+  function clearSel(v) {
+    const S = v.sel;
+    if (!S) return;
+    v.sel = null;
+    S.el?.remove(); S.bar?.remove();
+    repaint(v, S.page, S.box);
+  }
+  function dragMove(v, ev) {
+    const D = v.drag, S = v.sel;
+    if (ev.cancelable) ev.preventDefault();
+    if (!S) return;
+    const [x, y] = toPage(D.rect, ev.clientX, ev.clientY);
+    // The lines stay on their page.
+    D.dx = Math.max(-S.box.x0, Math.min(F.PAGE_W - S.box.x1, x - D.at[0]));
+    D.dy = Math.max(-S.box.y0, Math.min(F.PAGE_H - S.box.y1, y - D.at[1]));
+    const k = v.pageW / F.PAGE_W;
+    S.el.style.transform = `translate(${D.dx * k}px,${D.dy * k}px)`;
+  }
+  function dragUp(v, ev, cancelled) {
+    const D = v.drag, S = v.sel;
+    v.drag = null;
+    if (!S) return;
+    if (cancelled || Math.hypot(D.dx, D.dy) < 0.5) { S.el.style.transform = ''; S.bar.hidden = false; return; }
+    const list = v.note.pages[S.page].strokes;
+    const from = S.list.map(stroke => ({ stroke, index: list.indexOf(stroke) })).filter(it => it.index >= 0).sort((a, b) => a.index - b.index);
+    const to = S.list.map(st => {
+      const pts = st.pts.slice();
+      for (let k = 0; k < pts.length; k += 3) { pts[k] += D.dx; pts[k + 1] += D.dy; }
+      const out = { pts, w: st.w, t0: st.t0, dur: st.dur, color: st.color || '' };
+      if (st.pen) out.pen = st.pen;
+      return out;
+    });
+    const page = S.page;
+    S.el.remove(); S.bar.remove(); v.sel = null;
+    const op = { type: 'move', page, from, to };
+    apply(v, op, false);
+    commit(v, op);
+    selectStrokes(v, page, to);
+  }
+  function deleteSel(v) {
+    const S = v.sel;
+    if (!S) return;
+    const list = v.note.pages[S.page].strokes;
+    const items = S.list.map(stroke => ({ stroke, index: list.indexOf(stroke) })).filter(it => it.index >= 0).sort((a, b) => b.index - a.index);
+    S.el?.remove(); S.bar?.remove(); v.sel = null;
+    for (const it of items) list.splice(it.index, 1);
+    repaint(v, S.page, S.box);
+    commit(v, { type: 'erase', page: S.page, items });
+  }
+  // The selected lines as a picture: on white, as they look, a margin around.
+  function selImage(v) {
+    const S = v.sel;
+    const x0 = S.box.x0 - 16, y0 = S.box.y0 - 16, w = S.box.x1 - S.box.x0 + 32, h = S.box.y1 - S.box.y0 + 32;
+    const scale = Math.min(2, 1400 / Math.max(w, h));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(w * scale)); c.height = Math.max(1, Math.round(h * scale));
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.setTransform(scale, 0, 0, scale, -x0 * scale, -y0 * scale);
+    const look = { ink: '#1d1f21', light: true, highlight: einkNow() ? HIGHLIGHT_EINK : HIGHLIGHT };
+    for (const st of S.list) fillStroke(v, ctx, st, look);
+    const url = c.toDataURL('image/png');
+    return { mime: 'image/png', data: url.slice(url.indexOf(',') + 1), name: 'handwritten.png', preview: url };
+  }
+  // Where the note is, said the way a person and an agent find it: from its
+  // project's folder when it has one.
+  function noteLabel(v) {
+    const p = v.ws.path, at = p.indexOf('/documents/');
+    return at >= 0 ? p.slice(at + 1) : p.replace(/^.*\/notes\/chattering\//, '~/notes/chattering/');
+  }
+  // Ask: to the conversation beside the note, in its composer; else a new
+  // conversation in the note's project. Nothing is sent: the person writes
+  // (or says) the question and sends.
+  async function askSel(v) {
+    const S = v.sel;
+    if (!S) return;
+    const img = selImage(v);
+    const text = `About this part of my handwritten note (${noteLabel(v)}, page ${S.page + 1}): `;
+    const ws = v.ws;
+    if (ws.placement === 'beside' && ws.besideKey && typeof renderAgentThumbs === 'function' && $('agentText')) {
+      window._agentImages = window._agentImages || [];
+      if (window._agentImages.length >= 8) return toastSafe('Up to 8 images per message.');
+      window._agentImages.push(img);
+      renderAgentThumbs();
+      const ta = $('agentText');
+      if (!ta.value.trim()) ta.value = text;
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      clearSel(v);
+      if (typeof Pair !== 'undefined') Pair.focusConversation();
+      ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+      return;
+    }
+    if (typeof startDraftIn !== 'function') return toastSafe('Open a conversation beside the note (Page → A conversation beside) to ask there.');
+    const at = ws.path.indexOf('/documents/handwritten/');
+    clearSel(v);
+    try { await save(v); } catch {}
+    await startDraftIn(at >= 0 ? ws.path.slice(0, at) : '', { text, images: [img] });
+    const ta = $('agentText');
+    if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+  }
+
   // ---- the Android app's pen nib ----
   // On the app, the pen is the app's (InkOverlay.kt): it draws the live line
   // itself, on the e-ink panel's own overlay where the device has one (the
@@ -1318,7 +1561,9 @@
     const n = nativeInk();
     if (!n) return;
     try {
-      const on = want && !v.disposed && !!v.note;
+      // The lasso is the page's: it draws its own dashed loop and needs every
+      // tap (a selection's buttons, a drag), not a line from the app.
+      const on = want && !v.disposed && !!v.note && v.tool !== 'lasso';
       if (!on) { if (!regionOnly) { n.setEnabled(false); } return; }
       const r = v.scroll.getBoundingClientRect(), [ox, oy] = frameOffset();
       // The page's css pixel in device pixels, so the app maps the region and

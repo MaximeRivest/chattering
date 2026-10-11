@@ -76,3 +76,16 @@
 .ink-page-no { position: absolute; right: 8px; bottom: 6px; font: 10px var(--font); color: var(--text-faint); pointer-events: none; }
 .ink-message { margin: 40px auto; max-width: 520px; padding: 0 16px; color: var(--text-dim); }
 @media (max-width: 560px) { .ink-pages { gap: 10px; padding-top: 8px; } }
+
+/* A lasso selection (design/99): its lines in a layer of their own, a dashed
+   frame, and its buttons beside it. Taps go to the page underneath, which
+   tells a drag in the frame from a new loop outside it. */
+.ink-view[data-tool="lasso"] .ink-scroll { cursor: crosshair; }
+.ink-sel { position: absolute; z-index: 2; pointer-events: none; outline: 1.5px dashed var(--text); outline-offset: 0; }
+:root[data-theme-mode="binary"] .ink-sel { outline: 2px dashed #000; }
+.ink-sel canvas { display: block; width: 100%; height: 100%; }
+.ink-sel-bar { position: absolute; z-index: 3; display: flex; gap: 6px; padding: 4px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-md, 8px); box-shadow: 0 4px 14px #0002; }
+:root[data-theme-mode="binary"] .ink-sel-bar { border: 2px solid #000; border-radius: 0; box-shadow: none; }
+.ink-sel-bar button { min-height: 38px; padding: 0 12px; border: 1px solid var(--border); background: transparent; color: var(--text); font: inherit; }
+.ink-sel-bar button[data-sel="ask"] { font-weight: 600; border-color: var(--text); }
+.ink-sel-bar[hidden] { display: none; }

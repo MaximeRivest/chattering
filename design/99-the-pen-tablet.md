@@ -120,7 +120,29 @@ Seen in Chromium's software raster only, and not on the AINOTE: tiny
 horizontal ticks inside very thick loops, where a shape overlaps itself many
 times (GPU raster, and the tablet's screenshot, show none).
 
-Not yet: lasso (select, move, ask), a partial eraser, a full refresh against
+### The lasso (2026-10-11)
+
+Select (L) circles lines with the pen; a line is chosen when at least half
+its points are inside the loop. The selection floats in a layer of its own
+(its lines drawn there, the page repainted without them, a dashed frame)
+with three buttons: **✦ Ask**, **Delete**, **Done**. A pen or a finger in the
+frame drags it (a palm does not); outside it, the pen draws a new loop and a
+finger scrolls. A move is saved as the old lines out and new ones in, one
+undo step, so the set merge between devices still holds; lines stay on
+their page.
+
+**Ask** is the first step of "prompt by hand": the circled lines become a
+picture (as they look, on white), and go to the composer of the
+conversation beside the note when there is one, else to a new conversation
+in the note's project, with "About this part of my handwritten note
+(documents/handwritten/…, page n): " and the cursor after it. Nothing is
+sent until the person writes or says the question and sends. While the
+lasso is the tool, the page has the pen (the app's fast layer is off): a
+dashed loop needs no e-ink speed, and the selection's buttons need taps.
+
+Not yet: reading the handwriting into text (the next step: "Ask" should
+send the words too, and a note should be searchable), resizing a
+selection, a partial eraser, a full refresh against
 ghosting, tilt and speed (the AINOTE reports no tilt; speed would need the
 point times the file does not keep).
 
