@@ -1661,7 +1661,7 @@
     const key = JSON.stringify(next);
     if (key === v.holesKey) return;
     v.holesKey = key; v.holes = next;
-    logLine(v, { event: 'holes', n: next.length, ms: Math.round(ms * 10) / 10 });
+    logLine(v, { event: 'holes', n: next.length, ms: Math.round(ms * 10) / 10, rects: next });
     native(v, !v.root.querySelector('.ink-pop:not([hidden])'), { regionOnly: !!v.nativeOn === nativeWanted(v) });
   }
   function nativeWanted(v) {
