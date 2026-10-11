@@ -43,7 +43,8 @@ class InkOverlay @JvmOverloads constructor(
     attrs: AttributeSet? = null,
 ) : View(context, attrs) {
     fun interface Listener {
-        fun onStroke(packed: String, erase: Boolean)
+        /** pen: the pen the line was drawn with ("lasso": a selection loop, not ink). */
+        fun onStroke(packed: String, erase: Boolean, pen: String)
     }
 
     var listener: Listener? = null
@@ -55,6 +56,13 @@ class InkOverlay @JvmOverloads constructor(
      * (an older page that never set one).
      */
     var region: RectF? = null
+    /**
+     * Parts of the writing area the page has covered (its menus, a
+     * selection and its buttons, a panel over the note), in the same css
+     * pixels: a pen landing there is the page's, as if this layer were not
+     * there (ChatteringInk.setHoles, design/99).
+     */
+    var holes: List<RectF> = emptyList()
     var lastStylusMs = 0L
         private set
 
@@ -129,7 +137,9 @@ class InkOverlay @JvmOverloads constructor(
      * pencil's grain; -1 no live line), and its colour where this view draws.
      */
     private var penId = "ballpoint"
+    private var strokePen = "ballpoint"
     private var tone = 0
+    private var strokeTone = 0
     fun setPen(id: String, tone: Int, argb: Int) {
         penId = id
         this.tone = tone
@@ -153,9 +163,10 @@ class InkOverlay @JvmOverloads constructor(
 
     /** Is this point (overlay pixels) where the page lets the pen write? */
     fun inRegion(x: Float, y: Float): Boolean {
-        val r = region ?: return true
+        val r = region ?: return holes.none { x / cssPx in it.left..it.right && y / cssPx in it.top..it.bottom }
         val cx = x / cssPx
         val cy = y / cssPx
+        if (holes.any { cx >= it.left && cx <= it.right && cy >= it.top && cy <= it.bottom }) return false
         return cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom
     }
 
@@ -272,6 +283,8 @@ class InkOverlay @JvmOverloads constructor(
                 drawing = true
                 n = 0
                 pSmooth = -1f
+                strokePen = penId
+                strokeTone = tone
                 t0 = event.eventTime
                 val erasing = erase || event.getToolType(stylusIndex) == MotionEvent.TOOL_TYPE_ERASER
                 // The eraser's work is the page's; lines still shown here go first.
@@ -326,11 +339,11 @@ class InkOverlay @JvmOverloads constructor(
         learn()
         val packed = pack()
         n = 0
-        if (packed.isNotEmpty()) listener?.onStroke(packed, pendingErase)
+        if (packed.isNotEmpty()) listener?.onStroke(packed, pendingErase, strokePen)
     }
 
     private fun learn() {
-        if (n < 3) return
+        if (n < 3 || strokePen == "lasso") return
         val list = ps.copyOf(n).filter { it > 0f && it != 0.5f }.sorted()
         if (list.size < 3) return
         val med = list[list.size / 2]
@@ -376,13 +389,14 @@ class InkOverlay @JvmOverloads constructor(
         pSmooth = if (pSmooth < 0f) p else pSmooth + (p - pSmooth) * 0.35f
         val t = if (typicalP > 0f) typicalP else 0.5f
         val q = (0.5f * pSmooth / t).coerceIn(0.03f, 1f)
-        return max(0.75f, widthCss * cssPx / 2f * penFactor(penId, q, angle))
+        if (strokePen == "lasso") return 1.4f * cssPx
+        return max(0.75f, widthCss * cssPx / 2f * penFactor(strokePen, q, angle))
     }
 
     // Draw points [from, n) joined to the point before them: on the panel
     // overlay as one polyline and one update, or on this view.
     private fun draw(from: Int, erasing: Boolean) {
-        if (erasing || n == 0 || tone < 0) return
+        if (erasing || n == 0 || strokeTone < 0) return
         val count = n - from
         if (count <= 0) return
         if (nib != 0L) {
@@ -391,7 +405,9 @@ class InkOverlay @JvmOverloads constructor(
                 val i = from + k
                 bx[k] = ox + xs[i]; by[k] = oy + ys[i]; br[k] = rs[i]
             }
-            val rc = if (tone == 0) EbcNib.polyline(nib, bx, by, br, count, false) else EbcNib.polylineTone(nib, bx, by, br, count, tone)
+            // A dashed line starts its dashes with the line (TONE_START).
+            val t = if (from == 0 && (strokeTone and 0x200) != 0) strokeTone or 0x400 else strokeTone
+            val rc = if (t == 0) EbcNib.polyline(nib, bx, by, br, count, false) else EbcNib.polylineTone(nib, bx, by, br, count, t)
             if (rc == 0) { nibDirty = true; return }
             stopNib(); nibFailed = true // a refused update: this layer draws from now on
         }

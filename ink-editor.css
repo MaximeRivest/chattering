@@ -89,3 +89,5 @@
 .ink-sel-bar button { min-height: 38px; padding: 0 12px; border: 1px solid var(--border); background: transparent; color: var(--text); font: inherit; }
 .ink-sel-bar button[data-sel="ask"] { font-weight: 600; border-color: var(--text); }
 .ink-sel-bar[hidden] { display: none; }
+/* Delete stands apart, at the end: a tap meant for Done never removes a page. */
+.ink-sel-bar .ink-sel-danger { margin-left: 14px; }

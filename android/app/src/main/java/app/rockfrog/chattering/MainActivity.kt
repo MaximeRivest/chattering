@@ -120,6 +120,18 @@ class MainActivity : AppCompatActivity() {
         fun setRegion(left: Float, top: Float, right: Float, bottom: Float) {
             runOnUiThread { ink.region = if (right > left && bottom > top) RectF(left, top, right, bottom) else null }
         }
+        /**
+         * Covered parts of the writing area: "left,top,right,bottom;…" in css
+         * pixels of the window. A pen landing there goes to the page.
+         */
+        @JavascriptInterface
+        fun setHoles(list: String) {
+            val rects = list.split(';').take(64).mapNotNull { part ->
+                val v = part.split(',').mapNotNull { it.trim().toFloatOrNull() }
+                if (v.size == 4 && v[2] > v[0] && v[3] > v[1]) RectF(v[0], v[1], v[2], v[3]) else null
+            }
+            runOnUiThread { ink.holes = rects }
+        }
         /** The pen in hand (design/99): its name, its e-ink tone and its colour (ARGB). */
         @JavascriptInterface
         fun setPen(id: String, tone: Int, argb: Int) {
@@ -328,9 +340,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun configureInk() {
-        ink.listener = InkOverlay.Listener { packed, erase ->
+        ink.listener = InkOverlay.Listener { packed, erase, pen ->
             val safe = packed.replace("'", "")
-            PageCall.run(web, "w.fileInkAcceptPacked&&w.fileInkAcceptPacked('$safe',$erase)")
+            val safePen = if (Regex("^[a-z][a-z0-9-]{0,23}$").matches(pen)) pen else "ballpoint"
+            PageCall.run(web, "w.fileInkAcceptPacked&&w.fileInkAcceptPacked('$safe',$erase,'$safePen')")
         }
     }
 

@@ -64,3 +64,103 @@ test('a note in the shell\'s frame hands the pen to the app, in window coordinat
   assert.equal(await run(`${W}.document.getElementById('inkPenMode')?.textContent || ''`).then(x => /older app/.test(x)), false,
     'a current app is not told to update');
 });
+
+// Anything of the page over the writing area is a hole in the app's layer:
+// a pen landing there is the page's (a menu dropping from the side list
+// drew a line instead of being tapped, on the AINOTE). And the lasso goes
+// through the app's fast layer, its selection a hole.
+test('the app leaves covered parts of the note to the page; the lasso is fast', { timeout: 180000 }, async t => {
+  const b = await viewerBrowser(t);
+  const { evaluate: run, until } = b;
+  await until(`typeof InkNotes!=='undefined'`);
+  const stub = precise => `(()=>{const calls=[];window.ChatteringInk={calls,drawn:0,live:0,
+    setEnabled(on){calls.push(['enabled',on])},setRegion(l,t,r,b){calls.push(['region',l,t,r,b])},setPixelRatio(){},setPen(id,tone){calls.push(['pen',id,tone])},
+    ${precise ? "setHoles(h){calls.push(['holes',h])}," : ''}
+    setErase(){},setWidth(){},setPressureTypical(){},clearLive(){this.live++},clearAll(){},fastNib(){return true},strokeDrawn(){this.drawn++}};return 1})()`;
+  await run(stub(true));
+  const file = await run(`InkNotes.create('')`);
+  await until(`!!document.querySelector('.ink-view .ink-page') && $('docStatus').textContent==='Saved'`);
+  const last = kind => run(`(ChatteringInk.calls.filter(c=>c[0]==='${kind}').pop()||[])`);
+  await until(`ChatteringInk.calls.some(c=>c[0]==='holes')`, 'the app is told what covers the note');
+  assert.deepEqual(await last('holes'), ['holes', ''], 'nothing covers it yet');
+  // A menu of the page dropping over the note (as the side list's do).
+  await run(`(()=>{const m=document.createElement('div');m.id='fakeMenu';const r=document.querySelector('.ink-scroll').getBoundingClientRect();
+    m.style.cssText='position:fixed;z-index:999;background:#fff;border:1px solid;left:'+(r.left+40)+'px;top:'+(r.top+60)+'px;width:200px;height:120px';document.body.appendChild(m);return 1})()`);
+  await until(`(ChatteringInk.calls.filter(c=>c[0]==='holes').pop()||[])[1]!==''`, 'the menu is a hole');
+  const hole = (await last('holes'))[1].split(';').map(q => q.split(',').map(Number));
+  const menu = await run(`(()=>{const r=$('fakeMenu').getBoundingClientRect();return [r.left,r.top,r.right,r.bottom]})()`);
+  const covers = hole.some(q => q[0] <= menu[0] + 1 && q[1] <= menu[1] + 1 && q[2] >= menu[2] - 1 && q[3] >= menu[3] - 1);
+  assert.ok(covers, 'the hole covers the menu: ' + JSON.stringify({ hole, menu }));
+  assert.ok(hole.every(q => (q[2] - q[0]) * (q[3] - q[1]) < 340 * 260), 'and not much more');
+  await run(`$('fakeMenu').remove()`);
+  await until(`(ChatteringInk.calls.filter(c=>c[0]==='holes').pop()||[])[1]===''`, 'closed: no hole');
+
+  // The lasso: drawn by the app, dashed; its loop comes back marked as such.
+  await run(`document.querySelector('[data-ink-tool=lasso]').click()`);
+  assert.deepEqual(await last('pen'), ['pen', 'lasso', 0x200], 'the app draws the loop dashed');
+  assert.deepEqual(await last('enabled'), ['enabled', true], 'the app keeps the pen in Select');
+  await run(`(()=>{const n=InkNotes.current.note;n.pages[0].strokes.push({pts:[200,200,.5,260,205,.5,320,200,.5],w:2.6,t0:1,dur:1,color:''});return 1})()`);
+  const page = await run(`(()=>{const r=document.querySelector('.ink-page').getBoundingClientRect();return {x:r.left,y:r.top,w:r.width,h:r.height}})()`);
+  const k = page.w / 1000;
+  const loop = Array.from({ length: 20 }, (_, i) => { const a = i / 19 * Math.PI * 2; return [page.x + (260 + 120 * Math.cos(a)) * k, page.y + (202 + 40 * Math.sin(a)) * k]; });
+  await run(`fileInkAcceptPacked(${JSON.stringify(loop.map(p => p[0].toFixed(1) + ',' + p[1].toFixed(1) + ',0.5,0').join(' '))}, false, 'lasso')`);
+  await until(`InkNotes.current.sel && InkNotes.current.sel.list.length===1`, 'the app\'s loop selects');
+  assert.equal(await run(`InkNotes.current.note.pages[0].strokes.length`), 1, 'a loop is not ink');
+  assert.ok(await run(`ChatteringInk.live`) > 0, 'the dashed loop is wiped from the panel');
+  await until(`(ChatteringInk.calls.filter(c=>c[0]==='holes').pop()||[])[1]!==''`, 'the selection and its buttons are holes');
+  const selHoles = (await last('holes'))[1].split(';').map(q => q.split(',').map(Number));
+  const bar = await run(`(()=>{const r=document.querySelector('.ink-sel-bar').getBoundingClientRect();return [r.left+r.width/2,r.top+r.height/2]})()`);
+  assert.ok(selHoles.some(q => bar[0] >= q[0] && bar[0] <= q[2] && bar[1] >= q[1] && bar[1] <= q[3]), 'the buttons are the page\'s');
+  // A tap (a one-point loop) lets go.
+  await run(`fileInkAcceptPacked(${JSON.stringify((page.x + 700 * k).toFixed(1) + ',' + (page.y + 900 * k).toFixed(1) + ',0.5,0')}, false, 'lasso')`);
+  assert.equal(await run(`!!InkNotes.current.sel`), false);
+  assert.deepEqual(b.exceptions, []);
+  void file;
+});
+
+test('an app without holes gives the page the pen while something covers the note', { timeout: 120000 }, async t => {
+  const b = await viewerBrowser(t);
+  const { evaluate: run, until } = b;
+  await until(`typeof InkNotes!=='undefined'`);
+  await run(`(()=>{const calls=[];window.ChatteringInk={calls,setEnabled(on){calls.push(['enabled',on])},setRegion(){},setPixelRatio(){},setPen(){},setErase(){},setWidth(){},setPressureTypical(){},clearLive(){},clearAll(){},fastNib(){return true},strokeDrawn(){}};return 1})()`);
+  await run(`InkNotes.create('')`);
+  await until(`!!document.querySelector('.ink-view .ink-page') && $('docStatus').textContent==='Saved'`);
+  const enabled = `(ChatteringInk.calls.filter(c=>c[0]==='enabled').pop()||[])[1]`;
+  await until(`${enabled}===true`);
+  await run(`(()=>{const m=document.createElement('div');m.id='fakeMenu';const r=document.querySelector('.ink-scroll').getBoundingClientRect();
+    m.style.cssText='position:fixed;z-index:999;background:#fff;left:'+(r.left+40)+'px;top:'+(r.top+60)+'px;width:200px;height:120px';document.body.appendChild(m);return 1})()`);
+  await until(`${enabled}===false`, 'covered: the page has the pen');
+  await run(`$('fakeMenu').remove()`);
+  await until(`${enabled}===true`, 'uncovered: the app again');
+  await run(`document.querySelector('[data-ink-tool=lasso]').click()`);
+  assert.equal(await run(enabled), false, 'the lasso stays the page\'s on that app');
+});
+
+// The real case: the side list's ⋯ menu on a conversation, opened while a
+// note is on screen, hangs over the note: it must be the page's to tap.
+test('a side list menu over the note is a hole', { timeout: 120000 }, async t => {
+  const b = await viewerBrowser(t);
+  const { evaluate: run, until, size } = b;
+  await until(`typeof InkNotes!=='undefined'`);
+  await size(960, 1280);
+  await run(`(()=>{const calls=[];window.ChatteringInk={calls,setEnabled(on){calls.push(['enabled',on])},setRegion(){},setPixelRatio(){},setPen(){},setHoles(h){calls.push(['holes',h])},setErase(){},setWidth(){},setPressureTypical(){},clearLive(){},clearAll(){},fastNib(){return true},strokeDrawn(){}};return 1})()`);
+  // The conversation in the side list, then a note.
+  await run(`location.hash='#pi:fixture/media.jsonl'`);
+  await until(`!!document.querySelector('.ag-more')`, 'the conversation is in the side list');
+  await run(`InkNotes.create('')`);
+  await until(`!!document.querySelector('.ink-view .ink-page') && $('docStatus').textContent==='Saved'`);
+  const holes = `(ChatteringInk.calls.filter(c=>c[0]==='holes').pop()||[])[1]`;
+  await until(`${holes}===''`);
+  await run(`document.querySelector('.ag-more').click()`);
+  const menu = await run(`new Promise(r=>setTimeout(()=>{const m=[...document.querySelectorAll('[role=menu],.mpick,.ag-menu,.side-menu')].find(e=>e.getBoundingClientRect().width>0);if(!m)return r(null);const q=m.getBoundingClientRect();r({cls:m.className,box:[q.left,q.top,q.right,q.bottom]})},300))`);
+  assert.ok(menu, 'the menu opened');
+  const area = await run(`(()=>{const r=document.querySelector('.ink-scroll').getBoundingClientRect();return [r.left,r.top,r.right,r.bottom]})()`);
+  if (menu.box[2] <= area[0]) { t.diagnostic('the menu stays in the side list here: ' + JSON.stringify({ menu, area })); return; }
+  await until(`${holes}!==''`, 'the menu over the note is a hole');
+  const hs = (await run(holes)).split(';').map(q => q.split(',').map(Number));
+  const over = [Math.max(menu.box[0], area[0]), Math.max(menu.box[1], area[1]), Math.min(menu.box[2], area[2]), Math.min(menu.box[3], area[3])];
+  assert.ok(hs.some(q => q[0] <= over[0] + 1 && q[1] <= over[1] + 1 && q[2] >= over[2] - 1 && q[3] >= over[3] - 1), 'covering where it overlaps: ' + JSON.stringify({ hs, over }));
+  await run(`document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
+  await run(`document.body.click()`);
+  await until(`${holes}===''`, 'closed: the app has the whole note again');
+});

@@ -140,6 +140,40 @@ sent until the person writes or says the question and sends. While the
 lasso is the tool, the page has the pen (the app's fast layer is off): a
 dashed loop needs no e-ink speed, and the selection's buttons need taps.
 
+### Fast lasso, holes, copy and paste (2026-10-11, app 0.3.8)
+
+Asked: the lasso felt slow ("make it fast ink on top"), copy and paste, and
+menus that could not be tapped when the side list was open: its ⋯ menu
+hangs over the note, and the pen drew a line there instead.
+
+- **Holes.** The app's fast layer took every pen landing in the writing
+  area's rectangle, whatever the page showed there. The page now tells the
+  app what covers the area (`setHoles`), and a pen landing in a hole is the
+  page's. Covers are found from what changes (a MutationObserver on the page
+  and the shell around it): a changed element over the area, not part of it,
+  that the browser says is on top at a few points of the overlap. A grid of
+  hit tests over the whole area was tried first and measured on the AINOTE:
+  230–330 ms per update. The change-driven check: 6–20 ms. An app without
+  `setHoles` (0.3.7) gives the page the pen while anything covers the area.
+  Checked on the tablet: with the side list's ⋯ menu over the note, a pen
+  tap on the menu draws nothing.
+- **The lasso through the app**: the loop is drawn on the e-ink overlay,
+  dashed (`ebc_nib.c TONE_DASH`, dashes counted along the whole line), and
+  comes back to the page marked `lasso` (the app now names the pen of each
+  line). The selection's frame and buttons are holes, so dragging and the
+  buttons are the page's.
+- **Copy** (selection bar, Ctrl+C; Ctrl+X cuts) keeps the lines on this
+  device, so they paste into another note too, and offers a picture to the
+  system clipboard where the browser allows. **Paste**: a tap in Select with
+  something copied offers "Paste here"; Ctrl+V pastes mid-screen. Pasted
+  lines are the selection, to drag into place; one undo step.
+- **Delete** moved to the end of the selection's bar, apart from Done, and
+  says "Deleted n lines. Tap here to undo." (as does Clear this page). On
+  the first day, a page of Maxime's first note lost 55 of its 56 lines in one
+  step a minute after he used Ask on it; the file history had it and it was
+  restored. Nothing in the records says whether it was a Delete he meant;
+  a test of Ask then back to the note loses nothing.
+
 Not yet: reading the handwriting into text (the next step: "Ask" should
 send the words too, and a note should be searchable), resizing a
 selection, a partial eraser, a full refresh against

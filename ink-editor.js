@@ -167,6 +167,7 @@
     renderAll(v);
     wireInput(v);
     wireLifecycle(v);
+    watchHoles(v);
     startLog(v);
     paintTools(v);
     setStatus(v, v.rev !== v.savedRev ? 'Unsaved' : 'Saved');
@@ -366,7 +367,9 @@
     const items = gone.map((stroke, index) => ({ stroke, index })).reverse(); // as the eraser records them: last first
     list.length = 0;
     repaint(v, i, unionBox(gone));
-    commit(v, { type: 'erase', page: i, items });
+    const op = { type: 'erase', page: i, items };
+    commit(v, op);
+    offerUndo(v, op, items.length);
   }
   // Which pen draws here, said plainly: the way to tell an app update took.
   function paintPenMode() {
@@ -381,7 +384,7 @@
       : 'Pen drawn by the app';
   }
   function setTool(v, tool) {
-    if (tool !== 'lasso') clearSel(v);
+    if (tool !== 'lasso') { clearSel(v); hidePasteBar(v); }
     v.tool = tool; v.root.dataset.tool = tool; paintTools(v);
     if (!v.root.querySelector('.ink-pop:not([hidden])')) native(v, true);
   }
@@ -1078,6 +1081,10 @@
     else if (!mod && !ev.altKey && k === 'e') setTool(v, 'eraser');
     else if (!mod && !ev.altKey && k === 'l') setTool(v, 'lasso');
     else if (!mod && v.sel && (k === 'delete' || k === 'backspace')) deleteSel(v);
+    else if (mod && k === 'c' && v.sel) copySel(v);
+    else if (mod && k === 'x' && v.sel) { copySel(v); deleteSel(v); }
+    else if (mod && k === 'v' && readClip()) { const i = visiblePage(v), c = readClip(), r = v.pages[i].el.getBoundingClientRect(), s2 = v.scroll.getBoundingClientRect();
+      const [cx, cy] = toPage(r, s2.left + s2.width / 2, s2.top + s2.height / 2); setTool(v, 'lasso'); paste(v, i, cx - c.w / 2, cy - c.h / 2); }
     else if (k === 'escape' && v.sel) clearSel(v);
     else if (!mod && !ev.altKey && (k === 'pagedown' || k === 'pageup')) { v.scroll.scrollBy({ top: (k === 'pagedown' ? 1 : -1) * v.scroll.clientHeight * 0.9 }); }
     else done = false;
@@ -1329,7 +1336,6 @@
     if (touch) return false; // a finger outside it scrolls, as everywhere
     ev.preventDefault();
     if (ev.pointerType === 'pen') { v.lastPen = performance.now(); notePen(); }
-    clearSel(v);
     const i = pageAt(v, ev.clientY);
     const rect = v.pages[i].el.getBoundingClientRect(), stage = v.scroll.getBoundingClientRect();
     v.lasso = { id: ev.pointerId, page: i, rect, stage, pts: [], last: null };
@@ -1356,16 +1362,104 @@
     const L = v.lasso;
     v.lasso = null;
     settleLive(v, true);
-    if (cancelled || L.pts.length < 6) return;
-    const poly = L.pts, list = v.note.pages[L.page].strokes;
+    if (cancelled) return;
+    lassoFinish(v, L.page, L.pts);
+  }
+  // A finished loop (page units), from the page's own lasso or the app's
+  // fast one. A loop too small to hold anything is a tap: it lets go of a
+  // selection, or offers to paste what was copied, there.
+  function lassoFinish(v, page, poly) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let k = 0; k < poly.length; k += 2) { x0 = Math.min(x0, poly[k]); x1 = Math.max(x1, poly[k]); y0 = Math.min(y0, poly[k + 1]); y1 = Math.max(y1, poly[k + 1]); }
+    if (poly.length < 6 || Math.max(x1 - x0, y1 - y0) * v.scale < 8) {
+      if (v.sel || v.pasteBar) { clearSel(v); hidePasteBar(v); }
+      else if (poly.length >= 2 && readClip()) showPasteBar(v, page, poly[0], poly[1]);
+      return;
+    }
+    hidePasteBar(v);
+    const list = v.note.pages[page].strokes;
     const chosen = list.filter(st => {
       const p = st.pts, n = p.length / 3;
       let inside = 0;
       for (let k = 0; k < p.length; k += 3) if (inPoly(poly, p[k], p[k + 1])) inside++;
       return inside * 2 >= n && inside > 0;
     });
-    if (!chosen.length) { toastSafe('Nothing inside the loop: circle the lines to select.'); return; }
-    selectStrokes(v, L.page, chosen);
+    if (!chosen.length) { clearSel(v); toastSafe('Nothing inside the loop: circle the lines to select.'); return; }
+    selectStrokes(v, page, chosen);
+  }
+
+  // ---- copy and paste ----
+  // What was copied is kept on this device (so it pastes into another note
+  // too), as lines relative to their box's corner. Also offered to the
+  // system clipboard as a picture where the browser allows it, to paste
+  // into a message or another app.
+  const CLIP = 'chattering.ink.clip';
+  function readClip() {
+    try { const c = JSON.parse(localStorage.getItem(CLIP) || 'null'); return c && Array.isArray(c.strokes) && c.strokes.length ? c : null; } catch { return null; }
+  }
+  function copySel(v) {
+    const S = v.sel;
+    if (!S) return;
+    const ox = S.box.x0, oy = S.box.y0;
+    const strokes = S.list.map(st => {
+      const pts = st.pts.map((n, k) => k % 3 === 0 ? +(n - ox).toFixed(1) : k % 3 === 1 ? +(n - oy).toFixed(1) : +n.toFixed(2));
+      const out = { pts, w: st.w, color: st.color || '' };
+      if (st.pen) out.pen = st.pen;
+      return out;
+    });
+    try { localStorage.setItem(CLIP, JSON.stringify({ strokes, w: S.box.x1 - ox, h: S.box.y1 - oy })); }
+    catch { return toastSafe('Too much to copy at once.'); }
+    try {
+      if (navigator.clipboard && window.ClipboardItem) {
+        const img = selImage(v);
+        fetch(img.preview).then(r => r.blob()).then(blob => navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])).catch(() => {});
+      }
+    } catch {}
+    toastSafe(S.list.length === 1 ? 'Copied one line. In Select, tap where it should go.' : `Copied ${S.list.length} lines. In Select, tap where they should go.`);
+  }
+  // Paste with the copied box's corner at (x, y) on a page, kept on the
+  // page; the pasted lines are the selection, to drag into place.
+  function paste(v, page, x, y) {
+    const c = readClip();
+    if (!c) return toastSafe('Nothing copied yet: select lines, then Copy.');
+    hidePasteBar(v);
+    clearSel(v);
+    x = Math.max(0, Math.min(F.PAGE_W - c.w, x)); y = Math.max(0, Math.min(F.PAGE_H - c.h, y));
+    const now = Date.now();
+    const to = c.strokes.map((st, k) => {
+      const pts = st.pts.map((n, j) => j % 3 === 0 ? n + x : j % 3 === 1 ? n + y : n);
+      const out = { pts, w: st.w, t0: now + k, dur: 0, color: st.color || '' };
+      if (st.pen && F.PENS[st.pen]) out.pen = st.pen;
+      return out;
+    });
+    const op = { type: 'move', page, from: [], to };
+    apply(v, op, false);
+    commit(v, op);
+    if (page === v.note.pages.length - 1) { // the last page has writing: a fresh one waits below
+      v.note.pages.push(F.blankPage());
+      v.pagesEl.appendChild(pageEl(v, v.note.pages[v.note.pages.length - 1], v.note.pages.length - 1));
+    }
+    selectStrokes(v, page, to);
+  }
+  function showPasteBar(v, page, x, y) {
+    hidePasteBar(v);
+    const pg = v.pages[page];
+    if (!pg) return;
+    const k = v.pageW / F.PAGE_W;
+    const bar = document.createElement('div');
+    bar.className = 'ink-sel-bar ink-paste-bar';
+    bar.innerHTML = '<button type="button" data-sel="paste">Paste here</button><button type="button" data-sel="cancel">Cancel</button>';
+    bar.style.cssText = `left:${Math.max(4, Math.min(x * k - 10, v.pageW - 210))}px;top:${Math.max(4, y * k - 52)}px`;
+    bar.querySelector('[data-sel=paste]').onclick = () => paste(v, page, x, y);
+    bar.querySelector('[data-sel=cancel]').onclick = () => hidePasteBar(v);
+    pg.el.appendChild(bar);
+    v.pasteBar = bar;
+    holesSoon(v);
+  }
+  function hidePasteBar(v) {
+    if (!v.pasteBar) return;
+    v.pasteBar.remove(); v.pasteBar = null;
+    holesSoon(v);
   }
   function inPoly(poly, x, y) {
     let inside = false;
@@ -1404,14 +1498,16 @@
     el.appendChild(c);
     const bar = document.createElement('div');
     bar.className = 'ink-sel-bar';
-    bar.innerHTML = `<button type="button" data-sel="ask" title="Send these lines, as a picture, to a conversation">✦ Ask</button><button type="button" data-sel="delete">Delete</button><button type="button" data-sel="done">Done</button>`;
+    bar.innerHTML = `<button type="button" data-sel="ask" title="Send these lines, as a picture, to a conversation">✦ Ask</button><button type="button" data-sel="copy">Copy</button><button type="button" data-sel="done">Done</button><button type="button" class="ink-sel-danger" data-sel="delete">Delete</button>`;
     const above = y0 * k > 56;
-    bar.style.cssText = `left:${Math.max(4, Math.min(x0 * k, v.pageW - 260))}px;top:${above ? y0 * k - 50 : (y0 + h) * k + 8}px`;
+    bar.style.cssText = `left:${Math.max(4, Math.min(x0 * k, v.pageW - 350))}px;top:${above ? y0 * k - 50 : (y0 + h) * k + 8}px`;
+    bar.querySelector('[data-sel=copy]').onclick = () => copySel(v);
     bar.querySelector('[data-sel=ask]').onclick = () => askSel(v);
     bar.querySelector('[data-sel=delete]').onclick = () => deleteSel(v);
     bar.querySelector('[data-sel=done]').onclick = () => clearSel(v);
     pg.el.append(el, bar);
     S.el = el; S.bar = bar;
+    holesSoon(v);
   }
   function inSel(v, ev) {
     const S = v.sel;
@@ -1425,6 +1521,7 @@
     v.sel = null;
     S.el?.remove(); S.bar?.remove();
     repaint(v, S.page, S.box);
+    holesSoon(v);
   }
   function dragMove(v, ev) {
     const D = v.drag, S = v.sel;
@@ -1464,9 +1561,18 @@
     const list = v.note.pages[S.page].strokes;
     const items = S.list.map(stroke => ({ stroke, index: list.indexOf(stroke) })).filter(it => it.index >= 0).sort((a, b) => b.index - a.index);
     S.el?.remove(); S.bar?.remove(); v.sel = null;
+    holesSoon(v);
     for (const it of items) list.splice(it.index, 1);
     repaint(v, S.page, S.box);
-    commit(v, { type: 'erase', page: S.page, items });
+    const op = { type: 'erase', page: S.page, items };
+    commit(v, op);
+    offerUndo(v, op, items.length);
+  }
+  // Removing many lines at once says so, with a way back right where the
+  // eye is (the toolbar's undo is far on a big tablet).
+  function offerUndo(v, op, n) {
+    if (typeof toast !== 'function') return;
+    try { toast(`Deleted ${n === 1 ? 'one line' : n + ' lines'}. Tap here to undo.`, () => { if (!v.disposed && v.undo[v.undo.length - 1] === op) undo(v); }, '', { repeat: true }); } catch {}
   }
   // The selected lines as a picture: on white, as they look, a margin around.
   function selImage(v) {
@@ -1520,6 +1626,155 @@
     if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
   }
 
+  // ---- what covers the writing area (the app's holes) ----
+  // The app's fast layer takes the pen anywhere in the writing area's
+  // rectangle. Anything of the page over that rectangle (a menu dropping
+  // from the side list or the toolbar, a dialog, a drawer, the lasso's
+  // selection and its buttons) must get the pen instead, or a tap there
+  // draws a line (seen on the AINOTE with the side list's menus).
+  //
+  // What covers it is found from what changes: an element added, shown or
+  // moved (a MutationObserver, on this page and on the shell around it) is a
+  // candidate when it lies over the area and is not part of it; it is a
+  // cover when the browser says it is on top at a few points of that
+  // overlap. Covers are checked again at every change and dropped when
+  // gone. A grid of hit tests over the whole area was tried first: 230 to
+  // 330 ms each time on the AINOTE, too slow to run on every change.
+  // The app is told the covers (setHoles); an older app gives the page the
+  // pen while anything covers the area.
+  function holesSoon(v, ms = 60) {
+    if (!v || v.disposed) return;
+    // Throttled, not debounced: a stream of changes (a conversation beside
+    // writing its answer) must not put the update off forever.
+    const due = performance.now() + ms;
+    if (v.holesTimer && v.holesDue <= due) return;
+    clearTimeout(v.holesTimer);
+    v.holesDue = due;
+    v.holesTimer = setTimeout(() => { v.holesTimer = 0; updateHoles(v); }, ms);
+  }
+  function updateHoles(v) {
+    if (v.disposed || !v.note) return;
+    if (v.draw || v.drag || v.lasso) return holesSoon(v, 250); // never while the pen is busy
+    const t0 = performance.now();
+    const next = computeHoles(v);
+    const ms = performance.now() - t0;
+    const key = JSON.stringify(next);
+    if (key === v.holesKey) return;
+    v.holesKey = key; v.holes = next;
+    logLine(v, { event: 'holes', n: next.length, ms: Math.round(ms * 10) / 10 });
+    native(v, !v.root.querySelector('.ink-pop:not([hidden])'), { regionOnly: !!v.nativeOn === nativeWanted(v) });
+  }
+  function nativeWanted(v) {
+    const n = nativeInk();
+    if (!n) return false;
+    const precise = typeof n.setHoles === 'function';
+    return !v.root.querySelector('.ink-pop:not([hidden])') && (precise || (v.tool !== 'lasso' && !(v.holes && v.holes.length)));
+  }
+  // The shell around the frame (the encrypted link), when there is one: its
+  // document and where the frame sits in it.
+  function shellOf() {
+    try {
+      if (window.parent === window || window.parent !== window.top) return null;
+      const off = frameOffset();
+      return off ? { doc: window.top.document, frame: window.frameElement, off } : null;
+    } catch { return null; }
+  }
+  // Is this element (or one of its) a candidate cover: outside the writing
+  // area and not one of its ancestors? An ancestor that changed (a class on
+  // the body showing a drawer) stands for its positioned children.
+  function candidates(v, el, into) {
+    if (!el || el.nodeType !== 1 || !el.isConnected) return;
+    if (v.scroll.contains(el)) return;
+    if (el.contains(v.scroll) || (el.ownerDocument !== document && el.contains(window.frameElement))) {
+      const kids = el.children;
+      for (let i = 0; i < kids.length && i < 120; i++) {
+        const c = kids[i];
+        if (c.contains(v.scroll) || (c.ownerDocument !== document && c.contains(window.frameElement))) continue;
+        const pos = getComputedStyle(c).position;
+        if (pos === 'fixed' || pos === 'absolute' || pos === 'sticky') into.add(c);
+      }
+      return;
+    }
+    into.add(el);
+  }
+  // Where an element (with whatever hangs from it: a menu's list is often
+  // an absolute child outside its box) overlaps the writing area, in this
+  // page's css pixels; null when it does not.
+  function coverBox(v, el, area, shell) {
+    if (!el.isConnected) return null;
+    const dx = el.ownerDocument === document ? 0 : -shell.off[0], dy = el.ownerDocument === document ? 0 : -shell.off[1];
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const add = r => { if (r.width > 0 && r.height > 0) { x0 = Math.min(x0, r.left + dx); y0 = Math.min(y0, r.top + dy); x1 = Math.max(x1, r.right + dx); y1 = Math.max(y1, r.bottom + dy); } };
+    add(el.getBoundingClientRect());
+    const all = el.getElementsByTagName('*');
+    for (let i = 0; i < all.length && i < 300; i++) add(all[i].getBoundingClientRect());
+    const box = [Math.max(x0, area.left), Math.max(y0, area.top), Math.min(x1, area.right), Math.min(y1, area.bottom)];
+    return box[2] > box[0] + 1 && box[3] > box[1] + 1 ? box : null;
+  }
+  // On top somewhere in that overlap: the browser's own answer at a 3×3 of points.
+  function onTop(v, el, box, shell) {
+    const local = el.ownerDocument === document;
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) {
+      const x = box[0] + (box[2] - box[0]) * (0.15 + 0.35 * i), y = box[1] + (box[3] - box[1]) * (0.15 + 0.35 * j);
+      const hit = local ? document.elementFromPoint(x, y) : shell.doc.elementFromPoint(x + shell.off[0], y + shell.off[1]);
+      if (hit && (hit === el || el.contains(hit)) && !(local && v.scroll.contains(hit))) return true;
+    }
+    return false;
+  }
+  function computeHoles(v) {
+    const area = v.scroll.getBoundingClientRect(), shell = shellOf();
+    v.covers ||= new Set();
+    for (const el of v.coverCands || []) v.covers.add(el);
+    v.coverCands = new Set();
+    const out = [];
+    for (const el of [...v.covers]) {
+      if (el.ownerDocument !== document && !shell) { v.covers.delete(el); continue; }
+      const box = coverBox(v, el, area, shell);
+      if (!box || !onTop(v, el, box, shell)) { v.covers.delete(el); continue; }
+      out.push(box.map((n, k) => Math.round(k < 2 ? n - 4 : n + 4)));
+    }
+    // The lasso's own: its frame (it takes no taps, so the browser does not
+    // see it on top), its buttons, the paste bar.
+    for (const el of [v.sel && v.sel.el, v.sel && v.sel.bar, v.pasteBar]) {
+      if (!el || !el.isConnected || el.hidden) continue;
+      const q = el.getBoundingClientRect(), pad = el === (v.sel && v.sel.el) ? 8 : 4;
+      out.push([q.left - pad, q.top - pad, q.right + pad, q.bottom + pad].map(Math.round));
+    }
+    return out.slice(0, 48);
+  }
+  function holesText(v, ox, oy) {
+    return (v.holes || []).map(q => [q[0] + ox, q[1] + oy, q[2] + ox, q[3] + oy].join(',')).join(';');
+  }
+  // What can change the cover: anything added, shown, hidden or moved in
+  // the page or the shell around it. Changes far from the writing area (a
+  // conversation beside, streaming) cost one rectangle each and no more.
+  function watchHoles(v) {
+    const area = () => v.scroll.getBoundingClientRect();
+    const mo = new MutationObserver(recs => {
+      let any = !!(v.covers && v.covers.size);
+      const into = v.coverCands ||= new Set();
+      const before = into.size;
+      for (let i = 0; i < recs.length && i < 60; i++) {
+        const r = recs[i];
+        if (r.type === 'childList') { for (const n of r.addedNodes) candidates(v, n.nodeType === 1 ? n : null, into); }
+        else candidates(v, r.target, into);
+      }
+      // Only those over the area count; the rest are forgotten now.
+      if (into.size > before) {
+        const a = area(), shell = shellOf();
+        for (const el of [...into]) if (!coverBox(v, el, a, shell)) into.delete(el);
+      }
+      if (any || into.size) holesSoon(v, 80);
+    });
+    const opts = { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'hidden', 'open', 'style', 'aria-expanded'] };
+    mo.observe(document.body, opts);
+    try { if (window.top !== window && window.top.document.body) mo.observe(window.top.document.body, opts); } catch {}
+    const resize = () => holesSoon(v, 120);
+    window.addEventListener('resize', resize);
+    v.cleanups.push(() => { mo.disconnect(); window.removeEventListener('resize', resize); clearTimeout(v.holesTimer); });
+    holesSoon(v, 0);
+  }
+
   // ---- the Android app's pen nib ----
   // On the app, the pen is the app's (InkOverlay.kt): it draws the live line
   // itself, on the e-ink panel's own overlay where the device has one (the
@@ -1563,14 +1818,21 @@
     try {
       // The lasso is the page's: it draws its own dashed loop and needs every
       // tap (a selection's buttons, a drag), not a line from the app.
-      const on = want && !v.disposed && !!v.note && v.tool !== 'lasso';
+      // The app's fast layer draws the lasso's loop too, once it can leave
+      // the covered parts (the selection, its buttons) to the page: an app
+      // with setHoles (0.3.8). An older one: the page has the lasso, and
+      // the pen whenever anything covers the writing area.
+      const precise = typeof n.setHoles === 'function';
+      const on = want && !v.disposed && !!v.note && (precise || (v.tool !== 'lasso' && !(v.holes && v.holes.length)));
+      v.nativeOn = on;
       if (!on) { if (!regionOnly) { n.setEnabled(false); } return; }
       const r = v.scroll.getBoundingClientRect(), [ox, oy] = frameOffset();
       // The page's css pixel in device pixels, so the app maps the region and
       // the lines with the page's own ratio, not one it assumes.
       n.setPixelRatio?.(devicePixelRatio);
       n.setRegion(Math.round(r.left + ox), Math.round(r.top + oy), Math.round(r.right + ox), Math.round(r.bottom + oy));
-      if (!regionOnly) { n.setErase(v.tool === 'eraser'); n.setWidth?.(v.width * v.scale); nativePen(v, n); if (typicalP) n.setPressureTypical?.(typicalP); n.setEnabled(true); }
+      if (precise) n.setHoles(holesText(v, ox, oy));
+      if (!regionOnly) { n.setErase(v.tool === 'eraser'); n.setWidth?.(v.tool === 'lasso' ? 1.4 : v.width * v.scale); nativePen(v, n); if (typicalP) n.setPressureTypical?.(typicalP); n.setEnabled(true); }
     } catch {}
   }
   // The pen in hand, for the app's live line (app 0.3.7+; an older app draws
@@ -1582,6 +1844,7 @@
   // the line as a view (phones).
   function nativePen(v, n) {
     if (typeof n.setPen !== 'function') return;
+    if (v.tool === 'lasso') { try { n.setPen('lasso', 0x200, 0xff000000 | 0); } catch {} return; } // dashed (ebc_nib.c TONE_DASH)
     const pen = F.PENS[v.penId] || F.PENS.ballpoint;
     const c = v.color;
     const grey = c === '#5c5c5c' ? 10 : c === '#a0a0a0' ? 5 : 16;
@@ -1594,7 +1857,8 @@
     try { n.setPen(v.penId || 'ballpoint', tone, (alpha * 0x1000000 + parseInt(hex, 16)) | 0); } catch {}
   }
   // A line the app drew: "x,y[,pressure[,ms]] …" in the page's css pixels.
-  function acceptPacked(packed, erase) {
+  // pen: the pen the app drew it with (0.3.8); "lasso" is a selection loop.
+  function acceptPacked(packed, erase, pen) {
     const v = view;
     if (!v || v.disposed || !v.note) return;
     const pts = [], [ox, oy] = frameOffset() || [0, 0];
@@ -1605,6 +1869,14 @@
     if (!pts.length) return;
     const i = pageAt(v, pts[0][1]);
     const rect = v.pages[i].el.getBoundingClientRect();
+    if (pen === 'lasso') {
+      const poly = [];
+      for (const [cx, cy] of pts) poly.push(...toPage(rect, cx, cy));
+      lassoFinish(v, i, poly);
+      // The dashed loop on the panel goes now: the selection's frame replaces it.
+      try { nativeInk()?.clearLive(); } catch {}
+      return;
+    }
     if (erase || v.tool === 'eraser') {
       const items = [], radius = eraseRadius(v);
       let last = null;

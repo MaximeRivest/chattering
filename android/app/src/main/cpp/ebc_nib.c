@@ -60,6 +60,7 @@ struct nib {
     int width, height;
     int left, top, right, bottom;
     int rotation;
+    float dash; /* panel pixels travelled by a dashed line so far */
 };
 
 struct dirty { int left, top, right, bottom, valid; };
@@ -99,6 +100,12 @@ static void clear_memory(struct nib *n) {
  * random speckle, a pencil's grain. The mask is the panel's pixel, so a
  * line drawn over itself stays the same and never fills in. */
 #define TONE_GRAIN 0x100
+/* A dashed line (the lasso's loop): DASH_ON panel pixels drawn, then a gap,
+ * counted along the whole line across calls; TONE_START begins a new line. */
+#define TONE_DASH 0x200
+#define TONE_START 0x400
+#define DASH_ON 14.0f
+#define DASH_PERIOD 24.0f
 static const uint8_t BAYER[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
 static int tone_on(int tone, int x, int y) {
     int density = tone & 0xff;
@@ -167,11 +174,13 @@ static void segment(struct nib *n, float x1, float y1, float ra, float x2, float
     if (steps < 1) steps = 1;
     for (int i = 0; i <= steps; i++) {
         float t = (float)i / (float)steps;
+        if ((tone & TONE_DASH) && fmodf(n->dash + len * t, DASH_PERIOD) >= DASH_ON) continue;
         int cx = (int)lroundf(ax + (bx - ax) * t), cy = (int)lroundf(ay + (by - ay) * t);
         float r = ra + (rb - ra) * t;
         if ((tone & 0xff) > 0 && (tone & 0xff) < 16) disc_tone(n, cx, cy, r, value, tone);
         else disc(n, cx, cy, r, value);
     }
+    if (tone & TONE_DASH) n->dash += len;
     float r = ra > rb ? ra : rb;
     int pad = (int)ceilf(r) + 2;
     grow(d, (int)floorf(fminf(ax, bx)) - pad, (int)floorf(fminf(ay, by)) - pad,
@@ -242,6 +251,7 @@ static jint polyline(JNIEnv *env, jlong handle, jfloatArray xs, jfloatArray ys, 
     if (px && py && pr) {
         uint8_t value = erase ? TRANSPARENT_Y8 : BLACK_Y8;
         if (erase) tone = 0;
+        if (tone & TONE_START) n->dash = 0;
         struct dirty d = {0, 0, 0, 0, 0};
         if (count == 1) segment(n, px[0], py[0], pr[0], px[0], py[0], pr[0], value, tone, &d);
         for (jint i = 1; i < count; i++) segment(n, px[i - 1], py[i - 1], pr[i - 1], px[i], py[i], pr[i], value, tone, &d);
