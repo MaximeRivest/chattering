@@ -54,7 +54,9 @@ cat > "$NOTES" <<EOF
 - Signing certificate SHA-256: \`$CERT_COLONS\` (\`apksigner verify --print-certs Chattering-android.apk\`)
 - Built from commit $COMMIT (\`scripts/build-android.sh\`).
 
-**Not yet in this alpha:** downloads and background notifications over the encrypted link (both work with a direct server address); updates are not automatic.
+**Notifications** (from 0.3.11): Settings → notifications → *Turn on notifications*, once per computer. They arrive through the encrypted link, at home or away, end-to-end encrypted. Android shows a small \"listening\" notice while they are on; long-press it to hide that notice.
+
+**Not yet in this alpha:** downloads over the encrypted link (they work with a direct server address); updates are not automatic.
 EOF
 
 gh release upload android "$APK" dist/Chattering-android.apk.sha256 --clobber -R "$REPO"
