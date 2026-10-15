@@ -8,7 +8,9 @@
 
    Kept on this phone (IndexedDB, this site only): per paired computer, its
    id and name, and this phone's key for it — a key the browser created and
-   will not let any script read out. Nothing else. */
+   will not let any script read out. And, once notifications are turned on,
+   the key this phone's notification address is bound to (design/100).
+   Nothing else. */
 (function () {
   'use strict';
   const P = window.AnywhereProtocol, C = window.AnywhereClient;
@@ -497,6 +499,10 @@
     },
     homes: () => homes.map(h => ({ id: h.homeId, name: h.name, active: h.homeId === active })),
     switchTo, openSheet,
+    // Notifications (design/100): the key this device's one subscription is
+    // bound to, made here once and given to each computer that should be
+    // able to notify it (push-ui.js sends it through the tunnel).
+    pushKey,
     // Where the app shows what agents make, and a promise that it can.
     preview: PREVIEW ? { origin: PREVIEW, ready: () => previewReady() } : null,
   };
@@ -661,10 +667,60 @@
     return out;
   }
 
+  /* ---- notifications (design/100) ---- */
+  // A browser subscription is bound to one signing key, and this site's one
+  // subscription serves every paired computer: the key is this device's,
+  // kept here beside the pairings, readable by those computers' app only.
+  let pushKeyP = null;
+  function pushKey() {
+    return pushKeyP || (pushKeyP = (async () => {
+      let k = await kvGet('push-vapid');
+      if (!k || !k.privateJwk || !k.publicKey) {
+        const s = P.subtle();
+        const pair = await s.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+        const jwk = await s.exportKey('jwk', pair.privateKey);
+        const raw = new Uint8Array(await s.exportKey('raw', pair.publicKey));
+        k = { privateJwk: { kty: 'EC', crv: 'P-256', x: jwk.x, y: jwk.y, d: jwk.d }, publicKey: P.b64u(raw) };
+        await kvSet('push-vapid', k);
+      }
+      return k;
+    })().catch(e => { pushKeyP = null; throw e; }));
+  }
+
+  /* ---- a tapped notification ---- */
+  // Opens `path` (a conversation's address in the app) at computer
+  // `homeId`: switching computers first when it is another one, else
+  // moving the app already open, without reloading it.
+  async function openAt(homeId, path) {
+    path = typeof path === 'string' && path.startsWith('/') && !path.startsWith('//') ? path : '/';
+    if (!$('sheet').hidden) closeSheet();
+    if (homeId && homeOf(homeId) && homeId !== active) {
+      await switchTo(homeId);
+      history.replaceState(null, '', path); // the app opens there once connected
+      return;
+    }
+    const target = new URL(path, location.origin);
+    if (frame && frame.contentWindow) {
+      try {
+        const w = frame.contentWindow;
+        if (w.location.pathname === target.pathname && target.hash) { if (w.location.hash !== target.hash) w.location.hash = target.hash; }
+        else w.location.href = target.pathname + target.search + target.hash;
+        return;
+      } catch {}
+    }
+    history.replaceState(null, '', path);
+  }
+  // The Android app's notifications land here (MainActivity, onNewIntent).
+  window.anywhereOpen = (homeId, path) => { openAt(homeId, path); return true; };
+
   /* ---- start ---- */
   async function worker() {
     if (!('serviceWorker' in navigator)) throw Object.assign(new Error('This browser cannot run Chattering here (no service workers). Chrome, Safari, Firefox and Edge can.'), { code: 'browser' });
-    navigator.serviceWorker.addEventListener('message', ev => { const m = ev.data; if (m && m.type === 'anywhere-fetch') onFetch(m, ev.ports[0]); });
+    navigator.serviceWorker.addEventListener('message', ev => {
+      const m = ev.data;
+      if (m && m.type === 'anywhere-fetch') onFetch(m, ev.ports[0]);
+      else if (m && m.type === 'chattering-open') openAt(m.home, m.url);
+    });
     await navigator.serviceWorker.register('/sw.js', { scope: '/' });
     if (navigator.serviceWorker.controller) { sessionStorage.removeItem('anywhere-reloads'); return; }
     await new Promise(res => { navigator.serviceWorker.addEventListener('controllerchange', res, { once: true }); setTimeout(res, 5000); });
@@ -822,6 +878,15 @@
       active = (await kvGet('active')) || null;
       if (!homeOf(active)) active = homes[0] ? homes[0].homeId : null;
       await worker();
+      // A notification tapped with no window open (push-worker.js): it
+      // names its computer; the address keeps only the conversation.
+      const want = new URLSearchParams(location.search).get('home');
+      if (want) {
+        const u = new URL(location.href);
+        u.searchParams.delete('home');
+        history.replaceState(null, '', u.pathname + u.search + u.hash);
+        if (homeOf(want) && want !== active) { active = want; await kvSet('active', active); }
+      }
     } catch (e) {
       return showProblem('Chattering cannot start here', esc(e.message), [['Reload', 'reload', true, () => location.reload()]]);
     }

@@ -14,7 +14,9 @@
      network candidates through it;
    - hands both short-lived TURN credentials, so when no direct path exists
      the relay's TURN server (coturn, beside this) carries the encrypted
-     packets.
+     packets;
+   - holds notifications for the Android app until it takes them
+     (mailbox.js): encrypted on the computer, readable only by the app.
 
    What it cannot do: read anything. The tunnel between phone and home is
    end-to-end encrypted by WebRTC (DTLS), and both ends prove who they are
@@ -52,6 +54,7 @@ const { acceptWebSocket, refuseUpgrade } = require('../wsserver.js');
 const P = require('./protocol.js');
 const { createUsage } = require('./usage.js');
 const { createSite } = require('./site.js');
+const { createMailbox } = require('./mailbox.js');
 
 const LIMITS = {
   message: 16 * 1024,        // one signalling message
@@ -81,6 +84,9 @@ function createRelay(opts = {}) {
   const perAddress = new Map(); // address → open sockets (memory only)
   // Public addresses for shared links (site.js): off unless SITE_DOMAIN.
   const site = opts.site || createSite({ env, now: opts.now });
+  // Notifications for the Android app (mailbox.js, design/100): encrypted
+  // messages held in memory until the app takes them.
+  const mailbox = opts.mailbox || createMailbox({ now: opts.now });
 
   // TURN credentials the coturn "use-auth-secret" way: the name is when it
   // stops working, the password an HMAC of the name. coturn checks both
@@ -184,6 +190,7 @@ function createRelay(opts = {}) {
     const previewOf = P.relayHostOfPreview(hostOf(req));
     if (previewOf && u.pathname !== '/healthz') return servePreviewSite(req, res, u, previewOf);
     if (u.pathname === '/healthz') { res.writeHead(200, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); return res.end('ok\n'); }
+    if (mailbox.http(req, res, u)) return;
     // TEMPORARY (2026-10-08, to be removed): an iPhone home-screen icon's
     // layout numbers, to find why the app stops short of the screen's
     // bottom there. Numbers and a few flags only, never a person or an
@@ -251,6 +258,7 @@ function createRelay(opts = {}) {
     const u = pathOf(req.url);
     if (u && site.upgrade(req, socket, head, u, acceptWebSocket, refuseUpgrade)) return;
     if (P.relayHostOfPreview(hostOf(req))) return refuseUpgrade(socket, 404, 'Not Found');
+    if (u && mailbox.upgrade(req, socket, head, u, acceptWebSocket, refuseUpgrade)) return;
     if (!u || u.pathname !== '/signal') return refuseUpgrade(socket, 404, 'Not Found');
     const addr = addressOf(req);
     if ((perAddress.get(addr) || 0) >= LIMITS.perAddress) return refuseUpgrade(socket, 429, 'Too Many Requests');
@@ -386,7 +394,7 @@ function createRelay(opts = {}) {
   const server = http.createServer(serve);
   server.on('upgrade', onUpgrade);
   server.on('clientError', (e, socket) => { try { socket.destroy(); } catch {} });
-  return { server, homes, iceServers, usage, site, close: () => { clearInterval(sweeper); clearInterval(saver); usage.save(); server.close(); site.close(); } };
+  return { server, homes, iceServers, usage, site, mailbox, close: () => { clearInterval(sweeper); clearInterval(saver); usage.save(); server.close(); site.close(); mailbox.close(); } };
 }
 
 if (require.main === module) {

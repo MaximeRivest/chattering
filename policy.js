@@ -42,6 +42,9 @@ const ROUTES = {
   'POST /api/users/*': 'guest', // a person edits their own profile; roster changes are checked in the handler
   '/api/users/avatar': 'guest',
   '/api/presence': 'guest',
+  // Notifications (design/100): each person manages their own devices.
+  '/api/push': 'guest',
+  '/api/push/*': 'guest',
   '/api/themes': 'guest',
   '/api/themes.css': 'guest',
   '/api/models': 'guest',

@@ -58,6 +58,9 @@ const responseSpeed = require('./responsespeed.js');
 const sessionPayloadLib = require('./session-payload.js');
 const sessionHasher = sessionPayloadLib.createHasher();
 const agentReadLib = require('./agentread.js');
+const pushLib = require('./push.js');
+const pushPolicy = require('./push-policy.js');
+const { createPushNotifier } = require('./push-notify.js');
 const { createModelHealth } = require('./modelhealth.js');
 const delegationLib = require('./delegation.js');
 const { createDelegationCoordinator, inspectDeliverySession, TERMINAL: DELEGATION_TERMINAL } = require('./server-delegations.js');
@@ -1295,6 +1298,126 @@ function receiverFor(identity) {
       try { assertPathAccess(identity, path.resolve(expandHomePath(abs)), 'see', folders); return true; } catch { return false; }
     },
   };
+}
+
+// ---- notifications on a person's devices (design/100) --------------------
+// push.js keeps the devices and delivers; push-policy.js says when a buzz
+// is welcome and what it says; push-notify.js merges bursts. Made on first
+// use (the VAPID key is created then).
+let pushState = null;
+function pushRelayOrigins() {
+  const out = [];
+  for (const u of [(appSettings.anywhere && appSettings.anywhere.relay) || anywhereLib.DEFAULT_RELAY, anywhereLib.DEFAULT_RELAY]) { try { out.push(new URL(u).origin); } catch {} }
+  // Tests and private relays: more origins whose /_push/ may be posted to.
+  for (const o of String(process.env.CHATTERING_PUSH_ORIGINS || '').split(/[\s,]+/).filter(Boolean)) { try { out.push(new URL(o).origin); } catch {} }
+  return [...new Set(out)];
+}
+function pushing() {
+  if (pushState) return pushState;
+  const service = pushLib.createPushService({ dir: path.join(DATA_DIR, 'push'), extraOrigins: pushRelayOrigins, log: m => console.log(m) });
+  const here = new pushPolicy.HereBook();
+  const notifier = createPushNotifier({
+    service, here,
+    live: conn => sseByConn.has(conn),
+    home: pushHome,
+    recipients: pushRecipients,
+    canSee: (userId, key) => { const who = identityOfUserId(userId); return !!who && (!index[key] || keyVisible(who, key)); },
+    listed: key => agentReadLib.isListed(agentRead, key, (index[key] && index[key].mtimeMs) || 0),
+    unread: pushUnreadFor,
+    log: m => console.error('[push] ' + m),
+  });
+  pushState = { service, here, notifier, fanouts: new Map() };
+  return pushState;
+}
+// This computer as its devices know it: the encrypted link's id (the phone
+// opens the right computer from a notification), and its name.
+async function pushHome() {
+  let id = '';
+  try { id = await anywhere.homeId(); } catch {}
+  return { id: id || crypto.createHash('sha256').update('home\n' + HOST_NAME).digest('base64url').slice(0, 22), name: HOST_NAME };
+}
+// Who a notification is for: the person who asked, else whoever started
+// the conversation's program, else everyone who wrote in it, else the owner.
+function pushRecipients(key, askedBy) {
+  if (askedBy) return [askedBy];
+  const live = typeof liveIdentity !== 'undefined' && liveIdentity.get(key);
+  if (live && live.user && live.user.id) return [live.user.id];
+  const ids = ((index[key] && index[key].participants) || []).map(p => usersLib.resolveId(roster, p.id)).filter(Boolean);
+  if (ids.length) return ids;
+  const owner = usersLib.ownerOf(roster);
+  return owner ? [owner.id] : [];
+}
+// The unread replies of a person's list, for the app icon's badge and the
+// clearing of notifications read elsewhere: the side list's rule (a reply
+// in a conversation someone opened, not one still working).
+function pushUnreadFor(userId) {
+  const who = identityOfUserId(userId);
+  if (!who) return { count: 0, keys: [] };
+  const busy = new Set();
+  for (const r of headlessRuns.values()) if (r && r.key) busy.add(r.key);
+  for (const [k, st] of liveStates) if (st && st.working) busy.add(k);
+  const out = [];
+  for (const key of Object.keys(agentRead.opened)) {
+    const e = index[key];
+    if (!e || busy.has(key)) continue;
+    const at = agentReadLib.unreadAt(agentRead, key, e.mtimeMs || 0);
+    if (!at || !agentReadLib.isListed(agentRead, key, e.mtimeMs || 0) || !keyVisible(who, key)) continue;
+    out.push([key, at]);
+  }
+  out.sort((a, b) => b[1] - a[1]);
+  return { count: out.length, keys: out.map(x => x[0]) };
+}
+function pushTitle(key, fallback) {
+  const e = key && index[key];
+  return ((e && (e.title || e.timelineTitle)) || fallback || '').trim();
+}
+// A web or Codex run ended (broadcastRunFinal). Parallel answers report
+// once, when the last of them is in. A run the person stopped says nothing.
+function pushRunFinal(job, key) {
+  try {
+    const root = job.fanoutRootKey || key;
+    if (!root) return;
+    const stopped = /^stopped\b/.test(String(job.statusText || ''));
+    const said = job.status === 'done' && !stopped && String(job.lastAssistantText || '').trim() ? replyExcerpt(job.lastAssistantText, 400) : null;
+    const ps = pushing();
+    let count = 1, excerpt = said, failed = job.status === 'error' && !stopped;
+    if (job.fanoutId) {
+      // Every answer counts toward "all in", stopped or failed ones too.
+      const f = ps.fanouts.get(job.fanoutId) || { n: 0, ok: 0, excerpt: null, failed: null, at: Date.now() };
+      f.n++;
+      if (said) { f.ok++; f.excerpt = f.excerpt || said; }
+      if (failed) f.failed = f.failed || job.error || job.statusText;
+      ps.fanouts.set(job.fanoutId, f);
+      for (const [id, x] of ps.fanouts) if (Date.now() - x.at > 6 * 3600e3) ps.fanouts.delete(id);
+      if (f.n < (job.fanoutCount || 1)) return;
+      ps.fanouts.delete(job.fanoutId);
+      count = f.ok; excerpt = f.excerpt; failed = !f.ok && f.failed;
+    } else if (stopped) return; // the person stopped it
+    const title = () => pushTitle(root, job.title);
+    if (excerpt) ps.notifier.notify('reply', { key: root, title, excerpt, askedBy: job.askedBy, count });
+    else if (failed) ps.notifier.notify('failed', { key: root, title, detail: typeof failed === 'string' ? failed : job.error || job.statusText, askedBy: job.askedBy });
+  } catch (e) { console.error('[push] ' + e.message); }
+}
+function pushQuestion(key, detail, askedBy) {
+  if (!key) return;
+  try { pushing().notifier.notify('question', { key, title: () => pushTitle(key), detail, askedBy }); } catch (e) { console.error('[push] ' + e.message); }
+}
+// An agent's own program (design/91): "working" ending is a reply, unless
+// it resumes within seconds; a question it opens waits for an answer.
+function pushLiveState(key, prev, st) {
+  try {
+    const ps = pushing();
+    const who = () => { const i = typeof liveIdentity !== 'undefined' && liveIdentity.get(key); return i && i.user ? i.user.id : null; };
+    if (st && st.working) ps.notifier.cancel(key, 'reply');
+    if (prev && prev.waiting && !(st && st.waiting)) ps.notifier.cancel(key, 'question');
+    if (!st) return;
+    if (st.waiting && !(prev && prev.waiting)) {
+      ps.notifier.notify('question', { key, title: () => pushTitle(key), detail: '', askedBy: who() }, { wait: 2500 });
+    } else if (prev && prev.working && !st.working && !st.waiting) {
+      const excerpt = () => { const last = index[key] && index[key].last; return last && last.role === 'assistant' ? last.text : ''; };
+      ps.notifier.notify('reply', { key, title: () => pushTitle(key), excerpt, askedBy: who() }, { wait: 4000 });
+    }
+  } catch (e) { console.error('[push] ' + e.message); }
 }
 
 // ---- reading: one head per person per conversation (design/66) ----------
@@ -3321,6 +3444,7 @@ function broadcastRunFinal(job, key) {
   broadcast({ type: 'run-event', jobId: job.id, key, status: job.status, statusText: job.statusText, model: job.model, node: job.node || null, intent: job.intent || null,
     fanoutId: job.fanoutId, fanoutRootKey: job.fanoutRootKey, fanoutNode: job.fanoutNode,
     fanoutIndex: job.fanoutIndex, fanoutCount: job.fanoutCount, final: true, finishedAt, title, excerpt });
+  pushRunFinal(job, key);
 }
 
 // First plain words of a reply: code blocks and markdown marks dropped.
@@ -3526,6 +3650,8 @@ function runEventForwarder(job) {
             timeout: event.timeout || null, at: Date.now(),
           });
           job.statusText = 'waiting for you · ' + String(event.title || event.method).slice(0, 60);
+          // A dialog that answers itself within a minute is not worth a buzz.
+          if (!(Number(event.timeout) > 0 && Number(event.timeout) <= 60000)) pushQuestion(job.fanoutRootKey || job.key, String(event.title || event.message || '').slice(0, 300), job.askedBy);
         } else if (event.method === 'notify') {
           const mark = event.notifyType === 'error' ? '✗ ' : event.notifyType === 'warning' ? '⚠ ' : 'ℹ ';
           addRunNotice(job, mark + String(event.message || '').slice(0, 300));
@@ -3657,6 +3783,8 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
     // and what it is for: another version of a question's answer, a merge.
     node: node || null,
     intent: intent || null,
+    // Whose question this answers: the one told when it is ready (design/100).
+    askedBy: customMessage ? null : principal.user.id,
     ...(fanout ? {
       fanoutId: fanout.id, fanoutRootKey: fanout.rootKey, fanoutNode: fanout.node,
       fanoutIndex: fanout.index, fanoutCount: fanout.count,
@@ -3939,6 +4067,7 @@ async function delegationQuietReport(task, facts) {
 // machine plays the attention tone unless finish sounds are off or muted.
 function announceQuiet({ key, title, text, quietMs, level }) {
   broadcast({ type: 'attention', kind: 'quiet', key: key || null, title: title || null, text, quietMs, level, at: Date.now() });
+  if (key) { try { pushing().notifier.notify('quiet', { key, title: () => pushTitle(key, title), detail: text }); } catch (e) { console.error('[push] ' + e.message); } }
   if (doneSoundMode() !== 'off') enqueueAnnouncement({ tone: 'attention' });
 }
 // Can the parent conversation take a callback turn now? 'busy' waits;
@@ -4647,6 +4776,7 @@ function agentReadFinished(key, at) {
 function agentReadMark(keys) {
   const merged = { read: {} };
   let any = false;
+  if (pushState) for (const key of keys) pushState.notifier.cancel(key);
   for (const key of keys) {
     if (!key || !index[key]) continue;
     const d = agentReadLib.markRead(agentRead, key, { mtimeMs: index[key].mtimeMs });
@@ -9679,6 +9809,7 @@ function assertNotLive(key, what = 'This') {
 }
 function liveStateChanged(key, st) {
   const ended = !st || st.mode === 'ended' || !!st.exited;
+  pushLiveState(key, liveStates.get(key) || null, ended ? null : st);
   if (ended) { liveStates.delete(key); for (const [f, k] of liveHeld) if (k === key) liveHeld.delete(f); }
   else liveStates.set(key, st);
   const out = ended ? { mode: 'ended', working: false, waiting: false } : { mode: st.mode, working: !!st.working, waiting: !!st.waiting };
@@ -17113,6 +17244,11 @@ const STATIC_CACHE_MAX = 16 * 1024 * 1024;
 // (design/92) under /_c/app/, which may load these and nothing else.
 const APP_FILES = {
     '/sw.js': { file: 'sw.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    // Notifications (design/100): the same worker code the relay serves.
+    '/push-worker.js': { file: 'anywhere/public/push-worker.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/notification-badge.png': { file: 'anywhere/public/notification-badge.png', type: 'image/png', cache: 'public, max-age=86400', compress: false },
+    '/push-ui.js': { file: 'push-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/push-ui.css': { file: 'push-ui.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
     '/context-panel.js': { file: 'context-panel.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/file-completion-ui.js': { file: 'file-completion-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/harness-composer-ui.js': { file: 'harness-composer-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
@@ -19514,6 +19650,56 @@ async function handleRequest(req, res) {
         if (changed) broadcastPresence();
         json(res, 200, { ok: true, people: presenceFor(identity, client.conn) });
       } catch (e) { json(res, 400, { error: e.message }); }
+    } else if (u.pathname === '/api/push' && req.method === 'GET') {
+      // This person's devices with notifications, and the key a browser
+      // needs to subscribe (design/100).
+      if (!identity.user) return json(res, 401, { error: 'sign in first' });
+      const ps = pushing();
+      json(res, 200, { publicKey: ps.service.publicKey, home: await pushHome(), devices: ps.service.forUser(identity.user.id).map(ps.service.publicRecord),
+        recent: ps.notifier.recentFor(identity.user.id), relay: pushRelayOrigins()[0] || null, prefs: pushLib.DEFAULT_PREFS });
+    } else if (u.pathname.startsWith('/api/push/') && req.method === 'POST') {
+      if (!identity.user) return json(res, 401, { error: 'sign in first' });
+      const ps = pushing();
+      const me = identity.user.id;
+      try {
+        const p = await readJsonBody(req, 8192);
+        const what = u.pathname.slice('/api/push/'.length);
+        if (what === 'subscribe') {
+          const device = ps.service.subscribe(me, p.subscription, { label: p.label, kind: p.kind, prefs: p.prefs, vapid: p.vapid });
+          return json(res, 200, { device });
+        }
+        if (what === 'renew') {
+          // The browser replaced its address (push-worker.js): the new one
+          // keeps the old one's name and choices.
+          const old = p.old ? ps.service.find(me, p.old) : null;
+          const device = ps.service.subscribe(me, p.subscription, old ? { label: old.label, kind: old.kind, prefs: old.prefs, vapid: old.vapid } : {});
+          if (old && old.id !== device.id) ps.service.unsubscribe(me, old.id);
+          return json(res, 200, { device });
+        }
+        if (what === 'prefs') {
+          const device = ps.service.setPrefs(me, String(p.id || ''), p.prefs);
+          return device ? json(res, 200, { device }) : json(res, 404, { error: 'no such device' });
+        }
+        if (what === 'rename') {
+          const device = ps.service.rename(me, String(p.id || ''), p.label);
+          return device ? json(res, 200, { device }) : json(res, 404, { error: 'no such device' });
+        }
+        if (what === 'remove') return json(res, 200, { removed: ps.service.unsubscribe(me, String(p.id || '')) });
+        if (what === 'test') {
+          const r = await ps.notifier.test(me, String(p.id || ''), p.label ? String(p.label).slice(0, 60) : '');
+          return json(res, r.ok ? 200 : 502, r.ok ? { ok: true } : { error: r.error || 'not delivered' });
+        }
+        if (what === 'here') {
+          // Where this screen is and whether the person is using it: a
+          // device elsewhere stays quiet meanwhile (push-policy.js).
+          const client = sseByConn.get(String(p.conn || ''));
+          if (!client) return json(res, 410, { error: 'that live connection is gone' });
+          if (!client.identity.user || client.identity.user.id !== me) return json(res, 403, { error: 'not your connection' });
+          ps.here.set(client.conn, me, { visible: p.visible, focused: p.focused, idleMs: p.idleMs, route: p.route });
+          return json(res, 200, { ok: true });
+        }
+        json(res, 404, { error: 'no such action' });
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/access' && req.method === 'GET') {
       // How a conversation or a project is shared, and whether the asker may change it.
       const key = u.searchParams.get('id') || '';
@@ -20731,7 +20917,7 @@ async function handleRequest(req, res) {
       // and the page uses this beat to notice a stream that died quietly
       // (a phone that slept, a network that changed) and reconnect.
       const beat = setInterval(() => { try { res.write('event: ping\ndata: {}\n\n'); } catch {} }, 25000);
-      req.on('close', () => { clearInterval(beat); sseByConn.delete(conn); docFollowDetach(conn); programLiveUnfollow(conn); if (presence.remove(conn)) broadcastPresence(); });
+      req.on('close', () => { clearInterval(beat); sseByConn.delete(conn); docFollowDetach(conn); programLiveUnfollow(conn); if (pushState) pushState.here.remove(conn); if (presence.remove(conn)) broadcastPresence(); });
     } else if (u.pathname === '/api/papers' && req.method === 'GET') {
       // What the papers an answer cites are: ids=a,b,c (DOI, W-number, PMCID).
       const ids = (u.searchParams.get('ids') || '').split(/[\s,]+/).filter(Boolean);

@@ -105,4 +105,7 @@ for (const [dpi, launcher, stat] of [['mdpi', 48, 24], ['hdpi', 72, 36], ['xhdpi
   png(appIcon, `${RES}/mipmap-${dpi}/ic_launcher.png`, launcher);
   png(notify, `${RES}/drawable-${dpi}/ic_stat_rockfrog.png`, stat);
 }
+// The same silhouette for web notifications (the status-bar "badge" of
+// Chrome on Android, design/100): served by the relay and by Chattering.
+png(notify, 'anywhere/public/notification-badge.png', 96);
 fs.rmSync(tmp, { recursive: true, force: true });

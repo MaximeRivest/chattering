@@ -2551,6 +2551,8 @@ if (!window.ListGroups) window.ListGroups = (() => {
 <script src="/collab-client.js"></script>
 <script src="/people.js"></script>
 <link rel="stylesheet" href="/people.css">
+<script src="/push-ui.js"></script>
+<link rel="stylesheet" href="/push-ui.css">
 <script src="/anywhere-ui.js"></script>
 <link rel="stylesheet" href="/anywhere-ui.css">
 <script src="/file-viewers.js"></script>
@@ -3870,6 +3872,7 @@ document.addEventListener('visibilitychange', () => {
 function updateActiveBtn() {
   const listed = listedSessions();
   const unread = finishedUnreadSessions(listed);
+  if (window.PushUI) PushUI.unreadChanged(unread); // notifications read elsewhere go, the icon's count (design/100)
   const attention = new Set(unread.map(s => s.key));
   agentsRecovery.interrupted.forEach(r => attention.add(r.key));
   // The signals follow the list: work in a conversation nobody opened here
@@ -11898,6 +11901,7 @@ async function headlessSendFromComposer(btn, promptOverride) {
   btn.textContent = agentRunLabel();
   if (!out) return clearSendPending(key);
   if (out.error) { clearSendPending(key); return errToast('send failed: ' + out.error); }
+  window.dispatchEvent(new CustomEvent('chattering:sent', { detail: { key } }));
   const here = key === activeRel && viewKind === 'conversation' && current?.key === key;
   // A follow-up joins the turn being written; it has no run of its own.
   if (out.queued && here) echoUserPrompt(prompt);
@@ -16460,6 +16464,7 @@ const SETTINGS_PANES = [
   ['agents', 'agents', 'Continue Claude Code, Pi and Codex conversations in their own programs, shown here.'],
   ['model', 'model', 'Which model writes notes, titles, epics, and memory.'],
   ['sound', 'sound', 'What the speakers do when a run finishes; voice commands.'],
+  ['notifications', 'notifications', 'Your phone, tablet or browser tells you when a reply is ready.'],
   ['search', 'search', 'Meaning-based search on the GPU server.'],
   ['snippets', 'snippets', 'Sentences you type often.'],
   ['hotkeys', 'hotkeys', 'Run your AI programs from anywhere on your computer: select text, press keys.'],
@@ -16735,7 +16740,7 @@ function paneSound() {
     ${setOptionsHtml('setDoneSound', options, mode)}
     ${effective !== mode ? `<div class="set-help"><b>Playing now: ${esc(effective)}.</b> The ${esc(mode)} mode needs a voice service that is not set up here.</div>` : '<div class="set-help">If speech cannot be made (voice server down), the chime plays instead.</div>'}
     <div class="set-row" id="setMuteRow">${muteRowHtml()}</div>
-    ${phoneNotifyRowHtml()}
+    <div class="set-help">On your phone, tablet or another browser: <a href="#settings=notifications">notifications</a>.</div>
     ${typeof voiceSettingsHtml === 'function' ? voiceSettingsHtml() : ''}
     <h3>voice services</h3>
     <div class="set-help">Optional servers you run or trust. Recorded speech and reply text are sent to them. Leave them empty to keep sound on this computer: the chime still plays, and the microphone and read-aloud buttons stay hidden.</div>
@@ -16745,20 +16750,6 @@ function paneSound() {
     ${field('voiceModelUrl', 'spoken-digest model endpoint', 'An OpenAI-compatible chat completions address. Writes the short spoken summaries and understands spoken commands. Without it, announcements read the start of the reply.')}
     ${field('voiceModel', 'spoken-digest model name', 'The model name at that endpoint.', 'medium')}
     <div class="set-help">Saved addresses are not tested for reachability yet. Pick a sound mode above to hear whether read-aloud works.</div>`;
-}
-
-// Only the Android app has the native bridge; browsers never see this row.
-// The setting lives on the device, not in settings.json: each phone decides
-// for itself whether it wants to be told.
-function phoneNotifyRowHtml() {
-  const bridge = window.ChatteringNotify;
-  if (!bridge) return '';
-  let on = false;
-  try { on = !!bridge.isEnabled(); } catch {}
-  return `<h3>this device</h3>
-    <label class="set-check"><input id="setPhoneNotify" type="checkbox"${on ? ' checked' : ''}> notify me here when a reply is ready</label>
-    <div class="set-help">Works while the app is in the background. A small “listening” notice stays in the shade while it is on; the phone must reach the laptop.</div>
-    ${androidAppUpdate.rowHtml()}`;
 }
 
 // The Android app against the version this computer's code goes with
@@ -16813,13 +16804,6 @@ const androidAppUpdate = (() => {
   return { check, rowHtml };
 })();
 
-window.nativeNotifyChanged = on => {
-  const box = $('setPhoneNotify');
-  if (box) box.checked = !!on;
-  if (!on && box && box.dataset.wanted === '1') toast('notifications were not allowed on this phone');
-  if (box) delete box.dataset.wanted;
-};
-
 // In the Android app a link to another site must leave for the device
 // browser. The app's single WebView ignores target="_blank" and would load
 // the page in place of Chattering, with no way back on a device without a
@@ -16854,12 +16838,6 @@ function bindPaneSound(root) {
     } catch {}
   });
   bindMuteRow();
-  const phone = $('setPhoneNotify');
-  if (phone) phone.onchange = () => {
-    if (phone.checked) phone.dataset.wanted = '1';
-    try { window.ChatteringNotify.setEnabled(phone.checked); }
-    catch (e) { phone.checked = !phone.checked; errToast('could not change notifications: ' + e.message); }
-  };
 }
 
 function bindMuteRow() {
@@ -17151,6 +17129,7 @@ const SETTINGS_PANE_RENDER = {
   profile: [paneProfile, bindPaneProfile],
   model: [paneModel, bindPaneModel],
   sound: [paneSound, bindPaneSound],
+  notifications: [() => window.PushUI ? PushUI.paneHtml({ appUpdate: androidAppUpdate.rowHtml() }) : '', root => window.PushUI && PushUI.bindPane(root)],
   search: [paneSearch, bindPaneSearch],
   snippets: [paneSnippets, bindPaneSnippets],
   hotkeys: [() => window.Hotkeys ? Hotkeys.settingsHtml() : '', root => window.Hotkeys && Hotkeys.bindSettings(root)],

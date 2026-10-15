@@ -5,7 +5,9 @@
 // on the next load and a plain reload never re-downloads 1–4 MB.
 // Everything else goes straight to the network: the app's own freshness
 // rules (ETag + no-cache) stay with the server.
+// It also shows notifications (push-worker.js, design/100).
 const VENDOR_CACHE = 'chattering-vendor-v1';
+try { importScripts('/push-worker.js'); } catch (e) {}
 
 self.addEventListener('install', event => {
   event.waitUntil(self.skipWaiting());

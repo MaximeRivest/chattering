@@ -169,7 +169,8 @@ The iFlytek part is now its own chapter, with the pen at its centre: **design/99
 - [ ] Global AI commands view (item 3) reachable on the phone
 - [ ] APK: server address from the first-launch form only, no hardcoded IPs; Tailscale address option
 - [ ] Chattering Anywhere (design/85) for real: rent the relay (anywhere/README.md, ~€5/month), point `encrypted-link-to-your-devices.rockfrog.ai` at it, then a week on a real iPhone and Android phone, mobile data included (reconnect after sleep, relayed path, iOS home-screen pairing). Built and tested on one machine only.
-- [ ] Anywhere: carry artifact previews (their own origin) through the tunnel; downloads and background notifications in the Android app's encrypted-link mode (both work only in server mode today)
+- [ ] Anywhere: carry artifact previews (their own origin) through the tunnel; downloads in the Android app's encrypted-link mode (work only in server mode today). Notifications: done (design/100)
+- [ ] Notifications (design/100): deploy the relay (mailbox, worker anywhere-18) and publish Android 0.3.11; then a week on a real iPhone (Home Screen icon), an Android phone and the AINOTE: delivery while asleep, tap-to-open at the right computer, the badge, battery of the listener
 - [ ] Android app: an update check (sideloaded installs get no updates by themselves); Play Store later (a closed test with 12 testers for 14 days first)
 - [ ] test/anywhere.test.js "a wrong code, a wrong home, a home asleep" hangs rarely, only in the full parallel run (twice on 2026-09-30; 30+ runs alone or under CPU load pass). It now logs the step it waits on: read that the next time
 - [ ] Pen: aligned, responsive, palm-rejecting, coexisting with finger navigation (constraint in project memory)

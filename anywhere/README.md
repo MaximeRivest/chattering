@@ -25,9 +25,15 @@ would fail that check, and the phone would refuse to send anything.
   given random id is online, that a phone asks for it, both internet
   addresses, and, when the data has to go through it (TURN), how many bytes
   pass. That is all any server on the internet sees.
-- **It keeps:** nothing. No database, no files, no logs. Everything lives in
-  memory while sockets are open. After a restart it knows nobody, and homes
-  reconnect within a minute.
+- **It keeps:** nothing on disk. No database, no files, no logs. Everything
+  lives in memory while sockets are open. After a restart it knows nobody,
+  and homes reconnect within a minute.
+- **Notifications for the Android app** (`mailbox.js`, design/100): a
+  computer posts an encrypted notification to `/_push/<id>`, and the app
+  takes it over one WebSocket. The relay sees that one arrived for a
+  mailbox, its size and its time, never what it says. Only the app holds
+  the keys. A message waits in memory until the app takes it: at most a
+  day, and 25 per mailbox. A restart loses what was waiting.
 
 "We can't read it" is enforced by the encryption, and people can check it
 from the code. "We keep no logs" is a promise the operator makes: deploy it

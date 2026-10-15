@@ -1,0 +1,25 @@
+/* Settings → notifications (push-ui.js, design/100). The settings page's
+   own shapes (.set-check, .set-row, .set-group); this adds the device card
+   and the list of other devices. Theme tokens only, so e-ink and every
+   theme draw it. */
+.push-pane { margin: 0 0 var(--sp-4); }
+.push-here { border: 1px solid var(--border-strong); border-radius: var(--r); background: var(--surface-1); padding: 12px 14px; margin: 0 0 var(--sp-3); }
+.push-here.on { box-shadow: inset 3px 0 0 var(--accent); }
+.push-here .set-row:last-child, .push-here .set-help:last-child { margin-bottom: 0; }
+.push-state { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; margin: 0 0 10px; }
+.push-label { color: var(--text-dim); font-size: var(--fs-meta); }
+.push-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-strong); align-self: center; flex: none; }
+:root[data-theme-mode="binary"] .push-dot { background: var(--text); }
+.push-prefs { margin: 0 0 6px; }
+.push-prefs .set-check { margin-bottom: 6px; }
+.push-devices { list-style: none; margin: 0; padding: 0; }
+.push-devices li { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); padding: 6px 0; border-bottom: 1px solid var(--border); }
+.push-devices li:last-child { border-bottom: 0; }
+.push-devices li > div { min-width: 0; }
+.push-actions { display: flex; gap: 2px; flex: none; }
+.push-actions button { min-height: 28px; padding: 2px 8px; }
+.push-meta { color: var(--text-dim); font-size: var(--fs-meta); }
+.push-err { color: var(--danger, var(--text)); }
+.push-recent ul { list-style: none; margin: 6px 0 0; padding: 0; }
+.push-recent li { padding: 4px 0; border-bottom: 1px solid var(--border); line-height: 1.45; }
+.push-recent li:last-child { border-bottom: 0; }

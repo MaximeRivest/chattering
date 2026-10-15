@@ -38,6 +38,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.EditText
+import org.json.JSONObject
 import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.core.view.ViewCompat
@@ -57,12 +58,22 @@ class MainActivity : AppCompatActivity() {
         private const val WEB_MIC_PERMISSION_REQUEST = 4112
     }
 
-    // Settings page toggle for reply notifications. On Android 13+ the
+    // Notifications (design/100, push-ui.js). On Android 13+ the
     // notification permission is asked first; the service starts once the
     // user answers yes, and the page is told the final state either way.
+    // The page gives the subscription to each computer that should notify
+    // this phone; the service receives through the relay's mailbox.
     inner class NotifyBridge {
         @JavascriptInterface
         fun isEnabled(): Boolean = NotifyService.isEnabled(this@MainActivity)
+
+        /** This phone's notification address and keys (Web Push's shape). */
+        @JavascriptInterface
+        fun subscription(): String = try { NotifyService.subscription(this@MainActivity).toString() } catch (_: Exception) { "" }
+
+        /** How a computer lists this phone. */
+        @JavascriptInterface
+        fun label(): String = (Build.MODEL ?: "Android").trim().take(40) + " · app"
 
         @JavascriptInterface
         fun setEnabled(on: Boolean) {
@@ -243,7 +254,7 @@ class MainActivity : AppCompatActivity() {
         when {
             // A pairing code scanned with the camera, or a relay link tapped.
             anywhere.isRelay(link) || anywhere.isPairingLink(link) -> openAnywhere(link.toString())
-            prefs.getString("mode", null) == "anywhere" -> openAnywhere(null)
+            prefs.getString("mode", null) == "anywhere" -> openAnywhere(null, notificationPath(intent))
             saved.isNotEmpty() && prefs.contains("token") -> {
                 mode = "server"
                 openServer(saved, prefs.getString("token", "") ?: "", intent?.getStringExtra(NotifyService.EXTRA_KEY))
@@ -261,6 +272,14 @@ class MainActivity : AppCompatActivity() {
         if (anywhere.isRelay(link) || anywhere.isPairingLink(link)) { openAnywhere(link.toString()); return }
         val key = intent?.getStringExtra(NotifyService.EXTRA_KEY) ?: return
         if (web.visibility != View.VISIBLE) return
+        // Through the encrypted link the shell opens it, at the computer the
+        // notification came from (anywhere/public/shell.js, openAt).
+        if (mode == "anywhere") {
+            val url = intent?.getStringExtra(NotifyService.EXTRA_URL) ?: ("/#" + Uri.encode(key))
+            val home = intent?.getStringExtra(NotifyService.EXTRA_HOME) ?: ""
+            web.evaluateJavascript("window.anywhereOpen&&window.anywhereOpen(${JSONObject.quote(home)},${JSONObject.quote(url)})", null)
+            return
+        }
         val encoded = Uri.encode(key)
         PageCall.run(web, "w.location.hash='#$encoded'")
     }
@@ -794,7 +813,15 @@ class MainActivity : AppCompatActivity() {
      * page served from this app (AnywhereShell). A link (a scanned code) is
      * loaded as is; otherwise the relay this phone last used.
      */
-    private fun openAnywhere(link: String?) {
+    // A notification tapped while the app was closed: where the shell starts
+    // (it reads ?home= and opens that conversation, shell.js boot).
+    private fun notificationPath(intent: Intent?): String? {
+        val url = intent?.getStringExtra(NotifyService.EXTRA_URL)?.takeIf { it.startsWith("/") && !it.startsWith("//") } ?: return null
+        val home = intent?.getStringExtra(NotifyService.EXTRA_HOME) ?: return url
+        return "/?home=" + Uri.encode(home) + url.removePrefix("/")
+    }
+
+    private fun openAnywhere(link: String?, path: String? = null) {
         val prefs = getSharedPreferences("chattering", Context.MODE_PRIVATE)
         val uri = link?.let { try { anywhere.normalize(Uri.parse(it)) } catch (_: Exception) { null } }
         if (uri != null && uri.scheme == "https" && uri.host != null) {
@@ -812,7 +839,7 @@ class MainActivity : AppCompatActivity() {
         status.visibility = View.GONE
         error.visibility = View.GONE
         web.visibility = View.VISIBLE
-        web.loadUrl(uri?.toString() ?: ((prefs.getString("relay", null) ?: AnywhereShell.DEFAULT_RELAY) + "/"))
+        web.loadUrl(uri?.toString() ?: ((prefs.getString("relay", null) ?: AnywhereShell.DEFAULT_RELAY) + (path ?: "/")))
     }
 
     private fun reachFailureText(host: String, detail: String?): String {

@@ -58,9 +58,10 @@ async function viewerBrowser(t, opts = {}) {
     browser.on('error', e => { clearTimeout(timer); reject(e); });
   });
   ws = new WebSocket(endpoint); await new Promise(r => ws.onopen = r);
-  let id = 0; const pending = new Map(), exceptions = [], requests = [];
+  let id = 0; const pending = new Map(), exceptions = [], requests = [], listeners = new Set();
   ws.onmessage = event => {
     const m = JSON.parse(event.data);
+    if (m.method) for (const l of listeners) l(m);
     if (m.method === 'Runtime.exceptionThrown') exceptions.push(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text);
     if (m.method === 'Network.requestWillBeSent') requests.push(m.params.request);
     if (pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
@@ -124,7 +125,10 @@ async function viewerBrowser(t, opts = {}) {
     return { id: world.result.executionContextId, session };
   };
   const screenshot = async name => { const shot = await command('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(path.join(os.tmpdir(), name), Buffer.from(shot.result.data, 'base64')); };
-  return { home, work, base, token, auth, command, evaluate, until, size, open, frameContext, screenshot, exceptions, requests };
+  // browser: a command to the browser itself (Browser.*, Target.*); onEvent:
+  // every protocol event of any session, until the returned function is called.
+  const onEvent = fn => { listeners.add(fn); return () => listeners.delete(fn); };
+  return { home, work, base, token, auth, command, browser: send, onEvent, evaluate, until, size, open, frameContext, screenshot, exceptions, requests, log: () => log };
 }
 
 function samplePDF(padding = 0) {

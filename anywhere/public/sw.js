@@ -14,12 +14,18 @@
    shell holds), which hands it to the shell, which carries it through the
    tunnel to the computer's preview server. It never shows the shell. */
 'use strict';
-const VERSION = 'anywhere-17';
+const VERSION = 'anywhere-18';
 const PREVIEW = location.hostname.startsWith('previews.');
 const SHELL_CACHE = (PREVIEW ? 'anywhere-carrier-' : 'anywhere-shell-') + VERSION;
 const SHELL_FILES = PREVIEW ? ['/_anywhere/carrier.html', '/_anywhere/carrier.js']
   : ['/_anywhere/shell.html', '/_anywhere/shell.css', '/_anywhere/shell.js', '/_anywhere/protocol.js', '/_anywhere/client.js',
-    '/_anywhere/inside.js', '/_anywhere/manifest.webmanifest', '/_anywhere/mark.svg', '/_anywhere/favicon.svg', '/_anywhere/icon-192.png', '/_anywhere/apple-touch-icon.png'];
+    '/_anywhere/inside.js', '/_anywhere/manifest.webmanifest', '/_anywhere/mark.svg', '/_anywhere/favicon.svg', '/_anywhere/icon-192.png', '/_anywhere/apple-touch-icon.png',
+    '/_anywhere/push-worker.js', '/_anywhere/notification-badge.png'];
+// Notifications (design/100): the app's computers send them here; this
+// site's pages are the shell, which opens the app at the right computer.
+// A failed import must not cost the connection itself: without it the
+// worker still carries the app, only notifications wait for the next update.
+if (!PREVIEW) { self.CHATTERING_SHELL = true; try { importScripts('/_anywhere/push-worker.js'); } catch (e) {} }
 
 self.addEventListener('install', e => {
   // From the network, never the browser's own cache (the files are cached
