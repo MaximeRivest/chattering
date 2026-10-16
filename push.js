@@ -124,6 +124,7 @@ const PUSH_HOSTS = [
   /(^|\.)push\.apple\.com$/,            // Safari, iPhone and iPad home-screen apps
   /^fcm\.googleapis\.com$/,             // Chrome, Edge on Android, Samsung Internet, Brave, Opera
   /^android\.googleapis\.com$/,         // older Chrome subscriptions
+  /^jmt\d+\.google\.com$/,             // Chrome on computers, since 2025 (https://jmt17.google.com/fcm/send/…)
   /(^|\.)push\.services\.mozilla\.com$/, // Firefox
   /(^|\.)notify\.windows\.com$/,        // Edge on Windows
 ];

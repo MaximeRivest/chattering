@@ -53,11 +53,12 @@ test('the VAPID token is a valid ES256 JWT for the push service origin', () => {
 });
 
 test('only real push services and known relays may be posted to', () => {
-  const ok = ['https://web.push.apple.com/QGuQyavXutnMo', 'https://fcm.googleapis.com/fcm/send/x:y', 'https://updates.push.services.mozilla.com/wpush/v2/g',
+  const ok = ['https://web.push.apple.com/QGuQyavXutnMo', 'https://fcm.googleapis.com/fcm/send/x:y', 'https://jmt17.google.com/fcm/send/x:y', 'https://updates.push.services.mozilla.com/wpush/v2/g',
     'https://wns2-par02p.notify.windows.com/w/?token=x'];
   for (const e of ok) assert.ok(push.endpointAllowed(e), e);
   const bad = ['http://fcm.googleapis.com/x', 'https://127.0.0.1/x', 'https://fcm.googleapis.com.evil.com/x', 'https://evil.com/_push/x',
-    'https://user:pw@fcm.googleapis.com/x', 'https://fcm.googleapis.com:8443/x', 'file:///etc/passwd', 'https://localhost/_push/x'];
+    'https://user:pw@fcm.googleapis.com/x', 'https://fcm.googleapis.com:8443/x', 'file:///etc/passwd', 'https://localhost/_push/x',
+    'https://google.com/x', 'https://evil.google.com/x', 'https://jmt17.google.com.evil.com/x'];
   for (const e of bad) assert.ok(!push.endpointAllowed(e), e);
   assert.ok(push.endpointAllowed('https://relay.example/_push/abc', ['https://relay.example']));
   assert.ok(!push.endpointAllowed('https://relay.example/api/x', ['https://relay.example']));
