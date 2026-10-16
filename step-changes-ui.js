@@ -22,7 +22,7 @@
   const READ_MAX = 5000;      // lines drawn at most; the rest opens the file
   const LINE_MAX = 2000;      // characters of one line drawn
 
-  const data = new Map();     // key → { groups: Map(sig → group), steps: Map(call → files) }
+  const data = new Map();     // key → { groups: Map(sig → group), steps: Map(call → files), known: Map(sig → paths) }
   const cards = new Map();    // key → Map(cardId → state)
   const contents = new Map(); // key \0 cardId → content (a few dozen kept)
   const inflight = new Map(); // key → Promise
@@ -32,7 +32,7 @@
   const sigOf = calls => calls.join(',');
   // A newline apart: HTML attributes keep it (a NUL would become U+FFFD).
   const cardId = (calls, path) => sigOf(calls) + '\n' + path;
-  const store = key => { let d = data.get(key); if (!d) { d = { groups: new Map(), steps: new Map() }; data.set(key, d); } return d; };
+  const store = key => { let d = data.get(key); if (!d) { d = { groups: new Map(), steps: new Map(), known: new Map() }; data.set(key, d); } return d; };
   const openOf = key => { let m = cards.get(key); if (!m) { m = new Map(); cards.set(key, m); } return m; };
   function remember(key, id, value) {
     contents.set(key + '\0' + id, value);
@@ -50,10 +50,10 @@
     if (f.kind === 'deleted') return `<span class="sc-n"><span class="sc-del">−${f.del ?? 0}</span></span>`;
     return `<span class="sc-n"><span class="sc-add">+${f.add ?? 0}</span><span class="sc-del">−${f.del ?? 0}</span></span>`;
   }
-  function tagsHtml(f) {
+  function tagsHtml(f, quiet = false) {
     const t = [];
     if (f.how === 'command') t.push('<span class="sc-tag" title="Read from the command, not observed: this is the file as it is now">from the command</span>');
-    if (f.how === 'observed') t.push('<span class="sc-tag sc-quiet" title="The step did not name this file; comparing the folder before and after it shows the change">found</span>');
+    if (f.how === 'observed' && !quiet) t.push('<span class="sc-tag sc-quiet" title="The step did not name this file; comparing the folder before and after it shows the change">found</span>');
     if (f.shared) t.push('<span class="sc-tag sc-warn" title="Another conversation changed this file at the same time">also edited elsewhere</span>');
     if (f.steps > 1) t.push(`<span class="sc-tag sc-quiet" title="Changed by ${f.steps} steps; this is the change of all of them together">${f.steps} steps</span>`);
     return t.join('');
@@ -62,37 +62,211 @@
     const how = { named: 'Seen before and after the step', observed: 'Found by comparing the folder before and after the step', recorded: 'As the edit tool recorded it', command: 'Read from the command; not observed' }[f.how] || '';
     return `${f.path}\n${(KIND[f.kind] || KIND.modified)[1]}${how ? ' · ' + how : ''}\nClick: read the change here · Shift-click: full page`;
   }
-  function rowHtml(key, calls, f, open) {
+  function rowHtml(key, calls, f, open, depth = 0, inTree = false, quiet = false) {
     const [letter] = KIND[f.kind] || ['·'];
     const id = cardId(calls, f.path);
     return `<li class="sc-item" data-sc-path="${e(f.path)}">` +
-      `<button type="button" class="sc-row${f.pending ? ' sc-wait' : ''}" data-file-diff="${e(f.path)}" data-file-call="${e(calls[calls.length - 1] || '')}" data-sc-calls="${e(sigOf(calls))}" aria-expanded="${open ? 'true' : 'false'}" title="${e(rowTitle(f))}">` +
+      `<button type="button" class="sc-row${f.pending ? ' sc-wait' : ''}" data-file-diff="${e(f.path)}" data-file-call="${e(calls[calls.length - 1] || '')}" data-sc-calls="${e(sigOf(calls))}" aria-expanded="${open ? 'true' : 'false'}" title="${e(rowTitle(f))}"${depthAttr(depth)}>` +
       `<span class="sc-caret" aria-hidden="true"></span><span class="sc-kind" data-kind="${e(f.kind || '')}" aria-label="${e((KIND[f.kind] || ['', ''])[1])}">${f.pending ? '·' : letter}</span>` +
-      `<span class="sc-name">${e(f.name || baseName(f.path))}</span><span class="sc-dir">${e(f.dir || '')}</span>${tagsHtml(f)}${countHtml(f)}</button>` +
+      `<span class="sc-name">${e(f.name || baseName(f.path))}</span>${inTree ? '' : `<span class="sc-dir">${e(f.dir || '')}</span>`}${tagsHtml(f, quiet)}${countHtml(f)}</button>` +
       (open ? cardShellHtml(key, id) : '') + '</li>';
   }
-  function foldHtml(key, calls, files, label, title, cls) {
+  const depthAttr = depth => depth ? ` style="--sc-depth:${depth}"` : '';
+
+  // ---- long lists (design/88, "A long list") ----
+  // Up to FLAT_MAX files: one row each, as always. Past it, files the steps
+  // named stay on top as rows and the files only found by comparing the
+  // folder fold under one line; files sit in their folders, a folder's rows
+  // drawn only once it is open. Folders open by themselves, widest first,
+  // while the list stays within BUDGET rows; whatever a person opens or
+  // closes stays so (per box, so a box still growing keeps it).
+  const FLAT_MAX = 12;    // files listed one per row, whatever their folders
+  const BUDGET = 12;      // rows a long list shows before anything is pressed
+  const LEVEL_MAX = 20;   // entries of one folder drawn before "show more"
+  const MORE_STEP = 200;  // entries each "show more" adds
+  const folds = new Map(); // key → Map(fold id → true/false open; fold id + '\n+' → entries shown)
+  const foldsOf = key => { let m = folds.get(key); if (!m) { m = new Map(); folds.set(key, m); } return m; };
+  const foldId = (calls, section, dir) => `${calls[0] || ''}\n${section}\n${dir}`;
+  const plural = (n, one, many = one + 's') => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+  const KIND_WORD = { added: 'new', modified: 'changed', deleted: 'deleted', written: 'written' };
+
+  function tally(t, f) {
+    t.count++;
+    t.kinds[f.kind || 'modified'] = (t.kinds[f.kind || 'modified'] || 0) + 1;
+    if (f.add != null) t.add += f.add;
+    if (f.del != null) t.del += f.del;
+    if (f.how !== 'observed') t.named++;
+    if (f.shared) t.shared++;
+    if (f.open) t.open++;
+  }
+  const blank = (name, dir) => ({ name, dir, files: [], dirs: new Map(), count: 0, kinds: {}, add: 0, del: 0, named: 0, shared: 0, open: 0 });
+  /** Lines added and removed in many files together. */
+  const sumHtml = t => !t.add && !t.del ? '' : countHtml({ kind: t.del ? (t.add ? 'modified' : 'deleted') : 'added', add: t.add, del: t.del });
+  function summaryOf(files) { const t = blank('', ''); for (const f of files) tally(t, f); return t; }
+
+  /** Files in their folders; a folder holding only one folder is drawn as one (a/b/c/). */
+  function treeOf(files) {
+    const root = blank('', '');
+    for (const f of files) {
+      const dir = f.dir || '';
+      const parts = dir.split('/').filter(Boolean);
+      if (dir.startsWith('/') && parts.length) parts[0] = '/' + parts[0];
+      let n = root, at = '';
+      tally(n, f);
+      for (const part of parts) {
+        at += part + '/';
+        let c = n.dirs.get(part);
+        if (!c) { c = blank(part + '/', at); n.dirs.set(part, c); }
+        n = c; tally(n, f);
+      }
+      n.files.push(f);
+    }
+    (function compact(n) {
+      for (const [k, c] of [...n.dirs]) {
+        let m = c;
+        while (!m.files.length && m.dirs.size === 1) { const only = m.dirs.values().next().value; only.name = m.name + only.name; m = only; }
+        n.dirs.set(k, m);
+        compact(m);
+      }
+    })(root);
+    return root;
+  }
+  const entriesOf = n => [...[...n.dirs.values()].sort((a, b) => a.name.localeCompare(b.name)), ...n.files];
+  /** How many of a folder's entries are drawn: a few hidden are not worth a button. */
+  function shownOf(state, id, entries) {
+    const want = state.get(id + '\n+') || LEVEL_MAX;
+    let cut = entries.length > want + 5 ? want : entries.length;
+    // A file whose change is open is always drawn.
+    for (let i = cut; i < entries.length; i++) if (entries[i].open) cut = i + 1;
+    return cut;
+  }
+
+  /**
+   * The folders that open by themselves: nearest first, while the list fits
+   * in BUDGET rows. A folder alone where it is always opens: closed, it would
+   * only cost a press and hide nothing worth hiding.
+   */
+  function autoOpen(ctx, section, root, start) {
+    const state = foldsOf(ctx.key), open = new Set();
+    const cost = n => {
+      const entries = entriesOf(n), cut = shownOf(state, foldId(ctx.calls, section, n.dir), entries);
+      const inner = entries.slice(0, cut).filter(x => x.dirs);
+      return [cut + (cut < entries.length ? 1 : 0), inner.map(x => [x, entries.length === 1])];
+    };
+    let [rows, queue] = cost(root);
+    rows += start;
+    while (queue.length) {
+      const [n, alone] = queue.shift(), [k, inner] = cost(n);
+      if (!alone && rows + k > BUDGET) continue;
+      open.add(n.dir); rows += k; queue.push(...inner);
+    }
+    return open;
+  }
+  function folderHtml(ctx, section, n, depth, auto, quiet) {
+    const state = foldsOf(ctx.key), id = foldId(ctx.calls, section, n.dir);
+    const open = state.has(id) ? state.get(id) : (auto.has(n.dir) || n.open > 0);
+    const kinds = Object.keys(n.kinds), allFound = !n.named && !quiet;
+    const what = kinds.length === 1 ? plural(n.count, `${KIND_WORD[kinds[0]] || ''} file`.trim()) : plural(n.count, 'file');
+    const inside = n.dirs.size ? ` · ${plural(n.dirs.size, 'folder')}` : '';
+    const lines = kinds.length > 1 ? Object.entries(n.kinds).map(([k, c]) => `${c.toLocaleString()} ${KIND_WORD[k] || k}`).join(', ') : '';
+    const title = `${n.dir}\n${plural(n.count, 'file')}${lines ? ': ' + lines : ''}${inside}\n${open ? 'Press to fold' : 'Press to see them'}`;
+    return `<li class="sc-item sc-folder-item"><button type="button" class="sc-row sc-folder" data-sc-fold="${e(id)}" aria-expanded="${open}" title="${e(title)}"${depthAttr(depth)}>` +
+      `<span class="sc-caret" aria-hidden="true"></span><span class="sc-kind" data-kind="${kinds.length === 1 ? e(kinds[0]) : ''}" aria-hidden="true">${kinds.length === 1 ? (KIND[kinds[0]] || ['·'])[0] : '·'}</span>` +
+      `<span class="sc-name">${e(n.name)}</span><span class="sc-dir">${e(what + inside)}</span>` +
+      (allFound ? '<span class="sc-tag sc-quiet" title="The steps did not name these files; comparing the folder before and after them shows the changes">found</span>' : '') +
+      (n.shared ? `<span class="sc-tag sc-warn" title="Another conversation changed ${n.shared === 1 ? 'one of these files' : n.shared + ' of these files'} at the same time">also edited elsewhere</span>` : '') +
+      sumHtml(n) + '</button>' +
+      (open ? `<ul class="sc-list">${entriesHtml(ctx, section, n, depth + 1, auto, quiet || allFound)}</ul>` : '') + '</li>';
+  }
+  function entriesHtml(ctx, section, n, depth, auto, quiet) {
+    const state = foldsOf(ctx.key), id = foldId(ctx.calls, section, n.dir);
+    const entries = entriesOf(n), cut = shownOf(state, id, entries);
+    let out = entries.slice(0, cut).map(x => x.dirs ? folderHtml(ctx, section, x, depth, auto, quiet)
+      : rowHtml(ctx.key, ctx.calls, x, x.open, depth, true, quiet)).join('');
+    if (cut < entries.length) {
+      const left = entries.length - cut, next = Math.min(left, MORE_STEP);
+      out += `<li class="sc-item"><button type="button" class="sc-row sc-rest" data-sc-rest="${e(id)}" data-sc-shown="${cut + next}"${depthAttr(depth)}>` +
+        `<span class="sc-caret" aria-hidden="true"></span><span class="sc-name">${next === left ? `show the other ${left.toLocaleString()}` : `show ${next.toLocaleString()} more of ${left.toLocaleString()}`}</span></button></li>`;
+    }
+    return out;
+  }
+  /** Files as rows, or in their folders when there are many. */
+  function filesHtml(ctx, section, files, depth = 0, start = 0) {
+    // Under "found in the folder", every file was found: no need to say it on each.
+    const quiet = section === 'found';
+    if (files.length <= FLAT_MAX) return files.map(f => rowHtml(ctx.key, ctx.calls, f, f.open, depth, false, quiet)).join('');
+    const root = treeOf(files);
+    return entriesHtml(ctx, section, root, depth, autoOpen(ctx, section, root, start), quiet);
+  }
+  /** One line standing for many files, opened on a press. */
+  function foldHtml(ctx, section, files, label, title, cls) {
     if (!files.length) return '';
-    const open = files.some(f => openOf(key).has(cardId(calls, f.path)));
-    return `<li class="sc-item sc-fold ${cls}"><details${open ? ' open' : ''}><summary title="${e(title)}"><span class="sc-caret" aria-hidden="true"></span>${e(label)}</summary>` +
-      `<ul class="sc-list">${files.map(f => rowHtml(key, calls, f, openOf(key).has(cardId(calls, f.path)))).join('')}</ul></details></li>`;
+    const state = foldsOf(ctx.key), id = foldId(ctx.calls, section, '');
+    const t = summaryOf(files);
+    const open = state.has(id) ? state.get(id) : t.open > 0;
+    return `<li class="sc-item sc-fold ${cls}"><button type="button" class="sc-row sc-group" data-sc-fold="${e(id)}" aria-expanded="${open}" title="${e(title)}">` +
+      `<span class="sc-caret" aria-hidden="true"></span><span class="sc-name">${e(label)}</span>` +
+      (t.shared ? '<span class="sc-tag sc-warn" title="Another conversation changed some of these files at the same time">also edited elsewhere</span>' : '') +
+      sumHtml(t) + '</button>' +
+      (open ? `<ul class="sc-list">${filesHtml(ctx, section, files, 1)}</ul>` : '') + '</li>';
   }
   function listHtml(key, calls, g) {
-    const main = g.files.filter(f => !f.scratch), scratch = g.files.filter(f => f.scratch);
-    const open = f => openOf(key).has(cardId(calls, f.path));
-    return main.map(f => rowHtml(key, calls, f, open(f))).join('') +
-      foldHtml(key, calls, scratch, `${scratch.length} temporary ${scratch.length === 1 ? 'file' : 'files'}`, 'Files in a temporary folder outside the project: the agent\u2019s scratch work', 'sc-scratch') +
-      foldHtml(key, calls, g.during || [], `${g.during.length} ${g.during.length === 1 ? 'file' : 'files'} also changed while this ran`,
+    const opened = openOf(key);
+    const mark = f => ({ ...f, open: opened.has(cardId(calls, f.path)) });
+    const files = g.files.map(mark), during = (g.during || []).map(mark);
+    const main = files.filter(f => !f.scratch), scratch = files.filter(f => f.scratch);
+    const ctx = { key, calls };
+    // A long list: what the steps named first; what they only left behind, folded.
+    const named = main.filter(f => f.how !== 'observed'), found = main.filter(f => f.how === 'observed');
+    const split = main.length > FLAT_MAX && named.length && found.length;
+    return (split ? filesHtml(ctx, 'main', named) +
+        foldHtml(ctx, 'found', found, `${plural(found.length, 'more file')} found in the folder`,
+          'The steps did not name these files; comparing the folder before and after them shows the changes (a program they ran made or changed them)', 'sc-found')
+      : filesHtml(ctx, 'main', main)) +
+      foldHtml(ctx, 'scratch', scratch, `${plural(scratch.length, 'temporary file')}`, 'Files in a temporary folder outside the project: the agent\u2019s scratch work', 'sc-scratch') +
+      foldHtml(ctx, 'during', during, `${plural(during.length, 'file')} also changed while this ran`,
         'Other work ran in the same folder at the same time; these changes may not be these steps\u2019', 'sc-during');
   }
 
   /** The list under one box of steps. known: paths its edit and write tools name. */
   function stripHtml(key, calls, known = []) {
-    const g = store(key).groups.get(sigOf(calls));
-    const shown = g || { files: known.map(p => ({ path: p, name: baseName(p), dir: '', pending: true })), during: [] };
+    const d = store(key), sig = sigOf(calls);
+    if (known.length) d.known.set(sig, known);
+    const shown = shownGroup(key, sig);
     const empty = !shown.files.length && !(shown.during || []).length;
-    return `<section class="sc-strip" data-sc-key="${e(key)}" data-sc-calls="${e(sigOf(calls))}" aria-label="Files these steps changed"${empty ? ' hidden' : ''}><ul class="sc-list">${empty ? '' : listHtml(key, calls, shown)}</ul></section>`;
+    return `<section class="sc-strip" data-sc-key="${e(key)}" data-sc-calls="${e(sig)}" aria-label="Files these steps changed"${empty ? ' hidden' : ''}><ul class="sc-list">${empty ? '' : listHtml(key, calls, shown)}</ul></section>`;
   }
+  /** A box's list, or the files its edit and write steps name while it is asked for. */
+  function shownGroup(key, sig) {
+    const d = store(key);
+    return d.groups.get(sig) || { files: (d.known.get(sig) || []).map(p => ({ path: p, name: baseName(p), dir: '', pending: true })), during: [] };
+  }
+
+  /** A folder, a fold or "show more" was pressed: draw the list again, focus where it was. */
+  function onListPress(ev) {
+    const b = ev.target.closest?.('button[data-sc-fold], button[data-sc-rest]');
+    const strip = b?.closest('.sc-strip');
+    if (!strip) return;
+    ev.preventDefault();
+    const key = strip.dataset.scKey, state = foldsOf(key);
+    let focus;
+    if (b.dataset.scFold) {
+      state.set(b.dataset.scFold, b.getAttribute('aria-expanded') !== 'true');
+      focus = `[data-sc-fold="${CSS.escape(b.dataset.scFold)}"]`;
+    } else {
+      state.set(b.dataset.scRest + '\n+', Number(b.dataset.scShown));
+      // The first newly drawn entry takes the focus, where the button was.
+      const li = b.closest('li'), prev = li.previousElementSibling?.querySelector(':scope > button');
+      focus = prev ? (prev.dataset.scFold ? `[data-sc-fold="${CSS.escape(prev.dataset.scFold)}"]` : `[data-sc-path="${CSS.escape(prev.dataset.fileDiff)}"] > button`) : null;
+      focus = focus && { after: focus };
+    }
+    paintStrip(strip, key);
+    if (focus?.after) {
+      const at = strip.querySelector(focus.after)?.closest('li')?.nextElementSibling?.querySelector(':scope > button');
+      at?.focus({ preventScroll: true });
+    } else if (focus) strip.querySelector(focus)?.focus({ preventScroll: true });
+  }
+  if (typeof document !== 'undefined') document.addEventListener('click', onListPress);
 
   /** A step's own files, on its line inside the box (shell and other tools). */
   function chipsHtml(key, call) {
@@ -153,8 +327,7 @@
   }
 
   function paintStrip(s, key) {
-    const g = store(key).groups.get(s.dataset.scCalls);
-    if (!g) return;
+    const g = shownGroup(key, s.dataset.scCalls);
     const calls = s.dataset.scCalls.split(',');
     const html = listHtml(key, calls, g);
     const list = s.querySelector(':scope > .sc-list');
@@ -213,11 +386,7 @@
     const open = openOf(key);
     const inStrip = !!button.closest('.sc-strip');
     if (open.has(id)) {
-      open.delete(id);
-      const card = inStrip ? button.parentElement.querySelector(':scope > .sc-card') : document.querySelector(`.sc-card[data-sc-card="${CSS.escape(id)}"]`);
-      if (card) card.remove();
-      button.setAttribute('aria-expanded', 'false');
-      marks.prune();
+      closeCard(key, id, button);
       return true;
     }
     open.set(id, { calls, path, step: !inStrip, mode: null });
@@ -236,13 +405,39 @@
     fillCard(at.nextElementSibling, key);
     button.setAttribute('aria-expanded', 'true');
   }
+  function closeButtonHtml() {
+    return '<button type="button" data-sc-act="close" title="Close preview (Escape while inside)">close</button>';
+  }
+  function closeCard(key, id, origin) {
+    const open = openOf(key), st = open.get(id);
+    if (!st) return;
+    const buttons = [...document.querySelectorAll('button[data-sc-calls][data-file-diff]')].filter(b =>
+      b.dataset.scCalls === sigOf(st.calls) && b.dataset.fileDiff === st.path &&
+      (b.closest('[data-sc-key]')?.dataset.scKey || b.closest('[data-msg-key]')?.dataset.msgKey) === key);
+    const local = origin?.closest('.sc-item')?.querySelector(':scope > .sc-row');
+    const trigger = buttons.includes(origin) ? origin : buttons.includes(local) ? local : buttons[0];
+    st.tableView?.dispose();
+    open.delete(id);
+    for (const card of document.querySelectorAll('.sc-card')) {
+      if (card.dataset.scKey === key && card.dataset.scCard === id) card.remove();
+    }
+    for (const button of buttons) button.setAttribute('aria-expanded', 'false');
+    marks.prune();
+    if (trigger) {
+      trigger.focus({ preventScroll: true });
+      // Only reveal the row if it is outside the reading viewport. Closing
+      // a preview must not move an already visible row to the top.
+      trigger.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'instant' });
+    }
+  }
   function cardShellHtml(key, id, step = false) {
-    return `<div class="sc-card${step ? ' sc-step-card' : ''}" data-sc-card="${e(id)}" data-sc-key="${e(key)}" role="region" aria-label="Change to ${e(baseName(id.split('\n')[1]))}"><div class="sc-card-head"><span class="sc-what">Reading the change…</span></div></div>`;
+    return `<div class="sc-card${step ? ' sc-step-card' : ''}" data-sc-card="${e(id)}" data-sc-key="${e(key)}" role="region" aria-label="Change to ${e(baseName(id.split('\n')[1]))}"><div class="sc-card-head"><span class="sc-what">Reading the change…</span><span class="sc-acts">${closeButtonHtml()}</span></div></div>`;
   }
 
   async function fillCard(card, key) {
     const id = card.dataset.scCard, st = openOf(key).get(id);
     if (!st) return;
+    wireCard(card, key, st, null);
     let c = contents.get(key + '\0' + id);
     if (!c) {
       try {
@@ -252,7 +447,7 @@
         if (!res.ok || c.error) throw Error(c.error || 'The change could not be read');
       } catch (err) {
         if (!card.isConnected) return;
-        card.innerHTML = `<div class="sc-card-head"><span class="sc-what">${e(err.message)}</span><span class="sc-acts"><button type="button" data-sc-act="open">open the file</button></span></div>`;
+        card.innerHTML = `<div class="sc-card-head"><span class="sc-what">${e(err.message)}</span><span class="sc-acts"><button type="button" data-sc-act="open">open the file</button>${closeButtonHtml()}</span></div>`;
         wireCard(card, key, st, null);
         return;
       }
@@ -263,7 +458,7 @@
     catch (err) {
       // Never a card stuck on "Reading…": say so, and keep the file one press away.
       console.error(err);
-      card.innerHTML = `<div class="sc-card-head"><span class="sc-what">This change could not be drawn here (${e(err.message)}).</span><span class="sc-acts"><button type="button" data-sc-act="open">open the file</button></span></div>`;
+      card.innerHTML = `<div class="sc-card-head"><span class="sc-what">This change could not be drawn here (${e(err.message)}).</span><span class="sc-acts"><button type="button" data-sc-act="open">open the file</button>${closeButtonHtml()}</span></div>`;
       wireCard(card, key, st, c);
     }
   }
@@ -318,8 +513,8 @@
       ? modes.map(([m, label]) => `<button type="button" data-sc-mode="${m}" aria-pressed="${m === mode}">${e(label)}</button>`).join('') : '';
     card.innerHTML = `<div class="sc-card-head">${whatHtml(c, st)}<span class="sc-acts">${toggles}` +
       `<button type="button" data-sc-act="open" title="Open the file as it is now, beside the conversation (Shift: full page)">open</button>` +
-      `<button type="button" data-sc-act="review" title="Review these steps: comment on lines, mark files reviewed, send notes back">review</button></span></div>` +
-      `<div class="sc-body">${bodyHtml(key, st, c, mode)}</div>`;
+      `<button type="button" data-sc-act="review" title="Review these steps: comment on lines, mark files reviewed, send notes back">review</button>${closeButtonHtml()}</span></div>` +
+      `<div class="sc-body" tabindex="0" role="region" aria-label="Preview of ${e(baseName(st.path))}">${bodyHtml(key, st, c, mode)}</div>`;
     // The table draws itself (sorting, filtering, opening rows), and keeps
     // what the reader chose in st.table while the card is drawn again.
     st.tableView?.dispose();
@@ -331,6 +526,12 @@
     marks.apply(card);
   }
   function wireCard(card, key, st, c) {
+    card.onkeydown = ev => {
+      if (ev.key !== 'Escape' || ev.isComposing || ev.defaultPrevented) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeCard(key, card.dataset.scCard, card);
+    };
     card.onclick = ev => {
       const b = ev.target.closest('button');
       if (!b || !card.contains(b)) return;
@@ -340,6 +541,7 @@
       if (b.dataset.scMore) { st.more = (st.more || 1) + 1; renderCard(card, key, st, c); return; }
       if (b.dataset.scAll) { st.all = true; renderCard(card, key, st, c); return; }
       const act = b.dataset.scAct;
+      if (act === 'close') { closeCard(key, card.dataset.scCard, card); return; }
       if (act === 'open' && typeof openPathInApp === 'function') openPathInApp({ key, path: st.path, button: b, page: ev.shiftKey });
       if (act === 'review') review(key, st);
     };

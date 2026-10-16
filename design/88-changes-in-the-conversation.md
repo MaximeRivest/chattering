@@ -112,6 +112,46 @@ changed the file to the last: counted between those two snapshots (by Git,
 or directly for files saved by name). A file changed and changed back in one
 box is not listed.
 
+## A long list
+
+A step that runs experiments or a build can leave hundreds of files
+(2026-10-16: one command in bigspin made 261, one row each, each repeating
+`explab-local/runs/m3/default/…`: pages of scrolling past them). So:
+
+- **Up to 12 files: one row each**, as above. Nothing changes for the usual
+  step.
+- **Past 12, what the steps named stays on top** as rows (edit and write
+  tools, a command's named outputs), and the files only *found* by comparing
+  the folder fold under one line: *N more files found in the folder*, with
+  their lines added and removed. When every file was found (one script made
+  them all), there is no fold: the files go straight into their folders.
+- **Files sit in their folders.** A folder is one row: its name, *N new
+  files · K folders*, the kind letter when all its files share one, the lines
+  added and removed together, *found* when the steps named none of them,
+  *also edited elsewhere* when any was (a warning is never folded away). A
+  folder holding only one folder is drawn as one (`runs/m3/default/`), and a
+  file inside a folder does not repeat the folder.
+- **Folders open by themselves while the list stays within 12 rows**,
+  nearest first; a folder alone where it is always opens (closed, it would
+  only cost a press). Above that, they wait for a press.
+- **A folder draws 20 entries**, then *show the other N* (up to 200 more per
+  press). A folder's rows are not drawn at all until it opens, so a list of
+  thousands costs a few rows.
+- **What a person opens or closes stays so** through redraws and while a
+  box still runs (kept per box, by its first step), the temporary and
+  *changed while this ran* folds included, which used to close at every
+  redraw. A folder holding an open change opens with it, unless the person
+  closed it.
+
+*Cost:* reaching one file in a long list takes one or two presses more; a
+folder alone where it is may add up to 21 rows to the first view; and the
+first view is a summary, so a reader looking for one file reads folder names
+first. Kept: the flat list for short ones, because a folder row for three
+files is a press for nothing. Rejected: a scrolling box inside the
+conversation (a scroll inside a scroll, worst on touch and e-ink screens),
+and hiding files by type (`.log`, `.trace`), which would one day hide the
+file that mattered.
+
 ## Decisions, and what they cost
 
 - **In place, not beside.** The earlier click opened one step's change in

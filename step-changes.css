@@ -8,13 +8,13 @@
 /* One file: kind, name, folder, what it needs, lines. */
 .sc-row {
   display: flex; align-items: baseline; gap: 8px; width: 100%; height: auto; min-height: 34px;
-  padding: 7px 12px; border: 0; border-radius: 0; background: transparent; color: var(--text);
+  padding: 7px 12px 7px calc(12px + var(--sc-depth, 0) * 18px); border: 0; border-radius: 0; background: transparent; color: var(--text);
   font: inherit; font-size: var(--fs-body); text-align: left; cursor: pointer;
 }
 .sc-row:hover, .sc-row[aria-expanded="true"] { background: var(--surface-1); }
 .sc-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .sc-caret { flex: none; width: 8px; align-self: center; height: 8px; border-right: 1.5px solid var(--text-faint); border-bottom: 1.5px solid var(--text-faint); transform: rotate(-45deg); margin-right: 2px; transition: transform .12s; }
-.sc-row[aria-expanded="true"] > .sc-caret, .sc-fold > details[open] > summary > .sc-caret { transform: rotate(45deg); }
+.sc-row[aria-expanded="true"] > .sc-caret { transform: rotate(45deg); }
 .sc-kind { flex: none; width: 14px; font-family: var(--font-mono); font-size: 11px; font-weight: 700; text-align: center; color: var(--text-faint); }
 .sc-kind[data-kind="added"] { color: var(--success); }
 .sc-kind[data-kind="modified"] { color: var(--warn); }
@@ -30,15 +30,20 @@
 .sc-meta { color: var(--text-faint); font-family: var(--font); }
 .sc-wait .sc-name { color: var(--text-dim); }
 
-/* Scratch files and changes that may be someone else's: folded, quiet. */
-.sc-fold > details > summary { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 5px 12px; list-style: none; cursor: pointer; color: var(--text-faint); font-size: var(--fs-meta); }
-.sc-fold > details > summary::-webkit-details-marker { display: none; }
-.sc-fold > details > summary:hover { color: var(--text-dim); background: var(--surface-1); }
-.sc-fold > details > .sc-list { border-top: 1px solid var(--border); }
-.sc-fold .sc-row { padding-left: 28px; }
+/* A long list (design/88): folders, folds and "show more", a row each.
+   Their rows are drawn only once open; the indent says what holds what. */
+.sc-item > .sc-list { border-top: 1px solid var(--border); }
+.sc-folder .sc-name { font-weight: 500; }
+.sc-folder .sc-dir { flex: 0 1 auto; }
+.sc-group, .sc-rest { min-height: 30px; padding-top: 5px; padding-bottom: 5px; color: var(--text-faint); font-size: var(--fs-meta); }
+.sc-group .sc-name, .sc-rest .sc-name { font-weight: 400; }
+.sc-group:hover, .sc-rest:hover { color: var(--text-dim); }
+/* An open folder is not a selection: only an open change is shaded. */
+.sc-folder[aria-expanded="true"]:not(:hover), .sc-group[aria-expanded="true"]:not(:hover) { background: transparent; }
+.sc-rest .sc-caret { visibility: hidden; }
 
 /* The card: the change itself, under its row. */
-.sc-card { border-top: 1px solid var(--border); background: var(--surface-1); }
+.sc-card { min-width: 0; border-top: 1px solid var(--border); background: var(--surface-1); }
 .sc-card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 6px 12px; font-size: var(--fs-meta); color: var(--text-dim); }
 .sc-what b { color: var(--text); font-weight: 600; }
 .sc-how { color: var(--text-faint); }
@@ -46,7 +51,10 @@
 .sc-acts button { height: 24px; padding: 0 9px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--bg); color: var(--text-dim); font-size: 11px; }
 .sc-acts button:hover { color: var(--text); border-color: var(--border-strong); }
 .sc-acts button[aria-pressed="true"] { color: var(--text); border-color: var(--border-strong); background: var(--surface-2); }
-.sc-body { background: var(--bg); border-top: 1px solid var(--border); }
+/* Only the content scrolls: actions remain outside even for a single huge
+   wrapped line, an expanded diff, or a rendered page. */
+.sc-body { min-width: 0; max-height: min(32rem, 55vh); max-height: min(32rem, 55dvh); overflow: auto; background: var(--bg); border-top: 1px solid var(--border); }
+.sc-body:focus-visible, .sc-acts button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .sc-body:empty { display: none; }
 .sc-note { margin: 0; padding: 10px 14px; color: var(--text-dim); font-size: var(--fs-meta); }
 .sc-hunk-label { padding: 4px 14px; font-size: var(--fs-micro); color: var(--text-faint); background: var(--surface-1); border-bottom: 1px solid var(--border); }
