@@ -84,6 +84,35 @@ for 150 s.
   what is shown at once, so a sleeping phone is not minutes late. Quiet-work
   reminders are "normal".
 
+## Sound follows the person
+
+The finished-run sound (settings → sound: chime, title, summary, voice)
+used to play on the computer's own speakers, always. That was right when
+the browser ran on the same computer. Since work moved to lambda and the
+laptop became a window onto it, the chime played in lambda's room and the
+laptop stayed silent.
+
+Now it plays on the speakers of the screen the person is at, one screen
+only (`soundScreen` in push-policy.js, `soundTargets` in server.js):
+
+1. Their screens, from the same reports as above. A visible screen that
+   reported lately wins, the most recently touched first; else any open
+   one, most recently touched (a minimised window still plays sound).
+2. That screen is a browser on the computer itself (the event stream's
+   request was local: not through Tailscale Serve or the encrypted link):
+   the computer plays it, as before, and the voice mode's microphone is
+   that room's.
+3. Any other screen: the page plays it (`ScreenSound` in app.html). The
+   computer sends `done-sound` on that page's stream only: `{ tone }`,
+   which the page makes itself with Web Audio, or `{ audio }`, the speech
+   clip's address. The voice mode is the summary there: no microphone.
+4. No screen open: the computer plays it only if the person's last screen
+   was the computer's own (or none was seen since it started).
+
+The attention tone (work went quiet) and replies of an agent's own
+program ("working" ended, confirmed 4 s later) go the same way. The
+settings page's sample plays on the screen that asked for it.
+
 ## Settings → notifications (push-ui.js)
 
 - This device: a single on/off. Turning on asks the browser's or Android's
@@ -139,6 +168,15 @@ for 150 s.
   "done" is the end of "working", confirmed 4 s later, and the reply's
   words are the index's last message. A question is the program's open
   choice, without its text: the terminal reader does not expose it.
+
+- **A page plays sound only once it has been touched.** Browsers refuse
+  sound from a page nobody clicked since it loaded; such a page drops the
+  sound. Reopened and left alone, a laptop's window is quiet until its
+  first click.
+- **One screen sounds, not all.** Several devices chiming at once is noise;
+  the others have notifications.
+- **Questions of an agent's own program have no sound**, as before: only
+  its notification.
 
 ## Files
 

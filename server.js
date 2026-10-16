@@ -4063,12 +4063,12 @@ async function delegationQuietReport(task, facts) {
     log: task.logPath, session: task.sessionPath });
 }
 // The person hears about quiet work no agent could be told: the row says so
-// on every screen, the phone notifies (Android NotifyService), and this
-// machine plays the attention tone unless finish sounds are off or muted.
+// on every screen, their devices notify (design/100), and the screen they
+// are at plays the attention tone unless finish sounds are off or muted.
 function announceQuiet({ key, title, text, quietMs, level }) {
   broadcast({ type: 'attention', kind: 'quiet', key: key || null, title: title || null, text, quietMs, level, at: Date.now() });
   if (key) { try { pushing().notifier.notify('quiet', { key, title: () => pushTitle(key, title), detail: text }); } catch (e) { console.error('[push] ' + e.message); } }
-  if (doneSoundMode() !== 'off') enqueueAnnouncement({ tone: 'attention' });
+  if (doneSoundMode() !== 'off' && !voiceMuted()) playTargetsTone(soundTargets(key || null, null), 'attention');
 }
 // Can the parent conversation take a callback turn now? 'busy' waits;
 // 'unreachable' means no web turn will start there (not indexed, a terminal
@@ -9807,9 +9807,29 @@ function assertNotLive(key, what = 'This') {
     throw Object.assign(new Error(`${what} conversation is open in ${name}'s own program here: use its box below, or go back to Chattering's box first.`), { status: 409 });
   }
 }
+// An agent's own program finished a reply ("working" ended and stayed
+// ended for 4 s, as for notifications): the finished-run sound, as for a
+// web run. Its reply's words are the index's last message.
+const liveDoneSounds = new Map(); // key → timer
+function soundLiveState(key, prev, st) {
+  if (st && st.working) { clearTimeout(liveDoneSounds.get(key)); liveDoneSounds.delete(key); return; }
+  if (!st || st.waiting || !(prev && prev.working)) return;
+  clearTimeout(liveDoneSounds.get(key));
+  const who = typeof liveIdentity !== 'undefined' && liveIdentity.get(key);
+  liveDoneSounds.set(key, setTimeout(() => {
+    liveDoneSounds.delete(key);
+    const now = liveStates.get(key);
+    if (!now || now.working || now.waiting) return;
+    const last = index[key] && index[key].last;
+    const text = last && last.role === 'assistant' ? last.text : '';
+    if (!String(text || '').trim()) return;
+    announceDone({ key, askedBy: who && who.user ? who.user.id : null, text }).catch(e => console.log('speak-done failed: ' + e.message));
+  }, 4000));
+}
 function liveStateChanged(key, st) {
   const ended = !st || st.mode === 'ended' || !!st.exited;
   pushLiveState(key, liveStates.get(key) || null, ended ? null : st);
+  soundLiveState(key, liveStates.get(key) || null, ended ? null : st);
   if (ended) { liveStates.delete(key); for (const [f, k] of liveHeld) if (k === key) liveHeld.delete(f); }
   else liveStates.set(key, st);
   const out = ended ? { mode: 'ended', working: false, waiting: false } : { mode: st.mode, working: !!st.working, waiting: !!st.waiting };
@@ -16406,59 +16426,111 @@ function fallbackSpokenLine(text, opening) {
   return opening + (head ? ' It starts with: ' + head : '');
 }
 
+// Where a finished-run sound plays: on the speakers of the screen the
+// person is at (design/100, "Sound follows the person"). When that screen
+// is a browser on this computer, this computer plays it (and the voice
+// mode's microphone is this room's). When it is another device (a laptop
+// on Lambda through Tailscale or the encrypted link, a phone, a tablet),
+// that page plays it itself, and this computer stays quiet. With no screen
+// open, this computer plays only if the person was last here (or nobody
+// has been seen since it started). Each person hears their own runs.
+function soundTargets(key, askedBy) {
+  const targets = { host: false, screens: [] };
+  let ids = [];
+  try { ids = pushRecipients(key, askedBy); } catch {}
+  if (!ids.length) { targets.host = true; return targets; }
+  const here = pushing().here, now = Date.now();
+  for (const userId of ids) {
+    const row = pushPolicy.soundScreen(here.forUser(userId, conn => sseByConn.has(conn)), now);
+    if (row) {
+      if (row.local) targets.host = true;
+      else if (!targets.screens.includes(row.conn)) targets.screens.push(row.conn);
+      continue;
+    }
+    const last = here.lastFor(userId);
+    if (!last || last.local) targets.host = true;
+  }
+  return targets;
+}
+// One sound to one page: { tone } or { audio } (a speech clip's address).
+// Only to that stream: the other screens of the person stay quiet.
+function sendScreenSound(conn, sound) {
+  const client = sseByConn.get(conn);
+  if (!client) return;
+  try { client.res.write('data: ' + JSON.stringify({ type: 'done-sound', ...sound }) + '\n\n'); } catch {}
+}
+function playTargetsTone(targets, tone, job = null) {
+  if (targets.host) enqueueAnnouncement({ job, tone });
+  for (const conn of targets.screens) sendScreenSound(conn, { tone });
+}
+
 async function speakRunDone(job) {
   try {
-    const mode = doneSoundMode();
-    if (mode === 'off') return;
     if (job.fanoutId) return; // parallel runs would talk over each other
     const text = String(job.doneSpeechSource || '').trim();
     if (!text) return;
-    if (mode === 'chime') { enqueueAnnouncement({ job, tone: 'done' }); return; }
-    const entry = job.key && index[job.key];
-    const title = (entry && (entry.title || entry.timelineTitle) || '').trim() || 'an untitled task';
-    const opening = voiceOpeningFor(job.key, title);
-    let sentence = '';
-    if (mode === 'title') sentence = opening;
-    else if (voiceModelReady()) {
-      try {
-        const { outputs } = await aiProgram('reply_digest', { opening, title, reply: text.slice(0, 16000) }, { timeoutMs: 45000, caller: { conversation: job.key } });
-        sentence = String(outputs.digest || '').trim();
-      } catch (e) { console.log('speak-done summarizer unreachable, using fallback: ' + e.message); }
-    }
-    if (!sentence) sentence = fallbackSpokenLine(text, opening);
-    let wavPath;
-    try {
-      const clip = await synthesizeSpeech(sentence, false, VOICE_SPEED);
-      wavPath = path.join(TTS_DIR, clip.id + '.wav');
-    } catch (e) {
-      console.log('speak-done tts failed, chime instead: ' + e.message);
-      enqueueAnnouncement({ job, tone: 'done' });
-      return;
-    }
-    enqueueAnnouncement({ job, title, wavPath, listen: mode === 'voice' });
+    await announceDone({ key: job.key, askedBy: job.askedBy, text, job });
   } catch (e) { console.log('speak-done failed: ' + e.message); }
 }
 
+// A reply is ready in `key`: say so, as the sound mode says, where the
+// person is. `job` (a web run) lets the voice mode's spoken reply go back
+// to it; without one the microphone does not open.
+async function announceDone({ key, askedBy = null, text, job = null }) {
+  const mode = doneSoundMode();
+  if (mode === 'off' || voiceMuted()) return;
+  const targets = soundTargets(key, askedBy);
+  if (!targets.host && !targets.screens.length) return;
+  if (mode === 'chime') return playTargetsTone(targets, 'done', job);
+  const entry = key && index[key];
+  const title = (entry && (entry.title || entry.timelineTitle) || '').trim() || 'an untitled task';
+  const opening = voiceOpeningFor(key, title);
+  let sentence = '';
+  if (mode === 'title') sentence = opening;
+  else if (voiceModelReady()) {
+    try {
+      const { outputs } = await aiProgram('reply_digest', { opening, title, reply: String(text || '').slice(0, 16000) }, { timeoutMs: 45000, caller: { conversation: key } });
+      sentence = String(outputs.digest || '').trim();
+    } catch (e) { console.log('speak-done summarizer unreachable, using fallback: ' + e.message); }
+  }
+  if (!sentence) sentence = fallbackSpokenLine(String(text || ''), opening);
+  let clip;
+  try { clip = await synthesizeSpeech(sentence, false, VOICE_SPEED); }
+  catch (e) {
+    console.log('speak-done tts failed, chime instead: ' + e.message);
+    return playTargetsTone(targets, 'done', job);
+  }
+  // Another screen has no room microphone here: it hears the summary.
+  if (targets.host) enqueueAnnouncement({ job, title, wavPath: path.join(TTS_DIR, clip.id + '.wav'), listen: mode === 'voice' && !!job });
+  for (const conn of targets.screens) sendScreenSound(conn, { audio: '/api/tts/audio?id=' + clip.id });
+}
+
 // A sample of the current mode, for the settings page. Never opens the
-// microphone and never changes the "same conversation" memory.
-async function previewDoneSound() {
+// microphone and never changes the "same conversation" memory. `local`:
+// asked from a browser on this computer, which hears this computer's
+// speakers; any other screen gets `play` back and plays it itself, as it
+// would a finished run.
+async function previewDoneSound(local = true) {
   const mode = doneSoundMode();
   if (mode === 'off') return { ok: false, mode, reason: 'off' };
   if (voiceMuted()) return { ok: false, mode, reason: 'muted' };
   const capped = appSettings.doneSound !== mode
     ? (mode === 'chime' ? 'no read-aloud server is set up, so the chime plays (settings \u2192 sound)' : 'no speech-to-text server is set up, so the microphone does not open')
     : undefined;
-  if (mode === 'chime') { enqueueAnnouncement({ tone: 'done' }); return { ok: true, mode, reason: capped }; }
+  const tone = reason => {
+    if (local) enqueueAnnouncement({ tone: 'done' });
+    return { ok: true, mode, reason, ...(local ? {} : { play: { tone: 'done' } }) };
+  };
+  if (mode === 'chime') return tone(capped);
   const opening = 'Your conversation about sound settings has just returned.';
   const sentence = mode === 'title' ? opening
     : opening + ' It says the sound mode is saved. It recommends the mode that fits the room you are in.';
   try {
     const clip = await synthesizeSpeech(sentence, false, VOICE_SPEED);
-    enqueueAnnouncement({ wavPath: path.join(TTS_DIR, clip.id + '.wav'), listen: false });
-    return { ok: true, mode };
+    if (local) enqueueAnnouncement({ wavPath: path.join(TTS_DIR, clip.id + '.wav'), listen: false });
+    return { ok: true, mode, ...(local ? {} : { play: { audio: '/api/tts/audio?id=' + clip.id } }) };
   } catch (e) {
-    enqueueAnnouncement({ tone: 'done' });
-    return { ok: true, mode, reason: 'tts failed: ' + e.message + ' (chime played instead)' };
+    return tone('tts failed: ' + e.message + ' (chime played instead)');
   }
 }
 
@@ -19695,7 +19767,7 @@ async function handleRequest(req, res) {
           const client = sseByConn.get(String(p.conn || ''));
           if (!client) return json(res, 410, { error: 'that live connection is gone' });
           if (!client.identity.user || client.identity.user.id !== me) return json(res, 403, { error: 'not your connection' });
-          ps.here.set(client.conn, me, { visible: p.visible, focused: p.focused, idleMs: p.idleMs, route: p.route });
+          ps.here.set(client.conn, me, { visible: p.visible, focused: p.focused, idleMs: p.idleMs, route: p.route, local: client.local });
           return json(res, 200, { ok: true });
         }
         json(res, 404, { error: 'no such action' });
@@ -20251,7 +20323,7 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/voice/pause' && req.method === 'POST') {
       json(res, 200, { ok: voicePauseToggle(), paused: voice.paused });
     } else if (u.pathname === '/api/voice/preview' && req.method === 'POST') {
-      json(res, 200, await previewDoneSound());
+      json(res, 200, await previewDoneSound(isLocalRequest(req)));
     } else if (u.pathname === '/api/voice/mute' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
@@ -20901,7 +20973,9 @@ async function handleRequest(req, res) {
       // This stream names the browser for presence: the page reports where
       // it is under this id, and the row goes when the stream closes.
       const conn = crypto.randomBytes(8).toString('hex');
-      sseByConn.set(conn, { res, identity, conn });
+      // local: a browser on this computer, whose speakers are this computer's
+      // (a finished-run sound plays here, not in the page).
+      sseByConn.set(conn, { res, identity, conn, local: isLocalRequest(req) });
       try { res.write('data: ' + JSON.stringify({ type: 'hello', conn, me: usersLib.publicUser(identity.user), tier: identity.tier, users: publicUsers(), people: presenceFor(identity, conn) }) + '\n\n'); } catch {}
       // Seed the working-agent set right away: the periodic diff below only
       // broadcasts on change, so a fresh client would otherwise start blind.

@@ -3160,9 +3160,13 @@ function toggleJobs(show) {
 // (settings + the floating control) and "now speaking" (a floating pill with
 // pause and mute, visible only while audio plays).
 let voiceMutedState = false;
-function renderVoiceUi(playing, paused) {
+// The "speaking" pill, for speech this computer plays (`here` false: its
+// pause goes to the computer) or that this page plays (ScreenSound).
+let voicePillHere = false;
+function renderVoiceUi(playing, paused, here = false) {
   let pill = $('voicePill');
-  if (!playing) { if (pill) pill.remove(); return; }
+  if (!playing) { if (pill && voicePillHere === here) pill.remove(); return; }
+  voicePillHere = here;
   if (!pill) {
     pill = document.createElement('div');
     pill.id = 'voicePill';
@@ -3170,12 +3174,75 @@ function renderVoiceUi(playing, paused) {
       + '<button id="vpPause" title="Pause / resume"></button>'
       + '<button id="vpMute" title="Stop and mute for 30 minutes">mute</button>';
     document.body.appendChild(pill);
-    $('vpPause').onclick = () => fetch('/api/voice/pause', { method: 'POST' }).catch(() => {});
-    $('vpMute').onclick = () => voiceSetMuted(true);
+    $('vpPause').onclick = () => { if (voicePillHere) ScreenSound.pauseToggle(); else fetch('/api/voice/pause', { method: 'POST' }).catch(() => {}); };
+    $('vpMute').onclick = () => { ScreenSound.stop(); voiceSetMuted(true); };
   }
   pill.querySelector('.vp-label').textContent = paused ? '⏸ paused' : '🔊 speaking';
   $('vpPause').textContent = paused ? 'resume' : 'pause';
 }
+// Finished-run sounds this page plays itself (design/100, "Sound follows
+// the person"): the computer sends one here when this is the screen its
+// person is at and the screen is not on the computer (whose own speakers
+// play it then). A tone is made here (no network); speech is the
+// computer's clip. One at a time, in order. A browser plays sound only
+// once its page has been touched since it loaded (autoplay rules); before
+// that a sound is dropped.
+const ScreenSound = (() => {
+  // Mirrors VOICE_TONES in server.js: [Hz, ms]; 0 Hz is a pause.
+  const TONES = {
+    done: [[523, 80], [659, 80], [784, 180]],
+    attention: [[587, 140], [0, 90], [587, 140], [0, 90], [440, 260]],
+  };
+  let ctx = null, chain = Promise.resolve(), audio = null;
+  function context() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    if (!ctx) { try { ctx = new AC(); } catch { return null; } }
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    return ctx;
+  }
+  // A context made before the first touch stays suspended until one.
+  for (const t of ['pointerdown', 'keydown']) addEventListener(t, () => { if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {}); }, { capture: true, passive: true });
+  function tone(name) {
+    const notes = TONES[name] || TONES.done;
+    const ac = context();
+    if (!ac) return Promise.resolve();
+    let t = ac.currentTime + 0.02;
+    for (const [freq, ms] of notes) {
+      const dur = ms / 1000;
+      if (freq > 0) {
+        const osc = ac.createOscillator(), gain = ac.createGain();
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0, t);
+        gain.gain.linearRampToValueAtTime(0.25, t + 0.008);
+        gain.gain.setValueAtTime(0.25, Math.max(t + 0.008, t + dur - 0.03));
+        gain.gain.linearRampToValueAtTime(0, t + dur);
+        osc.connect(gain).connect(ac.destination);
+        osc.start(t); osc.stop(t + dur + 0.01);
+      }
+      t += dur;
+    }
+    return new Promise(r => setTimeout(r, (t - ac.currentTime) * 1000 + 50));
+  }
+  function speech(url) {
+    return new Promise(resolve => {
+      const a = new Audio(url);
+      audio = a;
+      const done = () => { if (audio === a) { audio = null; renderVoiceUi(false, false, true); } resolve(); };
+      a.onended = done; a.onerror = done;
+      a.onpause = () => { if (audio === a && !a.ended) renderVoiceUi(true, true, true); };
+      a.onplay = () => renderVoiceUi(true, false, true);
+      a.play().catch(done);
+    });
+  }
+  function play(sound) {
+    if (!sound) return;
+    chain = chain.then(() => sound.audio ? speech(sound.audio) : tone(sound.tone)).catch(() => {});
+  }
+  function pauseToggle() { if (!audio) return; if (audio.paused) audio.play().catch(() => {}); else audio.pause(); }
+  function stop() { if (!audio) return; const a = audio; audio = null; a.pause(); renderVoiceUi(false, false, true); a.onended && a.onended(); }
+  return { play, pauseToggle, stop };
+})();
 async function voiceSetMuted(muted, minutes = 30) {
   try {
     const d = await (await fetch('/api/voice/mute', {
@@ -16482,7 +16549,7 @@ const DONE_SOUND_OPTIONS = [
   ['chime', 'chime', 'Three short notes. No speech, no network.'],
   ['title', 'title', '“Your conversation about … has just returned.” Nothing more, no microphone.'],
   ['summary', 'summary', 'The title line, then two to four sentences about the reply. No microphone.'],
-  ['voice', 'voice', 'The summary, then the microphone opens for a spoken reply or a command: mute, skip, status, read, go to.'],
+  ['voice', 'voice', 'The summary, then the microphone opens for a spoken reply or a command: mute, skip, status, read, go to. The microphone is the one of the computer Chattering runs on: at another screen you hear the summary.'],
 ];
 
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
@@ -16725,6 +16792,7 @@ function paneSound() {
     return { value, name, desc: missing.length ? desc + ' Needs ' + missing.map(k => VOICE_SERVICE_NAMES[k]).join(' and ') + ' (below).' : desc, disabled: missing.length > 0 && value !== mode };
   });
   const can = !!(settingsState && settingsState.canEditSettings);
+  const hostLabel = (settingsState && settingsState.hostname) || 'the host';
   const field = (key, label, help, cls = '') => {
     const envName = { speechUrl: 'SPEECH_URL', ttsUrl: 'KOKORO_URL', ttsVoice: 'KOKORO_VOICE', voiceModelUrl: 'REWRITE_URL', voiceModel: 'REWRITE_MODEL' }[key];
     const cap = key === 'speechUrl' ? caps.speech : key === 'ttsUrl' || key === 'ttsVoice' ? caps.tts : caps.voiceModel;
@@ -16736,7 +16804,8 @@ function paneSound() {
     </div>`;
   };
   return `<h2>sound</h2>
-    <p class="lead">What the speakers do when an agent reply is ready. Pick a mode to hear it.</p>
+    <p class="lead">What you hear when an agent reply is ready. Pick a mode to hear it.</p>
+    <div class="set-help">It plays on the screen you are using, one screen only: ${esc(hostLabel)}'s own speakers when you are at ${esc(hostLabel)}, otherwise the browser or app in front of you. A page that has not been clicked since it opened cannot play sound yet (a browser rule).</div>
     ${setOptionsHtml('setDoneSound', options, mode)}
     ${effective !== mode ? `<div class="set-help"><b>Playing now: ${esc(effective)}.</b> The ${esc(mode)} mode needs a voice service that is not set up here.</div>` : '<div class="set-help">If speech cannot be made (voice server down), the chime plays instead.</div>'}
     <div class="set-row" id="setMuteRow">${muteRowHtml()}</div>
@@ -16833,6 +16902,7 @@ function bindPaneSound(root) {
     if (v === 'off') return;
     try {
       const d = await (await fetch('/api/voice/preview', { method: 'POST' })).json();
+      if (d.play) ScreenSound.play(d.play);
       if (!d.ok && d.reason === 'muted') toast('sound is muted right now — unmute to hear it');
       else if (d.reason) toast(d.reason);
     } catch {}
@@ -19034,6 +19104,7 @@ live.onmessage = ev => {
   }
   if (d.type === 'voice-state') { voiceMutedState = !!d.muted; voiceMutedUntil = Number(d.mutedUntil) || 0; if (settingsOpen) renderSettings(); return; }
   if (d.type === 'voice-playing') { renderVoiceUi(d.playing, d.paused); return; }
+  if (d.type === 'done-sound') { if (!voiceMutedState) ScreenSound.play(d); return; }
   if (d.type === 'voice-nav') {
     // A spoken "go to X": follow it on this screen.
     if (d.key) open(d.key, 'bottom').catch(() => {});

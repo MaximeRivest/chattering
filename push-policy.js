@@ -26,17 +26,39 @@ const KIND_PREF = { reply: 'replies', failed: 'problems', quiet: 'problems', que
 // One row per live connection of the app (its event stream): whether the
 // page is visible and focused, how long since the person touched it, and
 // which conversation it shows. Reported by push-ui.js.
+// `local`: the screen is a browser on the computer itself (its speakers
+// are the computer's), as the server saw the stream's request.
 class HereBook {
-  constructor() { this.rows = new Map(); }
-  set(conn, userId, { visible, focused, idleMs, route } = {}, now = Date.now()) {
+  constructor() { this.rows = new Map(); this.last = new Map(); }
+  set(conn, userId, { visible, focused, idleMs, route, local } = {}, now = Date.now()) {
     if (!conn || !userId) return;
     const idle = Math.max(0, Math.min(Number(idleMs) || 0, 7 * 24 * 3600 * 1000));
-    this.rows.set(conn, { conn, userId, visible: !!visible, focused: !!focused, activeAt: now - idle, route: String(route || '').slice(0, 600), at: now });
+    const row = { conn, userId, visible: !!visible, focused: !!focused, local: !!local, activeAt: now - idle, route: String(route || '').slice(0, 600), at: now };
+    this.rows.set(conn, row);
+    // The screen this person touched last, kept after it closes: with no
+    // screen open, a sound goes where they were.
+    const last = this.last.get(userId);
+    if (!last || row.activeAt >= last.activeAt) this.last.set(userId, { local: row.local, activeAt: row.activeAt });
     if (this.rows.size > 2000) { const oldest = [...this.rows.values()].sort((a, b) => a.at - b.at)[0]; this.rows.delete(oldest.conn); }
+    if (this.last.size > 2000) this.last.delete(this.last.keys().next().value);
   }
   remove(conn) { this.rows.delete(conn); }
   // Rows of one person's live connections (`live(conn)`: is its stream open).
   forUser(userId, live = () => true) { return [...this.rows.values()].filter(r => r.userId === userId && live(r.conn)); }
+  // { local, activeAt } of the screen this person touched last, or null.
+  lastFor(userId) { return this.last.get(userId) || null; }
+}
+
+// The one screen a finished-run sound plays on for a person: the one they
+// are at. A visible screen that reported lately, the most recently touched
+// first; else any open one, most recently touched (a minimised window
+// still plays sound). Null when none is open. One screen only: a laptop,
+// a phone and a tablet chiming together is noise.
+function soundScreen(rows, now) {
+  const byTouch = (a, b) => b.activeAt - a.activeAt;
+  const shown = rows.filter(r => seen(r, now)).sort(byTouch);
+  if (shown.length) return shown[0];
+  return rows.slice().sort(byTouch)[0] || null;
 }
 
 const seen = (r, now) => r.visible && now - r.at < FRESH_MS;
@@ -131,4 +153,4 @@ function deliveryFor(kind) {
   return { ttl: 24 * 3600, urgency: 'high' };
 }
 
-module.exports = { HereBook, decide, messageFor, tagFor, deliveryFor, fitMessage, KIND_PREF, ACTIVE_MS, LOOKING_MS, FRESH_MS };
+module.exports = { HereBook, decide, soundScreen, messageFor, tagFor, deliveryFor, fitMessage, KIND_PREF, ACTIVE_MS, LOOKING_MS, FRESH_MS };
