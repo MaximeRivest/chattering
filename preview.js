@@ -301,8 +301,9 @@ function createPreviewHandler(deps) {
 
 // Live: the file on disk (HTML read to add the kit; everything else streamed
 // with ranges). A version: the exact bytes captured then; a file the version
-// could not capture (older than its folder's declaration) falls back to disk
-// and says so in X-Chattering-Source.
+// could not capture or did not keep (older than its declaration, too large,
+// or not named by the page, design/101) falls back to disk and says so in
+// X-Chattering-Source.
 async function readVersion(store, claims, version, abs) {
   const live = async source => {
     let real;
@@ -321,8 +322,7 @@ async function readVersion(store, claims, version, abs) {
   const rel = path.relative(snap.root, abs).split(path.sep).join('/');
   const item = snap.manifest.find(f => f.path === rel);
   if (item && item.oid) return { bytes: await store.blob(snap.root, item.oid), mime: mimeOf(abs), immutable: true, source: 'version' };
-  if (item && item.unavailable) return live('live-fallback');
-  return null;
+  return live('live-fallback');
 }
 
 module.exports = { Capabilities, createPreviewHandler, contentPolicy, proxyPage, withKit, siteId, mimeOf, KIT, PROTOCOL_VERSION, LIBRARY_HOSTS };

@@ -1702,10 +1702,31 @@ async function artifactBlob(identity, params, req, res) {
   try { snap = await snapshotCached(version); } catch (e) { throw Object.assign(new Error(e.message), { status: 404 }); }
   const rel = path.relative(snap.root, file).split(path.sep).join('/');
   const item = snap.manifest.find(f => f.path === rel);
-  if (!item || !item.oid) throw Object.assign(new Error('This file is not in that version.'), { status: 404 });
+  // A file the version did not keep (the artifact's version holds only its
+  // page and what the page names, design/101): the file as it is now.
+  if (!item || !item.oid) {
+    const stat = await fsp.stat(file).catch(() => null);
+    if (!stat || !stat.isFile()) throw Object.assign(new Error('This file is not in that version.'), { status: 404 });
+    return fileMedia.serveFile(req, res, { abs: file, stat }, safeMime, { maxBytes: 64 * 1024 * 1024, headers: { ...headers, 'X-Chattering-Source': 'live-fallback' } });
+  }
   const body = await checkpoints().blob(snap.root, item.oid);
   res.writeHead(200, { ...headers, 'Content-Type': safeMime, 'Content-Length': body.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
   res.end(req.method === 'HEAD' ? undefined : body);
+}
+
+// Artifact folders recorded before design/101 saved everything beside the
+// file that was shown. Once every conversation is indexed, each becomes
+// what conversations actually showed there (the artifacts in the index).
+function convertArtifactFolders() {
+  if (process.env.CHATTERING_NO_CHECKPOINTS === '1') return;
+  let store;
+  try { store = checkpoints(); } catch { return; }
+  if (!store.db.prepare('SELECT 1 FROM artifact_scopes LIMIT 1').get()) return;
+  const declared = [];
+  for (const entry of Object.values(index)) for (const a of entry.artifacts || []) if (a.path && !a.widget) declared.push({ path: a.path, at: (typeof a.ts === 'number' ? a.ts : Date.parse(a.ts || entry.lastTs || '')) || Date.now() });
+  store.convertLegacyScopes(declared)
+    .then(r => console.log(`Saved file history: ${r.folders} artifact folders now follow what was shown (${r.kept} kept, ${r.dropped} nobody showed)`))
+    .catch(e => console.error('Saved file history: artifact folders:', e.message));
 }
 
 // The artifact tool (extensions/artifacts.ts) declares files it made. The
@@ -1722,11 +1743,13 @@ async function artifactDeclare(identity, body) {
   const isDir = stat.isDirectory();
   const cwd = index[key].cwd || os.homedir();
   const folder = isDir ? abs : path.dirname(abs);
-  let scope = null, scopeError = '';
-  try {
-    const root = await checkpoints().root(cwd);
-    if (folder !== root) scope = (await checkpoints().addArtifactScope(cwd, folder)).scope;
-  } catch (e) { scopeError = e.message; }
+  // Versions keep the artifact with the pictures and fonts it uses: a file
+  // with what it names, a folder whole while it is small (design/101).
+  let saved = null, scopeError = '';
+  try { saved = await checkpoints().declareArtifact(cwd, abs); } catch (e) { scopeError = e.message; }
+  const versionNote = saved && saved.folder && !saved.whole
+    ? `The folder is too large to version whole (${saved.over}); ` + (saved.entry ? `versions keep ${path.basename(saved.entry)} and the files it names.` : 'versions keep none of it. Show its page (a file) instead.')
+    : '';
   const kind = body.type && body.type !== 'auto' ? body.type : artifactKindOf(abs, isDir);
   const cap = previewCaps.sign({ u: identity.user.id, k: key, r: folder, e: isDir ? '' : path.basename(abs), t: kind === 'slides' ? 'slides' : undefined });
   const site = previewLib.siteId(key, folder);
@@ -1735,7 +1758,7 @@ async function artifactDeclare(identity, body) {
   const tailnet = tailnetName();
   if (tailnet) urls.push(`https://${tailnet}:${PREVIEW_TAILNET_PORT}${tail}`);
   if (appSettings.previewBase) urls.unshift(appSettings.previewBase.replace('{id}', site) + tail);
-  return { key, path: abs, kind, isDir, versioned: !!scope || !scopeError, scopeError, urls };
+  return { key, path: abs, kind, isDir, versioned: !!saved, scopeError, versionNote, urls };
 }
 let tailnetNameCache = { at: 0, name: '' };
 function tailnetName() {
@@ -22098,6 +22121,7 @@ applyLanMode(lanWanted(), () => {
   // The server upgrades the history store before any Pi worker opens it.
   try { checkpoints(); } catch (e) { console.error('Saved file history unavailable:', e.message); }
   fullScan().then(() => {
+    convertArtifactFolders();
     restoreInterruptedRuns();
     recoverLiveTerminals();
     watch(); watchNotes();

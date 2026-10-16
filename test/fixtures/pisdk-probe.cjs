@@ -36,7 +36,12 @@ async function until(fn) { for (let i = 0; i < 200; i++) { if (fn()) return; awa
     const store = new CheckpointStore();
     try {
       for (const b of begun) {
+        // A step's end is saved behind the agent (design/101): it lands
+        // shortly after the run reports it is done.
+        const ended = () => store.boundaries(b.file, ['env-probe', 'target-probe']).filter(r => r.phase === 'after').length >= 2;
+        for (let i = 0; i < 500 && !ended(); i++) await sleep(20);
         const boundaries = store.boundaries(b.file, ['env-probe']);
+        if (process.env.FIXTURE_DEBUG) console.error(JSON.stringify(store.boundaries(b.file, ['env-probe', 'target-probe']).map(r => [r.call, r.phase, !!r.snapshot, r.error])));
         const before = boundaries.find(b => b.phase === 'before'), after = boundaries.find(b => b.phase === 'after');
         assert.ok(before?.snapshot && after?.snapshot, 'Real awaited extension hooks did not produce checkpoints');
         assert.equal((await store.content(before.snapshot, 'probe.txt')).absent, true);

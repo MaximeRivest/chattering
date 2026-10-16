@@ -9,7 +9,7 @@ Claude / ChatGPT study of the same day (conversation 01a0ce59).
 | Piece | File |
 |---|---|
 | Preview origin: capabilities, policy, MCP Apps sandbox proxy, view kit, file serving from disk or a version | `preview.js` (listener in `server.js`, port 7435; TLS 7445 beside the LAN one; Tailscale Serve 8443) |
-| Versions of artifact folders, binary assets included; loose folders too | `checkpoint-store.js` (`artifact_scopes`), `checkpoint-extension.js` |
+| Versions of artifacts, binary assets included; loose folders too | `checkpoint-store.js` (`artifact_entries`, design/101), `checkpoint-extension.js` |
 | Endpoints: `/api/artifacts/config`, `resolve` (versions on the head's path), `widget`, `blob`, `declare` | `server.js` |
 | Tools `artifact` and `show` for every web session | `extensions/artifacts.ts` |
 | Widgets, cards, code previews, the panel, the MCP Apps host | `artifacts.js`, `artifacts.css`; hooks in `conversation-reader.js` and `app.html` |
@@ -218,10 +218,11 @@ answering — ChatGPT's strongest habit. A skill says when to do it.
 ## Versions of binary assets
 
 Checkpoints skip images, fonts, PDFs and files over 2 MiB. A declared
-artifact folder becomes a **checkpoint scope** (`approveScope` exists) whose
-captures include binary assets up to a limit (proposal: 20 MB per file,
-within the existing checkpoint budget). Outside declared folders nothing
-changes.
+artifact is saved with its binary assets (up to 25 MiB per file): a file
+with the files it names, a folder whole while it is small (1,000 files,
+50 MB), otherwise its page; all artifacts of a project share 100 MB per
+step. See design/101: declaring one file once made its whole folder a
+scope, which stopped history in large projects.
 
 ## Limits to state
 

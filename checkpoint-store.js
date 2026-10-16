@@ -10,6 +10,24 @@ const { sensitive, permittedLocal } = require('./task-locations');
 const SKIP = new Set(['.git', 'node_modules', '.venv', '.direnv', 'target', '__pycache__']);
 const READ_ONLY = new Set(['read', 'ls', 'find', 'grep']);
 const ARTIFACT_FILE_MAX = 25 * 1024 * 1024;
+// What one capture may hold (design/36, design/101): files considered, and
+// bytes of the files it saves. Checked before anything is read.
+const FILES_MAX = 20000, BYTES_MAX = 200 * 1024 * 1024, TEXT_MAX = 2 * 1024 * 1024;
+// An artifact folder is saved whole while it stays this small; past it,
+// only its page and the files the page uses. A page brings at most this.
+const FOLDER_FILES_MAX = 1000, FOLDER_BYTES_MAX = 50 * 1024 * 1024, FOLDER_RECHECK_MS = 5 * 60000;
+const PAGE_FILES_MAX = 300, PAGE_BYTES_MAX = 50 * 1024 * 1024, PAGE_DEPTH = 3;
+// All artifacts of a folder together, per capture: the most recently shown
+// come first. Leaves the rest of BYTES_MAX to the project's own files.
+const ARTIFACTS_BYTES_MAX = 100 * 1024 * 1024;
+// Artifacts declared longer ago than this are no longer followed at every
+// step; showing one again follows it again.
+const ARTIFACT_DAYS = 30;
+const PAGE_ENTRIES = ['index.html', 'index.htm', 'deck.json', 'index.md', 'README.md'];
+const READS_REFS = /\.(?:html?|svg|css|md|markdown|m?js)$/i;
+// Outside artifacts only text is saved: these are known not to be.
+const BINARY = /\.(?:png|jpe?g|gif|webp|avif|bmp|ico|tiff?|wav|mp3|ogg|flac|m4a|mp4|webm|mov|mkv|pdf|zip|gz|tgz|bz2|xz|zst|7z|tar|sqlite3?|db|(?:sqlite3?|db)-(?:journal|wal|shm)|pyc|woff2?|ttf|otf|so|dylib|dll|exe|bin|npy|npz|pt|pth|ckpt|safetensors|onnx|parquet|arrow|feather|pkl|pickle|h5|hdf5)$/i;
+const LOG = /\.log(?:\.\d+)?$/i;
 const hash = s => crypto.createHash('sha256').update(s).digest('hex');
 const blobId = b => crypto.createHash('sha1').update(Buffer.from(`blob ${b.length}\0`)).update(b).digest('hex');
 const platform = require('./platform.js');
@@ -31,6 +49,66 @@ const removedMessage = before => `Removed to free space (saved history from befo
 // long lists (a folder of video frames) repeat in every snapshot.
 const packList = list => deflateRawSync(Buffer.from(JSON.stringify(list)));
 const unpackList = stored => JSON.parse(typeof stored === 'string' ? stored : inflateRawSync(stored).toString('utf8'));
+// Relative file names a page, style, script or document mentions: quoted
+// names with an extension, unquoted attributes, CSS url(), srcset and
+// Markdown links. Over-matching is harmless (a name is kept only if such a
+// file exists); at most 500 per file.
+function references(text) {
+  const out = new Set();
+  const take = raw => {
+    if (out.size >= 500) return;
+    let s = String(raw).trim().replace(/[?#].*$/, '');
+    if (!s || s.startsWith('/') || s.startsWith('\\') || /^[a-z][a-z0-9+.-]*:/i.test(s) || !/\.[A-Za-z][A-Za-z0-9]{0,7}$/.test(s)) return;
+    try { s = decodeURIComponent(s); } catch {}
+    out.add(s);
+  };
+  for (const m of text.matchAll(/["'`]([^"'`\s<>]{1,300})["'`]/g)) take(m[1]);
+  for (const m of text.matchAll(/\b(?:src|href|poster|data)\s*=\s*([^\s"'`=<>]+)/gi)) take(m[1]);
+  for (const m of text.matchAll(/url\(\s*([^"'()\s]+)\s*\)/gi)) take(m[1]);
+  for (const m of text.matchAll(/srcset\s*=\s*["']([^"']+)["']/gi)) for (const part of m[1].split(',')) take(part.trim().split(/\s+/)[0]);
+  for (const m of text.matchAll(/\]\(\s*<?([^)\s>]+)/g)) take(m[1]);
+  return [...out];
+}
+const statOf = file => { try { return fs.lstatSync(file); } catch { return null; } };
+const tick = () => new Promise(r => setImmediate(r));
+const mbText = n => n >= 1024 * 1024 ? Math.round(n / (1024 * 1024)) + ' MB' : Math.ceil(n / 1024) + ' KB';
+const resolveReference = (from, ref) => { try { return path.resolve(path.dirname(from), ref); } catch { return null; } };
+// Raised when a capture passes its deadline or its step is stopped.
+function checker(deadline, budget, signal) {
+  return () => {
+    if (signal?.aborted) throw Object.assign(Error('Stopped with the step'), { stopped: true });
+    if (Date.now() > deadline) throw Object.assign(Error(slowMessage(budget)), { slow: true });
+  };
+}
+const seconds = ms => (ms >= 10000 ? Math.round(ms / 1000) : Math.round(ms / 100) / 10) + ' s';
+const slowMessage = budget => `Saving took longer than ${seconds(budget)}, so it was skipped rather than keep the agent waiting (the next step reuses what was done)`;
+// Resolves to null once prior settled; to a reason if the deadline or the
+// signal came first.
+function waitTurn(prior, deadline, signal, budget) {
+  return new Promise(resolve => {
+    let timer = null;
+    const finish = value => { clearTimeout(timer); signal?.removeEventListener?.('abort', stop); resolve(value); };
+    const stop = () => finish({ message: 'Stopped with the step', stopped: true });
+    if (signal?.aborted) return stop();
+    signal?.addEventListener?.('abort', stop, { once: true });
+    timer = setTimeout(() => finish({ message: slowMessage(budget) }), Math.max(0, deadline - Date.now()));
+    prior.then(() => finish(null), () => finish(null));
+  });
+}
+function largest(sizes) {
+  const [name, size] = [...sizes].sort((a, b) => b[1] - a[1])[0] || [];
+  return name ? { name, size } : null;
+}
+function tooManyFiles(paths, limit = FILES_MAX) {
+  const counts = new Map();
+  for (const p of paths) { const s = String(p).split(/[\\/]/); const top = s.length > 1 ? s[0] + '/' : s[0]; counts.set(top, (counts.get(top) || 0) + 1); }
+  const top = largest(counts);
+  return `This project has more than ${limit.toLocaleString('en-US')} files to save` + (top && top.size > limit / 4 ? ` (${top.size.toLocaleString('en-US')} in ${top.name})` : '');
+}
+function tooManyBytes(total, byFolder, limit = BYTES_MAX) {
+  const top = largest(byFolder);
+  return `This project has ${mbText(total)} of files to save, more than the ${mbText(limit)} limit` + (top && top.size > limit / 4 ? ` (${mbText(top.size)} in ${top.name})` : '');
+}
 function budgetBytes() {
   const mb = Number(process.env.CHATTERING_CHECKPOINT_MB || 1024);
   return Number.isFinite(mb) && mb > 0 ? mb * MB : 0;
@@ -70,6 +148,7 @@ class CheckpointStore {
       CREATE INDEX IF NOT EXISTS checkpoint_target_link_boundary ON checkpoint_target_links(boundary);
       CREATE TABLE IF NOT EXISTS checkpoint_scopes(root TEXT NOT NULL, path TEXT NOT NULL, PRIMARY KEY(root,path));
       CREATE TABLE IF NOT EXISTS artifact_scopes(root TEXT NOT NULL, path TEXT NOT NULL, PRIMARY KEY(root,path));
+      CREATE TABLE IF NOT EXISTS artifact_entries(root TEXT NOT NULL, path TEXT NOT NULL, folder INTEGER NOT NULL, declared INTEGER NOT NULL, PRIMARY KEY(root,path));
       CREATE INDEX IF NOT EXISTS checkpoint_call_only ON checkpoint_boundaries(call,id);
       CREATE INDEX IF NOT EXISTS checkpoint_root_time ON checkpoint_boundaries(root,started);
       CREATE INDEX IF NOT EXISTS checkpoint_boundary_snapshot ON checkpoint_boundaries(snapshot);
@@ -82,6 +161,10 @@ class CheckpointStore {
     this.migrateSchema(options.owner);
     this.queues = new Map(); this.cache = new Map(); this.ready = new Map();
     this.snapshots = new Map(); this.readers = new Map();
+    this.roots = new Map(); this.folderVerdicts = new Map(); this.references = new Map();
+    // Tests lower these; nothing else should.
+    this.limits = { files: FILES_MAX, bytes: BYTES_MAX, artifactBytes: ARTIFACTS_BYTES_MAX, ...options.limits };
+    this.workTrees = new Map(); this.lastSnapshot = new Map(); this.gate = Promise.resolve();
     // The server maintains; a Pi worker only saves (and says when it cannot).
     this.autoMaintain = (options.autoMaintain ?? !!options.owner) && process.env.CHATTERING_CHECKPOINT_MAINTENANCE !== '0';
     this.soon = null;
@@ -133,7 +216,7 @@ class CheckpointStore {
   // capture: many at once per folder; blocked while an exclusive lease holds.
   // exclusive: waits until the folder's captures finish, then holds them off.
   // maintain: one maintainer at a time for the whole store; never waits.
-  async lease(root, kind, { wait = 60000 } = {}) {
+  async lease(root, kind, { wait = 60000, check = () => {} } = {}) {
     const token = crypto.randomUUID(), ttl = LEASE_TTL[kind], start = Date.now();
     for (;;) {
       const now = Date.now();
@@ -150,7 +233,8 @@ class CheckpointStore {
       if (ok) break;
       if (kind === 'maintain') return null;
       if (Date.now() - start > wait) throw Error('Saved file history is being tidied; this step was not saved');
-      await sleep(50);
+      check();
+      await sleep(Math.min(50, Math.max(1, wait - (Date.now() - start))));
     }
     const renew = setInterval(() => { try { this.db.prepare('UPDATE checkpoint_leases SET expires=? WHERE token=?').run(Date.now() + ttl, token); } catch {} }, ttl / 4);
     renew.unref?.();
@@ -225,109 +309,299 @@ class CheckpointStore {
     })();
     this.ready.set(root, work); try { return await work; } catch (e) { this.ready.delete(root); throw e; }
   }
-  async paths(root, { artifactsOnly = false } = {}) {
-    let paths = [];
+  // Every file a capture considers, as workspace-relative path → whether it
+  // is saved as part of an artifact (binary allowed, larger files). Bounded
+  // before anything is read: the Git listing, the approved scopes, and for
+  // each artifact either its small folder or its page and what the page uses
+  // (design/101). notes: what was left out on purpose, for the person.
+  async enumerate(root, { artifactsOnly = false, check = () => {} } = {}) {
+    const listed = new Map(), notes = [];
+    const add = (full, artifact) => {
+      const rel = path.relative(root, full).split(path.sep).join('/');
+      listed.set(rel, !!listed.get(rel) || artifact);
+    };
     if (!artifactsOnly) {
-      const normal = await git(['rev-parse', '--is-inside-work-tree'], { cwd: root }).then(b => b.toString().trim() === 'true').catch(() => false);
-      const args = normal ? ['ls-files', '-z', '--cached', '--others', '--exclude-standard']
+      const args = (await this.isWorkTree(root)) ? ['ls-files', '-z', '--cached', '--others', '--exclude-standard']
         : ['--git-dir=' + this.repo(root), '--work-tree=' + root, 'ls-files', '-z', '--others', '--exclude-standard'];
       // Never fall back to an unfiltered filesystem walk after an enumeration
       // failure: that could silently capture ignored secrets or build output.
-      paths = (await git(args, { cwd: root })).toString('utf8').split('\0').filter(Boolean);
+      for (const rel of (await git(args, { cwd: root })).toString('utf8').split('\0')) if (rel) listed.set(rel, false);
+      if (listed.size > this.limits.files) throw Error(tooManyFiles([...listed.keys()], this.limits.files));
     }
-    const visit = async file => {
-      if (paths.length > 20000) throw Error('Approved capture scope exceeds the file limit');
-      // The store never saves itself, whatever folder was declared around it.
-      if (inside(this.dir, file)) return;
-      const stat = await fsp.lstat(file).catch(() => null);
-      if (!stat || stat.isSymbolicLink() || sensitive(file)) return;
-      if (stat.isDirectory()) {
-        for (const e of await fsp.readdir(file, { withFileTypes: true })) if (!SKIP.has(e.name)) await visit(path.join(file, e.name));
-      } else if (stat.isFile()) paths.push(path.relative(root, file).split(path.sep).join('/'));
-    };
-    // Approved scopes and artifact folders are walked explicitly: an artifact
-    // (design/67) is often build output a .gitignore would hide.
-    for (const scope of artifactsOnly ? this.artifactScopes(root) : [...this.scopes(root), ...this.artifactScopes(root)]) {
+    check();
+    if (!artifactsOnly) for (const scope of this.scopes(root)) {
       const real = await fsp.realpath(scope).catch(() => null);
-      if (real === scope && inside(root, real)) await visit(real);
+      if (real !== scope || !inside(root, real)) continue;
+      const walked = await this.walk(real, { files: this.limits.files - listed.size, check });
+      if (walked.over) throw Error(tooManyFiles([...listed.keys(), ...walked.files.map(f => path.relative(root, f))], this.limits.files));
+      for (const f of walked.files) add(f, false);
     }
-    return paths;
+    // Artifacts share one allowance per capture, the most recently shown
+    // first: a folder that does not fit is saved as its page, and an
+    // artifact whose page does not fit either is left out.
+    let room = this.limits.artifactBytes;
+    const counted = new Set();
+    const cost = sizes => { let n = 0; for (const [f, size] of sizes) if (!counted.has(f)) n += size; return n; };
+    const take = sizes => { room -= cost(sizes); for (const [f] of sizes) { counted.add(f); add(f, true); } };
+    const allowance = `the ${mbText(this.limits.artifactBytes)} kept per step for artifacts is used by ones shown more recently`;
+    const entries = this.artifactEntries(root).sort((a, b) => b.declared - a.declared || (a.path < b.path ? -1 : 1));
+    for (const entry of entries) {
+      const real = await fsp.realpath(entry.path).catch(() => null);
+      if (real !== entry.path || !inside(root, real)) continue;
+      const rel = path.relative(root, real).split(path.sep).join('/') || '.';
+      let page = null, entryFile = real;
+      if (entry.folder) {
+        const folder = await this.folderFiles(real, check);
+        if (!folder.over && cost(folder.sizes) <= room) { take(folder.sizes); continue; }
+        entryFile = PAGE_ENTRIES.map(name => path.join(real, name)).find(f => statOf(f)?.isFile());
+        if (entryFile) page = await this.pageFiles(root, entryFile, check);
+        const why = folder.over ? `too large to save whole: ${folder.over}` : allowance;
+        if (page && cost(page.sizes) <= room) { take(page.sizes); notes.push({ path: rel + '/', text: `only ${path.basename(entryFile)} and the files it uses are saved (${why})` }); }
+        else notes.push({ path: rel + '/', text: `not saved (${page ? allowance : why})` });
+        continue;
+      }
+      page = await this.pageFiles(root, real, check);
+      if (cost(page.sizes) > room) { notes.push({ path: rel, text: `not saved (${allowance})` }); continue; }
+      take(page.sizes);
+      if (page.cut) notes.push({ path: rel, text: page.cut });
+    }
+    if (listed.size > this.limits.files) throw Error(tooManyFiles([...listed.keys()], this.limits.files));
+    return { listed, notes };
   }
-  async capture(cwd, meta = {}) {
-    const root = await this.root(cwd), prior = this.queues.get(root) || Promise.resolve();
-    const work = prior.catch(() => {}).then(() => this.captureRoot(root, meta));
+  // Whether the folder is a Git work tree, remembered for a minute.
+  async isWorkTree(root) {
+    const known = this.workTrees.get(root);
+    if (known && Date.now() - known.at < 60000) return known.normal;
+    const normal = await git(['rev-parse', '--is-inside-work-tree'], { cwd: root }).then(b => b.toString().trim() === 'true').catch(() => false);
+    this.workTrees.set(root, { normal, at: Date.now() });
+    return normal;
+  }
+  // Regular files under a folder, never the store, symlinks or protected
+  // paths, stopping as soon as a limit is passed (over says which). With a
+  // byte limit, each file's size too (files over 25 MiB and logs count 0:
+  // they are not saved).
+  async walk(dir, { files: maxFiles = FILES_MAX, bytes: maxBytes = Infinity, check = () => {} } = {}) {
+    const files = [], sizes = new Map(); let bytes = 0, over = '', seen = 0;
+    const visit = async d => {
+      let entries;
+      try { entries = await fsp.readdir(d, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (over) return;
+        if ((++seen & 255) === 0) { check(); await tick(); }
+        if (SKIP.has(e.name)) continue;
+        const full = path.join(d, e.name);
+        // The store never saves itself, whatever folder was declared around it.
+        if (inside(this.dir, full) || sensitive(full)) continue;
+        if (e.isDirectory()) { await visit(full); continue; }
+        if (!e.isFile()) continue;
+        if (files.length >= maxFiles) { over = `more than ${maxFiles.toLocaleString('en-US')} files`; return; }
+        files.push(full);
+        if (maxBytes === Infinity) continue;
+        const size = LOG.test(e.name) ? 0 : statOf(full)?.size ?? 0;
+        sizes.set(full, size > ARTIFACT_FILE_MAX ? 0 : size);
+        bytes += sizes.get(full);
+        if (bytes > maxBytes) { over = `more than ${mbText(maxBytes)}`; return; }
+      }
+    };
+    await visit(dir);
+    return { files, sizes, bytes, over };
+  }
+  // An artifact folder is saved whole while it is small. A folder found too
+  // large is not walked again for a while: folders rarely shrink, and a
+  // declaration clears the verdict.
+  async folderFiles(dir, check) {
+    const known = this.folderVerdicts.get(dir);
+    if (known && Date.now() - known.at < FOLDER_RECHECK_MS) return known;
+    const verdict = { ...(await this.walk(dir, { files: FOLDER_FILES_MAX, bytes: FOLDER_BYTES_MAX, check })), at: Date.now() };
+    if (verdict.over) {
+      this.folderVerdicts.set(dir, { files: [], sizes: new Map(), over: verdict.over, at: verdict.at });
+      if (this.folderVerdicts.size > 500) this.folderVerdicts.delete(this.folderVerdicts.keys().next().value);
+    } else this.folderVerdicts.delete(dir);
+    return verdict;
+  }
+  // A page and the files it names (pictures, styles, scripts, data, frames),
+  // followed a few levels: what a person sees when the page is shown.
+  // References are read from the text, not by running the page, so a file
+  // whose name is assembled by a script is not found.
+  async pageFiles(root, entry, check = () => {}) {
+    const sizes = new Map(); let bytes = 0, cut = '';
+    const eligible = full => {
+      if (!inside(root, full) || inside(this.dir, full) || sensitive(full)) return null;
+      if (path.relative(root, full).split(path.sep).some(p => SKIP.has(p))) return null;
+      const st = statOf(full);
+      if (!st || !st.isFile() || st.size > ARTIFACT_FILE_MAX) return null;
+      try { return fs.realpathSync.native(full) === full ? st : null; } catch { return null; }
+    };
+    const first = eligible(entry);
+    if (!first) return { sizes, cut };
+    sizes.set(entry, first.size); bytes = first.size;
+    const queue = [[entry, first, 0]];
+    while (queue.length) {
+      const [file, stat, depth] = queue.shift();
+      check();
+      if (depth >= PAGE_DEPTH || !(READS_REFS.test(file) || (depth === 0 && /\.json$/i.test(file)))) continue;
+      for (const ref of await this.referencesOf(file, stat)) {
+        const full = resolveReference(file, ref);
+        if (!full || sizes.has(full)) continue;
+        if (sizes.size >= PAGE_FILES_MAX) { cut = `it uses more than ${PAGE_FILES_MAX} files; the rest are not saved`; break; }
+        const st = eligible(full);
+        if (!st) continue;
+        if (bytes + st.size > PAGE_BYTES_MAX) { cut = `the files it uses pass ${mbText(PAGE_BYTES_MAX)}; the rest are not saved`; continue; }
+        bytes += st.size; sizes.set(full, st.size);
+        queue.push([full, st, depth + 1]);
+      }
+    }
+    return { sizes, files: [...sizes.keys()], cut };
+  }
+  async referencesOf(file, stat) {
+    if (stat.size > TEXT_MAX) return [];
+    const fingerprint = `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+    const known = this.references.get(file);
+    if (known?.fingerprint === fingerprint) return known.refs;
+    const refs = references(await fsp.readFile(file, 'utf8').catch(() => ''));
+    this.references.set(file, { fingerprint, refs });
+    if (this.references.size > 4000) this.references.delete(this.references.keys().next().value);
+    return refs;
+  }
+  // The root of a folder, remembered for a minute.
+  rootOf(cwd) {
+    const known = this.roots.get(cwd);
+    if (known && Date.now() - known.at < 60000) return known.root;
+    const root = this.root(cwd);
+    this.roots.set(cwd, { root, at: Date.now() });
+    root.catch(() => { if (this.roots.get(cwd)?.root === root) this.roots.delete(cwd); });
+    return root;
+  }
+  // options: budget (ms) or deadline (epoch ms) for the whole capture,
+  // waiting included; signal stops it (the step was stopped). Past either,
+  // the capture gives up and records the step as not saved: the caller is
+  // never held longer than it asked (design/101).
+  async capture(cwd, meta = {}, { budget = 15000, deadline = Date.now() + budget, signal } = {}) {
+    // Captures of one process reach their folder's queue in the order they
+    // were asked for: each finds its root after the one asked before it, so
+    // a step's end is always saved before the next step's start.
+    const found = this.gate.then(() => this.rootOf(cwd));
+    this.gate = found.catch(() => {});
+    const root = await found, prior = this.queues.get(root) || Promise.resolve();
+    const job = { skip: false };
+    const work = prior.catch(() => {}).then(() => job.skip ? null : this.captureRoot(root, meta, { deadline, budget, signal }));
     this.queues.set(root, work);
-    try { return await work; } finally { if (this.queues.get(root) === work) this.queues.delete(root); }
+    const done = () => { if (this.queues.get(root) === work) this.queues.delete(root); };
+    work.then(done, done);
+    const turn = await waitTurn(prior, deadline, signal, budget);
+    if (turn) {
+      job.skip = true;
+      if (this.nothingToSave(root, meta)) return null;
+      return this.recordCapture(root, meta, Date.now(), null, turn.message, { stopped: !!turn.stopped });
+    }
+    return work;
   }
-  async captureRoot(root, meta) {
-    const started = Date.now(); let error = '', lease = null;
-    try { lease = await this.lease(root, 'capture'); } catch (e) { error = e.message; }
+  // A loose folder (home, temp) with no artifact and no named file: nothing
+  // of it is saved, and no step is recorded.
+  nothingToSave(root, meta) { return !!meta.targetOnly && !meta.targets?.length && !this.artifactEntries(root).length; }
+  async captureRoot(root, meta, { deadline = Date.now() + 15000, budget = 15000, signal } = {}) {
+    if (this.nothingToSave(root, meta)) return null;
+    const started = Date.now(); let error = '', lease = null, stopped = false;
+    const check = checker(deadline, budget, signal);
+    try { check(); lease = await this.lease(root, 'capture', { wait: Math.max(0, deadline - Date.now()), check }); } catch (e) { error = e.message; stopped = !!e.stopped; }
     // The lease is held until the boundary row names what was saved: until
     // then, maintenance could not tell the new rows from abandoned ones.
-    try { return await this.recordCapture(root, meta, started, lease, error); }
+    try { return await this.recordCapture(root, meta, started, lease, error, { stopped, check }); }
     finally {
       lease?.release();
       try { if (this.needsMaintenance(root)) this.maintainSoon(); } catch {}
     }
   }
-  async recordCapture(root, meta, started, lease, error) {
-    let snapshot = null, targets = [];
+  async recordCapture(root, meta, started, lease, error, { stopped = false, check = () => {} } = {}) {
+    let snapshot = null, targets = [], notes = [];
     if (lease) {
       targets = await this.captureTargets(root, meta.targets || []);
-      const artifactsOnly = !!meta.targetOnly && this.artifactScopes(root).length > 0;
-      if (!meta.targetOnly || artifactsOnly) try { snapshot = await this.scan(root, started, { artifactsOnly }); } catch (e) { error = e.message; }
+      const artifactsOnly = !!meta.targetOnly && this.artifactEntries(root).length > 0;
+      if (!meta.targetOnly || artifactsOnly) {
+        try { ({ snapshot, notes } = await this.scan(root, { artifactsOnly, check })); }
+        catch (e) { error = e.message; stopped = !!e.stopped; }
+      }
     }
     if (meta.run && meta.review) this.db.prepare('INSERT OR IGNORE INTO checkpoint_runs VALUES (?,?,?)').run(meta.run, meta.session || '', meta.review);
     const active = this.db.prepare(`SELECT 1 FROM checkpoint_boundaries b WHERE b.root=? AND b.phase='before' AND b.started>? AND NOT (b.session=? AND b.run=? AND b.call=?) AND NOT EXISTS (SELECT 1 FROM checkpoint_boundaries e WHERE e.session=b.session AND e.run=b.run AND e.call=b.call AND e.id>b.id AND e.phase IN ('after','after-error','settled-incomplete')) LIMIT 1`).get(root, started - 86400000, meta.session || '', meta.run || '', meta.call || '');
-    const row = this.db.prepare(`INSERT INTO checkpoint_boundaries(root,session,run,call,tool,phase,started,finished,snapshot,error,overlapping) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(root, meta.session || '', meta.run || '', meta.call || '', meta.tool || '', meta.phase || 'observation', started, Date.now(), snapshot?.id || null, error, meta.overlapping || active ? 1 : 0);
+    const insert = this.db.prepare(`INSERT INTO checkpoint_boundaries(root,session,run,call,tool,phase,started,finished,snapshot,error,overlapping) VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+    const finished = Date.now();
+    // One scan can stand for several boundaries at the same moment: the
+    // steps a stopped run left open end where the run settles.
+    for (const extra of meta.rows || []) insert.run(root, meta.session || '', meta.run || '', extra.call || '', extra.tool || '', extra.phase, started, finished, snapshot?.id || null, error, extra.overlapping ? 1 : 0);
+    const row = insert.run(root, meta.session || '', meta.run || '', meta.call || '', meta.tool || '', meta.phase || 'observation', started, finished, snapshot?.id || null, error, meta.overlapping || active ? 1 : 0);
     const id = Number(row.lastInsertRowid);
     for (const target of targets) this.db.prepare('INSERT INTO checkpoint_target_links VALUES (?,?,?,?)').run(id, JSON.stringify(target.location), target.version, target.error);
-    return { id, root, snapshot: snapshot?.id || null, error, targetErrors: targets.filter(t => t.error && !t.location.soft).map(t => t.error) };
+    return { id, root, snapshot: snapshot?.id || null, error, stopped, notes, targetErrors: targets.filter(t => t.error && !t.location.soft).map(t => t.error) };
   }
-  async scan(root, started, { artifactsOnly = false } = {}) {
+  // Two passes: every candidate is looked at (lstat only) and the limits are
+  // checked before a single file is read, so a folder too large to save
+  // costs a listing, not 200 MB of reading and storing. Then only files
+  // whose fingerprint changed are read. Work done before a deadline is kept
+  // in the fingerprint cache, so the next capture continues from there.
+  async scan(root, { artifactsOnly = false, check = () => {} } = {}) {
     // A whole-workspace scan lists everything under the root, so the root
     // must not hold the store. An artifacts-only scan (a loose folder such as
     // home, which does hold it) walks only the declared folders, and that
     // walk skips the store itself.
     if (!artifactsOnly && inside(root, this.dir)) throw Error('Checkpoint storage must be outside the captured workspace');
-    const repo = await this.init(root), manifest = [];
-    const paths = [...new Set(await this.paths(root, { artifactsOnly }))].sort();
-    const artifactDirs = this.artifactScopes(root);
-    const inArtifact = full => artifactDirs.some(dir => inside(dir, full));
-    if (paths.length > 20000) throw Error('Checkpoint file limit exceeded (20,000)');
-    let total = 0;
-    const cache = this.rootCache(root);
+    const repo = await this.init(root), manifest = [], todo = [];
+    const { listed, notes } = await this.enumerate(root, { artifactsOnly, check });
     const u = this.usage();
     if (!(u.limit > 0) || u.total >= u.limit) throw Error(this.fullMessage(u));
-    for (const rel of paths) {
+    let total = 0, n = 0;
+    const byFolder = new Map();
+    // lstat without the thread pool: one call costs microseconds, a round
+    // trip through the event loop far more on a busy machine. The loop
+    // yields every 256 files so the agent's own work is not held.
+    for (const rel of [...listed.keys()].sort()) {
+      if ((++n & 255) === 0) { check(); await tick(); }
       if (rel.split('/').some(p => SKIP.has(p))) continue;
       if (sensitive(rel)) { manifest.push({ path: rel, unavailable: 'Protected sensitive path' }); continue; }
-      if (Date.now() - started > 15000) throw Error('Checkpoint scan exceeded 15 seconds');
       const full = path.resolve(root, rel);
       if (!inside(root, full)) throw Error('Checkpoint path escaped the workspace');
       let stat;
-      try { stat = await fsp.lstat(full); } catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+      try { stat = fs.lstatSync(full); } catch (e) { if (e.code === 'ENOENT' || e.code === 'ENOTDIR') continue; throw e; }
       if (stat.isDirectory()) { manifest.push({ path: rel, unavailable: 'Nested repository/directory entry' }); continue; }
-      // Inside an artifact folder, pictures, fonts, sounds and documents are
-      // part of what the person sees, so they are versioned too (up to 25 MiB
-      // each, within the same storage budget).
-      const artifact = inArtifact(full);
-      const maxBytes = artifact ? ARTIFACT_FILE_MAX : 2 * 1024 * 1024;
-      if (!artifact && /\.(?:png|jpe?g|gif|webp|wav|mp3|ogg|mp4|pdf|zip|gz|sqlite|db|pyc|woff2?|ttf|so|dll|exe)$/i.test(rel)) { manifest.push({ path: rel, unavailable: 'Binary artifact; use its current-file preview' }); continue; }
-      if (!stat.isFile() || stat.size > maxBytes || !inside(root, await fsp.realpath(full))) { manifest.push({ path: rel, unavailable: artifact ? 'Symlink, special file, or file over 25 MiB' : 'Symlink, special file, or file over 2 MiB' }); continue; }
-      total += stat.size; if (total > 200 * 1024 * 1024) throw Error('Checkpoint workspace exceeds 200 MiB of eligible files');
+      // Inside an artifact, pictures, fonts, sounds and documents are part of
+      // what the person sees, so they are versioned too (up to 25 MiB each,
+      // within the same storage budget). Logs never are: they change at every
+      // step and nobody reviews them.
+      const artifact = listed.get(rel);
+      const maxBytes = artifact ? ARTIFACT_FILE_MAX : TEXT_MAX;
+      if (LOG.test(rel)) { manifest.push({ path: rel, unavailable: 'Log file' }); continue; }
+      if (!artifact && BINARY.test(rel)) { manifest.push({ path: rel, unavailable: 'Binary artifact; use its current-file preview' }); continue; }
+      if (!stat.isFile() || stat.size > maxBytes) { manifest.push({ path: rel, unavailable: artifact ? 'Symlink, special file, or file over 25 MiB' : 'Symlink, special file, or file over 2 MiB' }); continue; }
+      total += stat.size;
+      const top = rel.includes('/') ? rel.slice(0, rel.indexOf('/')) + '/' : rel;
+      byFolder.set(top, (byFolder.get(top) || 0) + stat.size);
+      todo.push({ rel, full, stat, artifact, maxBytes });
+    }
+    if (total > this.limits.bytes) throw Error(tooManyBytes(total, byFolder, this.limits.bytes));
+    const cache = this.rootCache(root);
+    for (const { rel, full, stat, artifact, maxBytes } of todo) {
+      check();
       const fingerprint = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.mode}`;
       const cached = cache.get(full);
       let oid = cached?.fingerprint === fingerprint ? cached.oid : null;
       if (!oid) {
-        const handle = await fsp.open(full, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
-        let bytes;
+        // A folder on the path swapped for a link since the listing would
+        // change the file's identity, so the fingerprint above would not
+        // match: checking the real path on a miss is enough.
+        if (!inside(root, await fsp.realpath(full).catch(() => full))) { manifest.push({ path: rel, unavailable: 'Symlink, special file, or file over 2 MiB' }); continue; }
+        let handle;
+        try { handle = await fsp.open(full, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0)); }
+        catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+        let bytes, changed = false;
         try {
           const buffer = Buffer.alloc(stat.size + 1); let size = 0;
           while (size < buffer.length) { const r = await handle.read(buffer, size, buffer.length - size, size); if (!r.bytesRead) break; size += r.bytesRead; }
           bytes = buffer.subarray(0, size); const after = await handle.stat();
-          if (bytes.length > maxBytes || after.ino !== stat.ino || after.mtimeMs !== stat.mtimeMs || after.size !== stat.size || after.ctimeMs !== stat.ctimeMs) throw Error('File changed during checkpoint scan: ' + rel);
+          changed = bytes.length > maxBytes || after.ino !== stat.ino || after.mtimeMs !== stat.mtimeMs || after.size !== stat.size || after.ctimeMs !== stat.ctimeMs;
         } finally { await handle.close(); }
+        // A file being written while it is read (a growing output) is not
+        // saved this time; the rest of the step is.
+        if (changed) { manifest.push({ path: rel, unavailable: 'Changing while it was being saved' }); continue; }
         if (!artifact && (bytes.includes(0) || !Buffer.from(bytes.toString('utf8')).equals(bytes))) { manifest.push({ path: rel, unavailable: 'Binary or non-UTF-8 contents' }); continue; }
         oid = await this.storeBlob(root, bytes);
         cache.set(full, { fingerprint, oid });
@@ -335,15 +609,30 @@ class CheckpointStore {
       }
       manifest.push({ path: rel, oid, mode: stat.mode & 0o111 ? '100755' : '100644' });
     }
+    check();
+    manifest.sort(byPath);
+    // Nothing changed since this process last saved the folder (a step's
+    // end and the next step's start, usually): the same snapshot, without
+    // building the same tree again. Maintenance may have removed it since.
+    const json = JSON.stringify(manifest), last = this.lastSnapshot.get(root);
+    if (last && last.json === json) {
+      const same = this.db.prepare('SELECT id, root, commit_hash, tree FROM checkpoint_snapshots WHERE id=?').get(last.id);
+      if (same) return { snapshot: same, notes };
+    }
     const index = path.join(path.dirname(repo), 'index-' + crypto.randomUUID());
     const env = { GIT_INDEX_FILE: index }, args = ['--git-dir=' + repo];
+    const remember = snapshot => {
+      this.lastSnapshot.set(root, { json, id: snapshot.id });
+      if (this.lastSnapshot.size > 32) this.lastSnapshot.delete(this.lastSnapshot.keys().next().value);
+      return { snapshot, notes };
+    };
     try {
-      await git([...args, 'read-tree', '--empty'], { env });
+      // A missing index file is an empty index.
       await git([...args, 'update-index', '-z', '--index-info'], { env, input: manifest.filter(f => f.oid).map(f => `${f.mode} ${f.oid}\t${f.path}\0`).join('') });
       const tree = (await git([...args, 'write-tree'], { env })).toString().trim();
-      const json = JSON.stringify(manifest), id = hash(root + '\0' + tree + '\0' + json);
+      const id = hash(root + '\0' + tree + '\0' + json);
       const existing = this.db.prepare('SELECT id, root, commit_hash, tree FROM checkpoint_snapshots WHERE id=?').get(id);
-      if (existing) return existing;
+      if (existing) return remember(existing);
       // One commit per snapshot, without a parent: nothing but the metadata
       // row keeps a snapshot, so removing old history is removing rows.
       const commit = (await git([...args, 'commit-tree', tree], { input: 'Workspace checkpoint\n', env: { GIT_AUTHOR_NAME: 'Workspace', GIT_AUTHOR_EMAIL: 'workspace@localhost', GIT_COMMITTER_NAME: 'Workspace', GIT_COMMITTER_EMAIL: 'workspace@localhost' } })).toString().trim();
@@ -355,7 +644,7 @@ class CheckpointStore {
           this.db.prepare('INSERT INTO checkpoint_roots(root,pending_snapshots) VALUES (?,1) ON CONFLICT(root) DO UPDATE SET pending_snapshots=pending_snapshots+1').run(root);
         this.db.exec('COMMIT');
       } catch (e) { this.db.exec('ROLLBACK'); throw e; }
-      return { id, root, commit_hash: commit, tree };
+      return remember({ id, root, commit_hash: commit, tree });
     } finally { await fsp.rm(index, { force: true }); }
   }
   // Snapshots never change, so each is read once and kept for a while.
@@ -546,15 +835,67 @@ class CheckpointStore {
   // either way, saving it would mean the store saving itself.
   overlapsStore(folder) { return inside(this.dir, folder) || inside(folder, this.dir); }
   scopes(root) { return this.db.prepare('SELECT path FROM checkpoint_scopes WHERE root=? ORDER BY path').all(root).map(r => r.path); }
-  // Artifact folders (design/67): always captured, binary assets included.
-  artifactScopes(root) { return this.db.prepare('SELECT path FROM artifact_scopes WHERE root=? ORDER BY path').all(root).map(r => r.path); }
+  // Artifacts (design/67, design/101), saved at every capture with their
+  // pictures and fonts: a file with what it uses, or a folder, whole while
+  // it is small. Folders recorded before design/101 (artifact_scopes) count
+  // as folders until the server converts them.
+  artifactEntries(root) {
+    const since = Date.now() - ARTIFACT_DAYS * 86400000;
+    const rows = this.db.prepare('SELECT path, folder, declared FROM artifact_entries WHERE root=? AND declared>=? ORDER BY path').all(root, since)
+      .map(r => ({ path: r.path, folder: !!r.folder, declared: r.declared }));
+    const known = new Set(rows.map(r => r.path));
+    for (const r of this.db.prepare('SELECT path FROM artifact_scopes WHERE root=? ORDER BY path').all(root)) if (!known.has(r.path)) rows.push({ path: r.path, folder: true, declared: 0, legacy: true });
+    return rows;
+  }
+  artifactScopes(root) { return this.artifactEntries(root).map(e => e.path); }
+  // Declares what the artifact tool showed. Returns how it is saved: whole
+  // (a small folder), or its page and the files the page uses.
+  async declareArtifact(cwd, target) {
+    const root = await this.root(cwd), real = await fsp.realpath(target);
+    if (!inside(root, real)) throw Error('The artifact is outside this conversation\'s workspace');
+    const stat = await fsp.stat(real), folder = stat.isDirectory();
+    if (sensitive(real) || (folder ? this.overlapsStore(real) : inside(this.dir, real)) || path.relative(root, real).split(path.sep).some(p => SKIP.has(p)))
+      throw Error(folder ? 'This folder cannot be versioned' : 'This file cannot be versioned');
+    if (!folder && !stat.isFile()) throw Error('Only a file or a folder can be versioned');
+    this.db.prepare('INSERT INTO artifact_entries VALUES (?,?,?,?) ON CONFLICT(root,path) DO UPDATE SET folder=excluded.folder, declared=excluded.declared').run(root, real, folder ? 1 : 0, Date.now());
+    this.folderVerdicts.delete(real);
+    const out = { root, scope: real, folder, whole: !folder, over: '', entry: folder ? '' : real };
+    if (folder) {
+      const v = await this.folderFiles(real);
+      out.whole = !v.over; out.over = v.over;
+      if (v.over) for (const name of PAGE_ENTRIES) if ((await fsp.lstat(path.join(real, name)).catch(() => null))?.isFile()) { out.entry = path.join(real, name); break; }
+    }
+    return out;
+  }
   async addArtifactScope(cwd, folder) {
-    const root = await this.root(cwd), scope = await fsp.realpath(folder);
-    if (!inside(root, scope)) throw Error('The artifact is outside this conversation\'s workspace');
-    if (sensitive(scope) || this.overlapsStore(scope) || scope.split(path.sep).some(p => SKIP.has(p))) throw Error('This folder cannot be versioned');
-    if (!(await fsp.stat(scope)).isDirectory()) throw Error('An artifact scope must be a folder');
-    this.db.prepare('INSERT OR IGNORE INTO artifact_scopes VALUES (?,?)').run(root, scope);
-    return { root, scope };
+    if (!(await fsp.stat(folder)).isDirectory()) throw Error('An artifact scope must be a folder');
+    return this.declareArtifact(cwd, folder);
+  }
+  // Folders recorded before design/101 became artifacts because a file in
+  // them was shown, so each saved everything beside that file. They become
+  // what was actually declared there: declared(folder) lists the artifacts
+  // conversations showed (absolute paths, with when). A folder nobody is
+  // known to have shown is dropped. Owner only, once.
+  async convertLegacyScopes(declared) {
+    const rows = this.db.prepare('SELECT root, path FROM artifact_scopes').all();
+    let kept = 0, dropped = 0;
+    const shown = [];
+    if (rows.length) for (const d of declared) {
+      const real = await fsp.realpath(d.path).catch(() => null);
+      const stat = real && await fsp.stat(real).catch(() => null);
+      if (stat && (stat.isFile() || stat.isDirectory())) shown.push({ path: real, folder: stat.isDirectory(), at: d.at || Date.now() });
+    }
+    for (const { root, path: folder } of rows) {
+      const found = shown.filter(s => (s.path === folder || path.dirname(s.path) === folder) && inside(root, s.path));
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        for (const f of found) this.db.prepare('INSERT INTO artifact_entries VALUES (?,?,?,?) ON CONFLICT(root,path) DO UPDATE SET declared=MAX(declared,excluded.declared)').run(root, f.path, f.folder ? 1 : 0, f.at);
+        this.db.prepare('DELETE FROM artifact_scopes WHERE root=? AND path=?').run(root, folder);
+        this.db.exec('COMMIT');
+      } catch (e) { this.db.exec('ROLLBACK'); throw e; }
+      if (found.length) kept++; else dropped++;
+    }
+    return { folders: rows.length, kept, dropped };
   }
   // Boundaries by tool call id alone: a parallel answer's calls ran in a fork
   // file that was later folded into the conversation.
@@ -585,4 +926,4 @@ class CheckpointStore {
     this.readers.clear(); this._legacyTargets?.close(); this.db.close();
   }
 }
-module.exports = { CheckpointStore, READ_ONLY, git, blobId, cleanGitEnv, removedMessage, packList, unpackList, ARTIFACT_FILE_MAX, HIGH, LOW, MB };
+module.exports = { CheckpointStore, READ_ONLY, git, blobId, cleanGitEnv, removedMessage, packList, unpackList, references, ARTIFACT_FILE_MAX, FOLDER_FILES_MAX, FOLDER_BYTES_MAX, PAGE_FILES_MAX, HIGH, LOW, MB };

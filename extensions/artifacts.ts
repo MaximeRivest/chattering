@@ -68,6 +68,7 @@ export default function artifacts(pi: ExtensionAPI) {
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       const lines = [`Opened ${params.title ? `"${params.title}" ` : ""}(${data.kind}) at ${data.path} in the reader's artifact panel.`];
       if (!data.versioned && data.scopeError) lines.push(`Versions of its binary assets are not kept: ${data.scopeError}`);
+      if (data.versionNote) lines.push(data.versionNote);
       if (data.urls?.length) lines.push("Preview addresses (live files, for testing): " + data.urls.join("  "));
       return { content: [{ type: "text" as const, text: lines.join("\n") }], details: data };
     },

@@ -98,10 +98,10 @@ are stopped; a raw copy of a live SQLite database alone is not a consistent back
 - Only regular UTF-8 text files up to 2 MiB are captured. Symlinks, binary,
   oversized and nested-repository entries are explicitly unavailable, never
   represented as empty files. Renames currently appear as deletion/addition.
-- Scans cap at 20,000 candidate paths and 200 MiB of eligible file contents.
-  The scan loop and individual Git commands have 15-second limits. Capturing
-  before tools adds latency; stat/contents caching and snapshot deduplication
-  reduce repeated work without interpreting Bash command strings.
+- Scans cap at 20,000 candidate paths and 200 MiB of eligible file contents,
+  checked from file sizes before anything is read. Only a step's start holds
+  the agent, for at most 2 s; every other capture runs behind it (design/101,
+  which replaces the 15-second scan limit). Logs are not saved.
 - `CHATTERING_CHECKPOINT_MB` defaults to 1024 MiB for the whole store
   (repositories and metadata). Compaction and oldest-first removal keep it
   there; see design/81, which supersedes the earlier "no pruning" rule. Do
