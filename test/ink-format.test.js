@@ -203,3 +203,67 @@ test('a thick line has a disc wherever a bend would open a gap between its bands
   F.trace({ moveTo() {}, lineTo() {}, closePath() {}, arc() { thin++; } }, { pts, w: 2, pen: 'ballpoint' });
   assert.ok(thin < discs / 3, 'a thin line still skips the discs it does not need: ' + thin);
 });
+
+// ---- typed text on a page (design/103) ----
+const mono = s => s.length * 10; // a measure: 10 units a character
+
+test('typed text wraps at spaces, inside a word only when it must, and comes back exact', () => {
+  const lines = F.wrapText('one two three\n\nfourfivesixseven  end', 80, mono);
+  assert.deepEqual(lines, [
+    { s: 'one two ', soft: false }, { s: 'three', soft: true },
+    { s: '', soft: false },
+    { s: 'fourfive', soft: false }, { s: 'sixseven  ', soft: true }, { s: 'end', soft: true },
+  ]);
+  assert.equal(F.textOfLines(lines), 'one two three\n\nfourfivesixseven  end');
+});
+
+test('a typed block is an SVG text any viewer shows, and reads back as the same block', () => {
+  const note = F.empty({ paper: 'lines' });
+  const text = 'Groceries: eggs & <milk>\n  indented "quote"';
+  note.pages[0].texts.push({ id: 'tabc', x: 60, y: 93, w: 200, size: 22, lh: 44, text, lines: F.wrapText(text, 200, mono), t0: 1760101900000 });
+  note.pages[0].strokes.push(stroke(100, 300, 1760101901000));
+  const svg = F.serialize(note);
+  assert.match(svg, /<g data-ink-layer="text" fill="currentColor" font-family="[^"]+" xml:space="preserve"/);
+  assert.match(svg, /<text data-ink-typed="tabc" x="60" y="93" font-size="22" data-w="200" data-lh="44" data-t="1760101900000"><tspan x="60" y="93">Groceries: eggs &amp; /);
+  assert.match(svg, /data-soft="1"/, 'a wrapped line says it only wraps');
+  const back = F.parse(svg);
+  const b = back.pages[0].texts[0];
+  assert.equal(b.text, text);
+  assert.deepEqual([b.id, b.x, b.y, b.w, b.size, b.lh, b.t0], ['tabc', 60, 93, 200, 22, 44, 1760101900000]);
+  assert.equal(back.pages[0].strokes.length, 1);
+  assert.equal(F.serialize(back), svg, 'unchanged, byte for byte');
+  assert.equal(F.isBlankPage(back.pages[0]), false);
+  // Text alone makes a page written: a page with only typed text is not blank.
+  const only = F.empty(); only.pages[0].texts.push(b);
+  assert.equal(F.isBlankNote(only), false);
+  assert.equal(F.isBlankNote(F.empty()), true);
+});
+
+test('typed text merges as a set: an edit on one side, a new block on the other, both kept', () => {
+  const block = (id, text, x = 60) => ({ id, x, y: 93, w: 400, size: 22, lh: 44, text, lines: [{ s: text, soft: false }], t0: 1 });
+  const base = F.empty(); base.pages[0].texts.push(block('a', 'first'), block('b', 'second'));
+  const mine = F.parse(F.serialize(base)), theirs = F.parse(F.serialize(base));
+  mine.pages[0].texts[0] = block('a', 'first, changed here');             // edited here
+  theirs.pages[0].texts.splice(1, 1);                                    // removed there
+  theirs.pages[0].texts.push(block('c', 'third, from the tablet', 200)); // added there
+  const out = F.merge(base, mine, theirs);
+  assert.deepEqual(out.pages[0].texts.map(b => b.text), ['first, changed here', 'third, from the tablet']);
+  // The same block changed on both sides: both versions stay, nothing typed is lost.
+  const t2 = F.parse(F.serialize(base)); t2.pages[0].texts[0] = block('a', 'first, changed there');
+  assert.deepEqual(F.merge(base, mine, t2).pages[0].texts.map(b => b.text).sort(), ['first, changed here', 'first, changed there', 'second']);
+});
+
+test('typed lines sit on the paper\'s ruling', () => {
+  assert.equal(F.baselineAt('lines', 0), 93);       // the first rule, 98
+  assert.equal(F.baselineAt('lines', 98), 93);
+  assert.equal(F.baselineAt('lines', 99), 137);
+  assert.equal(F.baselineAt('grid', 50), 75);
+  assert.ok(F.baselineAt('lines', 5000) < F.PAGE_H, 'never below the page');
+});
+
+test('a file with a text layer from elsewhere keeps what is not a typed block', () => {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1414" data-ink-format="1"><g data-ink-page="1"><g data-ink-layer="text"><text data-ink-typed="x1" x="60" y="93">plain</text><rect width="5" height="5"/></g></g></svg>`;
+  const note = F.parse(svg);
+  assert.equal(note.pages[0].texts[0].text, 'plain');
+  assert.equal(note.pages[0].extra[0].tag, 'rect', 'kept, in the extra layer');
+});

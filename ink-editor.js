@@ -9,7 +9,12 @@
 //   pen       writes (its eraser end, or the Eraser tool, erases);
 //   mouse     writes too (a Wacom tablet is a pen, a mouse is a slow one);
 //   finger    scrolls, 1:1, and never writes unless "Draw with a finger" is on;
-//             a hand resting on the screen while the pen is near is ignored.
+//             a hand resting on the screen while the pen is near is ignored;
+//   keyboard  types (design/103): on a page with writing, a block of text
+//             where the last tap was (its dot gives way to the text), else
+//             under the writing; on an empty note, the note becomes a typed
+//             (Markdown) note instead. Tools are on Alt (W E S T), so no
+//             letter is ever a shortcut while a person types.
 //
 // Fast, the way the handwriting keyboard taught (~/Projects/iflytek,
 // handwriting-ime/fastink and research/ebc; remarkable_customization's
@@ -78,17 +83,14 @@
   window.addEventListener('pointerdown', ev => { if (ev.pointerType === 'pen') notePen(); }, { capture: true, passive: true });
 
   // ---- a new note ----
+  // A page, always: Notes.create (notes.js) decides between a page and a
+  // typed note; this is the page.
   async function create(project = '', opts = {}) {
-    const now = new Date();
-    const title = 'Note · ' + now.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }) + ' ' + now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-    let out;
-    try { out = await postJson('/api/ink/new', { project: project || '', when: now.getTime(), tzOffset: now.getTimezoneOffset(), title, paper: pref('paper', F.DEFAULT_PAPER) }); }
-    catch { out = { error: 'Could not reach this computer. Check the connection and try again.' }; }
-    if (!out || out.error) { errToast(out && out.error === 'project not found' ? 'That project has no folder on this computer.' : (out && out.error) || 'Could not make the note'); return null; }
-    if (typeof OpenFiles !== 'undefined') OpenFiles.keep(out.path, project || '', 'pin');
-    if (opts.beside && typeof openLiveFileBeside === 'function') await openLiveFileBeside(out.path, { project: project || null, beside: opts.beside });
-    else await openLiveFile(out.path, { project: project || null, back: typeof currentHash !== 'undefined' ? currentHash : null });
-    return out.path;
+    if (window.Notes) return Notes.create(project, { ...opts, kind: 'ink' });
+    return null;
+  }
+  function noteTitle(now = new Date()) {
+    return 'Note · ' + now.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }) + ' ' + now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   }
 
   // ---- mounting into the file view (filesmode.js calls this) ----
@@ -106,10 +108,12 @@
         <span id="docStatus" role="status">Opening…</span>
         <div class="ink-tools" role="toolbar" aria-label="Writing tools">
           <span class="ink-slots" role="group" aria-label="Your pens">${[0, 1, 2].map(i => `<button type="button" class="ink-slot" data-ink-slot="${i}" aria-pressed="false"></button>`).join('')}</span>
-          <button type="button" class="ink-tool" data-ink-tool="eraser" aria-pressed="false" title="Eraser (E): touch a line to remove it. The pen's eraser end works too. Tap again for more">${icon('eraser')}<span class="ink-label">Eraser</span></button>
-          <button type="button" class="ink-tool" data-ink-tool="lasso" aria-pressed="false" title="Select (L): circle lines to move them, delete them, or ask about them">${icon('lasso')}<span class="ink-label">Select</span></button>
+          <button type="button" class="ink-tool" data-ink-tool="eraser" aria-pressed="false" title="Eraser (Alt+E): touch a line or a typed text to remove it. The pen's eraser end works too. Tap again for more">${icon('eraser')}<span class="ink-label">Eraser</span></button>
+          <button type="button" class="ink-tool" data-ink-tool="lasso" aria-pressed="false" title="Select (Alt+S): circle lines and typed text to move them, delete them, or ask about them">${icon('lasso')}<span class="ink-label">Select</span></button>
+          <button type="button" class="ink-tool" data-ink-tool="text" aria-pressed="false" title="Text (Alt+T): tap where the text goes, or tap a typed text to change it. With a keyboard, just type">${icon('text')}<span class="ink-label">Text</span></button>
           <button type="button" class="ink-tool" id="inkUndo" disabled title="Undo (${e(modKey('Z'))})">${icon('undo')}</button>
           <button type="button" class="ink-tool" id="inkRedo" disabled title="Redo (${e(modKey('Shift+Z'))})">${icon('redo')}</button>
+          <button type="button" class="ink-tool ink-type-note" id="inkTypeNote" hidden title="Make this empty note a typed note, and type it (or just start typing)">${icon('keyboard')}<span class="ink-label">Type instead</span></button>
           <button type="button" class="ink-tool" id="inkPageBtn" aria-haspopup="dialog" aria-expanded="false" title="Paper, pages, picture, finger">${icon('page')}<span class="ink-label">Page</span></button>
         </div>
         <div class="ink-pop ink-palette" id="inkPalette" role="dialog" aria-label="Pen" hidden>
@@ -131,13 +135,13 @@
           ${typeof OpenFiles !== 'undefined' ? `<button type="button" data-keep-menu="${e(ws.path)}">${e(OpenFiles.menuLabel(ws.path))}</button>` : ''}
           ${typeof Pair !== 'undefined' && ws.placement !== 'beside' ? '<button type="button" id="inkBeside">☷ A conversation beside</button>' : ''}
           ${ws.project ? '<button type="button" id="liveBrowse">Browse this folder</button>' : ''}
-          <span class="ink-menu-hint">Pen writes · finger scrolls · 1 2 3 pick a pen · ${e(modKey('Z'))} undoes</span>
+          <span class="ink-menu-hint">Pen writes · finger scrolls · keys type · Alt+W pen · Alt+T text · ${e(modKey('Z'))} undoes</span>
           <span class="ink-menu-hint" id="inkPenMode"></span>
         </div>
       </header>
       <div class="fw-banner" id="fwBanner" hidden></div>
       <div class="ink-stage">
-        <div class="ink-scroll" tabindex="0" aria-label="Handwritten note. Write with a pen or the mouse; scroll with a finger or the wheel."><div class="ink-pages"></div></div>
+        <div class="ink-scroll" tabindex="0" aria-label="Note page. Write with a pen or the mouse; type to add text; scroll with a finger or the wheel."><div class="ink-pages"></div></div>
         <canvas class="ink-live" aria-hidden="true"></canvas>
         <canvas class="ink-live ink-predict" aria-hidden="true"></canvas>
       </div>
@@ -216,6 +220,8 @@
       redo: '<path d="M11 3l3 3-3 3"/><path d="M14 6H7a4 4 0 000 8h3"/>',
       page: '<path d="M4 2h6l3 3v9H4z"/><path d="M10 2v3h3"/><path d="M6 8h5M6 10.5h5"/>',
       lasso: '<path d="M8 2.5c3.3 0 5.5 1.7 5.5 3.8S11.3 10 8 10 2.5 8.4 2.5 6.3 4.7 2.5 8 2.5z" stroke-dasharray="2.2 1.8"/><path d="M4.6 9.2c-.9 1.1-.6 2.6.7 3l-.6 2.3"/>',
+      text: '<path d="M3 4V2.5h10V4"/><path d="M8 2.5v11"/><path d="M6 13.5h4"/>',
+      keyboard: '<rect x="1.5" y="4" width="13" height="8.5" rx="1.2"/><path d="M4 7h.01M6.5 7h.01M9 7h.01M11.5 7h.01M5 10h6"/>',
     };
     return `<svg class="ink-icon" viewBox="0 0 16 16" aria-hidden="true">${paths[name]}</svg>`;
   }
@@ -277,7 +283,9 @@
       setTool(v, 'eraser');
     };
     $('inkPageBtn').onclick = () => togglePop(v, 'inkPageMenu');
+    $('inkTypeNote').onclick = () => { closePops(v); toTyped(v); };
     root.querySelector('[data-ink-tool=lasso]').onclick = () => { closePops(v); setTool(v, 'lasso'); };
+    root.querySelector('[data-ink-tool=text]').onclick = () => { closePops(v); setTool(v, 'text'); };
     root.querySelectorAll('[data-ink-pen]').forEach(b => b.onclick = () => {
       const sl = v.slots[v.slot];
       if (sl.pen === b.dataset.inkPen) return;
@@ -361,16 +369,19 @@
     sampleSvg(pal.querySelector('.ink-preview'), sl.pen, pen.sizes[sl.size] * 1.6, sl.color);
   }
   function clearPage(v) {
+    commitEdit(v);
     const i = visiblePage(v);
-    const list = v.note.pages[i].strokes;
-    if (!list.length) return;
+    const list = v.note.pages[i].strokes, texts = v.note.pages[i].texts;
+    if (!list.length && !texts.length) return;
     const gone = list.slice();
-    const items = gone.map((stroke, index) => ({ stroke, index })).reverse(); // as the eraser records them: last first
-    list.length = 0;
-    repaint(v, i, unionBox(gone));
+    const items = gone.map((stroke, index) => ({ stroke, index })).reverse() // as the eraser records them: last first
+      .concat(texts.map((text, index) => ({ text, index })).reverse());
+    list.length = 0; texts.length = 0;
+    if (gone.length) repaint(v, i, unionBox(gone));
+    renderTexts(v, i);
     const op = { type: 'erase', page: i, items };
     commit(v, op);
-    offerUndo(v, op, items.length);
+    offerUndo(v, op);
   }
   // Which pen draws here, said plainly: the way to tell an app update took.
   function paintPenMode() {
@@ -435,6 +446,7 @@
     sizeLive(v);
     if (changed) for (let i = 0; i < v.pages.length; i++) if (v.pages[i]?.backed) back(v, i);
     if (changed && v.sel) showSel(v);
+    if (changed) placeEdit(v);
   }
   // The app's ▤ button floats over the window's top-right corner: when the
   // note's header reaches that corner, its tools keep clear of it.
@@ -468,10 +480,16 @@
   function renderAll(v) {
     v.sel = null;
     v.observer?.disconnect();
+    // Text being typed stays where it is, focused, across a redraw (another
+    // device's writing merged in): its box moves to the new page.
+    const E = v.edit, had = !!E && document.activeElement === E.ta;
+    if (E) { E.moving = true; if (!v.note.pages[E.page]) E.page = v.note.pages.length - 1; }
     v.pagesEl.replaceChildren();
     v.pages = [];
     v.note.pages.forEach((page, i) => v.pagesEl.appendChild(pageEl(v, page, i)));
+    if (E) { v.pages[E.page].el.appendChild(E.ta); placeEdit(v); if (had) E.ta.focus({ preventScroll: true }); E.moving = false; }
     paintTools(v);
+    paintEmpty(v);
   }
   function pageEl(v, page, i) {
     const el = document.createElement('div');
@@ -485,12 +503,16 @@
     const extra = document.createElementNS(SVGNS, 'g'); extra.setAttribute('class', 'ink-extra');
     for (const node of page.extra) { const n = safeSvg(node, v.ws.path); if (n) extra.appendChild(n); }
     svg.appendChild(extra);
+    // Typed text, under the ink as on paper (a pen circles a typed word).
+    const typed = document.createElementNS(SVGNS, 'g'); typed.setAttribute('class', 'ink-typed');
+    svg.appendChild(typed);
     const canvas = document.createElement('canvas');
     canvas.className = 'ink-layer';
     canvas.width = canvas.height = 0;
     const no = document.createElement('span'); no.className = 'ink-page-no'; no.textContent = String(i + 1);
     el.append(svg, canvas, no);
-    v.pages[i] = { el, canvas, ctx: null, backed: false };
+    v.pages[i] = { el, canvas, ctx: null, backed: false, typed };
+    renderTexts(v, i);
     observe(v, el);
     return el;
   }
@@ -713,6 +735,7 @@
     on(sc, 'dragstart', ev => ev.preventDefault());
     on(sc, 'scroll', () => { if (!v.draw) settleLive(v, true); rememberPlace(v); }, { passive: true });
     on(v.root, 'keydown', ev => keyDown(v, ev));
+    on(v.root, 'paste', ev => pasteEvent(v, ev));
     const ro = new ResizeObserver(() => { if (!v.disposed && !v.draw) { layout(v); native(v, true, { regionOnly: true }); v.seedCovers?.(); holesSoon(v, 120); } });
     ro.observe(sc);
     v.cleanups.push(() => ro.disconnect());
@@ -777,6 +800,15 @@
     if (v.disposed || !v.note) return;
     tapTrack(v, ev, 'down');
     if (ev.target.closest && ev.target.closest('.ink-sel-bar')) return; // the selection's buttons
+    // Typing on the page: a tap in the text places the caret; a click or a
+    // tap elsewhere ends the text and does nothing more; the pen goes on
+    // writing (it always writes); a finger scrolls, the text still open.
+    if (v.edit && ev.target === v.edit.ta) return;
+    if (v.edit && ev.pointerType !== 'touch') {
+      commitEdit(v);
+      if (!(ev.pointerType === 'pen' && v.tool !== 'text')) { ev.preventDefault(); v.scroll.focus({ preventScroll: true }); return; }
+    }
+    if (v.tool === 'text' && textDown(v, ev)) return;
     if (v.tool === 'lasso' && lassoDown(v, ev)) return;
     const now = performance.now();
     if (ev.pointerType === 'pen') {
@@ -956,6 +988,15 @@
   }
   function pointerUp(v, ev, cancelled = false) {
     if (v.gesture) tapTrack(v, ev, cancelled ? 'cancel' : 'up');
+    if (v.textTap && ev.pointerId === v.textTap.id) {
+      const T = v.textTap;
+      v.textTap = null;
+      if (v.pan && ev.pointerId === v.pan.id) panEnd(v, ev);
+      // A tap, not a scroll: the text goes there (on lift, which lets a
+      // phone's keyboard open: a focus during a touch's down does not).
+      if (!cancelled && Math.hypot(ev.clientX - T.x, ev.clientY - T.y) < 12 && performance.now() - T.t < 900) placeText(v, ev.clientX, ev.clientY);
+      return;
+    }
     if (v.pan && ev.pointerId === v.pan.id) return panEnd(v, ev);
     if (v.lasso && ev.pointerId === v.lasso.id) return lassoUp(v, ev, cancelled);
     if (v.drag && ev.pointerId === v.drag.id) return dragUp(v, ev, cancelled);
@@ -1058,19 +1099,30 @@
     v.note.pages[page].strokes.push(stroke);
     paintStroke(v, page, stroke);
     if (record) commit(v, { type: 'add', page, stroke });
-    if (page === v.note.pages.length - 1) { // the last page has writing: a fresh one waits below
-      v.note.pages.push(F.blankPage());
-      v.pagesEl.appendChild(pageEl(v, v.note.pages[v.note.pages.length - 1], v.note.pages.length - 1));
-    }
+    trailAfter(v, page);
+  }
+  // The last page has writing: a fresh one waits below.
+  function trailAfter(v, page) {
+    if (page !== v.note.pages.length - 1 || F.isBlankPage(v.note.pages[page])) return;
+    v.note.pages.push(F.blankPage());
+    v.pagesEl.appendChild(pageEl(v, v.note.pages[v.note.pages.length - 1], v.note.pages.length - 1));
   }
   // About ten screen pixels around the eraser, never finer than the line.
   function eraseRadius(v) { return Math.max(6, 10 / v.scale); }
   // Erased lines leave the page at once; the canvas is painted again only
   // around them, a few times a second while the eraser moves.
   function eraseNear(v, page, x, y, into) {
-    const list = v.note.pages[page].strokes;
+    const list = v.note.pages[page].strokes, texts = v.note.pages[page].texts;
     const radius = eraseRadius(v);
     let hit = false;
+    // A typed text goes whole, as a line does, when the eraser touches it.
+    for (let i = texts.length - 1; i >= 0; i--) {
+      const b = tbox(texts[i]);
+      if (x < b.x0 - radius || x > b.x1 + radius || y < b.y0 - radius || y > b.y1 + radius) continue;
+      into.push({ text: texts[i], index: i });
+      texts.splice(i, 1);
+      renderTexts(v, page);
+    }
     for (let i = list.length - 1; i >= 0; i--) {
       const s = list[i];
       const b = boxOf(s);
@@ -1128,28 +1180,386 @@
   }
 
   // ---- keys ----
+  // Keys type (design/103). A letter is never a tool: the tools are on Alt,
+  // by key position so every layout finds them (W pen, E eraser, S select,
+  // T text; L and P are the app's).
+  const MAC = /Mac|iP(hone|ad|od)/.test(navigator.platform || navigator.userAgent || '');
+  function typesText(ev) {
+    if (ev.isComposing || ev.metaKey || ev.key === ' ') return false;
+    if (ev.ctrlKey && !ev.altKey) return false;         // a command (Ctrl+Alt is AltGr: it types)
+    if (ev.altKey && !ev.ctrlKey && !MAC) return false; // Alt+letter is a command off a Mac
+    return Array.from(ev.key).length === 1 || ev.key === 'Dead';
+  }
+  const ALT_TOOLS = { KeyW: 'pen', KeyE: 'eraser', KeyS: 'lasso', KeyT: 'text' };
   function keyDown(v, ev) {
     if (ev.target.closest && ev.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+    if (v.converting) return;
     const mod = ev.ctrlKey || ev.metaKey;
     const k = ev.key.toLowerCase();
+    const typed = ev.target.closest && ev.target.closest('.ink-typed [data-ink-typed]');
+    const altTool = ev.altKey && !ev.ctrlKey && !ev.metaKey && ALT_TOOLS[ev.code];
     let done = true;
-    if (mod && k === 'z' && !ev.shiftKey) undo(v);
+    if (altTool === 'pen') pickSlot(v, v.tool === 'pen' ? (v.slot + 1) % 3 : v.slot);
+    else if (altTool) { closePops(v); setTool(v, altTool); }
+    else if (mod && k === 'z' && !ev.shiftKey) undo(v);
     else if (mod && ((k === 'z' && ev.shiftKey) || k === 'y')) redo(v);
     else if (mod && k === 's') save(v);
-    else if (!mod && !ev.altKey && k === 'p') pickSlot(v, v.slot);
-    else if (!mod && !ev.altKey && (k === '1' || k === '2' || k === '3')) pickSlot(v, Number(k) - 1);
     else if (k === 'escape' && closePops(v)) {}
-    else if (!mod && !ev.altKey && k === 'e') setTool(v, 'eraser');
-    else if (!mod && !ev.altKey && k === 'l') setTool(v, 'lasso');
+    else if (typed && !mod && (k === 'enter' || k === 'f2')) editFocused(v, typed);
+    else if (typed && !mod && !v.sel && (k === 'delete' || k === 'backspace')) removeFocused(v, typed);
     else if (!mod && v.sel && (k === 'delete' || k === 'backspace')) deleteSel(v);
     else if (mod && k === 'c' && v.sel) copySel(v);
     else if (mod && k === 'x' && v.sel) { copySel(v); deleteSel(v); }
-    else if (mod && k === 'v' && readClip()) { const i = visiblePage(v), c = readClip(), r = v.pages[i].el.getBoundingClientRect(), s2 = v.scroll.getBoundingClientRect();
-      const [cx, cy] = toPage(r, s2.left + s2.width / 2, s2.top + s2.height / 2); setTool(v, 'lasso'); paste(v, i, cx - c.w / 2, cy - c.h / 2); }
     else if (k === 'escape' && v.sel) clearSel(v);
     else if (!mod && !ev.altKey && (k === 'pagedown' || k === 'pageup')) { v.scroll.scrollBy({ top: (k === 'pagedown' ? 1 : -1) * v.scroll.clientHeight * 0.9 }); }
+    else if (typesText(ev) && !(ev.target.closest && ev.target.closest('.ink-pop'))) {
+      // The key itself is not taken: focus moves to the text first, and the
+      // browser types it there (dead keys and AltGr included).
+      ev.stopPropagation();
+      startTyping(v, typed);
+      return;
+    }
     else done = false;
     if (done) { ev.preventDefault(); ev.stopPropagation(); }
+  }
+
+  // ---- typed text on the page (design/103) ----
+  // A block of text sits on the paper's ruling, under the ink, in the file
+  // as an SVG text (ink-format.js). It is typed in a textarea laid exactly
+  // where it will show; finished (Esc, a click away, the pen writing
+  // elsewhere, focus leaving), it becomes one block, one undo step. While
+  // it is being typed it is saved with the note as it stands, so nothing
+  // typed waits for the end of the paragraph to be kept.
+  const MARGIN = 60; // page units: the ruled lines' margins
+  let measureCtx = null;
+  function measurer(size) {
+    measureCtx ||= document.createElement('canvas').getContext('2d');
+    const font = `${size}px ${F.TEXT_FONT}`;
+    return str => { measureCtx.font = font; return measureCtx.measureText(str).width; };
+  }
+  const textBoxes = new WeakMap();
+  function tbox(b) {
+    let q = textBoxes.get(b);
+    if (!q) textBoxes.set(b, q = F.textBounds(b, measurer(b.size || F.TEXT_SIZE)));
+    return q;
+  }
+  const newTextId = () => 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  function makeBlock(d, text) {
+    return { id: d.id, x: d.x, y: d.y, w: d.w, size: d.size, lh: d.lh, text, lines: F.wrapText(text, d.w, measurer(d.size)), t0: Date.now() };
+  }
+  function textEl(b) {
+    const n = F.textNode(b);
+    const el = document.createElementNS(SVGNS, 'text');
+    for (const [a, val] of Object.entries(n.attrs)) el.setAttribute(a, val);
+    for (const c of n.children) {
+      const t = document.createElementNS(SVGNS, 'tspan');
+      for (const [a, val] of Object.entries(c.attrs)) t.setAttribute(a, val);
+      t.textContent = c.children.length ? c.children[0].text : '';
+      el.appendChild(t);
+    }
+    // Reachable without a pointer: Tab to it, Enter changes it, Delete removes it.
+    el.setAttribute('tabindex', '0');
+    el.setAttribute('role', 'button');
+    el.setAttribute('aria-label', 'Typed text: ' + b.text.slice(0, 160) + '. Enter to change it, Delete to remove it.');
+    return el;
+  }
+  function renderTexts(v, i) {
+    const pg = v.pages[i], page = v.note && v.note.pages[i];
+    if (!pg || !pg.typed || !page) return;
+    const out = [];
+    page.texts.forEach((b, k) => {
+      if (v.edit && v.edit.page === i && b.id === v.edit.draft.id) return; // in its textarea
+      if (v.sel && v.sel.page === i && v.sel.texts && v.sel.texts.has(b)) return; // in the selection's layer
+      const el = textEl(b);
+      el.dataset.k = String(k);
+      out.push(el);
+    });
+    pg.typed.replaceChildren(...out);
+  }
+  // On a canvas (the selection's layer, the picture of a selection).
+  function drawText(ctx, b, color) {
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.font = `${b.size || F.TEXT_SIZE}px ${F.TEXT_FONT}`;
+    ctx.textBaseline = 'alphabetic';
+    (b.lines && b.lines.length ? b.lines : [{ s: b.text }]).forEach((l, k) => ctx.fillText(l.s, b.x, b.y + k * (b.lh || 44)));
+    ctx.restore();
+  }
+  function textAt(v, i, x, y) {
+    const texts = v.note.pages[i].texts;
+    for (let k = texts.length - 1; k >= 0; k--) {
+      const q = tbox(texts[k]);
+      if (x >= q.x0 - 8 && x <= q.x1 + 8 && y >= q.y0 - 4 && y <= q.y1 + 4) return texts[k];
+    }
+    return null;
+  }
+  // Where a text starting at (x, y) goes: on the ruling line there, as wide
+  // as the page leaves it.
+  function spotAt(v, x, y) {
+    const lx = Math.max(16, Math.min(F.PAGE_W - 160, x));
+    return { x: lx, y: F.baselineAt(v.note.paper, y), w: Math.max(120, F.PAGE_W - MARGIN - lx) };
+  }
+  const isDot = s => { const b = boxOf(s); return Math.max(b.x1 - b.x0, b.y1 - b.y0) < 7; };
+  // Where typing goes when nothing says where: at a dot just tapped (the
+  // last thing done, under ten seconds ago: it was a tap to place the
+  // text, so it gives way to it), else under what is written on the page
+  // in view, at the left margin; past the page's last line, the next page.
+  function typeSpot(v) {
+    const last = v.undo[v.undo.length - 1];
+    if (last && last.type === 'add' && isDot(last.stroke) && Date.now() - (last.stroke.t0 || 0) < 10000 && v.note.pages[last.page]?.strokes.includes(last.stroke)) {
+      return { page: last.page, ...spotAt(v, last.stroke.pts[0], last.stroke.pts[1]), dot: last };
+    }
+    let i = visiblePage(v);
+    const page = v.note.pages[i], lh = F.ruleOf(v.note.paper).step;
+    let bottom = -Infinity;
+    for (const st of page.strokes) bottom = Math.max(bottom, boxOf(st).y1);
+    for (const b of page.texts) bottom = Math.max(bottom, tbox(b).y1);
+    let y = bottom === -Infinity ? 0 : bottom + F.TEXT_ASCENT * lh + 2; // the next line clear of it
+    if (y > F.PAGE_H - 60) { i = Math.min(i + 1, v.note.pages.length - 1); y = 0; if (i === v.note.pages.length - 1) trailAfter(v, i); }
+    return { page: i, x: MARGIN, y: F.baselineAt(v.note.paper, y), w: F.PAGE_W - 2 * MARGIN };
+  }
+  // Paste (Ctrl+V, a menu): text from the clipboard is typed text where
+  // typing would go (on an empty note, the typed note); otherwise the lines
+  // copied in a note, in the middle of the page on screen. The clipboard's
+  // own text wins: copying lines here puts a picture there, never text, so
+  // text in it was copied after.
+  function pasteEvent(v, ev) {
+    if (v.disposed || !v.note || v.converting) return;
+    if (ev.target.closest && ev.target.closest('input, textarea, select, [contenteditable="true"]')) return;
+    const text = ev.clipboardData ? ev.clipboardData.getData('text/plain') : '';
+    if (text && text.trim()) {
+      ev.preventDefault();
+      if (v.tool !== 'text' && F.isBlankNote(v.note) && !v.edit) return toTyped(v, text);
+      const at = typeSpot(v);
+      startEdit(v, at.page, null, at);
+      if (v.edit) { v.edit.ta.value = text.replace(/\r\n?/g, '\n'); v.edit.typed = true; v.edit.ta.setSelectionRange(v.edit.ta.value.length, v.edit.ta.value.length); sizeEdit(v); changed(v); }
+      return;
+    }
+    const c = readClip();
+    if (!c) return;
+    ev.preventDefault();
+    const i = visiblePage(v), r = v.pages[i].el.getBoundingClientRect(), s2 = v.scroll.getBoundingClientRect();
+    const [cx, cy] = toPage(r, s2.left + s2.width / 2, s2.top + s2.height / 2);
+    setTool(v, 'lasso');
+    paste(v, i, cx - c.w / 2, cy - c.h / 2);
+  }
+  function startTyping(v, focused) {
+    if (focused) return editFocused(v, focused); // the key goes at the end of that text
+    // An empty note is not a page yet: typing makes it a typed note. The
+    // Text tool, chosen on purpose, keeps the text on the page.
+    if (v.tool !== 'text' && F.isBlankNote(v.note) && !v.edit) return toTyped(v);
+    if (v.edit) { v.edit.ta.focus({ preventScroll: true }); return; } // the key goes to the open text
+    const at = typeSpot(v);
+    startEdit(v, at.page, null, at);
+  }
+  // The Text tool: a tap places text (a finger's drag still scrolls).
+  function textDown(v, ev) {
+    if (ev.pointerType === 'mouse' && ev.button !== 0) return true;
+    const touch = ev.pointerType === 'touch';
+    if (touch && (Math.max(ev.width || 0, ev.height || 0) > PALM_SIZE || performance.now() - v.lastPen < PALM_MS)) { ev.preventDefault(); return true; }
+    if (ev.pointerType === 'pen') { v.lastPen = performance.now(); notePen(); }
+    v.textTap = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, t: performance.now() };
+    if (touch) { startPan(v, ev); return true; }
+    ev.preventDefault();
+    try { v.scroll.setPointerCapture(ev.pointerId); } catch {}
+    return true;
+  }
+  function placeText(v, cx, cy) {
+    const i = pageAt(v, cy), rect = v.pages[i].el.getBoundingClientRect();
+    const [x, y] = toPage(rect, cx, cy);
+    if (y < 0 || y > F.PAGE_H) return;
+    const hit = textAt(v, i, x, y);
+    if (hit) startEdit(v, i, hit);
+    else startEdit(v, i, null, spotAt(v, x, y));
+  }
+  function startEdit(v, i, block, spot = null) {
+    if (v.disposed || !v.note) return;
+    commitEdit(v);
+    closePops(v);
+    if (v.sel) clearSel(v);
+    const draft = block ? { ...block }
+      : { id: newTextId(), x: spot.x, y: spot.y, w: spot.w, size: F.TEXT_SIZE, lh: F.ruleOf(v.note.paper).step, text: '' };
+    const ta = document.createElement('textarea');
+    ta.className = 'ink-type';
+    ta.value = draft.text;
+    ta.rows = 1;
+    ta.spellcheck = true;
+    ta.setAttribute('aria-label', `Typed text on page ${i + 1}. Esc when done.`);
+    v.pages[i].el.appendChild(ta);
+    const E = v.edit = { page: i, block: block || null, draft, ta, dot: (spot && spot.dot) || null, moving: false, typed: false };
+    // The tap that placed the text gives way to it (back if nothing is typed).
+    if (E.dot) {
+      const list = v.note.pages[E.dot.page].strokes, k = list.indexOf(E.dot.stroke);
+      if (k >= 0) { list.splice(k, 1); repaint(v, E.dot.page, boxOf(E.dot.stroke)); }
+      if (v.undo[v.undo.length - 1] === E.dot) v.undo.pop();
+      changed(v);
+    }
+    placeEdit(v);
+    renderTexts(v, i);
+    ta.addEventListener('input', () => { E.typed = true; sizeEdit(v); changed(v); });
+    ta.addEventListener('keydown', ev => {
+      if (ev.key === 'Escape' || ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter')) {
+        ev.preventDefault(); ev.stopPropagation();
+        commitEdit(v);
+        v.scroll.focus({ preventScroll: true });
+      }
+    });
+    // Focus leaving the text ends it; the window losing focus (another app,
+    // another tab) does not: the text is still open when the person is back.
+    ta.addEventListener('blur', () => setTimeout(() => { if (v.edit === E && !E.moving && document.activeElement !== ta) commitEdit(v); }, 0));
+    ta.focus({ preventScroll: true });
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    try { ta.scrollIntoView({ block: 'nearest' }); } catch {}
+    paintEmpty(v);
+    holesSoon(v);
+  }
+  function placeEdit(v) {
+    const E = v.edit;
+    if (!E) return;
+    const k = v.pageW / F.PAGE_W, d = E.draft;
+    Object.assign(E.ta.style, { left: d.x * k + 'px', top: (d.y - F.TEXT_ASCENT * d.lh) * k + 'px', width: d.w * k + 'px',
+      fontSize: d.size * k + 'px', lineHeight: d.lh * k + 'px', fontFamily: F.TEXT_FONT });
+    sizeEdit(v);
+  }
+  function sizeEdit(v) {
+    const ta = v.edit && v.edit.ta;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = ta.scrollHeight + 'px';
+    holesSoon(v);
+  }
+  // The text as one block (or none, if it was emptied), one undo step.
+  function commitEdit(v) {
+    const E = v.edit;
+    if (!E) return false;
+    v.edit = null;
+    const text = E.ta.value.replace(/\s+$/, '');
+    E.ta.remove();
+    const page = E.page, old = E.block;
+    // Every copy of this block goes: the one being changed, and one that
+    // came back from disk meanwhile (this text, saved while typing, then
+    // merged with another device's writing).
+    const copies = v.note.pages[page].texts.filter(b => b === old || b.id === E.draft.id);
+    let op = null;
+    if (text && (!old || text !== old.text || copies.length > 1)) op = { type: 'texts', page, from: copies, to: [makeBlock(E.draft, text)] };
+    else if (!text && copies.length) op = { type: 'texts', page, from: copies, to: [] };
+    if (!text && E.dot) { // nothing typed after all: the tap's dot is back
+      v.note.pages[E.dot.page].strokes.push(E.dot.stroke);
+      paintStroke(v, E.dot.page, E.dot.stroke);
+      v.undo.push(E.dot);
+    }
+    if (op) { apply(v, op, false); commit(v, op); trailAfter(v, page); }
+    else {
+      renderTexts(v, page);
+      if (E.typed || E.dot) changed(v); // saves the note as it is now
+    }
+    paintEmpty(v);
+    holesSoon(v);
+    return true;
+  }
+  // What a save writes: the note, with the text being typed as it stands.
+  function noteToSave(v) {
+    const E = v.edit;
+    const text = E ? E.ta.value.replace(/\s+$/, '') : '';
+    if (!E || !text || (E.block && text === E.block.text)) return v.note;
+    const blk = makeBlock(E.draft, text);
+    return { ...v.note, pages: v.note.pages.map((p, i) => {
+      if (i !== E.page) return p;
+      const texts = p.texts.slice(), k = E.block ? texts.indexOf(E.block) : -1;
+      if (k >= 0) texts[k] = blk; else texts.push(blk);
+      return { ...p, texts };
+    }) };
+  }
+  function focusedBlock(v, el) {
+    const i = Number(el.closest('.ink-page')?.dataset.page);
+    const b = Number.isFinite(i) && v.note.pages[i] ? v.note.pages[i].texts[Number(el.dataset.k)] : null;
+    return b ? { i, b } : null;
+  }
+  function editFocused(v, el) {
+    const f = focusedBlock(v, el);
+    if (f) startEdit(v, f.i, f.b);
+  }
+  function removeFocused(v, el) {
+    const f = focusedBlock(v, el);
+    if (!f) return;
+    const op = { type: 'texts', page: f.i, from: [f.b], to: [] };
+    apply(v, op, false);
+    commit(v, op);
+    offerUndo(v, { type: 'erase', items: [{ text: f.b }] });
+    v.scroll.focus({ preventScroll: true });
+  }
+
+  // ---- an empty note: by pen, or by keyboard? (design/103) ----
+  // Until something is on it, a note has not chosen. The page says so, and
+  // the first key typed (or "Type instead", for a keyboard on screen) makes
+  // it a typed note: notes.js turns the empty file into Markdown and opens
+  // it, and what was typed meanwhile lands there, caret and all.
+  // The words on the page take no taps (the pen writes over them, and they
+  // go); the button is in the toolbar, never over the writing area, where
+  // it would be a hole in the app's fast pen (an older app gives the whole
+  // area back to the slow page while anything covers it).
+  function paintEmpty(v) {
+    if (v.disposed || !v.note || !v.pages[0]) return;
+    const show = F.isBlankNote(v.note) && !v.edit && !v.converting && !!window.Notes;
+    const btn = v.root.querySelector('#inkTypeNote');
+    if (btn && btn.hidden === show) btn.hidden = !show;
+    if (!show) { if (v.emptyEl) { v.emptyEl.remove(); v.emptyEl = null; } return; }
+    if (v.emptyEl && v.pages[0].el.contains(v.emptyEl)) return;
+    v.emptyEl?.remove();
+    const el = document.createElement('p');
+    el.className = 'ink-empty';
+    el.setAttribute('aria-hidden', 'true'); // the toolbar's button and the page's label say it
+    el.textContent = (penSeen() ? 'Write with your pen' : 'Write with the mouse or a pen') + ', or start typing: the note becomes a typed note.';
+    v.pages[0].el.appendChild(el);
+    v.emptyEl = el;
+  }
+  function toTyped(v, initial = '') {
+    if (v.converting || v.disposed || !window.Notes) return false;
+    v.converting = true;
+    native(v, false);
+    paintEmpty(v);
+    // The text goes in a box of the page's own text, at the first line, at
+    // once (focused now, inside the key press or the tap, so the key lands
+    // in it and a phone's keyboard opens); the typed note takes it over.
+    const r = v.pages[0].el.getBoundingClientRect(), k = v.pageW / F.PAGE_W, lh = F.ruleOf(v.note.paper).step;
+    const bridge = document.createElement('textarea');
+    bridge.className = 'ink-type ink-bridge';
+    bridge.setAttribute('aria-label', 'Your typed note');
+    bridge.spellcheck = true;
+    Object.assign(bridge.style, { left: r.left + MARGIN * k + 'px', top: Math.max(0, r.top + (F.baselineAt(v.note.paper, 0) - F.TEXT_ASCENT * lh) * k) + 'px',
+      width: (F.PAGE_W - 2 * MARGIN) * k + 'px', height: lh * k * 4 + 'px', fontSize: F.TEXT_SIZE * k + 'px', lineHeight: lh * k + 'px', fontFamily: F.TEXT_FONT });
+    document.body.appendChild(bridge);
+    if (initial) bridge.value = initial.replace(/\r\n?/g, '\n');
+    bridge.focus({ preventScroll: true });
+    bridge.setSelectionRange(bridge.value.length, bridge.value.length);
+    Notes.toText(v.ws, bridge).then(ok => {
+      if (ok || v.disposed) return;
+      // It stayed a page (the note has writing now, or no connection): what
+      // was typed goes on the page, nothing lost.
+      const text = bridge.value;
+      bridge.remove();
+      v.converting = false;
+      native(v, true);
+      paintEmpty(v);
+      if (!text) return;
+      const at = typeSpot(v);
+      startEdit(v, at.page, null, at);
+      if (v.edit) { v.edit.ta.value = text; v.edit.typed = true; sizeEdit(v); changed(v); }
+    });
+    return true;
+  }
+  function keyHelp() {
+    return [
+      ['type', 'text on the page: at the dot you just tapped, else under the writing. On an empty note: a typed note instead'],
+      ['esc · ' + modKey('enter', true), 'finish the text'],
+      ['alt+w', 'pen; again: the next of your three pens'],
+      ['alt+e', 'eraser'],
+      ['alt+s', 'select: circle lines and texts'],
+      ['alt+t', 'text: tap where it goes, or a text to change it'],
+      ['tab, then enter · delete', 'change · remove a typed text'],
+      [modKey('z', true) + ' · ' + modKey('shift+z', true), 'undo · redo'],
+      ['pgup pgdn', 'scroll'],
+    ];
   }
 
   // ---- undo, pages, paper ----
@@ -1165,19 +1575,45 @@
       if (back) { const i = list.indexOf(op.stroke); if (i >= 0) list.splice(i, 1); repaint(v, op.page, boxOf(op.stroke)); }
       else { list.push(op.stroke); paintStroke(v, op.page, op.stroke); }
     } else if (op.type === 'erase') {
-      const list = v.note.pages[op.page].strokes;
-      if (back) for (const it of op.items.slice().reverse()) { list.splice(Math.min(it.index, list.length), 0, it.stroke); }
-      else for (const it of op.items) { const i = list.indexOf(it.stroke); if (i >= 0) list.splice(i, 1); }
-      repaint(v, op.page, unionBox(op.items.map(it => it.stroke)));
+      // Lines and typed texts, each back at its place on undo.
+      const list = v.note.pages[op.page].strokes, texts = v.note.pages[op.page].texts;
+      const ss = op.items.filter(it => it.stroke), ts = op.items.filter(it => it.text);
+      if (back) {
+        for (const it of ss.slice().reverse()) list.splice(Math.min(it.index, list.length), 0, it.stroke);
+        for (const it of ts.slice().reverse()) texts.splice(Math.min(it.index, texts.length), 0, it.text);
+      } else {
+        for (const it of ss) { const i = list.indexOf(it.stroke); if (i >= 0) list.splice(i, 1); }
+        for (const it of ts) { const i = texts.indexOf(it.text); if (i >= 0) texts.splice(i, 1); }
+      }
+      if (ss.length) repaint(v, op.page, unionBox(ss.map(it => it.stroke)));
+      if (ts.length) renderTexts(v, op.page);
     } else if (op.type === 'move') {
       // A move is the old lines out and new ones in (strokes are never
-      // changed, design/98, so two devices still merge as sets).
+      // changed, design/98, so two devices still merge as sets); typed
+      // texts the same way.
       const list = v.note.pages[op.page].strokes;
       const out = back ? op.to : op.from.map(it => it.stroke);
       for (const st of out) { const i = list.indexOf(st); if (i >= 0) list.splice(i, 1); }
       if (back) for (const it of op.from) list.splice(Math.min(it.index, list.length), 0, it.stroke);
       else list.push(...op.to);
-      repaint(v, op.page, unionBox([...op.to, ...op.from.map(it => it.stroke)]));
+      if (op.to.length || op.from.length) repaint(v, op.page, unionBox([...op.to, ...op.from.map(it => it.stroke)]));
+      if ((op.tto && op.tto.length) || (op.tfrom && op.tfrom.length)) {
+        const texts = v.note.pages[op.page].texts;
+        const tout = back ? op.tto : op.tfrom.map(it => it.text);
+        for (const b of tout) { const i = texts.indexOf(b); if (i >= 0) texts.splice(i, 1); }
+        if (back) for (const it of op.tfrom) texts.splice(Math.min(it.index, texts.length), 0, it.text);
+        else texts.push(...op.tto);
+        renderTexts(v, op.page);
+      }
+    } else if (op.type === 'texts') {
+      // Typed text added, changed (the old block out, the new one in its
+      // place) or removed.
+      const texts = v.note.pages[op.page].texts;
+      const out = back ? op.to : op.from, inn = back ? op.from : op.to;
+      let at = -1;
+      for (const b of out) { const i = texts.indexOf(b); if (i >= 0) { if (at < 0) at = i; texts.splice(i, 1); } }
+      texts.splice(at < 0 ? texts.length : at, 0, ...inn.filter(b => !texts.includes(b)));
+      renderTexts(v, op.page);
     } else if (op.type === 'paper') {
       v.note.paper = back ? op.from : op.to;
       renderAll(v);
@@ -1206,6 +1642,7 @@
   function changed(v) {
     v.rev++;
     paintTools(v);
+    paintEmpty(v);
     setStatus(v, 'Unsaved');
     clearTimeout(v.timer);
     v.timer = setTimeout(() => save(v), SAVE_AFTER_MS);
@@ -1222,7 +1659,7 @@
     try {
       for (let attempt = 0; attempt < 4; attempt++) {
         const rev = v.rev;
-        const text = F.serialize(v.note);
+        const text = F.serialize(noteToSave(v));
         let out;
         try { out = await postJson('/api/file/save', { path: v.ws.path, baseSha: v.baseSha, text, actor: 'human', input: 'pen', project: v.ws.project || '' }); }
         catch { out = { error: 'offline' }; }
@@ -1303,7 +1740,7 @@
   // fails), then sent; a page that is closing sends what fits in a beacon.
   function flush(v, closing = false) {
     if (!v.note || v.rev === v.savedRev) return;
-    const text = F.serialize(v.note);
+    const text = F.serialize(noteToSave(v));
     keepDraft(v, text);
     if (closing) {
       const body = JSON.stringify({ path: v.ws.path, baseSha: v.baseSha, text, actor: 'human', input: 'pen', project: v.ws.project || '' });
@@ -1324,6 +1761,7 @@
   function disposeView(v) {
     if (v.disposed) return;
     finishPending(v);
+    commitEdit(v);
     flushLog(v);
     flush(v);
     v.disposed = true;
@@ -1447,8 +1885,10 @@
       for (let k = 0; k < p.length; k += 3) if (inPoly(poly, p[k], p[k + 1])) inside++;
       return inside * 2 >= n && inside > 0;
     });
-    if (!chosen.length) { clearSel(v); toastSafe('Nothing inside the loop: circle the lines to select.'); return; }
-    selectStrokes(v, page, chosen);
+    // A typed text whose middle is inside the loop.
+    const texts = v.note.pages[page].texts.filter(b => { const q = tbox(b); return inPoly(poly, (q.x0 + q.x1) / 2, (q.y0 + q.y1) / 2); });
+    if (!chosen.length && !texts.length) { clearSel(v); toastSafe('Nothing inside the loop: circle the lines to select.'); return; }
+    selectStrokes(v, page, chosen, texts);
   }
 
   // ---- copy and paste ----
@@ -1458,7 +1898,12 @@
   // into a message or another app.
   const CLIP = 'chattering.ink.clip';
   function readClip() {
-    try { const c = JSON.parse(localStorage.getItem(CLIP) || 'null'); return c && Array.isArray(c.strokes) && c.strokes.length ? c : null; } catch { return null; }
+    try {
+      const c = JSON.parse(localStorage.getItem(CLIP) || 'null');
+      if (!c || !Array.isArray(c.strokes)) return null;
+      if (!Array.isArray(c.texts)) c.texts = [];
+      return c.strokes.length || c.texts.length ? c : null;
+    } catch { return null; }
   }
   function copySel(v) {
     const S = v.sel;
@@ -1470,7 +1915,8 @@
       if (st.pen) out.pen = st.pen;
       return out;
     });
-    try { localStorage.setItem(CLIP, JSON.stringify({ strokes, w: S.box.x1 - ox, h: S.box.y1 - oy })); }
+    const texts = (S.tlist || []).map(b => ({ x: +(b.x - ox).toFixed(1), y: +(b.y - oy).toFixed(1), w: b.w, size: b.size, lh: b.lh, text: b.text, lines: b.lines }));
+    try { localStorage.setItem(CLIP, JSON.stringify({ strokes, texts, w: S.box.x1 - ox, h: S.box.y1 - oy })); }
     catch { return toastSafe('Too much to copy at once.'); }
     try {
       if (navigator.clipboard && window.ClipboardItem) {
@@ -1478,7 +1924,8 @@
         fetch(img.preview).then(r => r.blob()).then(blob => navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])).catch(() => {});
       }
     } catch {}
-    toastSafe(S.list.length === 1 ? 'Copied one line. In Select, tap where it should go.' : `Copied ${S.list.length} lines. In Select, tap where they should go.`);
+    const n = S.list.length + texts.length;
+    toastSafe(`Copied ${countWords(S.list.length, texts.length)}. In Select, tap where ${n === 1 ? 'it' : 'they'} should go.`);
   }
   // Paste with the copied box's corner at (x, y) on a page, kept on the
   // page; the pasted lines are the selection, to drag into place.
@@ -1495,14 +1942,12 @@
       if (st.pen && F.PENS[st.pen]) out.pen = st.pen;
       return out;
     });
-    const op = { type: 'move', page, from: [], to };
+    const tto = c.texts.map(b => ({ ...b, id: newTextId(), x: b.x + x, y: b.y + y, t0: now }));
+    const op = { type: 'move', page, from: [], to, tfrom: [], tto };
     apply(v, op, false);
     commit(v, op);
-    if (page === v.note.pages.length - 1) { // the last page has writing: a fresh one waits below
-      v.note.pages.push(F.blankPage());
-      v.pagesEl.appendChild(pageEl(v, v.note.pages[v.note.pages.length - 1], v.note.pages.length - 1));
-    }
-    selectStrokes(v, page, to);
+    trailAfter(v, page);
+    selectStrokes(v, page, to, tto);
   }
   function showPasteBar(v, page, x, y) {
     hidePasteBar(v);
@@ -1533,13 +1978,20 @@
     return inside;
   }
   function toastSafe(text) { try { if (typeof toast === 'function') toast(text); } catch {} }
-  function selectStrokes(v, page, strokes) {
+  function selectStrokes(v, page, strokes, texts = []) {
     clearSel(v);
     const set = new Set(strokes);
-    v.sel = { page, set, list: strokes, box: unionBox(strokes), el: null, bar: null };
-    repaint(v, page, v.sel.box); // the page without them: they show in the selection's layer
+    v.sel = { page, set, list: strokes, texts: new Set(texts), tlist: texts, box: selBox(strokes, texts), el: null, bar: null };
+    if (strokes.length) repaint(v, page, v.sel.box); // the page without them: they show in the selection's layer
+    renderTexts(v, page);
     showSel(v);
   }
+  function selBox(strokes, texts) {
+    const b = unionBox(strokes);
+    for (const t of texts) { const q = tbox(t); b.x0 = Math.min(b.x0, q.x0); b.y0 = Math.min(b.y0, q.y0); b.x1 = Math.max(b.x1, q.x1); b.y1 = Math.max(b.y1, q.y1); }
+    return b;
+  }
+  const countWords = (lines, texts) => [lines ? (lines === 1 ? 'one line' : lines + ' lines') : '', texts ? (texts === 1 ? 'one text' : texts + ' texts') : ''].filter(Boolean).join(' and ') || 'nothing';
   // The selection's layer: its lines drawn as they look, a dashed frame, and
   // its buttons above (below when the selection is at the top of the page).
   function showSel(v) {
@@ -1557,6 +2009,7 @@
     c.width = Math.max(1, Math.round(w * k * dpr)); c.height = Math.max(1, Math.round(h * k * dpr));
     const ctx = c.getContext('2d');
     ctx.setTransform(k * dpr, 0, 0, k * dpr, -x0 * k * dpr, -y0 * k * dpr);
+    for (const t of S.tlist || []) drawText(ctx, t, inkColor(v));
     for (const st of S.list) fillStroke(v, ctx, st);
     el.appendChild(c);
     const bar = document.createElement('div');
@@ -1583,7 +2036,8 @@
     if (!S) return;
     v.sel = null;
     S.el?.remove(); S.bar?.remove();
-    repaint(v, S.page, S.box);
+    if (S.list.length) repaint(v, S.page, S.box);
+    if (S.tlist && S.tlist.length) renderTexts(v, S.page);
     holesSoon(v);
   }
   function dragMove(v, ev) {
@@ -1611,31 +2065,38 @@
       if (st.pen) out.pen = st.pen;
       return out;
     });
+    const texts = v.note.pages[S.page].texts;
+    const tfrom = (S.tlist || []).map(text => ({ text, index: texts.indexOf(text) })).filter(it => it.index >= 0).sort((a, b) => a.index - b.index);
+    const tto = (S.tlist || []).map(b => ({ ...b, x: b.x + D.dx, y: b.y + D.dy }));
     const page = S.page;
     S.el.remove(); S.bar.remove(); v.sel = null;
-    const op = { type: 'move', page, from, to };
+    const op = { type: 'move', page, from, to, tfrom, tto };
     apply(v, op, false);
     commit(v, op);
-    selectStrokes(v, page, to);
+    selectStrokes(v, page, to, tto);
   }
   function deleteSel(v) {
     const S = v.sel;
     if (!S) return;
-    const list = v.note.pages[S.page].strokes;
+    const list = v.note.pages[S.page].strokes, texts = v.note.pages[S.page].texts;
     const items = S.list.map(stroke => ({ stroke, index: list.indexOf(stroke) })).filter(it => it.index >= 0).sort((a, b) => b.index - a.index);
+    const titems = (S.tlist || []).map(text => ({ text, index: texts.indexOf(text) })).filter(it => it.index >= 0).sort((a, b) => b.index - a.index);
     S.el?.remove(); S.bar?.remove(); v.sel = null;
     holesSoon(v);
     for (const it of items) list.splice(it.index, 1);
-    repaint(v, S.page, S.box);
-    const op = { type: 'erase', page: S.page, items };
+    for (const it of titems) texts.splice(it.index, 1);
+    if (items.length) repaint(v, S.page, S.box);
+    renderTexts(v, S.page);
+    const op = { type: 'erase', page: S.page, items: items.concat(titems) };
     commit(v, op);
-    offerUndo(v, op, items.length);
+    offerUndo(v, op);
   }
   // Removing many lines at once says so, with a way back right where the
   // eye is (the toolbar's undo is far on a big tablet).
-  function offerUndo(v, op, n) {
+  function offerUndo(v, op) {
     if (typeof toast !== 'function') return;
-    try { toast(`Deleted ${n === 1 ? 'one line' : n + ' lines'}. Tap here to undo.`, () => { if (!v.disposed && v.undo[v.undo.length - 1] === op) undo(v); }, '', { repeat: true }); } catch {}
+    const what = countWords(op.items.filter(it => it.stroke).length, op.items.filter(it => it.text).length);
+    try { toast(`Deleted ${what}. Tap here to undo.`, () => { if (!v.disposed && v.undo[v.undo.length - 1] === op) undo(v); }, '', { repeat: true }); } catch {}
   }
   // The selected lines as a picture: on white, as they look, a margin around.
   function selImage(v) {
@@ -1648,6 +2109,7 @@
     ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, c.width, c.height);
     ctx.setTransform(scale, 0, 0, scale, -x0 * scale, -y0 * scale);
     const look = { ink: '#1d1f21', light: true, highlight: einkNow() ? HIGHLIGHT_EINK : HIGHLIGHT };
+    for (const t of S.tlist || []) drawText(ctx, t, look.ink);
     for (const st of S.list) fillStroke(v, ctx, st, look);
     const url = c.toDataURL('image/png');
     return { mime: 'image/png', data: url.slice(url.indexOf(',') + 1), name: 'handwritten.png', preview: url };
@@ -1681,7 +2143,7 @@
       return;
     }
     if (typeof startDraftIn !== 'function') return toastSafe('Open a conversation beside the note (Page → A conversation beside) to ask there.');
-    const at = ws.path.indexOf('/documents/handwritten/');
+    const at = ws.path.lastIndexOf('/documents/');
     clearSel(v);
     try { await save(v); } catch {}
     await startDraftIn(at >= 0 ? ws.path.slice(0, at) : '', { text, images: [img] });
@@ -1731,7 +2193,7 @@
     const n = nativeInk();
     if (!n) return false;
     const precise = typeof n.setHoles === 'function';
-    return !v.root.querySelector('.ink-pop:not([hidden])') && (precise || (v.tool !== 'lasso' && !(v.holes && v.holes.length)));
+    return !v.root.querySelector('.ink-pop:not([hidden])') && v.tool !== 'text' && !v.converting && (precise || (v.tool !== 'lasso' && !(v.holes && v.holes.length)));
   }
   // The shell around the frame (the encrypted link), when there is one: its
   // document and where the frame sits in it.
@@ -1798,7 +2260,7 @@
     }
     // The lasso's own: its frame (it takes no taps, so the browser does not
     // see it on top), its buttons, the paste bar.
-    for (const el of [v.sel && v.sel.el, v.sel && v.sel.bar, v.pasteBar]) {
+    for (const el of [v.sel && v.sel.el, v.sel && v.sel.bar, v.pasteBar, v.edit && v.edit.ta]) {
       if (!el || !el.isConnected || el.hidden) continue;
       const q = el.getBoundingClientRect(), pad = el === (v.sel && v.sel.el) ? 8 : 4;
       out.push([q.left - pad, q.top - pad, q.right + pad, q.bottom + pad].map(Math.round));
@@ -1898,7 +2360,9 @@
       // with setHoles (0.3.8). An older one: the page has the lasso, and
       // the pen whenever anything covers the writing area.
       const precise = typeof n.setHoles === 'function';
-      const on = want && !v.disposed && !!v.note && (precise || (v.tool !== 'lasso' && !(v.holes && v.holes.length)));
+      // The Text tool's taps are the page's (where the text goes), and so is
+      // the pen while an empty note becomes a typed one.
+      const on = want && !v.disposed && !!v.note && v.tool !== 'text' && !v.converting && (precise || (v.tool !== 'lasso' && !(v.holes && v.holes.length)));
       v.nativeOn = on;
       if (!on) { if (!regionOnly) { n.setEnabled(false); } return; }
       const r = v.scroll.getBoundingClientRect(), [ox, oy] = frameOffset();
@@ -1944,6 +2408,8 @@
       if (n.length >= 2 && Number.isFinite(n[0]) && Number.isFinite(n[1])) { n[0] -= ox; n[1] -= oy; pts.push(n); }
     }
     if (!pts.length) return;
+    // The pen wrote while a text was open: the text is done, the pen writes.
+    if (pen !== 'lasso') commitEdit(v);
     const i = pageAt(v, pts[0][1]);
     const rect = v.pages[i].el.getBoundingClientRect();
     if (pen === 'lasso') {
@@ -1988,6 +2454,6 @@
   }
   window.fileInkAcceptPacked = acceptPacked;
 
-  window.InkNotes = { isInkPath: F.isInkPath, mount, create, penSeen, acceptPacked,
+  window.InkNotes = { isInkPath: F.isInkPath, mount, create, penSeen, acceptPacked, keyHelp, noteTitle,
     pageImage: (i, opts) => view && pageImage(view, i, opts), get current() { return view; } };
 })();

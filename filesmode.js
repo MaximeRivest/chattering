@@ -416,6 +416,8 @@ async function fileWsMountMarkdown(ws, opts) {
   ws.sha = docState.sha;
   fileWsWireDocLinks(ws);
   fileWsAfterMount(ws, resumed ? { ...opts, resumed: true } : opts);
+  // A typed note (design/103): while empty, the way to make it a page.
+  if (typeof Notes !== 'undefined') Notes.mounted(ws);
 }
 
 // The whole-file editor's AI commands (app.html fileAiOptions). A shared

@@ -97,3 +97,34 @@
 .ink-sel-bar[hidden] { display: none; }
 /* Delete stands apart, at the end: a tap meant for Done never removes a page. */
 .ink-sel-bar .ink-sel-danger { margin-left: 14px; }
+
+/* Typed text on the page (design/103): under the ink, on the ruling, in
+   the ink's colour. Typed in a box laid exactly where it will show. */
+.ink-view[data-tool="text"] .ink-scroll { cursor: text; }
+.ink-typed { fill: var(--ink-pen); white-space: pre; }
+.ink-typed text:focus { outline: 2px solid var(--accent); outline-offset: 3px; }
+.ink-typed text:focus:not(:focus-visible) { outline: none; }
+.ink-type { position: absolute; z-index: 2; box-sizing: content-box; margin: 0; padding: 0; border: 0; border-radius: 0; resize: none; overflow: hidden;
+  background: transparent; color: var(--ink-pen); caret-color: var(--ink-pen); white-space: pre-wrap; overflow-wrap: break-word;
+  outline: 1.5px dashed color-mix(in oklab, var(--ink-pen) 45%, transparent); outline-offset: 4px; user-select: text; -webkit-user-select: text; touch-action: manipulation; }
+:root[data-theme-mode="binary"] .ink-type { outline: 2px dashed #000; }
+/* A caret on e-ink does not blink (every blink is a panel refresh): the
+   typed note's editor draws its own caret, held still here. A textarea's
+   caret is the system's and cannot be held still from a page. */
+:root[data-theme-mode="binary"] .cm-cursorLayer { animation: none !important; }
+/* While an empty page becomes a typed note: the same box, over the page. */
+.ink-type.ink-bridge { position: fixed; z-index: 60; background: var(--ink-paper); }
+/* An empty note says both ways in: words on the page (no taps: the pen
+   writes over them), the button in the toolbar. */
+.ink-empty { position: absolute; left: 50%; top: 9%; z-index: 1; transform: translateX(-50%); width: max-content; max-width: 86%; margin: 0; padding: 2px 10px;
+  background: var(--ink-paper); color: var(--text-dim); font: 15px/1.45 var(--font); text-align: center; pointer-events: none; }
+:root[data-theme-mode="binary"] .ink-empty { color: #000; }
+.ink-tools .ink-type-note[hidden] { display: none; }
+
+/* A typed note, while empty (notes.js, design/103): the other way in. */
+.note-kind-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 6px 14px; border-bottom: 1px solid var(--border); color: var(--text-dim); font-size: 13px; }
+.note-kind-bar[hidden] { display: none; }
+.note-kind-bar button { min-height: 34px; padding: 0 12px; border: 1px solid var(--border-strong, var(--border)); background: transparent; color: var(--text); font: inherit; }
+.note-kind-hint:empty { display: none; }
+:root[data-theme-mode="binary"] .note-kind-bar { color: #000; border-bottom: 2px solid #000; }
+:root[data-theme-mode="binary"] .note-kind-bar button { border: 2px solid #000; }

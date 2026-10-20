@@ -14,6 +14,11 @@
 //       <g data-ink-layer="pen" …>
 //         <path d="M120.5 300.2l.4.1…" stroke-width="2.4" data-p="4567…" data-t="1760101900000 830"/>
 //       </g>
+//       <g data-ink-layer="text" …>                typed text placed on the page
+//         <text data-ink-typed="t…" x y font-size data-w data-lh data-t>
+//           <tspan x y>a line as it shows</tspan><tspan x y data-soft="1">…</tspan>
+//         </text>
+//       </g>
 //       <g data-ink-layer="extra">…</g>          anything else, kept verbatim
 //       <desc data-ink-text="1">…</desc>          the page as text, once read
 //     </g>
@@ -25,6 +30,15 @@
 // relative steps, which keeps the file small. Its pressure is one digit per
 // point (0–9) in data-p; data-t is when it began (ms since 1970) and how long
 // it took. A path without data-p is still a stroke (uniform pressure).
+//
+// Typed text (design/103) is a block: its left edge (x), its first line's
+// baseline (y), the width it wraps in (data-w), its line height (data-lh),
+// one tspan per line as it shows, a line that only wraps the one before
+// marked data-soft. The text is the lines joined, a newline before each
+// line that is not soft, so any SVG viewer shows it and Chattering gets the
+// exact text back. Like a stroke, a block is never changed in place: an
+// edit is the old block out and the new one in, so two devices still merge
+// as sets.
 //
 // What Chattering did not write is never lost: a page's other elements go to
 // its extra layer and come back out unchanged, and so do unknown elements at
@@ -42,6 +56,15 @@
   const PAPERS = ['blank', 'lines', 'grid', 'dots'];
   const DEFAULT_PAPER = 'lines';
   const INK_PATH = /\.ink\.svg$/i;
+  // Typed text: one font for the page and the file, sized for an A4 page
+  // (22 units ≈ 4.6 mm, a 13 pt type), one line per ruling.
+  const TEXT_FONT = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
+  const TEXT_SIZE = 22;
+  const TEXT_ASCENT = 0.68; // of a line's height, above its baseline
+  // The ruling a paper draws (the page and the file draw it the same way):
+  // typed lines sit on it. lines: every 44 from 98; the others every 40.
+  const RULE = { lines: { first: 98, step: 44 }, grid: { first: 40, step: 40 }, dots: { first: 40, step: 40 }, blank: { first: 40, step: 40 } };
+  const ruleOf = paper => RULE[paper] || RULE.lines;
 
   // ---- a small XML reader: enough for SVG, and for any SVG a person or a
   // tool put in a note (comments, CDATA, processing instructions, entities).
@@ -236,8 +259,9 @@
     return { format: FORMAT, title: opts.title || '', paper: PAPERS.includes(opts.paper) ? opts.paper : DEFAULT_PAPER,
       created: opts.created || new Date().toISOString(), pages: [blankPage()], rest: [] };
   }
-  function blankPage() { return { strokes: [], extra: [], text: '' }; }
-  function isBlankPage(page) { return !page.strokes.length && !page.extra.length && !page.text; }
+  function blankPage() { return { strokes: [], texts: [], extra: [], text: '' }; }
+  function isBlankPage(page) { return !page.strokes.length && !(page.texts && page.texts.length) && !page.extra.length && !page.text; }
+  function isBlankNote(note) { return note.pages.every(isBlankPage) && !note.rest.some(n => n.tag); }
 
   function parse(text) {
     const tree = parseXml(text);
@@ -271,6 +295,14 @@
         }
         continue;
       }
+      if (child.tag === 'g' && child.attrs['data-ink-layer'] === 'text') {
+        for (const t of child.children) {
+          const block = t.tag === 'text' && t.attrs['data-ink-typed'] ? textFromNode(t) : null;
+          if (block) page.texts.push(block);
+          else if (t.tag || t.raw != null) page.extra.push(t);
+        }
+        continue;
+      }
       if (child.tag === 'g' && child.attrs['data-ink-layer'] === 'extra') { page.extra.push(...child.children.filter(c => c.tag || c.raw != null)); continue; }
       page.extra.push(child);
     }
@@ -294,7 +326,7 @@
     out.push('<?xml version="1.0" encoding="UTF-8"?>');
     out.push(`<svg xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 ${PAGE_W} ${height}" width="${PAGE_W}" height="${height}" color="#1d1f21" data-ink-format="${FORMAT}" data-paper="${paper}"${note.created ? ` data-created="${escapeXml(note.created)}"` : ''}>`);
     out.push(`<title>${escapeXml(note.title || 'Handwritten note')}</title>`);
-    out.push('<desc>A handwritten note from Chattering. Each page is a group (data-ink-page); each pen stroke is a path: its centre line, data-p one pressure digit (0-9) per point, data-t its start (ms since 1970) and length (ms). Page size 1000 x 1414.</desc>');
+    out.push('<desc>A handwritten note from Chattering. Each page is a group (data-ink-page); each pen stroke is a path: its centre line, data-p one pressure digit (0-9) per point, data-t its start (ms since 1970) and length (ms); typed text is a text element (data-ink-typed), one tspan per line, data-soft on a line that only wraps the one before. Page size 1000 x 1414.</desc>');
     if (defs) out.push(`<defs data-ink-paper="1">${defs}</defs>`);
     pages.forEach((page, i) => {
       out.push(`<g data-ink-page="${i + 1}" transform="translate(0 ${i * (PAGE_H + PAGE_GAP)})">`);
@@ -303,6 +335,11 @@
       if (page.strokes.length) {
         out.push('<g data-ink-layer="pen" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">');
         for (const stroke of page.strokes) if (stroke.pts.length >= 3) out.push(writeXml(pathNode(stroke)));
+        out.push('</g>');
+      }
+      if (page.texts && page.texts.length) {
+        out.push(`<g data-ink-layer="text" fill="currentColor" font-family="${escapeXml(TEXT_FONT)}" xml:space="preserve" style="white-space:pre">`);
+        for (const block of page.texts) out.push(writeXml(textNode(block)));
         out.push('</g>');
       }
       if (page.extra.length) out.push(`<g data-ink-layer="extra">${page.extra.map(writeXml).join('')}</g>`);
@@ -337,7 +374,7 @@
     for (let i = 0; i < n; i++) {
       const m = mine.pages[i] || blankPage();
       const t = theirs.pages[i] || blankPage();
-      const page = { strokes: [], extra: m.extra.length ? m.extra : t.extra, text: m.text || t.text };
+      const page = { strokes: [], texts: mergeTexts(i, base && base.pages[i], m, t), extra: m.extra.length ? m.extra : t.extra, text: m.text || t.text };
       const have = new Set();
       for (const s of m.strokes) {
         const k = strokeKey(s, i);
@@ -355,6 +392,90 @@
     if (base && mine.paper === base.paper) out.paper = theirs.paper;
     if (base && mine.title === base.title) out.title = theirs.title;
     return out;
+  }
+
+  // Typed blocks merge the same way: a block is known by its id, place and
+  // text, so an edit (old out, new in) on one side is an edit after the
+  // merge; edits of one block on both sides keep both (nothing typed lost).
+  function textKey(block, page) { return page + '|' + block.id + '|' + round1(block.x) + ',' + round1(block.y) + '|' + round1(block.w) + '|' + block.text; }
+  function mergeTexts(i, basePage, m, t) {
+    const baseKeys = new Set((basePage && basePage.texts || []).map(b => textKey(b, i)));
+    const theirKeys = new Set((t.texts || []).map(b => textKey(b, i)));
+    const out = [], have = new Set();
+    for (const b of m.texts || []) {
+      const k = textKey(b, i);
+      if (baseKeys.has(k) && !theirKeys.has(k)) continue; // erased or changed over there
+      if (!have.has(k)) { have.add(k); out.push(b); }
+    }
+    for (const b of t.texts || []) {
+      const k = textKey(b, i);
+      if (have.has(k) || baseKeys.has(k)) continue;
+      have.add(k); out.push(b);
+    }
+    return out;
+  }
+
+  // ---- typed text ----
+  // A block's lines as they show: each hard line wrapped at the block's
+  // width, at spaces where it can, inside a word where one word is wider
+  // than the block. measure(string) → width in page units (the page's
+  // canvas at the block's size); the spaces at a break stay on the line
+  // before it, so the text comes back exactly from the lines.
+  function wrapText(text, width, measure) {
+    const out = [];
+    for (const hard of String(text).split('\n')) {
+      if (!hard || measure(hard) <= width) { out.push({ s: hard, soft: false }); continue; }
+      let line = '', first = true;
+      const push = () => { out.push({ s: line, soft: !first }); first = false; line = ''; };
+      for (const token of hard.match(/\S+\s*|\s+/g) || []) {
+        if (measure((line + token).replace(/\s+$/, '')) <= width) { line += token; continue; }
+        if (line) push();
+        if (measure(token.replace(/\s+$/, '')) <= width) { line = token; continue; }
+        for (const ch of Array.from(token)) { // a word wider than the block: broken where it must be
+          if (line && measure((line + ch).replace(/\s+$/, '')) > width) push();
+          line += ch;
+        }
+      }
+      if (line || first) push();
+    }
+    return out;
+  }
+  const textOfLines = lines => lines.map((l, i) => (i && !l.soft ? '\n' : '') + l.s).join('');
+  function textNode(block) {
+    const lines = block.lines && block.lines.length ? block.lines : [{ s: block.text, soft: false }];
+    const lh = block.lh || 44, n = v => String(Math.round(v * 10) / 10);
+    const attrs = { 'data-ink-typed': String(block.id), x: n(block.x), y: n(block.y), 'font-size': n(block.size || TEXT_SIZE), 'data-w': n(block.w), 'data-lh': n(lh) };
+    if (block.t0) attrs['data-t'] = String(Math.round(block.t0));
+    const children = lines.map((l, k) => {
+      const a = { x: n(block.x), y: n(block.y + k * lh) };
+      if (l.soft) a['data-soft'] = '1';
+      return { tag: 'tspan', attrs: a, children: l.s ? [{ text: l.s }] : [] };
+    });
+    return { tag: 'text', attrs, children };
+  }
+  function textFromNode(node) {
+    const num = (v, d) => { const x = Number(v); return Number.isFinite(x) ? x : d; };
+    const spans = elements(node).filter(c => c.tag === 'tspan');
+    const lines = spans.length ? spans.map(c => ({ s: textOf(c), soft: c.attrs['data-soft'] === '1' })) : [{ s: textOf(node), soft: false }];
+    if (lines.length) lines[0].soft = false;
+    const size = num(node.attrs['font-size'], TEXT_SIZE);
+    return { id: String(node.attrs['data-ink-typed']), x: num(node.attrs.x, 60), y: num(node.attrs.y, 98), w: Math.max(20, num(node.attrs['data-w'], 880)), size: size > 0 ? size : TEXT_SIZE,
+      lh: Math.max(4, num(node.attrs['data-lh'], 44)), text: textOfLines(lines), lines, t0: num(String(node.attrs['data-t'] || '').split(/\s+/)[0], 0) };
+  }
+  // Where a block sits (page units), from its lines' measured widths when
+  // there is a measure, else its whole width.
+  function textBounds(block, measure) {
+    const lh = block.lh || 44, n = Math.max(1, (block.lines || []).length || 1);
+    let wid = block.w;
+    if (measure) wid = Math.min(block.w, Math.max(block.size || TEXT_SIZE, ...(block.lines || [{ s: block.text }]).map(l => measure(l.s.replace(/\s+$/, '')))));
+    return { x0: block.x, y0: block.y - TEXT_ASCENT * lh, x1: block.x + wid, y1: block.y + (n - 1) * lh + (1 - TEXT_ASCENT) * lh };
+  }
+  // The baseline of the ruling line a point (page units) writes on: the
+  // first ruling at or below it, kept on the page.
+  function baselineAt(paper, y) {
+    const r = ruleOf(paper);
+    const k = Math.max(0, Math.ceil((y - r.first) / r.step));
+    return Math.min(r.first + k * r.step, r.first + Math.floor((PAGE_H - 40 - r.first) / r.step) * r.step) - 5;
   }
 
   // ---- drawing helpers shared by the page and future image rendering ----
@@ -605,6 +726,7 @@
   }
   function isInkPath(p) { return INK_PATH.test(String(p || '')); }
 
-  return { FORMAT, PAGE_W, PAGE_H, PAGE_GAP, PAPERS, DEFAULT_PAPER, empty, blankPage, isBlankPage, parse, serialize, merge, strokeKey,
+  return { FORMAT, PAGE_W, PAGE_H, PAGE_GAP, PAPERS, DEFAULT_PAPER, empty, blankPage, isBlankPage, isBlankNote, parse, serialize, merge, strokeKey,
+    TEXT_FONT, TEXT_SIZE, TEXT_ASCENT, ruleOf, baselineAt, wrapText, textOfLines, textNode, textFromNode, textBounds, textKey,
     simplify, densify, settle, discs, trace, outline, pressureFactor, PENS, PEN_ORDER, penOf, medianPressure, hits, bounds, pathData, pathPoints, fileName, isInkPath, parseXml, writeXml };
 });

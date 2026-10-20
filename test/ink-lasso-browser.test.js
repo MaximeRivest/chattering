@@ -87,8 +87,8 @@ test('lasso: select, move, undo, delete, ask', { timeout: 180000 }, async t => {
   assert.ok(Math.abs(Math.min(...pasted.map(s => Math.min(...s.pts.filter((_, j) => j % 3 === 0)))) - 200) < 4, 'at the tap');
   await run(`$('inkUndo').click()`);
   await until(`${count}===3`, 'undo takes the pasted lines away');
-  // Ctrl+V pastes in the middle of the page on screen.
-  await run(`document.querySelector('.ink-scroll').dispatchEvent(new KeyboardEvent('keydown',{key:'v',ctrlKey:true,bubbles:true}))`);
+  // Paste (Ctrl+V) pastes in the middle of the page on screen: the clipboard holds the lines' picture, no text.
+  await run(`(()=>{const d=new DataTransfer();d.setData('text/html','<img>');document.querySelector('.ink-scroll').dispatchEvent(new ClipboardEvent('paste',{clipboardData:d,bubbles:true,cancelable:true}));return 1})()`);
   await until(`${count}===5`, 'Ctrl+V pastes');
   await run(`$('inkUndo').click()`);
   await until(`${count}===3`);

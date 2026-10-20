@@ -48,7 +48,7 @@ const OpenFiles = (() => {
   let kept = [];                 // [{path, project, at}], newest first
   let own = false;               // this person keeps their own list (a guest)
   const pending = new Map();     // path → {op: 'keep'|'close'|'restore', file}: not yet accepted
-  let pushTimer = null, pushing = false;
+  let pushTimer = null, pushing = false, inflight = null; // inflight: the batch on its way to the server
 
   const read = (key, fallback) => { try { const v = JSON.parse(localStorage.getItem(key) || 'null'); return v == null ? fallback : v; } catch { return fallback; } };
   const write = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch {} };
@@ -127,7 +127,12 @@ const OpenFiles = (() => {
       // Only what differs from the server's list is sent: letting a file go
       // and keeping it again before the batch leaves sends nothing, so it
       // cannot land after another device's later change and undo it.
-      const there = serverList.find(f => f.path === file.path);
+      // A change still on its way to the server counts as there: letting go
+      // of a file whose keeping has not been answered yet must still be sent
+      // (a note that became a typed note at once, design/103, else stayed
+      // listed under the name of a file that is gone).
+      const flying = inflight && inflight.get(file.path);
+      const there = flying ? (flying.op === 'close' ? null : flying.file) : serverList.find(f => f.path === file.path);
       const same = op === 'close' ? !there : !!there && (op !== 'keep' || !file.project || !!there.project);
       if (same) pending.delete(file.path);
       else pending.set(file.path, { op, file });
@@ -142,7 +147,7 @@ const OpenFiles = (() => {
     pushTimer = null;
     if (pushing || !pending.size || own) return;
     pushing = true;
-    const batch = new Map(pending);
+    const batch = inflight = new Map(pending);
     const body = { keep: [], close: [], restore: [] };
     for (const { op, file } of batch.values()) body[op].push(op === 'close' ? file.path : file);
     try {
@@ -168,6 +173,7 @@ const OpenFiles = (() => {
       pushTimer = setTimeout(push, 10000);
     } finally {
       pushing = false;
+      inflight = null;
       if (pending.size && !pushTimer) pushTimer = setTimeout(push, 150);
     }
   }
@@ -504,7 +510,7 @@ const OpenFiles = (() => {
   const isRowKey = key => typeof key === 'string' && key.startsWith(KEY_PREFIX);
   const pathOfKey = key => isRowKey(key) ? key.slice(KEY_PREFIX.length) : null;
   function tinyAgeOf(ms) { return typeof tinyAge === 'function' ? tinyAge(ms) : Math.round(ms / 1000) + 's'; }
-  const KIND_GLYPH = { md: ['▤', 'Document or notebook'], code: ['‹›', 'Code or text'], image: ['◩', 'Image'], video: ['▷', 'Video'], pdf: ['▯', 'PDF'], ink: ['✎', 'Handwritten note'] };
+  const KIND_GLYPH = { md: ['▤', 'Document or notebook'], code: ['‹›', 'Code or text'], image: ['◩', 'Image'], video: ['▷', 'Video'], pdf: ['▯', 'PDF'], ink: ['✎', 'Note page'] };
   const kindOf = path => typeof fileWsKind === 'function' ? fileWsKind(path) : /\.(md|markdown|qmd|rmd|mdx)$/i.test(path) ? 'md' : 'code';
 
   // The rows in the order they show: the kept files, newest first, and a

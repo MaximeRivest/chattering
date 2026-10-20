@@ -14,17 +14,17 @@ test('handwritten notes: make, write, erase, undo, save, merge, reopen', { timeo
   const { work, evaluate: run, until, command, size } = b;
   const read = file => F.parse(fs.readFileSync(file, 'utf8'));
 
-  // The side list offers a note in the project; the ✎ shortcut waits for a pen.
-  await until(`typeof InkNotes!=='undefined' && !!$('sideInk')`);
-  assert.equal(await run(`$('sideInk').hidden`), true, 'no pen seen yet: no shortcut');
+  // The side list offers a note on every device (design/103).
+  await until(`typeof InkNotes!=='undefined' && typeof Notes!=='undefined' && !!$('sideInk')`);
+  assert.equal(await run(`$('sideInk').hidden`), false, 'the ✎ is there, pen or not');
 
   // One tap: a file, open, kept in the side list. (The test's folder is not a
   // project, so the note goes to the notes folder; a project's go to its
-  // documents/handwritten/, see ink-notes.test.js.)
+  // documents/notes/, see ink-notes.test.js.)
   const file = await run(`InkNotes.create('')`);
   await until(`!!document.querySelector('.ink-view .ink-page') && $('docStatus').textContent==='Saved'`, 'the note opens');
   assert.ok(file && fs.existsSync(file), 'the note is a file');
-  assert.equal(path.basename(path.dirname(file)), 'handwritten');
+  assert.equal(path.basename(path.dirname(file)), 'notes');
   assert.match(path.basename(file), /^\d{4}-\d\d-\d\d-\d{4}\.ink\.svg$/);
   assert.equal(await run(`OpenFiles.isKept(${JSON.stringify(file)})`), true, 'it stays under Open files');
   assert.equal(await run(`viewKind`), 'file');
@@ -50,7 +50,7 @@ test('handwritten notes: make, write, erase, undo, save, merge, reopen', { timeo
   const line = (fx0, fy, fx1, n = 12) => Array.from({ length: n }, (_, i) => [...at(fx0 + (fx1 - fx0) * i / (n - 1), fy + Math.sin(i) * 0.004), 0.2 + 0.06 * i]);
   await pen(line(0.1, 0.1, 0.6));
   await until(`InkNotes.current.note.pages.reduce((n,p)=>n+p.strokes.length,0)===1`, 'the stroke is on the page');
-  assert.equal(await run(`$('sideInk').hidden`), false, 'after a pen: the ✎ shortcut is there');
+  assert.equal(await run(`InkNotes.penSeen()`), true, 'a pen was used here: the next note opens as a page');
   // The line is pixels on the page's canvas, and the live layer is empty again.
   const inkPixels = `(()=>{const c=document.querySelector('.ink-page .ink-layer');const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let n=0;for(let i=3;i<d.length;i+=4)if(d[i]>128)n++;return n})()`;
   await until(`${inkPixels}>200`, 'the line is painted on its page');
@@ -154,11 +154,11 @@ test('handwritten notes: make, write, erase, undo, save, merge, reopen', { timeo
   assert.equal(await run(strokes), 4, 'and draws nothing');
   await pen(line(0.1, 0.2, 0.5));
   await until(`${strokes}===5`, () => run(`JSON.stringify({n:${strokes},draw:!!InkNotes.current.draw,pending:!!InkNotes.current.pending,tool:InkNotes.current.tool,pop:[...document.querySelectorAll(".ink-pop")].map(p=>p.hidden)})`).then(x => x + " " + JSON.stringify(b.exceptions)));
-  // Slot 2 is the pencil, slot 3 the highlighter, by default; 1 2 3 on the keyboard.
+  // Slot 2 is the pencil, slot 3 the highlighter, by default; Alt+W takes the next pen (keys type, design/103).
   await run(`document.querySelector('[data-ink-slot="1"]').click()`);
   await pen(line(0.1, 0.27, 0.5));
-  await run(`document.querySelector('.ink-scroll').dispatchEvent(new KeyboardEvent('keydown',{key:'3',bubbles:true}))`);
-  assert.equal(await run(`InkNotes.current.penId`), 'highlighter', 'the 3 key takes the third pen');
+  await run(`document.querySelector('.ink-scroll').dispatchEvent(new KeyboardEvent('keydown',{key:'w',code:'KeyW',altKey:true,bubbles:true}))`);
+  assert.equal(await run(`InkNotes.current.penId`), 'highlighter', 'Alt+W takes the next pen');
   await pen(line(0.1, 0.34, 0.5));
   await until(`${strokes}===7 && $('docStatus').textContent==='Saved'`, 'three pens on the page, saved');
   note = read(file);

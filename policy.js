@@ -247,6 +247,8 @@ const ROUTES = {
   '/api/git/file-feedback': 'member',
   '/api/doc/create': 'member',
   '/api/ink/new': 'member', // design/98; the handler checks the project
+  '/api/notes/new': 'member', // design/103; the handler checks the project
+  '/api/notes/convert': 'member', // design/103; the handler checks the path
   '/api/doc/asset': 'member',
   '/api/vouch/status': 'member',
   '/api/vouch/all': 'member',

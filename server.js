@@ -1987,6 +1987,11 @@ function isMainTranscript(relPath) {
   return (relPath.endsWith('.jsonl') && !relPath.includes('subagents')) || codexTranscript.isRollout(relPath);
 }
 
+// A person's own notes kept under the notes folder (design/103,
+// ink-notes.js looseFolders): theirs, not the AI-written notes, epics and
+// memory around them, so search and records never label them as those.
+function isPersonNoteRel(rel) { return /^(notes|handwritten)[\\/]/.test(rel); }
+
 async function* walk(dir, base) {
   let entries;
   try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
@@ -2234,7 +2239,7 @@ async function legacySearch(q, limit = 100) {
   }
   groups.sort((a, b) => ((index[b.key] || {}).lastTs || '').localeCompare((index[a.key] || {}).lastTs || ''));
   for await (const rel of walk(NOTES_DIR, NOTES_DIR)) {
-    if (!rel.endsWith('.md')) continue;
+    if (!rel.endsWith('.md') || isPersonNoteRel(rel)) continue;
     try {
       const text = await fsp.readFile(path.join(NOTES_DIR, rel), 'utf8');
       if (text.toLowerCase().indexOf(needle) < 0) continue;
@@ -2275,7 +2280,7 @@ async function syncSearchIndex() {
     // Markdown memory: every .md under the notes tree (notes, epics, projects).
     const seenMd = new Set();
     for await (const rel of walk(NOTES_DIR, NOTES_DIR)) {
-      if (!rel.endsWith('.md')) continue;
+      if (!rel.endsWith('.md') || isPersonNoteRel(rel)) continue;
       seenMd.add(rel);
       try {
         const stat = await fsp.stat(path.join(NOTES_DIR, rel));
@@ -13972,9 +13977,10 @@ async function docCreateResponse(body) {
   return { ok: true, path: abs, project };
 }
 
-// A new handwritten note (design/98, ink-notes.js): in the project's
-// documents/handwritten/, or in the notes folder without a project. The
-// person who makes it must be able to act in that project.
+// A new note (design/98, design/103, ink-notes.js), by pen (kind 'ink', a
+// page) or keyboard (kind 'text', Markdown): in the project's
+// documents/notes/, or in the notes folder without a project. The person
+// who makes it must be able to act in that project.
 async function inkNewResponse(body, identity) {
   const project = String(body.project || '');
   let folder;
@@ -13984,10 +13990,30 @@ async function inkNewResponse(body, identity) {
     folder = inkNotes.folderFor(meta.cwd);
   } else folder = inkNotes.looseFolder(NOTES_DIR);
   assertPathAccess(identity, folder, 'act');
-  const out = await inkNotes.create({ folder, when: body.when, tzOffset: body.tzOffset, title: body.title, paper: body.paper });
-  await recordDocEdit({ ts: Date.now(), path: out.path, action: 'create', actor: 'human', input: 'pen', added: 0, removed: 0, sha: sha256Hex(out.text), user: identity && identity.user ? identity.user.id : undefined });
+  const kind = body.kind === 'text' ? 'text' : 'ink';
+  const out = await inkNotes.create({ folder, kind, when: body.when, tzOffset: body.tzOffset, title: body.title, paper: body.paper });
+  await recordDocEdit({ ts: Date.now(), path: out.path, action: 'create', actor: 'human', input: kind === 'text' ? 'keyboard' : 'pen', added: 0, removed: 0, sha: sha256Hex(out.text), user: identity && identity.user ? identity.user.id : undefined });
   recentFilesTouch(out.path, { project, kind: 'saved', actor: 'human' });
-  return { ok: true, path: out.path, project, sha: sha256Hex(out.text), text: out.text };
+  return { ok: true, path: out.path, project, kind, sha: sha256Hex(out.text), text: out.text };
+}
+
+// An empty note becomes the other kind (design/103): the first key pressed
+// on an empty page makes it a typed note, a pen on an empty typed note a
+// page. Only notes (a notes folder), only while empty (ink-notes.js
+// convert refuses otherwise, 409).
+async function noteConvertResponse(body, identity) {
+  const abs = path.resolve(expandHomePath(String(body.path || '')));
+  if (!inkNotes.isNotePath(abs, NOTES_DIR)) throw Object.assign(new Error('only a note changes kind'), { status: 400 });
+  assertPathAccess(identity, abs, 'act');
+  const to = body.to === 'text' ? 'text' : 'ink';
+  const out = await inkNotes.convert({ path: abs, to, paper: body.paper, when: body.when, title: String(body.title || '').slice(0, 200) });
+  if (out.unchanged) return { ok: true, path: abs, kind: to };
+  const user = identity && identity.user ? identity.user.id : undefined;
+  await recordDocEdit({ ts: Date.now(), path: out.path, action: 'create', actor: 'human', input: to === 'text' ? 'keyboard' : 'pen', added: 0, removed: 0, sha: sha256Hex(out.text), user });
+  if (!out.kept) await recordDocEdit({ ts: Date.now(), path: abs, action: 'delete', actor: 'human', input: to === 'text' ? 'keyboard' : 'pen', added: 0, removed: 0, sha: '', user });
+  const project = String(body.project || '');
+  recentFilesTouch(out.path, { project, kind: 'saved', actor: 'human' });
+  return { ok: true, path: out.path, from: abs, kept: !!out.kept, kind: to, project, sha: sha256Hex(out.text), text: out.text };
 }
 
 // Cheap document catalog for the project documents surface: every markdown
@@ -17388,6 +17414,7 @@ const APP_FILES = {
     '/ink-format.js': { file: 'ink-format.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/ink-editor.js': { file: 'ink-editor.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/ink-editor.css': { file: 'ink-editor.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/notes.js': { file: 'notes.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/table-view.css': { file: 'table-view.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
     '/html-preview.js': { file: 'html-preview.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/pdf-viewer-config.js': { file: 'pdf-viewer-config.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
@@ -18495,10 +18522,15 @@ async function handleRequest(req, res) {
       for await (const chunk of req) body += chunk;
       try { json(res, 200, await docCreateResponse(JSON.parse(body || '{}'))); }
       catch (e) { json(res, 400, { error: e.message }); }
-    } else if (u.pathname === '/api/ink/new' && req.method === 'POST') {
+    } else if ((u.pathname === '/api/notes/new' || u.pathname === '/api/ink/new') && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
       try { json(res, 200, await inkNewResponse(JSON.parse(body || '{}'), identity)); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/notes/convert' && req.method === 'POST') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      try { json(res, 200, await noteConvertResponse(JSON.parse(body || '{}'), identity)); }
       catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/project/docs' && req.method === 'GET') {
       try { json(res, 200, await projectDocsResponse(u.searchParams.get('name') || '')); }

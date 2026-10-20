@@ -21,6 +21,13 @@ so the AI layers that come next attach to it without changing it.
 
 ## What a person does
 
+*Since 2026-10-20 (design/103) a note is written with a pen **or typed**:
+the button is ✎ Note on every device (and N), it opens as a page where a
+pen has been used and as a typed note elsewhere, an empty page that gets a
+key becomes a typed note, and a page takes typed text. New notes go to
+`documents/notes/` (`~/notes/chattering/notes/`); the folders below are
+where notes made before that stay.*
+
 1. **Start.** ✎ beside `+ new` in the side list (shown once this device has
    used a pen, and always on the e-ink tablet), `▾ → ✎ Handwritten note`
    anywhere, or `✎ Handwritten note` in a project's files. One tap, no name
@@ -181,8 +188,9 @@ Each of these is a layer on the same file; none needs a format change.
    model), drawn in `--ink-ai`, never mixed with the pen's strokes: the
    eraser and undo treat each addition as one object, and "remove what the AI
    added" is one filter. The pen layer stays only what the hand wrote.
-5. **Typed text on the page**, and moving a selection, both as extra-layer
-   elements; the set merge above extends to them by id.
+5. **Typed text on the page**, and moving a selection: built (design/99 for
+   the selection, design/103 for typed text, which has its own layer,
+   `data-ink-layer="text"`, and merges as a set like the strokes).
 
 ## Trade-offs, stated
 

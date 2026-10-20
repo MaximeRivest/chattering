@@ -95,7 +95,8 @@ very delightfully". Done (app 0.3.7 for the live line; the page for the rest):
 - **Toolbar**: three pens at hand, each shown as a stroke of itself; a tap
   takes one, a tap on the one in hand opens the palette (every pen as a
   sample drawn by the page's own shape, sizes, colours, a preview). 1 2 3 on
-  a keyboard. Eraser, tapped again: "Clear this page" (undoable). The ⋯
+  a keyboard (since design/103 keys type on a page: Alt+W takes the next
+  pen, Alt+E, Alt+S, Alt+T the eraser, select and text). Eraser, tapped again: "Clear this page" (undoable). The ⋯
   became a labelled **Page** button. A pop-up closes at the first touch
   outside it, and that touch draws nothing; while one is open the app's
   layer lets the pen go to the page.
