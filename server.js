@@ -1754,14 +1754,18 @@ async function artifactWidget(identity, params) {
   const key = String(params.id || '');
   if (!index[key]) throw Object.assign(new Error('not found'), { status: 404 });
   if (!keyVisible(identity, key)) throw Object.assign(new Error('This is not shared with you.'), { status: 403 });
+  // entry: the saved entry holding the call. Without it (a run still being
+  // written: its page has no entry yet) the call is looked up by its id.
   const entryId = String(params.entry || ''), callId = String(params.call || '');
+  if (!callId) throw Object.assign(new Error('Which widget?'), { status: 400 });
   const raw = await fsp.readFile(absPathForKey(key), 'utf8');
   for (const line of raw.split('\n')) {
     if (!line.includes(entryId) || !line.includes(callId)) continue;
     let d; try { d = JSON.parse(line); } catch { continue; }
-    if ((d.id || d.uuid) !== entryId) continue;
+    if (entryId && (d.id || d.uuid) !== entryId) continue;
     const content = d.message && Array.isArray(d.message.content) ? d.message.content : [];
     const call = content.find(b => b && (b.type === 'toolCall' || b.type === 'tool_use') && b.id === callId);
+    if (!call && !entryId) continue;
     const args = call && (call.arguments || call.input);
     if (!args || typeof args.html !== 'string') break;
     return { html: args.html.slice(0, WIDGET_MAX), title: String(args.title || '').slice(0, 120), truncated: args.html.length > WIDGET_MAX };

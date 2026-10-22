@@ -5500,7 +5500,7 @@ function showTranscriptReloadButton() {
   b.id = 'convReload';
   b.textContent = '↻ new messages';
   b.title = 'This conversation changed on disk. Reload it and jump to the end.';
-  b.onclick = () => refreshTranscript();
+  b.onclick = () => { liveRefresh.jump = true; refreshTranscript(); };
   host.appendChild(b);
 }
 // The conversation on screen grew (design/95): fetch what follows the copy
@@ -5510,7 +5510,9 @@ function showTranscriptReloadButton() {
 // fifth of a second. E-ink waits longer: each redraw flashes its screen.
 // Before, every update fetched and drew the whole conversation, 48 times in
 // 15 s for an agent writing; a weak device was frozen most of that time.
-const liveRefresh = { running: null, again: false, timer: 0, last: 0, cost: 0 };
+// jump: the next drawing goes to the end (the reader asked for it); else it
+// stays where the reader is, at the end only when they were there.
+const liveRefresh = { running: null, again: false, timer: 0, last: 0, cost: 0, jump: false };
 function refreshTranscript() {
   const key = activeRel;
   if (!key) return Promise.resolve();
@@ -5536,7 +5538,9 @@ async function runTranscriptRefresh(key) {
     // What drawing it in cost here: its own work, the layout it forces
     // included; not whatever else the page did before the next frame.
     const t0 = performance.now();
-    await showNewerConversation(next, 'bottom', asked);
+    const scroll = liveRefresh.jump || readerAtTail() ? 'bottom' : 'preserve';
+    liveRefresh.jump = false;
+    await showNewerConversation(next, scroll, asked);
     liveRefresh.cost = performance.now() - t0;
   } catch (err) {
     // A failed reload (network blip) must leave a way back: the button stays.
@@ -5554,9 +5558,18 @@ function reconcileTranscript(entry, { force = false } = {}) {
   const selection = window.getSelection();
   const editing = $('view')?.querySelector('.msg-editor');
   const selecting = selection && !selection.isCollapsed && ($('conversationTranscript')?.contains(selection.anchorNode) || $('liveReplies')?.contains(selection.anchorNode) || $('parallelStage')?.contains(selection.anchorNode));
-  if (readerAtTail() && !editing && !selecting) refreshTranscript(); else showTranscriptReloadButton();
+  // A run that ended is drawn saved wherever the reader is: its live view
+  // lacks what only the saved conversation has (artifacts made late, the
+  // panel), and drawing it in keeps the reader's place (patchConversation).
+  // While they read further up, other updates wait for the end, or the button.
+  if (!editing && !selecting && (force || readerAtTail())) refreshTranscript(); else showTranscriptReloadButton();
   return true;
 }
+// Back at the end with newer messages waiting: they are drawn in.
+$('view').addEventListener('scroll', () => {
+  if (!$('convReload') || !readerAtTail() || viewKind !== 'conversation' || (current && hasLiveRun(current.key))) return;
+  reconcileTranscript(null, { force: true });
+}, { passive: true });
 const isWorking = s => !!(s && s.key) && (hasLiveRun(s.key) ||
   (runningKeys.has(s.key) && isActive(s)) ||
   (s.mtimeMs && Date.now() - s.mtimeMs < WORKING_MS));

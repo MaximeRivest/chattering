@@ -138,6 +138,15 @@ conversation already holds, at the head.**
    when a later step joins its group or the conversation is drawn again.
    Anything that removes transcript parts must go through the reader's
    `discardPart`.
+   A run started in Chattering is drawn from its live steps until it ends
+   (the saved conversation is drawn once, at its end). Its artifacts show
+   there as soon as their call finishes (`Artifacts.liveStrip`, from the
+   call's arguments in the run event; a widget's page is read from the
+   saved call by its id), and the panel opens then, under the same rules as
+   for a saved artifact. When the run ends, the saved conversation is drawn
+   wherever the reader is, keeping the paragraph they read in place, and a
+   widget the run showed moves into it without loading again. The step
+   monitor (the expanded live view) shows steps only.
 2. **Code block.** An `html`/`svg` fence in an answer gets a **Preview**
    action (Open WebUI's rule: html + following css/js blocks form one page).
    Derived from the message text; no tool needed.

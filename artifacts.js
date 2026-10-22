@@ -179,7 +179,7 @@
   function cardHtml(key, m) {
     const a = m.artifact || {};
     const kind = a.type && a.type !== 'auto' ? a.type : '';
-    return `<div class="art-card" role="group" aria-label="Artifact" data-art-key="${escHtml(key)}" data-art-path="${escHtml(a.path || '')}" data-art-title="${escHtml(a.title || '')}" data-art-type="${escHtml(a.type || 'auto')}" data-art-node="${escHtml(m.eid || '')}">` +
+    return `<div class="art-card" role="group" aria-label="Artifact" data-art-key="${escHtml(key)}" data-art-path="${escHtml(a.path || '')}" data-art-title="${escHtml(a.title || '')}" data-art-type="${escHtml(a.type || 'auto')}" data-art-node="${escHtml(m.eid || '')}" data-art-call="${escHtml(m.id || '')}">` +
       `<span class="art-card-icon" aria-hidden="true">◧</span><span class="art-card-text"><b>${escHtml(a.title || (a.path || '').split(/[\\/]/).filter(Boolean).pop() || 'Artifact')}</b><small>${a.publishedBy ? escHtml(`published by ${a.publishedBy}${a.url ? ' on claude.ai' : ''} · a copy kept here`) : escHtml(a.path || '') + (kind ? ' · ' + escHtml(kind) : '')}</small></span>` +
       // claude.ai does not let other sites show its pages: its own address
       // opens in a new tab; the copy opens here.
@@ -202,7 +202,9 @@
   const canMove = typeof Element.prototype.moveBefore === 'function';
   const kept = new Map(); // widget id → its loaded figure, set aside
   let keepBox = null, releaseTimer = 0;
-  const widgetId = fig => `${fig.dataset.artKey}|${fig.dataset.artEntry}|${fig.dataset.artCall}`;
+  // A widget is its call in its conversation: the same while the run streams
+  // it (no saved entry yet) and once it is saved.
+  const widgetId = fig => `${fig.dataset.artKey}|${fig.dataset.artCall}`;
   // Within root, root included: a live update's new elements can be the
   // widgets and cards themselves (their strip has no wrapper).
   const within = (root, sel) => [...(root.matches && root.matches(sel) ? [root] : []), ...root.querySelectorAll(sel)];
@@ -210,7 +212,7 @@
   // nothing to take them back).
   function salvage(node, key) {
     if (!canMove || !node || node.nodeType !== 1 || !node.isConnected) return;
-    for (const fig of within(node, '.art-widget[data-mounted]')) {
+    for (const fig of within(node, '.art-widget[data-loaded]')) {
       if (key && fig.dataset.artKey !== key) continue;
       if (!keepBox) { keepBox = document.createElement('div'); keepBox.className = 'art-kept'; keepBox.hidden = true; }
       if (!keepBox.isConnected) document.body.appendChild(keepBox);
@@ -225,37 +227,127 @@
     for (const fig of kept.values()) fig.remove(); // its bridge goes with the frame (the sweep above)
     kept.clear();
   }
-  // The new placeholder takes the loaded widget of its call, if one is set aside.
+  // The new placeholder takes the loaded widget of its call: one set aside,
+  // or the one a live run showed while it was being written (the saved
+  // conversation now holds that call; the live view goes soon after).
   function adopt(fig) {
-    const id = widgetId(fig), old = kept.get(id);
+    if (!canMove) return false;
+    const id = widgetId(fig);
+    let old = kept.get(id);
+    if (old) kept.delete(id);
+    else if (!fig.closest(LIVE)) old = [...document.querySelectorAll(`${LIVE} .art-widget[data-loaded]`)].find(f => widgetId(f) === id) || null;
     if (!old) return false;
-    kept.delete(id);
     try { fig.parentNode.moveBefore(old, fig); } catch { old.remove(); return false; }
     fig.remove();
     return true;
   }
 
+  // ---- artifacts of a run being written ------------------------------------
+  // A run started here is drawn from its live steps until it ends (the saved
+  // conversation is drawn once, then). Its artifacts show there as soon as
+  // their call has finished: the same cards and widgets, and the panel opens
+  // as it does for an artifact that lands in the saved conversation.
+  const LIVE = '[data-live-arts]';
+  const toolName = name => String(name || '').replace(/^mcp__chattering__/, '');
+  // The artifact a finished live step made, as its saved call would say it
+  // (server.js reads the same arguments); null when the step made none.
+  // Each run event repeats every step, a widget's page included: a finished
+  // call is read once.
+  const liveRead = new Map(); // call id → its artifact, or null
+  function liveArtifact(b) {
+    if (!b || b.kind !== 'tool' || !b.callId || b.phase !== 'done' || b.error) return null;
+    if (liveRead.has(b.callId)) return liveRead.get(b.callId);
+    const a = readLiveArtifact(b);
+    liveRead.set(b.callId, a);
+    if (liveRead.size > 500) liveRead.delete(liveRead.keys().next().value);
+    return a;
+  }
+  function readLiveArtifact(b) {
+    const name = toolName(b.name);
+    if (name !== 'show' && name !== 'artifact') return null;
+    let args = null;
+    try { args = JSON.parse(b.rawArgs || ''); } catch {}
+    if (name === 'show') {
+      // Cut arguments still name a widget: its page is read from the saved call.
+      if (!args && !b.argsTruncated) return null;
+      return { kind: 'widget', title: String(args?.title || '').slice(0, 120) };
+    }
+    if (!args || typeof args.path !== 'string' || !args.path) return null;
+    return { kind: 'files', path: args.path, title: String(args.title || '').slice(0, 120), type: typeof args.type === 'string' ? args.type : 'auto' };
+  }
+  // The strip of artifacts under a live box of steps: `prev` (the strip drawn
+  // last time, or null) brought up to `blocks`; null when there is none.
+  // Elements already drawn stay (a loaded widget keeps its page). A call the
+  // saved conversation already shows is not drawn twice.
+  function liveStrip(prev, key, blocks) {
+    const calls = [];
+    for (const b of blocks) { const a = liveArtifact(b); if (a) calls.push({ role: 'tool', id: b.callId, eid: '', artifact: a }); }
+    const transcript = document.getElementById('conversationTranscript');
+    const shown = id => transcript && transcript.querySelector(`[data-art-key="${CSS.escape(key)}"][data-art-call="${CSS.escape(id)}"]`);
+    const want = calls.filter(m => !shown(m.id));
+    if (!want.length) return null;
+    const strip = prev || Object.assign(document.createElement('div'), { className: 'art-live' });
+    strip.setAttribute('data-live-arts', '');
+    let before = strip.firstElementChild;
+    for (const m of want) {
+      let el = [...strip.children].find(c => c.dataset.artCall === m.id);
+      if (!el) {
+        const t = document.createElement('template');
+        t.innerHTML = window.artifactCardsHtml(key, [m]);
+        el = t.content.firstElementChild;
+      }
+      if (el !== before) strip.insertBefore(el, before); else before = before.nextElementSibling;
+    }
+    for (const c of [...strip.children]) {
+      if (want.some(m => m.id === c.dataset.artCall)) continue;
+      salvage(c); // a loaded widget leaves by itself, to be taken back
+      if (c.parentNode === strip) c.remove();
+    }
+    wire(strip);
+    noticeLive(key, want);
+    return strip;
+  }
+
+  // The height each widget last had: one drawn again (where it could not be
+  // carried over) takes its place at once, so what is below does not move.
+  const sizes = new Map();
   async function mountWidget(fig) {
     fig.dataset.mounted = '1';
     const host = fig.querySelector('.art-widget-host');
+    const id = widgetId(fig), known = sizes.get(id);
+    if (known) host.style.minHeight = known + 'px';
     try {
       await loadConfig();
-      const q = new URLSearchParams({ id: fig.dataset.artKey, entry: fig.dataset.artEntry, call: fig.dataset.artCall });
-      const r = await fetch('/api/artifacts/widget?' + q);
-      const data = await r.json();
+      const q = new URLSearchParams({ id: fig.dataset.artKey, call: fig.dataset.artCall });
+      if (fig.dataset.artEntry) q.set('entry', fig.dataset.artEntry);
+      // A live widget's call reaches the conversation file with its message,
+      // which the server reads a moment later: asked again a few times.
+      let r, data;
+      for (let tries = fig.dataset.artEntry ? 1 : 6, wait = 250; ; wait *= 2) {
+        r = await fetch('/api/artifacts/widget?' + q);
+        data = await r.json().catch(() => ({}));
+        if ((r.ok && !data.error) || --tries <= 0 || r.status !== 404 || !fig.isConnected) break;
+        await new Promise(res => setTimeout(res, wait));
+      }
       if (!r.ok || data.error) throw Error(data.error || 'The widget could not be read.');
       let height = 0;
       const frame = proxyFrame({
         html: data.html, site: siteOf(fig.dataset.artKey + '|' + fig.dataset.artCall), title: data.title || 'widget', displayMode: 'inline',
         dims: () => ({ width: host.clientWidth, maxHeight: INLINE_MAX() }),
-        onSize: h => { const want = Math.max(40, Math.min(INLINE_MAX(), Math.ceil(h))); if (want !== height) { height = want; frame.style.height = want + 'px'; } },
+        onSize: h => {
+          const want = Math.max(40, Math.min(INLINE_MAX(), Math.ceil(h)));
+          if (want !== height) { height = want; frame.style.height = want + 'px'; sizes.set(id, want); }
+          host.style.minHeight = '';
+        },
         onFullscreen: () => openWidgetInPanel(fig, data),
         toolName: 'show', toolInput: { title: data.title || '' },
       });
-      frame.style.height = '160px';
+      frame.style.height = (known || 160) + 'px';
       host.replaceChildren(frame);
+      fig.dataset.loaded = '1'; // only a loaded widget is carried into a new drawing
       fig.querySelector('.art-to-panel').onclick = () => openWidgetInPanel(fig, data);
     } catch (e) {
+      host.style.minHeight = '';
       host.innerHTML = `<p class="art-note">${escHtml(e.message)}</p>`;
     }
   }
@@ -762,7 +854,8 @@
     if (!d || !d.key) return;
     const calls = artifactCallsOf(d);
     const known = seenArtifacts.get(d.key);
-    seenArtifacts.set(d.key, new Set(calls.map(m => m.id)));
+    // Calls a live run already showed stay known.
+    seenArtifacts.set(d.key, new Set([...calls.map(m => m.id), ...(known || [])]));
     // A floating window belongs to no conversation: it stays over this one
     // and is not replaced by what this one had open last time.
     if (floating && state && state.key !== d.key) return;
@@ -774,15 +867,7 @@
       // A new artifact landed while this conversation is open: show it.
       const fresh = calls.filter(m => !known.has(m.id));
       const last = fresh[fresh.length - 1];
-      if (last) {
-        const spec = { kind: 'files', key: d.key, path: last.artifact.path, title: last.artifact.title, type: last.artifact.type };
-        // Never in place of a file being edited beside: it is offered instead.
-        if (state && state.key === d.key && (state.kind === 'document' || state.editing) && !(state.editing && state.editing === last.artifact.path)) {
-          if (typeof toast === 'function') toast('◧ New: ' + (last.artifact.title || last.artifact.path) + ' — open it beside', () => openPanel(spec));
-          return;
-        }
-        return openPanel(spec);
-      }
+      if (last) return showFresh(d.key, last.artifact);
     }
     if (!state || state.key !== d.key) {
       // Reopen what was open in this conversation last time.
@@ -793,6 +878,30 @@
       return;
     }
     if (state && state.key === d.key && state.kind === 'files' && !state.editing) render(false);
+  }
+  // A new artifact of the conversation on screen opens beside it; never in
+  // place of a file being edited beside: it is offered instead.
+  function showFresh(key, a) {
+    const spec = { kind: 'files', key, path: a.path, title: a.title, type: a.type };
+    if (state && state.key === key && (state.kind === 'document' || state.editing) && !(state.editing && state.editing === a.path)) {
+      if (typeof toast === 'function') toast('◧ New: ' + (a.title || a.path) + ' — open it beside', () => openPanel(spec));
+      return;
+    }
+    return openPanel(spec);
+  }
+  // Artifacts a live run made in the conversation on screen: the newest one
+  // opens, under the rules above, and each is known from then on (the saved
+  // conversation does not open it a second time).
+  function noticeLive(key, calls) {
+    if (typeof current === 'undefined' || !current || current.key !== key) return;
+    const known = seenArtifacts.get(key);
+    if (!known) return; // not followed yet: onConversation decides
+    const fresh = calls.filter(m => m.artifact.kind === 'files' && !known.has(m.id));
+    if (!fresh.length) return;
+    for (const m of fresh) known.add(m.id);
+    if (floating && state && state.key !== key) return;
+    if (window.matchMedia('(max-width: 700px)').matches && (!state || state.key !== key)) return;
+    showFresh(key, fresh[fresh.length - 1].artifact);
   }
   // The head moved (a card, an arrow, the tree): the version follows.
   function onHeadChange() {
@@ -826,7 +935,7 @@
 
   const shortPath = p => typeof shortFilePath === 'function' ? shortFilePath(p) : String(p || '').replace(/^\/home\/[^/]+/, '~');
 
-  window.Artifacts = { wire, salvage, openPanel, closePanel, hideFor, remember, rekey, onConversation, onHeadChange, onLeaveConversation, previewOrigin, hostContext, codePage, setFloating, state: () => state, floating: () => floating };
+  window.Artifacts = { wire, salvage, liveStrip, openPanel, closePanel, hideFor, remember, rekey, onConversation, onHeadChange, onLeaveConversation, previewOrigin, hostContext, codePage, setFloating, state: () => state, floating: () => floating };
 })();
 
 /* ---- the artifact library (design/67) --------------------------------------

@@ -555,6 +555,7 @@ async function patchConversation(d, scroll) {
   for (const el of host.children) if (!el.matches('.rd-block, .rd-unlinked, .rd-origin')) return false;
   const atTail = scroll === 'bottom' || (scroll !== 'preserve' && readerAtTail());
   const keep = atTail ? null : rememberReaderAnchor();
+  const livePlace = atTail || keep ? null : rememberLivePlace();
   rememberSnapshot(d);
   adoptServerReading(d);
   settleFollow(d);
@@ -599,7 +600,7 @@ async function patchConversation(d, scroll) {
   if (atTail) {
     appScroll($('view'), $('view').scrollHeight);
     maintainReaderLanding(() => { $('view').scrollTop = $('view').scrollHeight; });
-  } else restoreReaderAnchor(keep);
+  } else if (!restoreLivePlace(livePlace)) restoreReaderAnchor(keep);
   return true;
 }
 
@@ -1059,6 +1060,44 @@ function rememberReaderAnchor() {
   if (!el) return null;
   return { id: el.dataset.flowAnchor || el.dataset.eid, flow: !!el.dataset.flowAnchor, offset: el.getBoundingClientRect().top - top };
 }
+// Where the reader is when the top of the screen is in a live run's view
+// (below the saved transcript): the elements there, each with what stands
+// for it once the run is saved. The answer being written is the same element
+// then (restoreLiveReplyHandoff moves it), and the paragraph read in it is
+// what is kept in place (the saved transcript spaces an answer's paragraphs
+// its own way); a box of steps is the saved box of the same first call;
+// artifacts are the saved ones of the same calls.
+function rememberLivePlace() {
+  const view = $('view'), live = $('liveReplies');
+  if (!view || !live || !current || live.dataset.conversationKey !== current.key) return null;
+  const top = view.getBoundingClientRect().top;
+  const below = el => el.getClientRects().length && el.getBoundingClientRect().bottom > top + 8;
+  const out = [];
+  for (const el of live.querySelectorAll('.msg[data-live-reply], [data-live-work], [data-live-arts] [data-art-call]')) {
+    if (!below(el)) continue;
+    const blocks = el.matches('.msg') ? [...(el.querySelector('.md')?.children || [])] : [];
+    const i = blocks.findIndex(below);
+    if (i >= 0) out.push({ el: blocks[i], holder: el, index: i, offset: blocks[i].getBoundingClientRect().top - top });
+    out.push({ el, gkey: el.matches('[data-live-work]') && el._ledger ? liveStepsBoxKey(el._ledger.blocks) : null,
+      call: el.dataset.artCall || null, offset: el.getBoundingClientRect().top - top });
+    if (out.length >= 8) break;
+  }
+  return out.length ? out : null;
+}
+function restoreLivePlace(place) {
+  const view = $('view'), transcript = $('conversationTranscript');
+  if (!place || !view || !transcript) return false;
+  for (const p of place) {
+    const el = transcript.contains(p.el) ? p.el
+      : p.holder ? (transcript.contains(p.holder) ? p.holder.querySelector('.md')?.children[p.index] : null)
+      : p.gkey ? transcript.querySelector(`.toolgroup[data-gkey="${CSS.escape(p.gkey)}"]`)
+      : p.call ? transcript.querySelector(`[data-art-call="${CSS.escape(p.call)}"]`) : null;
+    if (!el || !el.getClientRects().length) continue;
+    view.scrollTop += el.getBoundingClientRect().top - view.getBoundingClientRect().top - p.offset;
+    return true;
+  }
+  return false;
+}
 function restoreReaderAnchor(anchor) {
   const view = $('view');
   if (!view || !anchor) return false;
@@ -1473,6 +1512,15 @@ function renderLiveReplyLedger(host, jobId, L, saved = new Map(), expanded = fal
         work._strip.dataset.liveStrip = token;
         place(work._strip);
       }
+      // The artifacts its finished steps made, where the saved box will have
+      // them (artifacts.js). In the conversation only: the step monitor
+      // below shows steps, and a widget is loaded once.
+      if (!expanded && window.Artifacts) {
+        const arts = Artifacts.liveStrip(work._arts || null, L.key, blocks);
+        if (arts) { arts.dataset.liveArts = token; place(arts); }
+        else if (work._arts) discardPart(work._arts);
+        work._arts = arts;
+      }
       work.ontoggle = () => {
         if (!expanded) stepsFoldSeen(L.key, liveStepsBoxKey(work._ledger.blocks), work.open);
         if (work.open) renderLsBlocks(work._ledger, work.querySelector(':scope > .ls-flow'));
@@ -1499,6 +1547,7 @@ function renderLiveReplyLedger(host, jobId, L, saved = new Map(), expanded = fal
   }
   for (const work of host.querySelectorAll('[data-live-work]')) if (!workKeys.has(work.dataset.liveWork)) work.remove();
   for (const strip of host.querySelectorAll('[data-live-strip]')) if (!workKeys.has(strip.dataset.liveStrip)) strip.remove();
+  for (const arts of host.querySelectorAll('[data-live-arts]')) if (!workKeys.has(arts.dataset.liveArts)) discardPart(arts);
 }
 
 function selectedLiveStream() {
@@ -1529,19 +1578,19 @@ function renderLiveReplies() {
   const t = computeTrace(current);
   for (const run of [...host.children]) {
     const owner = runLedgers.get(run.dataset.replyRun);
-    if (!owner || owner.key !== activeRel) run.remove();
+    if (!owner || owner.key !== activeRel) discardPart(run);
   }
   for (const [jobId, L] of runLedgers) {
     if (L.key !== activeRel || (L.fanoutId && L.fanoutRootKey === activeRel)) continue;
     let run = host.querySelector(`[data-reply-run="${CSS.escape(jobId)}"]`);
     // Regenerations and merges stream inside their answer group instead.
-    if (L.intent && L.intent.question) { run?.remove(); continue; }
+    if (L.intent && L.intent.question) { if (run) discardPart(run); continue; }
     // A reply shows where it continues the path being read, nowhere else.
     const place = liveRunPlace(t, L.node, L.startedAt);
     if (!place.show) { if (run) run.hidden = true; continue; }
     // A run that ended without writing its question sent nothing: no prompt
     // stays on screen as if it had been asked.
-    if (L.done && !L.order.length && place.question == null) { run?.remove(); continue; }
+    if (L.done && !L.order.length && place.question == null) { if (run) discardPart(run); continue; }
     if (!run) {
       run = document.createElement('div'); run.dataset.replyRun = jobId;
       run.innerHTML = '<div data-live-body></div>';
@@ -1549,7 +1598,7 @@ function renderLiveReplies() {
     }
     const saved = savedLiveReplies(L, current.messages);
     const texts = L.order.filter(id => L.blocks.get(id).text);
-    if (L.done && texts.length && texts.every(id => saved.has(id))) { run.remove(); continue; }
+    if (L.done && texts.length && texts.every(id => saved.has(id))) { discardPart(run); continue; }
     // Live text belongs to one visible surface: the open stream or the
     // transcript. Both are projections of this conversation's same ledger.
     run.hidden = liveOpen && selectedLiveStream()[1] === L;
