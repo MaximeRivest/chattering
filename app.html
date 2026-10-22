@@ -2105,6 +2105,8 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
   body.phone-shell #agentsPop .ag-row { min-height: 52px; }
   body.phone-shell #agentsPop .ag-row.current { background: var(--surface-2); }
   body.phone-shell #agentsPop .ag-row.current .ag-title { color: var(--accent); }
+  /* Only without Beside (a server not restarted since design/104): the old sheet. */
+  body.phone-shell.phone-files > #rightFiles:not([hidden]) { display: flex; flex-direction: column; position: fixed; top: 0; left: 0; right: 0; bottom: var(--phone-bar-h); z-index: 47; background: var(--bg); }
   body.phone-shell #rightFileList { padding: 0 4px 8px; overscroll-behavior: contain; }
   body.phone-shell .file-scope-switch { padding-top: 8px; }
   body.phone-shell .file-scope-switch button { min-height: 38px; }
@@ -4391,7 +4393,7 @@ const SIDE_PANELS = ['inbox'];
 let rightFilesMode = agentSecState.filePanel === 'files' ? 'files' : 'recent-files';
 let rightFilesView = ['made', 'artifacts', 'programs'].includes(agentSecState.fileView) ? agentSecState.fileView : 'files';
 // On screen or not: Beside says (beside.js); the old column's "open" becomes its lists tab.
-let rightFilesOpen = false;
+let rightFilesOpen = !window.Beside && agentSecState.filePanelOpen === true;
 if (['files', 'recent-files'].includes(agentSecState.panel)) {
   rightFilesMode = agentSecState.panel;
   agentSecState.filePanel = rightFilesMode;
@@ -4423,6 +4425,15 @@ function setSidePanel(id, { remember = true } = {}) {
 // rightFilesOpen says the lists are on screen.
 function paintRightFilesFrame() {
   const phone = typeof phoneShellOn === 'function' && phoneShellOn();
+  if (!window.Beside) {
+    // A server that does not serve beside.js yet (not restarted since the
+    // update): the old right column, so the lists still work.
+    document.body.classList.toggle('file-side-open', sideLayoutOn() && rightFilesOpen);
+    $('rightFiles').hidden = phone ? !rightFilesOpen : !sideLayoutOn();
+    $('rightFilePanel').hidden = !rightFilesOpen;
+    if (phone) paintPhoneBar();
+    return;
+  }
   document.body.classList.remove('file-side-open');
   $('rightFiles').hidden = true;
   $('rightFilePanel').hidden = !rightFilesOpen;
