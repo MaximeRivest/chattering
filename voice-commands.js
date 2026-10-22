@@ -371,7 +371,7 @@ const VOICE_PICKABLE = [
   // The conversation tree's boxes: a click selects one; "open it" reads it.
   { sel: '.tnode[data-tn]', kind: 'box', key: el => 'tn:' + el.dataset.tn, title: el => voiceText(el) },
 ];
-const VOICE_REGIONS = [['#side', 'left panel'], ['#rightFiles', 'right panel'], ['#agentsPop', 'agents panel'], ['.mgantt', 'project timeline'], ['#list', 'timeline'], ['#treewrap', 'tree'], ['#treebar', 'tree bar'], ['#view', 'main view']];
+const VOICE_REGIONS = [['#side', 'left panel'], ['#artifactPane', 'right panel'], ['#agentsPop', 'agents panel'], ['.mgantt', 'project timeline'], ['#list', 'timeline'], ['#treewrap', 'tree'], ['#treebar', 'tree bar'], ['#view', 'main view']];
 const VOICE_PLURAL = { conversation: 'conversations', file: 'files', folder: 'files and folders', project: 'projects', mark: 'marks', box: 'boxes' };
 
 function voiceMarkTitle(el) {
@@ -641,7 +641,7 @@ const voiceFocusOrLast = () => voiceFocus() || voicePointItems('answer').pop() |
 const VOICE_CONTROL_SEL = 'button, summary, [role="button"], a[href]';
 const VOICE_TRANSCRIPT_ITEM = '.msg, .toolgroup, .tg-review, .dg-cards';
 const VOICE_RISKY_CONTROL = /\b(delete|remove|abort|discard|reset|forget|send|merge|archive|stop|cancel|clear|revoke|leave)\b/i;
-const VOICE_CONTROL_REGIONS = [['#voiceDock', null], ['#voiceHints', null], ['#agentCompose', 'the message box'], ['#treebar', 'the tree bar'], ['#markPop', 'the mark card'], ['.mgantt', 'the project timeline'], ['#side', 'the left panel'], ['#rightFiles', 'the right panel'], ['header, #floatHead', 'the top bar'], ['#view', 'the page']];
+const VOICE_CONTROL_REGIONS = [['#voiceDock', null], ['#voiceHints', null], ['#agentCompose', 'the message box'], ['#treebar', 'the tree bar'], ['#markPop', 'the mark card'], ['.mgantt', 'the project timeline'], ['#side', 'the left panel'], ['#artifactPane', 'the right panel (Beside)'], ['header, #floatHead', 'the top bar'], ['#view', 'the page']];
 
 function voiceControlLabel(el, { plain = false } = {}) {
   const text = (el.getAttribute('aria-label') || el.textContent || '').replace(/\s+/g, ' ').trim();
@@ -2134,10 +2134,19 @@ function voiceWrite(text) {
 
 function voiceScreen() {
   if (settingsOpen) return 'the settings';
-  if (viewKind === 'file' && typeof fileWs !== 'undefined' && fileWs) return 'a file open in the editor: ' + fileWs.path.split(/[\\/]/).pop() + (voiceAskOpen() ? ', with the ask box open' : '');
-  if (viewKind === 'conversation' && current) return 'a conversation: ' + (current.title || 'untitled') + ', with its message box'
-    + (typeof fileWs !== 'undefined' && fileWs && fileWs.placement === 'beside' ? ', and beside it the file ' + fileWs.path.split(/[\\/]/).pop() + ' open in the editor' : '');
+  return voiceMiddle() + voiceBeside();
+}
+function voiceMiddle() {
+  if (viewKind === 'file' && typeof fileWs !== 'undefined' && fileWs && fileWs.placement !== 'beside') return 'a file open in the editor: ' + fileWs.path.split(/[\\/]/).pop() + (voiceAskOpen() ? ', with the ask box open' : '');
+  if (viewKind === 'conversation' && current) return 'a conversation: ' + (current.title || 'untitled') + ', with its message box';
   return viewKind === 'home' ? 'the home page (the timeline of conversations)' : viewKind || 'the app';
+}
+// Beside (design/104): what is in the right column, its tab shown first.
+function voiceBeside() {
+  if (typeof Beside === 'undefined' || !Beside.shown()) return '';
+  const a = Beside.active(), others = Beside.visible().filter(t => t !== a);
+  const name = t => Beside.label(t.spec)[1] + (t.spec.kind === 'document' ? ' (a file, in the editor)' : t.spec.kind === 'file' ? ' (a file, to read)' : t.spec.kind === 'folder' ? ' (a folder)' : '');
+  return '; beside it, in the right column (Beside): ' + name(a) + (others.length ? '; other tabs there: ' + others.map(name).join(', ') : '');
 }
 
 async function voiceContext(said) {

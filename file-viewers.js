@@ -23,6 +23,7 @@ function fileViewerFrame(ws, kind) {
       <button id="liveBack" title="Return to the previous view"><span class="lf-back-arrow">←</span><span class="lf-wide">${esc(liveBackLabel(ws).slice(2))}</span></button>
       ${liveFileNameHtml(ws)}
       <span id="docStatus" role="status">Opening ${kind}…</span>
+      <button id="mediaBeside" class="lf-page-only" title="Put it beside, and go back to where you were: read it next to your work">◨ Beside</button>
       <button id="mediaReload">Reload</button>
       <a id="mediaDownload" href="${fgAttr(fileViewerURL(ws, true))}" download>Download</a>
     </header>
@@ -39,6 +40,7 @@ function fileViewerFrame(ws, kind) {
   };
   $('liveBack').onclick = () => liveFileGoBack(ws);
   $('mediaReload').onclick = () => fileWsMountBody(ws, {});
+  $('mediaBeside').onclick = () => fileWsToBeside(ws);
   return state;
 }
 // Where a PDF or a video was left (its page, its time), per file on this
@@ -89,23 +91,81 @@ async function liveFileMountPDF(ws) {
   try {
     await fileViewerJSON('/api/path/info?' + fileViewerQuery(ws), { signal: state.controller.signal });
     if (!state.current()) return;
-    const frame = document.createElement('iframe');
-    frame.id = 'filePDF'; frame.className = 'lf-preview-frame'; frame.title = 'PDF reader: ' + ws.path.split(/[\\/]/).pop();
-    frame.referrerPolicy = 'no-referrer';
-    const onMessage = event => {
-      if (!state.current() || event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.type !== 'chattering:pdf') return;
-      if (event.data.error) return state.fail(event.data.error);
-      if (event.data.page) return setFileViewerPlace(ws, event.data.page > 1 ? event.data.page : 0);
-      state.message.hidden = true;
-      state.status.textContent = `${event.data.pages} pages · Read-only`;
-      liveFileRememberOpen(ws);
-    };
-    window.addEventListener('message', onMessage);
-    state.cleanups.push(() => { window.removeEventListener('message', onMessage); frame.remove(); });
-    state.host.append(frame);
-    const query = new URLSearchParams({ file: fileViewerURL(ws), eink: document.documentElement.dataset.themeMode === 'binary' ? '1' : '0', page: String(fileViewerPlace(ws) || '') });
-    frame.src = '/vendor/pdfjs/6.3.289/web/viewer.html?' + query;
+    const reader = pdfReaderFrame(ws, fileViewerURL(ws), {
+      live: state.current,
+      fail: state.fail,
+      ready: pages => { state.message.hidden = true; state.status.textContent = `${pages} pages · Read-only`; liveFileRememberOpen(ws); },
+    });
+    reader.frame.id = 'filePDF';
+    state.cleanups.push(reader.dispose);
+    state.host.append(reader.frame);
   } catch (error) { if (state.current()) state.fail(error.message); }
+}
+// The PDF reader (pdf.js), at the page this file was left on, telling
+// where the reader is as it moves. One reader for the page and for Beside.
+// place: { path } (the key of the remembered page). Returns { frame, dispose }.
+function pdfReaderFrame(place, url, { live = () => true, fail = () => {}, ready = () => {} } = {}) {
+  const frame = document.createElement('iframe');
+  frame.className = 'lf-preview-frame';
+  frame.title = 'PDF reader: ' + String(place.path).split(/[\\/]/).pop();
+  frame.referrerPolicy = 'no-referrer';
+  const onMessage = event => {
+    if (!live() || event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.type !== 'chattering:pdf') return;
+    if (event.data.error) return fail(event.data.error);
+    if (event.data.page) return setFileViewerPlace(place, event.data.page > 1 ? event.data.page : 0);
+    ready(event.data.pages);
+  };
+  window.addEventListener('message', onMessage);
+  const query = new URLSearchParams({ file: url, eink: document.documentElement.dataset.themeMode === 'binary' ? '1' : '0', page: String(fileViewerPlace(place) || '') });
+  frame.src = '/vendor/pdfjs/6.3.289/web/viewer.html?' + query;
+  return { frame, dispose: () => { window.removeEventListener('message', onMessage); frame.remove(); } };
+}
+
+// A PDF, a picture or a video beside (design/104): read, no editor, and no
+// hold on the file workspace, so a file can be edited full page meanwhile.
+// The same readers and the same remembered page or time as full page.
+// Returns dispose().
+function mountFileReader(host, { path, id = '' }) {
+  const kind = typeof fileWsKind === 'function' ? fileWsKind(path) : 'code';
+  const url = '/api/file/media?' + new URLSearchParams({ id, path });
+  const place = { path };
+  let disposed = false;
+  const cleanups = [];
+  host.innerHTML = `<div class="bs-reader"><p class="bs-reader-message" role="status">Opening…</p></div>`;
+  const box = host.firstElementChild, message = box.firstElementChild;
+  const fail = text => { if (!disposed) { message.hidden = false; message.textContent = text; } };
+  const ok = () => { if (!disposed) message.hidden = true; };
+  if (kind === 'pdf') {
+    const reader = pdfReaderFrame(place, url, { live: () => !disposed, fail, ready: ok });
+    box.append(reader.frame);
+    cleanups.push(reader.dispose);
+  } else if (kind === 'image') {
+    const img = document.createElement('img');
+    img.alt = String(path).split(/[\\/]/).pop();
+    img.onload = ok;
+    img.onerror = () => fail('The browser could not show this picture.');
+    img.src = url;
+    box.append(img);
+  } else if (kind === 'video') {
+    const video = document.createElement('video');
+    video.controls = true; video.playsInline = true; video.preload = 'metadata';
+    video.setAttribute('aria-label', String(path).split(/[\\/]/).pop());
+    video.onloadedmetadata = () => {
+      const at = fileViewerPlace(place);
+      if (at > 0 && Number.isFinite(video.duration) && at < video.duration - videoEndMargin(video)) video.currentTime = at;
+      ok();
+    };
+    video.onerror = () => fail('This device could not play the video.');
+    const remember = () => { if (Number.isFinite(video.duration) && video.duration > 0) setFileViewerPlace(place, video.currentTime < video.duration - videoEndMargin(video) ? video.currentTime : 0); };
+    video.addEventListener('pause', remember);
+    video.addEventListener('seeked', remember);
+    cleanups.push(() => { remember(); video.pause(); video.removeAttribute('src'); video.load(); });
+    video.src = url;
+    box.append(video);
+  } else {
+    fail('This file has no reader here.');
+  }
+  return () => { if (disposed) return; disposed = true; for (const c of cleanups) { try { c(); } catch {} } host.replaceChildren(); };
 }
 
 // Source stays mounted while Preview is visible: switching never discards edits,

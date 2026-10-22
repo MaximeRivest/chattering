@@ -428,8 +428,17 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   assert.equal((await filePaths()).length, 2);
   await chooseActor('human'); assert.deepEqual(await filePaths(), [sharedFile]);
   await chooseActor('agent');
+  // The lists are a tab of Beside (design/104): a click opens the file in
+  // that tab. One file is edited at a time, and README.md is open in the
+  // middle: beside, it is a copy to read, with the way to edit it there.
   await evaluate(`[...document.querySelectorAll('.ag-files-block .ag-file')].find(r=>r.dataset.path===${JSON.stringify(agentFile)}).click()`);
-  await until(`fileWs?.path===${JSON.stringify(agentFile)} && !!fileWs.editor`, 'agent-touched file opens in the live editor');
+  await until(`Artifacts.state()?.kind==='document' && Artifacts.state().path===${JSON.stringify(agentFile)} && Artifacts.state().readOnly && fileWs?.path===${JSON.stringify(sharedFile)} && /const example/.test(document.querySelector('#artifactPane .bs-copy-body')?.textContent || '')`, 'the file opens beside, as a copy to read, while the middle edits another');
+  assert.match(await evaluate(`document.querySelector('#artifactPane .bs-copy-note').textContent`), /README\.md is open in the middle/);
+  await evaluate(`Beside.back()`);
+  await until(`Artifacts.state()?.kind==='lists' && document.querySelector('#artifactPane .ag-files-block')`, '‹ back to the list');
+  // Shift+click: the other place, the middle, in the live editor.
+  await evaluate(`[...document.querySelectorAll('.ag-files-block .ag-file')].find(r=>r.dataset.path===${JSON.stringify(agentFile)}).dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))`);
+  await until(`fileWs?.path===${JSON.stringify(agentFile)} && !!fileWs.editor && fileWs.placement==='page'`, 'agent-touched file opens in the live editor');
   assert.equal(await evaluate(`rightFilesOpen && $('rightFilePanel').checkVisibility()`), true, 'opening a file keeps the files panel');
   assert.equal(await evaluate(`fileWs.back`), 'pi:fixture/files-agent.jsonl', 'file retains its source conversation');
   await until(`recentFilesList.some(f=>f.actor==='human'&&f.path===${JSON.stringify(agentFile)})`, 'opening the file records a separate human visit');

@@ -57,6 +57,16 @@ const OpenFiles = (() => {
     .map(f => ({ path: f.path, project: typeof f.project === 'string' ? f.project : '', at: Number(f.at) }));
   const sortNewest = list => list.sort((a, b) => b.at - a.at || a.path.localeCompare(b.path));
   const isKept = path => kept.some(f => f.path === path);
+  // Files a tab of Beside holds (design/104): their editors park warm when
+  // another tab shows, as a kept file's do, within the same budget. This
+  // window's only; the list is not changed.
+  let held = new Set();
+  const warmWanted = path => isKept(path) || held.has(path);
+  function hold(paths) {
+    held = new Set(paths || []);
+    // A file no tab holds any more, and not kept: what is parked of it goes.
+    for (const e of [...windows.values()]) if (!warmWanted(e.path) && !busy(e) && !onScreen(e)) release(e);
+  }
   const keptEntry = path => kept.find(f => f.path === path) || null;
 
   // The server's list, with this browser's unaccepted changes on top. Its
@@ -338,7 +348,7 @@ const OpenFiles = (() => {
   // A run ended in a notebook closed from the list meanwhile (here, or on
   // another device): its result is written, then its editor goes.
   function settle(e) {
-    if (!busy(e) && !isKept(e.path) && !onScreen(e)) release(e);
+    if (!busy(e) && !warmWanted(e.path) && !onScreen(e)) release(e);
   }
   // ■ on a row: stop run all's queue and interrupt the cell (the kernel
   // keeps its variables).
@@ -353,7 +363,7 @@ const OpenFiles = (() => {
 
   // ---- parking notebooks (app.html parkDocument / resumeDocumentEditor) ----
   // Should leaving this document park it rather than close it?
-  function keeps(st) { return !!st && (isKept(st.path) || busy(entryOf(st))); }
+  function keeps(st) { return !!st && (warmWanted(st.path) || busy(entryOf(st))); }
   function park(st, { scroll = 0 } = {}) {
     if (!keeps(st)) return false;
     const e = windowOf(st.path);
@@ -374,7 +384,7 @@ const OpenFiles = (() => {
   // A document is on screen (mounted fresh or resumed). A kept file's
   // document is the one this window holds from now on; its last run is seen.
   function shown(st) {
-    if (!isKept(st.path) && !windows.has(st.path)) return;
+    if (!warmWanted(st.path) && !windows.has(st.path)) return;
     const e = windowOf(st.path);
     if (e.st && e.st !== st && !e.st.closed && typeof disposeDocSession === 'function') disposeDocSession(e.st);
     e.st = st;
@@ -399,7 +409,7 @@ const OpenFiles = (() => {
   // visit: not a review of an old version, not while an agent it asked is
   // editing the file (that visit's settle and review are bound to it).
   function keepsCode(ws) {
-    return !!(ws && ws.kind === 'code' && ws.mode === 'write' && ws.editor && !ws.run && !ws.reviewRef && isKept(ws.path));
+    return !!(ws && ws.kind === 'code' && ws.mode === 'write' && ws.editor && !ws.run && !ws.reviewRef && warmWanted(ws.path));
   }
   function parkCode(ws, { host, scroll = 0 }) {
     if (!keepsCode(ws) || !host) return false;
@@ -442,7 +452,7 @@ const OpenFiles = (() => {
     forgetIfEmpty(e);
   }
   function forgetIfEmpty(e) {
-    if (!warm(e) && !busy(e) && windows.get(e.path) === e && !isKept(e.path)) windows.delete(e.path);
+    if (!warm(e) && !busy(e) && windows.get(e.path) === e && !warmWanted(e.path)) windows.delete(e.path);
   }
   function seen(path) {
     const r = runs[path];
@@ -452,9 +462,10 @@ const OpenFiles = (() => {
   // ---- telling the page ----
   function changed() {
     // A file let go elsewhere: what this window parked of it goes too.
-    for (const e of [...windows.values()]) if (!isKept(e.path) && !busy(e) && !onScreen(e)) release(e);
+    for (const e of [...windows.values()]) if (!warmWanted(e.path) && !busy(e) && !onScreen(e)) release(e);
     paintKeepControls();
     if (typeof renderAgentsPopSoon === 'function') renderAgentsPopSoon();
+    window.dispatchEvent(new Event('chattering:open-files'));
   }
 
   // ---- the pin (the file's header, the Files browser) ----
@@ -496,6 +507,11 @@ const OpenFiles = (() => {
     // Alt+P on an open file, in its text or anywhere on the page.
     document.addEventListener('keydown', e => {
       if (e.code !== 'KeyP' || !e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.repeat) return;
+      // In Beside (design/104), Alt+P is its tab's pin: it stays beside
+      // wherever you go, and a file is kept here too.
+      if (typeof Beside !== 'undefined' && Beside.shown() && e.target.closest && e.target.closest('#artifactPane')) {
+        e.preventDefault(); Beside.togglePin(); return;
+      }
       // A file on the page, or beside a conversation (design/83) while its text has the keyboard.
       if (typeof fileWs === 'undefined' || !fileWs || typeof viewKind === 'undefined') return;
       if (viewKind !== 'file' && !(fileWs.placement === 'beside' && e.target.closest && e.target.closest('#artifactPane'))) return;
@@ -593,7 +609,7 @@ const OpenFiles = (() => {
     runStarted, runState, runEnded, runAllStarted, runAllEnded, stop, anyBusy,
     keeps, park, take, shown, released,
     // code and text files
-    keepsCode, parkCode, takeCode, codeReleased,
+    keepsCode, parkCode, takeCode, codeReleased, hold,
     // the page
     keepButtonHtml, menuLabel, paintKeepControls, toggleCurrent, seen,
     rowKey, isRowKey, pathOfKey, sectionHtml, sectionOpen, setSectionOpen, handleClick,

@@ -63,6 +63,7 @@
     paintPill(on && overlay() && !shownOverlay);
     paintTiltButton();
     paintPairButton();
+    if (window.Beside) Beside.syncLists();
     // Every editor and chart measures again; the ask box follows its line.
     window.dispatchEvent(new Event('resize'));
   }
@@ -84,8 +85,11 @@
     if (!b) return;
     const work = tilt() === 'work';
     if (overlay()) {
-      b.textContent = '☷ conversation';
-      b.title = 'Back to the conversation; this stays one tap away (Alt+\\)';
+      // What is in the middle: a conversation, or another page (design/104).
+      const vk = typeof viewKind !== 'undefined' ? viewKind : '';
+      const middle = vk === 'conversation' || vk === 'draft' ? 'conversation' : 'page';
+      b.textContent = '☷ ' + middle;
+      b.title = 'Back to the ' + middle + '; this stays one tap away (Alt+\\)';
       b.setAttribute('aria-pressed', 'false');
     } else {
       b.textContent = '⇄ swap';
@@ -99,6 +103,8 @@
   // what the person asked to see.
   function opened() { shownOverlay = true; ensureGrip(); apply(); }
   function closed() { apply(); }
+  /** Over the conversation (a narrow screen): the middle comes first, what is beside waits behind the pill. */
+  function stepAside() { if (overlay()) { shownOverlay = false; apply(); } }
 
   // ---- the pill: the other side, one tap away ----------------------------------
 
@@ -112,9 +118,10 @@
       document.body.appendChild(pill);
     }
     const st = Artifacts.state();
-    const glyph = st && st.kind === 'document' ? '▤' : st && st.kind === 'change' ? '±' : '◧';
-    pill.textContent = glyph + ' ' + ((st && st.title) || 'beside');
-    pill.title = 'Show ' + ((st && st.title) || 'what is beside the conversation') + ' again';
+    const [glyph, name] = st && window.Beside ? Beside.label(st) : [st && st.kind === 'document' ? '▤' : st && st.kind === 'change' ? '±' : '◧', st && st.title];
+    const more = window.Beside ? Beside.visible().length - 1 : 0;
+    pill.textContent = glyph + ' ' + (name || 'beside') + (more > 0 ? ' +' + more : '');
+    pill.title = 'Show ' + (name || 'what is beside') + ' again' + (more > 0 ? ' — ' + (more + 1) + ' tabs beside' : '');
     pill.hidden = false;
   }
 
@@ -155,12 +162,12 @@
 
   /**
    * A file beside the conversation `key` (the one on screen). line: where to
-   * put the cursor. fromList: opened from the right panel's lists (Made,
-   * Files), which the panel's ← goes back to.
+   * put the cursor. newTab: a tab of its own (design/104); origin: 'beside'
+   * when the click was inside Beside (it opens in that tab).
    */
-  function openFile(path, { key, line = null, project = null, fromList = false } = {}) {
-    if (!path || !key || typeof Artifacts === 'undefined') return false;
-    Artifacts.openPanel({ kind: 'document', key, path: String(path), title: baseName(path), line, project, fromList });
+  function openFile(path, { key = null, line = null, project = null, newTab = false, origin } = {}) {
+    if (!path || typeof Artifacts === 'undefined') return false;
+    Artifacts.openPanel({ kind: 'document', key, path: String(path), title: baseName(path), line, project }, { newTab, origin });
     return true;
   }
 
@@ -229,6 +236,11 @@
   /** Put the file beside: the workspace already there (moved, or kept), or a new one. */
   function mountDocument(host, st) {
     const ws = typeof fileWs !== 'undefined' ? fileWs : null;
+    // The file is beside the conversation on screen, if one is (design/104:
+    // a pinned file stays beside other pages too, with none).
+    const vk = typeof viewKind !== 'undefined' ? viewKind : '';
+    const key = (vk === 'conversation' || vk === 'draft') && typeof activeRel !== 'undefined' ? activeRel : null;
+    st = { ...st, key };
     if (ws && ws.path === st.path && ws.frame && (ws.placement === 'beside' || !ws.frame.isConnected)) {
       ws.placement = 'beside';
       ws.besideKey = st.key;
@@ -290,8 +302,9 @@
     const b = pane()?.querySelector('[data-art-act="pair"]');
     if (!b) return;
     const ws = besideFile();
-    b.hidden = !ws;
-    if (!ws) return;
+    // Beside a project page or home there is no conversation to name (design/104).
+    b.hidden = !ws || !ws.besideKey;
+    if (!ws || !ws.besideKey) return;
     const title = titleOf(ws.besideKey);
     b.innerHTML = '<span class="art-pair-glyph" aria-hidden="true">☷</span><span class="art-pair-name"></span><span aria-hidden="true">▾</span>';
     b.querySelector('.art-pair-name').textContent = title;
@@ -471,7 +484,7 @@
   }
 
   window.Pair = {
-    tilt, setTilt, toggle, apply, opened, closed, overlay,
+    tilt, setTilt, toggle, apply, opened, closed, overlay, stepAside, repaint: () => { paintPairButton(); paintTiltButton(); },
     openFile, openChange, withConversation, focusConversation, showsConversation, conversationFor,
     mountDocument, release, released, back,
     pickConversation, switchConversation, newConversation, carryInto, intoDraft,

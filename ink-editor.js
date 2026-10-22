@@ -134,6 +134,7 @@
           <button type="button" id="inkFinger" aria-pressed="false">Draw with a finger</button>
           ${typeof OpenFiles !== 'undefined' ? `<button type="button" data-keep-menu="${e(ws.path)}">${e(OpenFiles.menuLabel(ws.path))}</button>` : ''}
           ${typeof Pair !== 'undefined' && ws.placement !== 'beside' ? '<button type="button" id="inkBeside">☷ A conversation beside</button>' : ''}
+          ${typeof Beside !== 'undefined' && ws.placement !== 'beside' ? '<button type="button" id="inkToBeside">◨ Put this note beside</button>' : ''}
           ${ws.project ? '<button type="button" id="liveBrowse">Browse this folder</button>' : ''}
           <span class="ink-menu-hint">Pen writes · finger scrolls · keys type · Alt+W pen · Alt+T text · ${e(modKey('Z'))} undoes</span>
           <span class="ink-menu-hint" id="inkPenMode"></span>
@@ -302,6 +303,7 @@
     $('inkPng').onclick = () => { closePops(v); downloadPage(v); };
     $('inkClearPage').onclick = () => { closePops(v); clearPage(v); };
     if ($('inkBeside')) $('inkBeside').onclick = () => { closePops(v); Pair.withConversation(v.ws); };
+    if ($('inkToBeside')) $('inkToBeside').onclick = () => { closePops(v); fileWsToBeside(v.ws); };
     if ($('liveBrowse')) $('liveBrowse').onclick = () => liveFileBrowseFolder(v.ws);
     // A pop-up over the page closes at the first touch outside it, and that
     // touch draws nothing (as on a reMarkable: the pen lands, the menu goes).

@@ -54,8 +54,11 @@ test('Files browser: rename in place, duplicate, delete and restore', { timeout:
 
   // Duplicate from the row's menu: the copy appears, ready to be named.
   await evaluate(`${row('ideas.md')}.closest('.fb-row').querySelector('.fb-more').click()`);
-  await until(`document.querySelector('.fb-entry-menu [data-fb-action="1"]')`, 'actions menu');
-  await evaluate(`document.querySelector('.fb-entry-menu [data-fb-action="1"]').click()`);
+  const item = label => `[...document.querySelectorAll('.fb-entry-menu [data-fb-action]')].find(b => b.textContent.startsWith(${JSON.stringify(label)}))`;
+  await until(item('Duplicate'), 'actions menu');
+  // A file's menu opens it in the other place first (design/104).
+  assert.match(await evaluate(`[...document.querySelectorAll('.fb-entry-menu [data-fb-action]')].map(b => b.textContent).join('|')`), /^Open beside.*\|Open in a new tab beside\|Rename/);
+  await evaluate(`${item('Duplicate')}.click()`);
   await until(`document.querySelector('.fb-rename input')?.value==='ideas copy.md'`, 'copy ready to name');
   assert.equal(fs.readFileSync(path.join(work, 'ideas copy.md'), 'utf8'), '# Notes\n');
   await evaluate(`${input}.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);

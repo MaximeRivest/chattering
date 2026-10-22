@@ -1,6 +1,10 @@
 'use strict';
-// A project has one file browser, whether entered from its summary or a conversation.
-let filesBrowser = null;
+// A project's file browser. It lives in the middle (the page, its own
+// route), or beside (a tab of Beside, design/104), or both at once: each
+// browser finds its elements inside its own frame (ids carry a prefix
+// beside), and says where a file it opens goes.
+let filesBrowser = null;   // the one in the middle
+let besideBrowser = null;  // the one in Beside's tab shown
 let filesBrowserSeq = 0;
 const filesBrowserPlaces = new Map();
 
@@ -12,7 +16,13 @@ function fbStore(key, value) {
 function fbHash(s) {
   return 'browse=' + encodeURIComponent(JSON.stringify({ project: s.project, conv: s.conv, root: s.root, dir: s.dir, mode: s.mode, range: s.range, count: s.count, actor: s.actor, from: s.from, to: s.to }));
 }
-function fbCurrent(s) { return filesBrowser === s && viewKind === 'files-browser'; }
+// This browser's element: ids are its own (prefixed beside).
+function fb$(s, id) { return s && s.el ? s.el.querySelector('#' + s.pre + id) : null; }
+function fbCurrent(s) {
+  if (!s || !s.el || !s.el.isConnected) return false;
+  return s.place === 'beside' ? besideBrowser === s : filesBrowser === s && viewKind === 'files-browser';
+}
+const fbLive = () => [filesBrowser, besideBrowser].filter(fbCurrent);
 async function fbJSON(url) {
   const r = await fetch(url); const d = await r.json();
   if (!r.ok || d.error) throw new Error(d.error || 'Request failed');
@@ -31,10 +41,17 @@ function fbConversationFiles() {
 function fbContext(s) {
   return { project: s.project, conv: s.conv, root: s.root, dir: s.dir, mode: s.mode, range: s.range, count: s.count, actor: s.actor, from: s.from, to: s.to, query: s.query, contents: s.contents, only: s.only };
 }
-function fbOpenFile(s, file, line) {
+// A click opens in the place it was made in (design/104): in the middle's
+// browser, full page; in Beside's, in its tab (‹ back to the folder).
+// other: Shift+click, the other place.
+function fbOpenFile(s, file, line, { other = false } = {}) {
   const context = fbContext(s);
+  const beside = (s.place === 'beside') !== !!other;
+  if (beside && typeof Beside !== 'undefined') {
+    return Beside.open({ kind: 'document', path: file, project: s.project, line: line || null }, { origin: s.place === 'beside' ? 'beside' : 'middle' });
+  }
   filesBrowserPlaces.set(s.project + '\0' + s.conv, { file, context });
-  return openLiveFile(file, { project: s.project, root: s.root || '', line, browserContext: context });
+  return openLiveFile(file, { project: s.project, root: s.root || '', line, browserContext: s.place === 'beside' ? null : context, back: s.place === 'beside' ? (typeof currentHash !== 'undefined' ? currentHash : null) : undefined });
 }
 // A route hash that names a conversation (no "view=" grammar, a source
 // prefix). Such a hash as ws.back means the file was opened from that
@@ -58,43 +75,43 @@ function fbFinderClose(s) {
   if (!f) return;
   f.open = false; f.ticket++; clearTimeout(f.timer); f.controller?.abort();
   if (!fbCurrent(s)) return;
-  $('fbFinderPopup').hidden = true;
-  $('fbSearch').setAttribute('aria-expanded', 'false');
-  $('fbSearch').removeAttribute('aria-activedescendant');
+  fb$(s, 'fbFinderPopup').hidden = true;
+  fb$(s, 'fbSearch').setAttribute('aria-expanded', 'false');
+  fb$(s, 'fbSearch').removeAttribute('aria-activedescendant');
 }
 function fbFinderOpen(s) {
   if (!fbCurrent(s)) return;
   s.finder.open = true;
-  $('fbFinderPopup').hidden = false;
-  $('fbSearch').setAttribute('aria-expanded', 'true');
+  fb$(s, 'fbFinderPopup').hidden = false;
+  fb$(s, 'fbSearch').setAttribute('aria-expanded', 'true');
 }
 function fbFinderSelect(s, index) {
   const f = s.finder;
   f.index = Math.max(0, Math.min(f.items.length - 1, index));
-  const rows = $('fbFinderList').querySelectorAll('[role="option"]');
+  const rows = fb$(s, 'fbFinderList').querySelectorAll('[role="option"]');
   rows.forEach((row, i) => row.setAttribute('aria-selected', String(i === f.index)));
   const row = rows[f.index];
   if (row) {
-    $('fbSearch').setAttribute('aria-activedescendant', row.id);
+    fb$(s, 'fbSearch').setAttribute('aria-activedescendant', row.id);
     row.scrollIntoView({ block: 'nearest' });
-  } else $('fbSearch').removeAttribute('aria-activedescendant');
+  } else fb$(s, 'fbSearch').removeAttribute('aria-activedescendant');
 }
-function fbFinderActivate(s, index = s.finder.index) {
+function fbFinderActivate(s, index = s.finder.index, other = false) {
   const f = s.finder, entry = f.items[index];
   if (!fbCurrent(s) || !f.open || !entry) return;
   fbFinderClose(s);
-  $('fbSearch').value = '';
-  $('fbSearch').blur();
+  fb$(s, 'fbSearch').value = '';
+  fb$(s, 'fbSearch').blur();
   if (entry.directory) {
     s.dir = entry.rel; s.query = ''; s.contents = false;
     fbLoad(s);
-  } else fbOpenFile(s, entry.path, entry.line);
+  } else fbOpenFile(s, entry.path, entry.line, { other });
 }
 function fbFinderReset(s, message) {
   s.finder.items = []; s.finder.index = -1;
-  $('fbFinderList').innerHTML = '';
-  $('fbSearch').removeAttribute('aria-activedescendant');
-  $('fbFinderStatus').textContent = message;
+  fb$(s, 'fbFinderList').innerHTML = '';
+  fb$(s, 'fbSearch').removeAttribute('aria-activedescendant');
+  fb$(s, 'fbFinderStatus').textContent = message;
 }
 function fbFinderQueue(s, immediate = false) {
   if (!fbCurrent(s)) return;
@@ -102,8 +119,8 @@ function fbFinderQueue(s, immediate = false) {
   clearTimeout(f.timer); f.controller?.abort();
   const ticket = ++f.ticket;
   fbFinderOpen(s);
-  const query = $('fbSearch').value.trim();
-  const contents = $('fbFindMode').value === 'contents';
+  const query = fb$(s, 'fbSearch').value.trim();
+  const contents = fb$(s, 'fbFindMode').value === 'contents';
   if (!query) return fbFinderReset(s, contents ? 'Type text, then press Enter to search contents.' : 'Type a file or folder name.');
   if (contents && !immediate) return fbFinderReset(s, 'Press Enter to search file contents.');
   fbFinderReset(s, 'Searching…');
@@ -120,8 +137,8 @@ function fbFinderQueue(s, immediate = false) {
       const q = query.toLowerCase();
       const rank = e => e.name.toLowerCase() === q ? 0 : e.name.toLowerCase().startsWith(q) ? 1 : e.name.toLowerCase().includes(q) ? 2 : 3;
       f.items = data.entries.filter(e => !e.link).sort((a, b) => rank(a) - rank(b) || a.rel.localeCompare(b.rel));
-      $('fbFinderList').innerHTML = f.items.map((e, i) => `<div id="fbFindOption${i}" role="option" aria-selected="false" data-fb-result="${i}"><span class="fb-find-icon" aria-hidden="true">${e.directory ? '▸' : '▤'}</span><span class="fb-find-path">${esc(e.rel)}${e.directory ? '/' : ''}${e.snippet != null ? `<small>Line ${e.line}: ${esc(e.snippet)}</small>` : ''}</span></div>`).join('');
-      $('fbFinderStatus').textContent = data.truncated ? `Showing ${f.items.length} matches; narrow your search for more.` : f.items.length ? `${f.items.length} match${f.items.length === 1 ? '' : 'es'}` : 'No matching files or folders.';
+      fb$(s, 'fbFinderList').innerHTML = f.items.map((e, i) => `<div id="${s.pre}fbFindOption${i}" role="option" aria-selected="false" data-fb-result="${i}"><span class="fb-find-icon" aria-hidden="true">${e.directory ? '▸' : '▤'}</span><span class="fb-find-path">${esc(e.rel)}${e.directory ? '/' : ''}${e.snippet != null ? `<small>Line ${e.line}: ${esc(e.snippet)}</small>` : ''}</span></div>`).join('');
+      fb$(s, 'fbFinderStatus').textContent = data.truncated ? `Showing ${f.items.length} matches; narrow your search for more.` : f.items.length ? `${f.items.length} match${f.items.length === 1 ? '' : 'es'}` : 'No matching files or folders.';
       fbFinderSelect(s, 0);
     } catch (e) {
       if (e.name !== 'AbortError' && fbCurrent(s) && f.open && f.ticket === ticket) fbFinderReset(s, 'Search unavailable: ' + e.message);
@@ -130,100 +147,142 @@ function fbFinderQueue(s, immediate = false) {
 }
 function fbFinderSetup(s) {
   s.finder = { open: false, ticket: 0, items: [], index: -1 };
-  const input = $('fbSearch');
+  const input = fb$(s, 'fbSearch');
   input.onfocus = () => fbFinderQueue(s);
   input.oninput = e => { if (!e.isComposing) fbFinderQueue(s); };
   input.oncompositionend = () => fbFinderQueue(s);
-  $('fbSearchForm').onsubmit = e => {
+  fb$(s, 'fbSearchForm').onsubmit = e => {
     e.preventDefault();
     if (s.finder.open && s.finder.items.length) fbFinderActivate(s);
     else fbFinderQueue(s, true);
   };
-  $('fbFindMode').onchange = () => {
-    const contents = $('fbFindMode').value === 'contents';
+  fb$(s, 'fbFindMode').onchange = () => {
+    const contents = fb$(s, 'fbFindMode').value === 'contents';
     input.placeholder = contents ? 'Search contents' : 'Go to file';
     input.setAttribute('aria-label', contents ? 'Search file contents' : 'Go to file');
-    $('fbFindSubmit').hidden = !contents;
+    fb$(s, 'fbFindSubmit').hidden = !contents;
     input.focus(); fbFinderQueue(s);
   };
-  $('fbFindSubmit').onclick = () => { input.focus(); fbFinderQueue(s, true); };
+  fb$(s, 'fbFindSubmit').onclick = () => { input.focus(); fbFinderQueue(s, true); };
   input.onkeydown = e => {
     if (e.isComposing || e.keyCode === 229) { e.stopPropagation(); return; }
+    // Shift+Enter: the file opens in the other place (design/104).
+    if (e.key === 'Enter' && e.shiftKey && s.finder.open && s.finder.items.length) { e.preventDefault(); e.stopPropagation(); fbFinderActivate(s, s.finder.index, true); return; }
     if (['ArrowDown', 'ArrowUp'].includes(e.key)) {
       e.preventDefault(); e.stopPropagation();
       if (!s.finder.open) fbFinderQueue(s);
       else fbFinderSelect(s, s.finder.index + (e.key === 'ArrowDown' ? 1 : -1));
     }
   };
-  $('fbFinder').addEventListener('keydown', e => {
+  fb$(s, 'fbFinder').addEventListener('keydown', e => {
     if (e.key === 'Escape') {
       e.preventDefault(); e.stopPropagation();
       input.focus(); fbFinderClose(s); input.blur();
     }
   });
-  $('fbFinder').addEventListener('focusout', e => {
-    if (!$('fbFinder').contains(e.relatedTarget)) fbFinderClose(s);
+  fb$(s, 'fbFinder').addEventListener('focusout', e => {
+    if (!fb$(s, 'fbFinder').contains(e.relatedTarget)) fbFinderClose(s);
   });
   // Keep input focus while selecting an option with a mouse or touch.
-  $('fbFinderList').onmousedown = e => e.preventDefault();
-  $('fbFinderList').onclick = e => {
+  fb$(s, 'fbFinderList').onmousedown = e => e.preventDefault();
+  fb$(s, 'fbFinderList').onclick = e => {
     const row = e.target.closest('[data-fb-result]');
-    if (row) fbFinderActivate(s, Number(row.dataset.fbResult));
+    if (row) fbFinderActivate(s, Number(row.dataset.fbResult), e.shiftKey);
   };
 }
 document.addEventListener('pointerdown', e => {
-  const s = filesBrowser;
-  if (s && fbCurrent(s) && s.finder?.open && !$('fbFinder').contains(e.target)) fbFinderClose(s);
+  for (const s of fbLive()) if (s.finder?.open && !fb$(s, 'fbFinder').contains(e.target)) fbFinderClose(s);
 });
 
+function fbState(project, opts, place) {
+  return { project, conv: opts.conv || '', root: opts.root || '', dir: opts.dir || '', mode: opts.mode === 'changes' ? 'changes' : 'browse',
+    range: opts.range || (opts.conv ? 'conversation' : 'day'), count: opts.count || 20, actor: opts.actor || '', from: opts.from || '', to: opts.to || '',
+    since: fbStore('visited:' + project) || Date.now() - 86400000, events: [], seq: ++filesBrowserSeq, query: opts.query || '', contents: !!opts.contents, only: !!opts.only,
+    place, pre: place === 'beside' ? 'bs-' : '' };
+}
 async function showFilesBrowser(project, opts = {}) {
-  const seq = ++filesBrowserSeq;
   markSettingsClosed();
   if (progressStream) { progressStream.close(); progressStream = null; }
-  const s = { project, conv: opts.conv || '', root: opts.root || '', dir: opts.dir || '', mode: opts.mode === 'changes' ? 'changes' : 'browse',
-    range: opts.range || (opts.conv ? 'conversation' : 'day'), count: opts.count || 20, actor: opts.actor || '', from: opts.from || '', to: opts.to || '',
-    since: fbStore('visited:' + project) || Date.now() - 86400000, events: [], seq, query: opts.query || '', contents: !!opts.contents, only: !!opts.only };
+  const s = fbState(project, opts, 'page');
   if (filesBrowser) fbFinderClose(filesBrowser);
   filesBrowser = s;
   projectOverviewName = project;
   setRoute('files-browser', fbHash(s), { project });
-  $('view').innerHTML = `<section class="fb-view">
-    <header class="fb-header">${s.conv ? '<nav aria-label="Conversation view"><button id="fbConversation">Conversation</button><button class="on" aria-current="page">Files</button></nav>' : '<button id="fbSummary">← Project summary</button>'}<h1>${esc(project)}</h1><span class="fb-live">● Live files</span><button id="fbRefresh">Refresh</button></header>
+  await fbBuild(s, $('view'));
+}
+// The project's folder in Beside's tab (artifacts.js draws the tab with it).
+// The same folder shown again keeps its browser, scroll and all.
+function fbMountBeside(host, spec) {
+  const s0 = besideBrowser;
+  if (s0 && s0.el && s0.el.parentElement === host && s0.project === spec.project) return;
+  if (s0) fbFinderClose(s0);
+  const s = fbState(spec.project, { ...spec, range: spec.range || (spec.conv ? 'conversation' : 'day') }, 'beside');
+  besideBrowser = s;
+  return fbBuild(s, host);
+}
+function fbDisposeBeside() {
+  if (besideBrowser) fbFinderClose(besideBrowser);
+  besideBrowser = null;
+}
+// The middle's folder goes beside, and the middle goes back to where you were.
+async function fbToBeside(s) {
+  if (!s || s.place !== 'page' || typeof Beside === 'undefined') return false;
+  const ctx = fbContext(s);
+  await Beside.sendFromMiddle({ kind: 'folder', ...ctx }, () => s.conv ? open(s.conv, 'restore') : showProjectOverview(s.project));
+  return true;
+}
+async function fbBuild(s, host) {
+  const beside = s.place === 'beside', project = s.project, P = s.pre;
+  const nav = beside ? ''
+    : s.conv ? `<nav aria-label="Conversation view"><button id="${P}fbConversation">Conversation</button><button class="on" aria-current="page">Files</button></nav>`
+    : `<button id="${P}fbSummary">← Project summary</button>`;
+  const section = document.createElement('section');
+  section.className = 'fb-view' + (beside ? ' fb-beside' : '');
+  section.innerHTML = `
+    ${beside ? '' : `<header class="fb-header">${nav}<h1>${esc(project)}</h1><span class="fb-live">● Live files</span><button id="${P}fbToBeside" title="Put this folder beside, and go back to where you were: browse next to your work">◨ Beside</button><button id="${P}fbRefresh">Refresh</button></header>`}
     <div class="fb-toolbar"><nav aria-label="Files view"><button data-fb-mode="browse">Browse</button><button data-fb-mode="changes">Changes</button></nav>
-      <label>Highlight <select id="fbRange"><option value="none">Nothing</option><option value="seen">Since last visit</option>${s.conv ? '<option value="conversation">This conversation</option>' : ''}<option value="last">Last X changes</option><option value="hour">Last hour</option><option value="day">Last 24 hours</option><option value="custom">Time range</option></select></label>
-      <input id="fbCount" type="number" min="1" max="5000" aria-label="Number of changes" value="${esc(String(s.count))}" hidden>
-      <label id="fbFromLabel" hidden>From <input id="fbFrom" type="datetime-local" value="${esc(s.from)}"></label><label id="fbToLabel" hidden>To <input id="fbTo" type="datetime-local" value="${esc(s.to)}"></label>
-      <label>By <select id="fbActor"><option value="">Everyone</option><option value="ai">Agents</option><option value="human">Editor saves</option><option value="external">Unknown / external</option><option value="git">Git commits</option></select></label>
+      <label>Highlight <select id="${P}fbRange"><option value="none">Nothing</option><option value="seen">Since last visit</option>${s.conv ? '<option value="conversation">This conversation</option>' : ''}<option value="last">Last X changes</option><option value="hour">Last hour</option><option value="day">Last 24 hours</option><option value="custom">Time range</option></select></label>
+      <input id="${P}fbCount" class="fb-count" type="number" min="1" max="5000" aria-label="Number of changes" value="${esc(String(s.count))}" hidden>
+      <label id="${P}fbFromLabel" hidden>From <input id="${P}fbFrom" type="datetime-local" value="${esc(s.from)}"></label><label id="${P}fbToLabel" hidden>To <input id="${P}fbTo" type="datetime-local" value="${esc(s.to)}"></label>
+      <label>By <select id="${P}fbActor"><option value="">Everyone</option><option value="ai">Agents</option><option value="human">Editor saves</option><option value="external">Unknown / external</option><option value="git">Git commits</option></select></label>
+      ${beside ? `<button id="${P}fbRefresh" class="fb-refresh" title="Read the folder again">↻</button>` : ''}
     </div>
-    <div class="fb-toolbar fb-browse-bar"><select id="fbRoot" aria-label="Repository" hidden></select><label><input id="fbOnly" type="checkbox"> Changed only</label>
-      <div class="fb-finder" id="fbFinder"><form id="fbSearchForm" role="search"><svg aria-hidden="true" viewBox="0 0 16 16"><circle cx="6.5" cy="6.5" r="4.5"/><path d="m10 10 4 4"/></svg><input id="fbSearch" type="search" disabled placeholder="Go to file" aria-label="Go to file" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="fbFinderList" aria-keyshortcuts="T" autocomplete="off" spellcheck="false"><kbd aria-hidden="true">T</kbd></form>
-        <div id="fbFinderPopup" class="fb-finder-popup" hidden><div class="fb-finder-tools"><select id="fbFindMode" aria-label="Search mode"><option value="files">File names</option><option value="contents">File contents</option></select><span>Entire repository</span><button id="fbFindSubmit" type="button" hidden>Search</button></div><div id="fbFinderList" role="listbox" aria-label="Matching files and folders"></div><div id="fbFinderStatus" role="status"></div><div class="fb-finder-help">↑ ↓ select · Enter open · Esc close</div></div>
-      </div><button id="fbNew">+ Document</button>${typeof Notes !== 'undefined' ? '<button id="fbInk" title="A note, kept in documents/notes/: write with a pen or type, whichever you do first (N)">✎ Note</button>' : ''}</div>
-    <div id="fbNotice" role="status"></div><div id="fbBody">Loading files…</div>
-  </section>`;
-  $('fbConversation')?.addEventListener('click', () => open(s.conv, 'restore'));
-  $('fbSummary')?.addEventListener('click', () => showProjectOverview(project));
-  $('fbNew').onclick = () => createProjectDocument(project);
-  if ($('fbInk')) $('fbInk').onclick = () => Notes.create(project);
-  $('fbRefresh').onclick = () => fbLoad(s);
-  $('fbRange').value = s.range; $('fbActor').value = s.actor;
-  $('fbOnly').checked = s.only;
+    <div class="fb-toolbar fb-browse-bar"><select id="${P}fbRoot" aria-label="Repository" hidden></select><label><input id="${P}fbOnly" type="checkbox"> Changed only</label>
+      <div class="fb-finder" id="${P}fbFinder"><form id="${P}fbSearchForm" class="fb-search-form" role="search"><svg aria-hidden="true" viewBox="0 0 16 16"><circle cx="6.5" cy="6.5" r="4.5"/><path d="m10 10 4 4"/></svg><input id="${P}fbSearch" class="fb-search" type="search" disabled placeholder="Go to file" aria-label="Go to file" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${P}fbFinderList" ${beside ? '' : 'aria-keyshortcuts="T"'} autocomplete="off" spellcheck="false">${beside ? '' : '<kbd aria-hidden="true">T</kbd>'}</form>
+        <div id="${P}fbFinderPopup" class="fb-finder-popup" hidden><div class="fb-finder-tools"><select id="${P}fbFindMode" aria-label="Search mode"><option value="files">File names</option><option value="contents">File contents</option></select><span>Entire repository</span><button id="${P}fbFindSubmit" type="button" hidden>Search</button></div><div id="${P}fbFinderList" class="fb-finder-list" role="listbox" aria-label="Matching files and folders"></div><div id="${P}fbFinderStatus" class="fb-finder-status" role="status"></div><div class="fb-finder-help">↑ ↓ select · Enter open · Shift+Enter ${beside ? 'in the middle' : 'beside'} · Esc close</div></div>
+      </div><button id="${P}fbNew" class="fb-new">+ Document</button>${typeof Notes !== 'undefined' ? `<button id="${P}fbInk" title="A note, kept in documents/notes/: write with a pen or type, whichever you do first (N)">✎ Note</button>` : ''}</div>
+    <div id="${P}fbNotice" class="fb-notice" role="status"></div><div id="${P}fbBody">Loading files…</div>`;
+  s.el = section;
+  host.replaceChildren(section);
+  fb$(s, 'fbConversation')?.addEventListener('click', () => open(s.conv, 'restore'));
+  fb$(s, 'fbSummary')?.addEventListener('click', () => showProjectOverview(project));
+  fb$(s, 'fbToBeside')?.addEventListener('click', () => fbToBeside(s));
+  fb$(s, 'fbNew').onclick = () => createProjectDocument(project);
+  if (fb$(s, 'fbInk')) fb$(s, 'fbInk').onclick = () => Notes.create(project);
+  fb$(s, 'fbRefresh').onclick = () => fbLoad(s);
+  fb$(s, 'fbRange').value = s.range; fb$(s, 'fbActor').value = s.actor;
+  fb$(s, 'fbOnly').checked = s.only;
   fbFinderSetup(s);
   const controls = () => {
-    s.range = $('fbRange').value; s.actor = $('fbActor').value;
-    s.count = Math.max(1, Math.min(5000, Number($('fbCount').value) || 20));
-    s.from = $('fbFrom').value; s.to = $('fbTo').value;
-    $('fbCount').hidden = s.range !== 'last';
-    $('fbFromLabel').hidden = $('fbToLabel').hidden = s.range !== 'custom';
+    s.range = fb$(s, 'fbRange').value; s.actor = fb$(s, 'fbActor').value;
+    s.count = Math.max(1, Math.min(5000, Number(fb$(s, 'fbCount').value) || 20));
+    s.from = fb$(s, 'fbFrom').value; s.to = fb$(s, 'fbTo').value;
+    fb$(s, 'fbCount').hidden = s.range !== 'last';
+    fb$(s, 'fbFromLabel').hidden = fb$(s, 'fbToLabel').hidden = s.range !== 'custom';
   };
   controls();
-  for (const id of ['fbRange', 'fbActor', 'fbCount', 'fbFrom', 'fbTo']) $(id).onchange = () => { controls(); fbLoad(s); };
-  $('fbOnly').onchange = () => { s.only = $('fbOnly').checked; fbPaint(s); };
-  $('fbRoot').onchange = () => { fbFinderClose(s); s.root = $('fbRoot').value; s.dir = ''; fbLoad(s); };
-  $('view').querySelectorAll('[data-fb-mode]').forEach(b => b.onclick = () => { s.mode = b.dataset.fbMode; fbRemember(s); fbPaint(s); });
+  for (const id of ['fbRange', 'fbActor', 'fbCount', 'fbFrom', 'fbTo']) fb$(s, id).onchange = () => { controls(); fbLoad(s); };
+  fb$(s, 'fbOnly').onchange = () => { s.only = fb$(s, 'fbOnly').checked; fbPaint(s); };
+  fb$(s, 'fbRoot').onchange = () => { fbFinderClose(s); s.root = fb$(s, 'fbRoot').value; s.dir = ''; fbLoad(s); };
+  s.el.querySelectorAll('[data-fb-mode]').forEach(b => b.onclick = () => { s.mode = b.dataset.fbMode; fbRemember(s); fbPaint(s); });
   await fbLoad(s);
 }
+// Where the browser is now: the middle's in its route, Beside's in its tab.
 function fbRemember(s) {
+  if (s.place === 'beside') {
+    if (typeof Beside !== 'undefined' && fbCurrent(s)) Beside.update({ root: s.root, dir: s.dir, mode: s.mode });
+    return;
+  }
   filesBrowserPlaces.set(s.project + '\0' + s.conv, fbContext(s));
   replaceRoute(fbHash(s));
 }
@@ -243,7 +302,7 @@ function fbActivityParams(s) {
 async function fbLoad(s) {
   const ticket = s.load = (s.load || 0) + 1;
   if (!fbCurrent(s)) return;
-  $('fbNotice').textContent = 'Loading…';
+  fb$(s, 'fbNotice').textContent = 'Loading…';
   try {
     const params = fbActivityParams(s);
     const [tree, activity] = await Promise.all([
@@ -252,14 +311,14 @@ async function fbLoad(s) {
     ]);
     if (!fbCurrent(s) || ticket !== s.load) return;
     s.tree = tree; s.root = tree.root; s.dir = tree.dir; s.events = activity.events; s.activity = activity;
-    $('fbSearch').disabled = false;
+    fb$(s, 'fbSearch').disabled = false;
     s.groups = new Map();
     for (const e of s.events) { if (!s.groups.has(e.path)) s.groups.set(e.path, []); s.groups.get(e.path).push(e); }
-    $('fbRoot').innerHTML = tree.roots.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('');
-    $('fbRoot').value = tree.roots.find(r => r === s.root) || tree.roots[0]; $('fbRoot').hidden = tree.roots.length < 2;
+    fb$(s, 'fbRoot').innerHTML = tree.roots.map(r => `<option value="${esc(r)}">${esc(r)}</option>`).join('');
+    fb$(s, 'fbRoot').value = tree.roots.find(r => r === s.root) || tree.roots[0]; fb$(s, 'fbRoot').hidden = tree.roots.length < 2;
     fbStore('visited:' + s.project, Date.now());
     fbRemember(s); fbPaint(s);
-  } catch (e) { if (fbCurrent(s) && ticket === s.load) $('fbNotice').textContent = e.message; }
+  } catch (e) { if (fbCurrent(s) && ticket === s.load) fb$(s, 'fbNotice').textContent = e.message; }
 }
 function fbRelativeTime(ts, now = Date.now()) {
   const ms = ts == null || ts === '' ? NaN : new Date(ts).getTime();
@@ -278,9 +337,10 @@ function fbTimeHTML(ts) {
   return `<time data-fb-time="${date.getTime()}" datetime="${date.toISOString()}" title="${esc(date.toLocaleString())}">${fbRelativeTime(date.getTime())}</time>`;
 }
 function fbRefreshTimes() {
-  if (document.hidden || viewKind !== 'files-browser') return;
+  // The middle's browser, or one in Beside's tab shown.
+  if (document.hidden || (viewKind !== 'files-browser' && !(besideBrowser && fbCurrent(besideBrowser)))) return;
   const now = Date.now();
-  document.querySelectorAll('[data-fb-time]').forEach(el => {
+  document.querySelectorAll('.fb-view [data-fb-time]').forEach(el => {
     const text = fbRelativeTime(Number(el.dataset.fbTime), now);
     if (el.textContent !== text) el.textContent = text;
   });
@@ -300,25 +360,37 @@ function fbBadge(s, events) {
 }
 function fbPaint(s) {
   if (!fbCurrent(s) || !s.tree) return;
-  $('view').querySelectorAll('[data-fb-mode]').forEach(b => { b.classList.toggle('on', b.dataset.fbMode === s.mode); b.setAttribute('aria-current', b.dataset.fbMode === s.mode ? 'page' : 'false'); });
-  $('fbNotice').textContent = [s.activity.historyWarning || '', s.activity.error ? 'Activity unavailable: ' + s.activity.error : '', s.tree.truncated ? 'Search/listing limit reached. Narrow your search or open a folder.' : '', s.activity.truncated ? `Showing the newest ${s.events.length} recorded changes; narrow the range for more.` : '', s.range === 'conversation' ? 'Highlighting this conversation; files show their current contents.' : '', s.range === 'seen' ? 'Since your previous Files visit on this browser.' : ''].filter(Boolean).join(' ');
+  s.el.querySelectorAll('[data-fb-mode]').forEach(b => { b.classList.toggle('on', b.dataset.fbMode === s.mode); b.setAttribute('aria-current', b.dataset.fbMode === s.mode ? 'page' : 'false'); });
+  fb$(s, 'fbNotice').textContent = [s.activity.historyWarning || '', s.activity.error ? 'Activity unavailable: ' + s.activity.error : '', s.tree.truncated ? 'Search/listing limit reached. Narrow your search or open a folder.' : '', s.activity.truncated ? `Showing the newest ${s.events.length} recorded changes; narrow the range for more.` : '', s.range === 'conversation' ? 'Highlighting this conversation; files show their current contents.' : '', s.range === 'seen' ? 'Since your previous Files visit on this browser.' : ''].filter(Boolean).join(' ');
   if (s.mode === 'changes') return fbPaintChanges(s);
   const parts = s.dir.split('/').filter(Boolean);
-  $('fbBody').innerHTML = `<nav class="fb-crumbs" aria-label="Folder path"><button data-fb-dir="">${esc(s.project)}</button>${parts.map((part, i) => `<span>/</span><button data-fb-dir="${esc(parts.slice(0, i + 1).join('/'))}">${esc(part)}</button>`).join('')}</nav><div class="fb-list" id="fbList"></div><section id="fbReadme"></section>`;
+  fb$(s, 'fbBody').innerHTML = `<nav class="fb-crumbs" aria-label="Folder path"><button data-fb-dir="">${esc(s.project)}</button>${parts.map((part, i) => `<span>/</span><button data-fb-dir="${esc(parts.slice(0, i + 1).join('/'))}">${esc(part)}</button>`).join('')}</nav><div class="fb-list" id="${s.pre}fbList"></div><section id="${s.pre}fbReadme" class="fb-readme"></section>`;
   const entries = s.tree.entries.map(e => {
     const events = e.directory ? s.events.filter(x => x.path.startsWith(e.path + '/')) : s.groups.get(e.path) || [];
     return { ...e, events };
   }).filter(e => !s.only || e.events.length);
   s.rows = entries;
-  $('fbList').innerHTML = entries.map((e, i) => `<div class="fb-row${e.events.length ? ' changed' : ''}" data-fb-row="${i}"><button data-fb-entry="${i}" ${e.link ? 'aria-disabled="true" title="Symbolic links are not opened by this browser"' : ''} aria-keyshortcuts="F2 Delete"><span aria-hidden="true">${e.directory ? '▸' : '·'}</span> ${esc(s.query ? e.rel : e.name)}${e.link ? ' ↗' : ''}</button><div>${e.directory || typeof presenceFileSlotHtml !== 'function' ? '' : presenceFileSlotHtml(e.path)}${fbBadge(s, e.events)}<span class="fb-row-acts">${e.directory || typeof OpenFiles === 'undefined' ? '' : OpenFiles.keepButtonHtml(e.path, s.project, { cls: 'fb-keep' })}<button type="button" class="fb-more" data-fb-menu="${i}" aria-haspopup="menu" aria-label="More actions for ${esc(e.name)}" title="Rename, duplicate, delete">⋯</button></span></div>${e.snippet != null ? `<code class="fb-snippet">${e.line}: ${esc(e.snippet)}</code>` : ''}</div>`).join('') || '<div class="empty">No matching files.</div>';
+  fb$(s, 'fbList').innerHTML = entries.map((e, i) => `<div class="fb-row${e.events.length ? ' changed' : ''}" data-fb-row="${i}"><button data-fb-entry="${i}" ${e.link ? 'aria-disabled="true" title="Symbolic links are not opened by this browser"' : ''} aria-keyshortcuts="F2 Delete"><span aria-hidden="true">${e.directory ? '▸' : '·'}</span> ${esc(s.query ? e.rel : e.name)}${e.link ? ' ↗' : ''}</button><div>${e.directory || typeof presenceFileSlotHtml !== 'function' ? '' : presenceFileSlotHtml(e.path)}${fbBadge(s, e.events)}<span class="fb-row-acts">${e.directory || typeof OpenFiles === 'undefined' ? '' : OpenFiles.keepButtonHtml(e.path, s.project, { cls: 'fb-keep' })}<button type="button" class="fb-more" data-fb-menu="${i}" aria-haspopup="menu" aria-label="More actions for ${esc(e.name)}" title="Rename, duplicate, delete">⋯</button></span></div>${e.snippet != null ? `<code class="fb-snippet">${e.line}: ${esc(e.snippet)}</code>` : ''}</div>`).join('') || '<div class="empty">No matching files.</div>';
   if (typeof renderPresenceMarks === 'function') renderPresenceMarks();
-  $('fbList').querySelectorAll('[data-fb-entry]').forEach(b => {
+  fb$(s, 'fbList').querySelectorAll('[data-fb-entry]').forEach(b => {
     const e = entries[Number(b.dataset.fbEntry)];
-    b.onclick = () => {
+    b.onclick = ev => {
       // A link stays focusable (its actions work by keyboard) but does not open.
       if (e.link) return;
-      if (e.directory) { s.dir = e.rel; s.query = ''; $('fbSearch').value = ''; fbLoad(s); }
-      else fbOpenFile(s, e.path, e.line);
+      if (e.directory && ev.shiftKey && typeof Beside !== 'undefined') {
+        // Shift: the folder in the other place.
+        if (s.place === 'beside') showFilesBrowser(s.project, { ...fbContext(s), dir: e.rel, query: '' });
+        else Beside.openFolder(s.project, { conv: s.conv, root: s.root, dir: e.rel });
+        return;
+      }
+      if (e.directory) { s.dir = e.rel; s.query = ''; fb$(s, 'fbSearch').value = ''; fbLoad(s); }
+      else fbOpenFile(s, e.path, e.line, { other: ev.shiftKey });
+    };
+    // A middle click: a new tab beside, as a browser does.
+    b.onauxclick = ev => {
+      if (ev.button !== 1 || e.link || e.directory || typeof Beside === 'undefined') return;
+      ev.preventDefault();
+      Beside.open({ kind: 'document', path: e.path, project: s.project }, { origin: 'middle', newTab: true });
     };
     b.onkeydown = ev => {
       if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.isComposing) return;
@@ -327,18 +399,18 @@ function fbPaint(s) {
       else if (ev.key === 'ContextMenu' || (ev.key === 'F10' && ev.shiftKey)) { ev.preventDefault(); ev.stopPropagation(); fbEntryMenu(s, e, b); }
     };
   });
-  $('fbList').querySelectorAll('[data-fb-menu]').forEach(b => b.onclick = ev => {
+  fb$(s, 'fbList').querySelectorAll('[data-fb-menu]').forEach(b => b.onclick = ev => {
     ev.stopPropagation();
     fbEntryMenu(s, entries[Number(b.dataset.fbMenu)], b);
   });
-  $('fbList').oncontextmenu = ev => {
+  fb$(s, 'fbList').oncontextmenu = ev => {
     const row = ev.target.closest('[data-fb-row]');
     if (!row || ev.target.closest('input, .fb-snippet')) return;
     ev.preventDefault();
     fbEntryMenu(s, entries[Number(row.dataset.fbRow)], null, ev.clientX, ev.clientY);
   };
-  $('fbBody').querySelectorAll('[data-fb-dir]').forEach(b => b.onclick = () => { s.dir = b.dataset.fbDir; s.query = ''; $('fbSearch').value = ''; fbLoad(s); });
-  if (s.tree.readme && !s.only) fbReadme(s, s.tree.readme, $('fbReadme'));
+  fb$(s, 'fbBody').querySelectorAll('[data-fb-dir]').forEach(b => b.onclick = () => { s.dir = b.dataset.fbDir; s.query = ''; fb$(s, 'fbSearch').value = ''; fbLoad(s); });
+  if (s.tree.readme && !s.only) fbReadme(s, s.tree.readme, fb$(s, 'fbReadme'));
   fbPaintDeleted(s);
   // After a rename, a copy or a delete: the place the person is working.
   const after = s.after; s.after = null;
@@ -346,7 +418,7 @@ function fbPaint(s) {
     const i = after.rel != null ? entries.findIndex(e => e.rel === after.rel) : Math.min(after.index, entries.length - 1);
     if (i >= 0) {
       if (after.rename) fbStartRename(s, entries[i]);
-      else $('fbList').querySelector(`[data-fb-entry="${i}"]`)?.focus();
+      else fb$(s, 'fbList').querySelector(`[data-fb-entry="${i}"]`)?.focus();
     }
   }
 }
@@ -376,12 +448,17 @@ function fbMovePlaces(from, to) {
 }
 function fbRowOf(s, e) {
   const i = (s.rows || []).indexOf(e);
-  return i < 0 ? null : $('fbList')?.querySelector(`[data-fb-row="${i}"]`);
+  return i < 0 ? null : fb$(s, 'fbList')?.querySelector(`[data-fb-row="${i}"]`);
 }
 function fbEntryMenu(s, e, anchor, x = 0, y = 0) {
   if (!fbCurrent(s) || !e) return;
   closeFileActionMenu();
+  const beside = s.place === 'beside', canBeside = typeof Beside !== 'undefined' && !e.link;
   const items = [
+    ...(canBeside && !e.directory ? [
+      [beside ? 'Open in the middle' : 'Open beside', 'Shift', () => fbOpenFile(s, e.path, e.line, { other: true }), beside ? 'Full page, in the middle; this folder stays beside' : 'Next to your work, in Beside; this folder stays'],
+      ['Open in a new tab beside', '', () => Beside.open({ kind: 'document', path: e.path, project: s.project }, { origin: 'middle', newTab: true })],
+    ] : []),
     ['Rename', 'F2', () => fbStartRename(s, e)],
     ['Duplicate', '', () => fbDuplicate(s, e)],
     ['Delete', 'Del', () => fbDelete(s, e), 'Moves it to Recently deleted, where it stays 30 days'],
@@ -515,12 +592,12 @@ async function fbRestore(s, id, root = '') {
 // Recently deleted: under the list, folded, only when something is there.
 function fbPaintDeleted(s) {
   const host = document.createElement('section');
-  host.id = 'fbDeleted';
-  $('fbList').after(host);
+  host.id = s.pre + 'fbDeleted'; host.className = 'fb-deleted';
+  fb$(s, 'fbList').after(host);
   const n = s.tree.deleted || 0;
   if (!n || s.query) return;
-  host.innerHTML = `<button type="button" class="fb-deleted-toggle" aria-expanded="${!!s.deletedOpen}" aria-controls="fbDeletedList">Recently deleted (${n})</button><div id="fbDeletedList"${s.deletedOpen ? '' : ' hidden'}></div>`;
-  const list = host.querySelector('#fbDeletedList');
+  host.innerHTML = `<button type="button" class="fb-deleted-toggle" aria-expanded="${!!s.deletedOpen}" aria-controls="${s.pre}fbDeletedList">Recently deleted (${n})</button><div id="${s.pre}fbDeletedList" class="fb-deleted-list"${s.deletedOpen ? '' : ' hidden'}></div>`;
+  const list = host.querySelector('.fb-deleted-list');
   const toggle = host.querySelector('.fb-deleted-toggle');
   const load = async () => {
     list.textContent = 'Loading…';
@@ -554,11 +631,11 @@ function fbPaintChanges(s) {
     const matches = new Set(s.tree.entries.map(e => e.path));
     groups = groups.filter(([path]) => matches.has(path) || path.toLowerCase().includes(s.query.toLowerCase()));
   }
-  $('fbBody').innerHTML = `<div class="fb-change-summary"><b>${groups.length} files · ${s.events.length} recorded changes</b><p>Combined comparisons use the nearest recorded versions. Filters select activity and files, not authorship of every line in a combined diff. Unknown external writes are not assumed to be human.</p><label>Diff layout <select id="fbDiffLayout"><option value="split">Side by side</option><option value="unified">Unified</option></select></label></div><div id="fbChanges"></div>`;
-  $('fbDiffLayout').value = s.layout || 'split';
-  $('fbDiffLayout').onchange = () => { s.layout = $('fbDiffLayout').value; $('fbChanges').classList.toggle('unified', s.layout === 'unified'); };
-  $('fbChanges').classList.toggle('unified', s.layout === 'unified');
-  if (!groups.length) $('fbChanges').innerHTML = '<div class="empty">No recorded changes in this selection.</div>';
+  fb$(s, 'fbBody').innerHTML = `<div class="fb-change-summary"><b>${groups.length} files · ${s.events.length} recorded changes</b><p>Combined comparisons use the nearest recorded versions. Filters select activity and files, not authorship of every line in a combined diff. Unknown external writes are not assumed to be human.</p><label>Diff layout <select id="${s.pre}fbDiffLayout"><option value="split">Side by side</option><option value="unified">Unified</option></select></label></div><div id="${s.pre}fbChanges"></div>`;
+  fb$(s, 'fbDiffLayout').value = s.layout || 'split';
+  fb$(s, 'fbDiffLayout').onchange = () => { s.layout = fb$(s, 'fbDiffLayout').value; fb$(s, 'fbChanges').classList.toggle('unified', s.layout === 'unified'); };
+  fb$(s, 'fbChanges').classList.toggle('unified', s.layout === 'unified');
+  if (!groups.length) fb$(s, 'fbChanges').innerHTML = '<div class="empty">No recorded changes in this selection.</div>';
   groups.forEach(([path, events]) => {
     const stateKey = s.project + ':' + path;
     const record = fbStore('review:' + stateKey) || {};
@@ -584,7 +661,7 @@ function fbPaintChanges(s) {
       card.dataset.loaded = '1'; record.viewed = latest; save();
       fbLoadDiff(s, path, events, card.querySelector('.fb-diff-host'));
     };
-    paintReview(); $('fbChanges').append(card);
+    paintReview(); fb$(s, 'fbChanges').append(card);
   });
 }
 async function fbLoadDiff(s, path, events, host) {
@@ -622,11 +699,12 @@ async function fbLoadDiff(s, path, events, host) {
   } catch (e) { if (host.isConnected) host.textContent = 'Comparison unavailable: ' + e.message; }
 }
 function fbActivity(d) {
-  const s = filesBrowser;
-  if (!s || !fbCurrent(s)) return;
+  for (const s of fbLive()) fbActivityOne(s, d);
+}
+function fbActivityOne(s, d) {
   if (d.project && d.project !== s.project) return;
   // The echo of a rename, copy or delete made here: the list already shows it.
   if (d.path && (s.ownOps || []).some(o => o.until > Date.now() && fbUnder(d.path, o.path))) return;
   // Never replace a review or move focus under the reader. Refresh is explicit.
-  $('fbNotice').textContent = 'New file activity is available. Refresh to include it; your current review stays in place.';
+  fb$(s, 'fbNotice').textContent = 'New file activity is available. Refresh to include it; your current review stays in place.';
 }

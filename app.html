@@ -267,11 +267,6 @@ body.side-layout.file-side-open > #rightFiles { display: flex; grid-column: 3; g
 #rightFileList .ag-row.current { background: var(--surface-2); }
 .ag-file .ag-file-open { border: 0; background: transparent; padding: 0; color: inherit; font: inherit; text-align: left; min-height: 30px; }
 .ag-file-open:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
-@media (min-width: 701px) and (max-width: 1100px) {
-  body.side-layout.file-side-open { --right-w: 0px; }
-  body.side-layout.file-side-open > #rightFiles { border-left: 0; }
-  body.side-layout #rightFilePanel { position: fixed; z-index: 50; top: 0; bottom: 0; right: 0; width: min(288px, calc(100vw - 112px)); background: var(--panel-bg); border-left: 1px solid var(--panel-border); box-shadow: -8px 0 24px var(--shadow-color); }
-}
 body.side-layout > header { grid-column: 2; }
 body.side-layout > main { grid-column: 2; grid-row: 2; min-height: 0; }
 body.side-layout > #side { display: flex; grid-column: 1; grid-row: 1 / 3; flex-direction: row; min-height: 0; background: var(--panel-bg); border-right: 1px solid var(--panel-border); }
@@ -2110,8 +2105,6 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
   body.phone-shell #agentsPop .ag-row { min-height: 52px; }
   body.phone-shell #agentsPop .ag-row.current { background: var(--surface-2); }
   body.phone-shell #agentsPop .ag-row.current .ag-title { color: var(--accent); }
-  body.phone-shell.phone-files > #rightFiles { display: flex; flex-direction: column; position: fixed; top: 0; left: 0; right: 0; bottom: var(--phone-bar-h); z-index: 47; background: var(--bg); }
-  body.phone-shell.phone-files #rightFilePanel { flex: 1 1 auto; min-height: 0; }
   body.phone-shell #rightFileList { padding: 0 4px 8px; overscroll-behavior: contain; }
   body.phone-shell .file-scope-switch { padding-top: 8px; }
   body.phone-shell .file-scope-switch button { min-height: 38px; }
@@ -2586,6 +2579,8 @@ if (!window.ListGroups) window.ListGroups = (() => {
 <link rel="stylesheet" href="/ask-bubble.css">
 <script src="/pair.js"></script>
 <link rel="stylesheet" href="/pair.css">
+<script src="/beside.js"></script>
+<link rel="stylesheet" href="/beside.css">
 <script src="/collab-client.js"></script>
 <script src="/people.js"></script>
 <link rel="stylesheet" href="/people.css">
@@ -2689,13 +2684,10 @@ function setRouteKind(kind) {
   // (Guarded: a route set while the page script is still starting comes
   // before the counter exists.)
   if (kind !== 'conversation') { try { conversationLoadSeq++; } catch {} }
-  // A file placed beside a conversation (design/83) stays through a move to
-  // a conversation: the panel it sits in decides (it follows its conversation).
-  // It also stays for a new conversation started beside it (Pair.newConversation).
-  const besideFile = (kind === 'conversation' || (kind === 'draft' && window.Pair && Pair.intoDraft()))
-    && typeof fileWs !== 'undefined' && fileWs && fileWs.placement === 'beside';
-  // The artifact panel belongs to its conversation (design/67).
-  if (kind !== 'conversation' && !besideFile && window.Artifacts) Artifacts.onLeaveConversation();
+  // A file placed beside (design/83, 104) stays through any move of the
+  // middle: Beside decides whether its tab stays on screen (pinned, or
+  // following the place it was opened in), and lets go of it if not.
+  const besideFile = typeof fileWs !== 'undefined' && fileWs && fileWs.placement === 'beside';
   // Capture before the route resets scroll or replaces the conversation DOM.
   rememberConversationPosition();
   navRememberScroll();
@@ -4398,13 +4390,14 @@ function renderSidebarProjects() {
 const SIDE_PANELS = ['inbox'];
 let rightFilesMode = agentSecState.filePanel === 'files' ? 'files' : 'recent-files';
 let rightFilesView = ['made', 'artifacts', 'programs'].includes(agentSecState.fileView) ? agentSecState.fileView : 'files';
-let rightFilesOpen = agentSecState.filePanelOpen === true;
+// On screen or not: Beside says (beside.js); the old column's "open" becomes its lists tab.
+let rightFilesOpen = false;
 if (['files', 'recent-files'].includes(agentSecState.panel)) {
   rightFilesMode = agentSecState.panel;
-  rightFilesOpen = true;
   agentSecState.filePanel = rightFilesMode;
   agentSecState.filePanelOpen = true;
 }
+if (agentSecState.filePanelOpen === true && window.Beside) Beside.adoptLists(rightFilesView);
 if (agentSecState.panel !== 'inbox') {
   agentSecState.panel = 'inbox';
   saveAgentSecState();
@@ -4424,25 +4417,53 @@ function setSidePanel(id, { remember = true } = {}) {
   paintSideRail();
   renderAgentsPop(false);
 }
+// The lists (Files, Made, Artifacts, Programs) are a tab of Beside
+// (beside.js, design/104): the panel is moved into Beside's body while that
+// tab shows, and back into its hidden aside (#rightFiles) when it does not.
+// rightFilesOpen says the lists are on screen.
 function paintRightFilesFrame() {
   const phone = typeof phoneShellOn === 'function' && phoneShellOn();
-  const visible = (sideLayoutOn() || phone) && rightFilesOpen;
-  document.body.classList.toggle('file-side-open', sideLayoutOn() && rightFilesOpen);
-  // The frame follows the layout it is in now, not the way it got here: a
-  // phone shows it only while open; the column layout always keeps it (CSS
-  // shows it with file-side-open); the top bar has none. Deriving it here
-  // keeps a phone-width detour from leaving it hidden on a wide screen.
-  $('rightFiles').hidden = phone ? !visible : !sideLayoutOn();
-  $('rightFilePanel').hidden = !visible;
-  $('filesToggle').setAttribute('aria-expanded', String(visible));
+  document.body.classList.remove('file-side-open');
+  $('rightFiles').hidden = true;
+  $('rightFilePanel').hidden = !rightFilesOpen;
   if (phone) paintPhoneBar();
+}
+function mountLists(host, view) {
+  if (view && view !== rightFilesView) setRightViewQuiet(view);
+  if ($('rightFilePanel').parentElement !== host) host.replaceChildren($('rightFilePanel'));
+  rightFilesOpen = true;
+  paintRightFilesFrame();
+  renderRightFiles();
+}
+function parkLists() {
+  const panel = $('rightFilePanel');
+  if (panel.parentElement !== $('rightFiles')) $('rightFiles').append(panel);
+  rightFilesOpen = false;
+  paintRightFilesFrame();
+}
+if (window.Beside) Beside.onLists(on => {
+  if (on === rightFilesOpen) return;
+  rightFilesOpen = on;
+  agentSecState.filePanelOpen = on; saveAgentSecState();
+  paintRightFilesFrame();
+  if ($('convChanges') && window.Made) Made.paintChip?.();
+});
+function setRightViewQuiet(view) {
+  rightFilesView = ['made', 'artifacts', 'programs'].includes(view) ? view : 'files';
+  agentSecState.fileView = rightFilesView; saveAgentSecState();
 }
 function setRightFiles(mode, open = true) {
   if (!['files', 'recent-files'].includes(mode)) return;
   if (mode !== rightFilesMode) $('rightFileList').scrollTop = 0;
-  rightFilesMode = mode; rightFilesOpen = open;
+  rightFilesMode = mode;
   agentSecState.filePanel = mode; agentSecState.filePanelOpen = open;
-  saveAgentSecState(); paintRightFilesFrame(); renderRightFiles();
+  saveAgentSecState();
+  if (window.Beside) {
+    if (open) Beside.showLists(rightFilesView);
+    else if (rightFilesOpen || Beside.tabs().some(t => t.spec.kind === 'lists')) Beside.hideLists();
+    else paintRightFilesFrame();
+  } else { rightFilesOpen = open; paintRightFilesFrame(); }
+  renderRightFiles();
   // Resizing the workspace must also resize timeline geometry, not just CSS.
   window.dispatchEvent(new Event('resize'));
 }
@@ -4466,7 +4487,7 @@ function fileActivityHtml(project) {
 }
 let rightFilesScopeKey = null;
 function renderRightFiles() {
-  if (!(sideLayoutOn() || (typeof phoneShellOn === 'function' && phoneShellOn())) || !rightFilesOpen) return;
+  if (!rightFilesOpen) return;
   const host = $('rightFileList');
   const project = rightFilesMode === 'recent-files' ? '' : workspaceScope();
   const scopeKey = rightFilesMode + ':' + project;
@@ -5170,11 +5191,13 @@ $('rightFileList').onclick = $('agentsPop').onclick = async e => {
     return;
   }
   const fileRow = e.target.closest('.ag-file[data-path]');
-  // From the right panel, beside the conversation on screen, a file opens in
-  // the same column (design/83), and ← goes back to the list.
-  if (fileRow && e.currentTarget === $('rightFileList') && window.Pair && viewKind === 'conversation' && activeRel && !phoneLayout()) {
+  // From the lists, which are a tab of Beside (design/104), a file opens in
+  // that tab and ‹ goes back to the list; Shift+click: in the middle. On a
+  // phone the lists are a destination of the bottom bar (design/58): a file
+  // opens as the page, and the sheet closes, as before.
+  if (fileRow && e.currentTarget === $('rightFileList') && window.Beside && !e.shiftKey && $('artifactPane')?.contains(fileRow) && !phoneShellOn()) {
     e.stopPropagation();
-    Pair.openFile(fileRow.dataset.path, { key: activeRel, project: fileRow.dataset.project || null, fromList: true });
+    Beside.open({ kind: 'document', path: fileRow.dataset.path, project: fileRow.dataset.project || null, key: activeRel || null }, { origin: 'beside' });
     return;
   }
   if (fileRow) {
@@ -10006,7 +10029,7 @@ async function openPathInApp(ctx, quiet = false) {
     if (!quiet) errToast(info.error);
     return false;
   }
-  if (info.kind === 'directory') return openFolderInApp(info, { quiet, key: ctx.key });
+  if (info.kind === 'directory') return openFolderInApp(info, { quiet, key: ctx.key, page: !!ctx.page, newTab: !!ctx.newTab, inBeside: besideOrigin(ctx) });
   if (info.preview === 'image') {
     openMediaLightbox('/api/path/content?' + query, info.path);
     return true;
@@ -10022,8 +10045,9 @@ async function openPathInApp(ctx, quiet = false) {
   const line = Number((String(ctx.path).match(/:(\d+)(?::\d+)?$/) || [])[1]) || null;
   const project = s ? projectOf(s) : currentProjectName();
   // From the conversation on screen, a file opens beside it (design/83):
-  // the conversation stays; full page is the menu's, or Shift+click.
-  if (fromConversation && !ctx.page && window.Pair) return Pair.openFile(info.path, { key: fromConversation, line, project });
+  // the conversation stays; full page is the menu's, or Shift+click. A
+  // link inside Beside opens in its tab (design/104).
+  if ((fromConversation || besideOrigin(ctx)) && !ctx.page && window.Pair) return Pair.openFile(info.path, { key: fromConversation || activeRel || null, line, project, newTab: !!ctx.newTab, origin: besideOrigin(ctx) ? 'beside' : undefined });
   if (fromConversation) rememberConversationFileReturn(ctx.button);
   openLiveFile(info.path, { project, back: fromConversation || currentHash, line });
   return true;
@@ -10048,15 +10072,22 @@ async function keepPathOpen(ctx, on) {
 // from the laptop and the phone, where "Show in folder" (a desktop action
 // on the server's own screen) does not. `info` is a /api/path/info answer;
 // a folder outside every project's repositories has no in-app view.
-function openFolderInApp(info, { quiet = false, key = '' } = {}) {
+function openFolderInApp(info, { quiet = false, key = '', page = false, newTab = false, inBeside = false } = {}) {
   const at = info.browse;
   if (!at) {
     if (!quiet) errToast('this folder is outside every project — use Show in folder' + (info.hostActions ? '' : ' on the server'));
     return false;
   }
   const conv = viewKind === 'conversation' && key === activeRel ? key : '';
+  // From the conversation on screen (or inside Beside), the folder opens
+  // beside (design/104); Shift+click and the menu: in the middle.
+  if ((conv || inBeside) && !page && typeof Beside !== 'undefined') { Beside.openFolder(at.project, { conv, root: at.root, dir: at.dir, origin: inBeside ? 'beside' : 'middle', newTab }); return true; }
   showFilesBrowser(at.project, { root: at.root, dir: at.dir, conv });
   return true;
+}
+// A link clicked inside Beside: it opens in Beside's tab (design/104).
+function besideOrigin(ctx) {
+  return !!(ctx && ctx.button && ctx.button.closest && ctx.button.closest('#artifactPane'));
 }
 
 async function runNativePathAction(ctx, action) {
@@ -10083,6 +10114,16 @@ async function primaryFileAction(ctx) {
   if (!opened && ctx.change) viewFileChange(ctx);
 }
 
+// A middle click on a file link: a new tab beside, as a browser opens a link in a new tab.
+document.addEventListener('auxclick', e => {
+  if (e.button !== 1 || !window.Beside) return;
+  const button = e.target.closest?.('[data-transcript-path], [data-file-diff]');
+  if (!button || !(viewKind === 'conversation' || besideOrigin({ button }))) return;
+  e.preventDefault(); e.stopPropagation();
+  const ctx = fileControlContext(button);
+  if (ctx.change && !FILE_PREVIEW_PATH.test(ctx.path)) return;
+  openPathInApp({ ...ctx, newTab: true });
+}, true);
 function handleFileControlClick(e, button) {
   e.stopPropagation();
   e.preventDefault();
@@ -10104,13 +10145,14 @@ function openFileActionMenu(ctx, x, y) {
   const image = FILE_IMAGE_PATH.test(ctx.path), preview = FILE_PREVIEW_PATH.test(ctx.path);
   const items = [];
   // From the conversation on screen, things open beside it; full page is one item away.
-  const beside = !!window.Pair && viewKind === 'conversation' && ctx.key === activeRel;
+  const beside = !!window.Pair && ((viewKind === 'conversation' && ctx.key === activeRel) || besideOrigin(ctx));
   const change = () => {
     items.push([beside ? 'View this change beside' : 'View this change', () => viewFileChange(ctx)]);
     if (beside) items.push(['View this change full page', () => viewFileChange({ ...ctx, page: true })]);
   };
   if (ctx.change && !preview) change();
   items.push([image ? 'Open image in Chattering' : beside ? 'Open the file beside' : 'Open current file in Chattering', () => openPathInApp(ctx)]);
+  if (beside && !image && window.Beside) items.push(['Open in a new tab beside', () => openPathInApp({ ...ctx, newTab: true })]);
   if (beside && !image) items.push(['Open the file full page', () => openPathInApp({ ...ctx, page: true })]);
   if (ctx.change && preview) change();
   // Keep it under Open files without leaving the page (open-files.js).
@@ -17973,7 +18015,6 @@ function applyLayout() {
   if (on) {
     document.body.classList.add('side-layout');
     side.hidden = false;
-    $('rightFiles').hidden = false;
     paintRightFilesFrame();
     $('sideAgents').appendChild(pop);
     $('sideFootSlot').append($('settingsBtn'));
@@ -18023,23 +18064,26 @@ function setSideFold(fold) {
 }
 $('sideFold').onclick = e => { e.stopPropagation(); setSideFold(true); $('sideUnfold').focus({ preventScroll: true }); };
 $('sideUnfold').onclick = e => { e.stopPropagation(); setSideFold(false); $('sideHome').focus({ preventScroll: true }); };
+// The corner square: Beside shown or put away (beside.js); with nothing on
+// the desk here, the lists open.
 $('filesToggle').onclick = e => {
   e.stopPropagation();
+  if (window.Beside) { Beside.toggle(); return; }
   setRightFiles(rightFilesMode, true);
-  $('rightFileClose').focus({ preventScroll: true });
 };
 document.querySelectorAll('[data-file-scope]').forEach(button => button.onclick = e => {
   e.stopPropagation();
   setRightFiles(button.dataset.fileScope, true);
 });
 function setRightView(view) {
-  rightFilesView = ['made', 'artifacts', 'programs'].includes(view) ? view : 'files';
-  agentSecState.fileView = rightFilesView; saveAgentSecState();
+  setRightViewQuiet(view);
   $('rightFileList').scrollTop = 0;
   setRightFiles(rightFilesMode, true);
 }
 document.querySelectorAll('[data-right-view]').forEach(button => button.onclick = e => { e.stopPropagation(); setRightView(button.dataset.rightView); });
+// The lists put away: Beside steps aside with them (their tab stays).
 function closeRightFiles() {
+  if (window.Beside && Beside.listsShowing()) { Beside.toggle(); $('filesToggle').focus({ preventScroll: true }); return; }
   setRightFiles(rightFilesMode, false);
   $('filesToggle').focus({ preventScroll: true });
 }
@@ -18293,7 +18337,7 @@ $('phoneBar').onclick = e => {
     const open = !rightFilesOpen;
     if (open && !$('agentsPop').hidden) toggleAgents(false);
     setRightFiles(rightFilesMode, open);
-    if (open) { $('rightFiles').hidden = false; loadRecentFiles(); }
+    if (open) loadRecentFiles();
   } else if (tab === 'gantt') {
     closePhoneSheets();
     if (!document.body.classList.contains('home')) goHome();
@@ -18921,11 +18965,15 @@ function helpNow() {
     return sections;
   }
 
-  // Something beside the conversation (design/83): which side is wide.
+  // Beside (design/83, 104): its tabs, and which side is wide.
   if (window.Artifacts && Artifacts.state() && !Artifacts.floating()) {
     sections.push({ label: 'beside', keys: [
-      ['alt+\\', window.Pair && Pair.overlay() ? 'the conversation / what is beside it' : 'swap which side is wide'],
-      ['shift+click', 'a file or change in the conversation: full page instead of beside'],
+      ['alt+b', window.Pair && Pair.overlay() ? 'step Beside aside — it stays one tap away' : 'put Beside away — its tabs stay'],
+      ...(window.Beside && Beside.visible().length > 1 ? [['alt+[ / alt+]', 'the tab before / after']] : []),
+      ['alt+\\', window.Pair && Pair.overlay() ? 'the middle / what is beside it' : 'swap which side is wide'],
+      ['click', 'opens where you clicked: inside Beside, in its tab'],
+      ['shift+click', 'opens in the other place: a link in the conversation full page, a file in Beside in the middle'],
+      ['middle click', 'a file link: in a new tab beside · a tab: close it'],
     ] });
   }
   // Open panels sit on top of the view.
@@ -19064,6 +19112,8 @@ const HELP_GLOBAL = [
   ['x / X', 'fold / unfold everything on the screen'],
   ['`', 'fold / unfold the top bar or side panel'],
   ['alt+← / alt+→', 'back / forward through the screens — hold ‹ › for the list'],
+  ['alt+b', 'Beside: the right column — folders, files, PDFs, lists next to your work'],
+  ['alt+shift+b', 'the file or folder in the middle goes beside; the middle goes back'],
   ['a', 'agents'],
   ['j', 'jobs'],
   [',', 'settings'],

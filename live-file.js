@@ -196,6 +196,7 @@ function liveFileHead(ws) {
     <button id="docReload" hidden title="Reload the current disk file">Reload</button>
     <button id="liveHistory" class="lf-wide" title="Recorded versions of this file: read one, or compare two">History</button>
     <button id="liveWithConv" class="lf-wide lf-page-only" title="This file with its conversation beside it: the conversation that opened it or last worked on it">☷ Conversation beside</button>
+    <button id="liveBeside" class="lf-wide lf-page-only" title="Put this file beside, and go back to where you were (the editor moves as it is)">◨ Beside</button>
     <button id="liveAsk" class="lf-wide" title="Ask an agent for a change here: a box opens over the text · ${modKey('K')}">✦ Ask</button>
     ${md ? '<button id="docRun" class="lf-wide" title="Run the cell at the cursor · Ctrl+Enter">▶ Run</button>' : ''}
     ${md && liveFileCanShare() ? '<button id="liveShare" class="lf-wide" title="A link for people to read or edit this document live, from this computer">Share</button>' : ''}
@@ -204,6 +205,7 @@ function liveFileHead(ws) {
       <button id="liveHistoryMenu" class="lf-narrow">History</button>
       <button id="liveAskMenu" class="lf-narrow">✦ Ask for a change (${modKey('K')})</button>
       <button id="liveWithConvMenu" class="lf-narrow lf-page-only">☷ Its conversation beside</button>
+      <button id="liveBesideMenu" class="lf-narrow lf-page-only">◨ Put it beside</button>
       ${md ? '<button id="docRunMenu" class="lf-narrow">▶ Run this cell</button>' : ''}
       ${md && liveFileCanShare() ? '<button id="liveShareMenu" class="lf-narrow">Share by link…</button>' : ''}
       ${typeof OpenFiles !== 'undefined' ? `<button data-keep-menu="${fgAttr(ws.path)}">${esc(OpenFiles.menuLabel(ws.path))}</button>` : ''}
@@ -259,6 +261,31 @@ function fileWsToPage(ws) {
   if ($('liveBack')) { $('liveBack').onclick = () => liveFileGoBack(ws); const label = $('liveBack').querySelector('.lf-wide'); if (label) label.textContent = liveBackLabel(ws).slice(2); }
   liveFilePlaced(ws);
   try { ws.editor?.focus?.(); } catch {}
+}
+
+// The page → Beside (design/104): the file goes beside and the middle goes
+// back to where you were before it. An editor moves as it is (the same
+// undo history, cursor, shared text and running cells); a PDF, a picture
+// or a video opens in Beside's reader, at the same page or time.
+async function fileWsToBeside(ws) {
+  if (!ws || fileWs !== ws || ws.placement === 'beside' || typeof Beside === 'undefined') return false;
+  const spec = { path: ws.path, project: ws.project || null };
+  const reader = ['pdf', 'image', 'video'].includes(ws.kind);
+  const live = ws.kind === 'ink' ? !!ws.inkView : ws.kind === 'md' ? typeof docState !== 'undefined' && !!docState : !!ws.editor;
+  const keepsEditor = !reader && ws.mode === 'write' && !!ws.frame && live && !ws.reviewRef;
+  if (keepsEditor) {
+    // The editor leaves the page alive; the route change does not close it.
+    ws.placement = 'beside';
+    ws.besideKey = null;
+    ws.frame.remove();
+  }
+  await Beside.sendFromMiddle({ kind: reader ? 'file' : 'document', ...spec }, () => liveFileGoBackFrom(ws));
+  return !keepsEditor || fileWs === ws;
+}
+// Where a file page goes back to; home when it came from nowhere.
+async function liveFileGoBackFrom(ws) {
+  if (ws.back || ws.browserContext || ws.project) return liveFileGoBack(ws);
+  return typeof goHome === 'function' ? goHome() : null;
 }
 
 async function openLiveFile(pathValue, opts = {}) {
@@ -334,6 +361,7 @@ async function liveFileMountImage(ws) {
       <span id="docStatus" role="status">Opening image…</span>
       <button id="imageFit" aria-pressed="true" title="Fit the image in the panel">Fit</button>
       <button id="imageActual" aria-pressed="false" title="One image pixel per screen CSS pixel; scroll to explore">Actual size</button>
+      <button id="imageBeside" class="lf-page-only" title="Put it beside, and go back to where you were">◨ Beside</button>
       <button id="imageReload" title="Reload the image from disk">Reload</button>
       <a href="${fgAttr(fileViewerURL(ws, true))}" download>Download</a>
     </header>
@@ -362,6 +390,7 @@ async function liveFileMountImage(ws) {
   fit.onclick = () => sizing(false); actual.onclick = () => sizing(true);
   $('liveBack').onclick = () => liveFileGoBack(ws);
   $('imageReload').onclick = () => liveFileMountImage(ws);
+  $('imageBeside').onclick = () => fileWsToBeside(ws);
   const fail = detail => {
     if (!current()) return;
     image.hidden = true; message.hidden = false;
@@ -414,6 +443,7 @@ function liveFileAfterMount(ws) {
   for (const id of ['liveHistory', 'liveHistoryMenu']) $(id).onclick = () => liveFileHistory(ws);
   for (const id of ['liveAsk', 'liveAskMenu']) $(id).onclick = () => fileWsToggleAsk(true);
   for (const id of ['liveWithConv', 'liveWithConvMenu']) if ($(id)) $(id).onclick = e => { e.currentTarget.closest('details')?.removeAttribute('open'); if (typeof Pair !== 'undefined') Pair.withConversation(ws); };
+  for (const id of ['liveBeside', 'liveBesideMenu']) if ($(id)) $(id).onclick = e => { e.currentTarget.closest('details')?.removeAttribute('open'); fileWsToBeside(ws); };
   if ($('liveBrowse')) $('liveBrowse').onclick = () => liveFileBrowseFolder(ws);
   // The help follows the view: it lists this file's keys, the editor's own included.
   $('liveKeys').onclick = e => { e.currentTarget.closest('details')?.removeAttribute('open'); toggleHelpOverlay(); };

@@ -401,7 +401,6 @@
   // the same element either way, so a page or a video keeps running when it
   // moves between the two.
   let pane = null, state = null, paneBridge = null, resolveSeq = 0, floating = false;
-  const stateKey = key => 'chattering.artifact.v1:' + key;
   const FLOAT_KEY = 'chattering.artifact.float', FLOAT_MIN_W = 220, FLOAT_MIN_H = 150;
   // floatWant: where the person put it (saved per device); floatGeo: that,
   // fitted to the window now. A window made smaller and big again gives the
@@ -443,18 +442,20 @@
     // or a document artifact at its current version) or a change. It is
     // not floated or reloaded; it goes full page.
     const editing = !!state && (state.kind === 'document' || !!state.editing);
-    const live = editing || (!!state && state.kind === 'change');
+    // Live things (an editor, a change, a folder, the lists) are not floated or reloaded.
+    const navigator = !!state && (state.kind === 'folder' || state.kind === 'lists');
+    const live = editing || navigator || (!!state && state.kind === 'change');
     pane.classList.toggle('art-live', live);
+    pane.dataset.kind = state ? state.kind : '';
     pane.querySelector('[data-art-act="float"]').hidden = live;
-    pane.querySelector('[data-art-act="page"]').hidden = !editing;
+    const page = pane.querySelector('[data-art-act="page"]');
+    page.hidden = !(editing || (state && window.Beside && Beside.canMiddle(state)));
+    page.title = state && state.kind === 'folder' ? 'Open this folder in the middle, full page (Shift+click opens a file there)' : 'Open it full page, in the middle (an editor moves as it is)';
     pane.querySelector('[data-art-act="full"]').hidden = live;
     pane.querySelector('[data-art-act="reload"]').hidden = live;
     // A file has its own ✦ Ask (the change box); the panel's "mention it" is for the rest.
-    pane.querySelector('[data-art-act="ask"]').hidden = editing;
+    pane.querySelector('[data-art-act="ask"]').hidden = editing || navigator;
     pane.querySelector('[data-art-act="publish"]').hidden = live || editing || !(state && state.publishable);
-    const list = pane.querySelector('[data-art-act="list"]');
-    list.hidden = !(state && state.fromList && LIST_NAMES[state.fromList]);
-    if (!list.hidden) { list.textContent = '← ' + LIST_NAMES[state.fromList]; list.title = 'Back to ' + LIST_NAMES[state.fromList]; }
     const btn = pane.querySelector('[data-art-act="float"]');
     btn.textContent = floating ? '⇥' : '⧉';
     btn.title = floating ? 'Put back beside the conversation' : 'Float: a small window that stays while you read on';
@@ -472,13 +473,9 @@
     if (on === floating) return;
     floating = on;
     // Docking takes the right column, where only one panel fits.
-    if (!on) closeRightFiles();
     applyMode();
+    if (window.Beside) Beside.render();
     window.dispatchEvent(new Event('resize'));
-  }
-  function closeRightFiles() {
-    if (typeof rightFilesOpen !== 'undefined' && rightFilesOpen && typeof setRightFiles === 'function') setRightFiles(rightFilesMode, false);
-    document.body.classList.remove('file-side-open');
   }
   window.addEventListener('resize', () => { if (floating && floatWant) placeFloat(floatWant); });
   // The phone's bar comes and goes with the layout, which the browser reports
@@ -497,12 +494,13 @@
     if (pane) return pane;
     pane = document.createElement('aside');
     pane.id = 'artifactPane';
-    pane.setAttribute('aria-label', 'Artifact');
-    pane.innerHTML = `<div class="art-resize" role="separator" aria-orientation="vertical" aria-label="Resize the artifact panel" tabindex="0"></div>
+    pane.setAttribute('aria-label', 'Beside');
+    pane.innerHTML = `<div class="art-resize" role="separator" aria-orientation="vertical" aria-label="Resize Beside" tabindex="0"></div>
       <div class="art-float-grip" role="separator" aria-label="Resize the floating window" tabindex="0"></div>
+      <div class="bs-strip"></div>
       <div class="art-head">
-        <button type="button" class="art-close" data-art-act="close" title="Close the artifact panel" aria-label="Close">✕</button>
-        <button type="button" class="art-list" data-art-act="list" hidden></button>
+        <button type="button" class="art-close" data-art-act="close" title="Close this tab" aria-label="Close">✕</button>
+        <button type="button" class="bs-back" data-art-act="back" hidden><span aria-hidden="true">‹</span><span class="bs-back-name"></span></button>
         <div class="art-titles"><b class="art-title"></b><small class="art-sub"></small></div>
         <span class="art-versions" role="group" aria-label="Versions">
           <button type="button" data-art-act="older" aria-label="Older version">‹</button>
@@ -510,24 +508,26 @@
           <button type="button" data-art-act="newer" aria-label="Newer version">›</button>
         </span>
         <span class="art-tools">
+          <button type="button" class="bs-pin-btn" data-art-act="pin" aria-pressed="false" hidden>📌</button>
           <button type="button" class="art-pair" data-art-act="pair" hidden aria-haspopup="dialog" aria-expanded="false"></button>
           <button type="button" data-art-act="publish" hidden title="Put this version on the web at its own address: a frozen copy, signed by this computer (design/92)">Publish</button>
           <button type="button" data-art-act="ask" title="Ask about this artifact in the message box">Ask</button>
           <button type="button" data-art-act="reload" title="Reload" aria-label="Reload">↻</button>
           <a class="art-newtab" target="_blank" rel="noopener noreferrer" title="Open in its own browser tab" aria-label="Open in a new tab">↗</a>
           <button type="button" data-art-act="float"></button>
-          <button type="button" data-art-act="page" hidden title="Open it full page, in place of the conversation (the editor moves as it is)">full page</button>
+          <button type="button" data-art-act="page" hidden title="Open it full page, in the middle (an editor moves as it is)">full page</button>
           <button type="button" data-art-act="tilt" aria-pressed="false">⇄</button>
           <button type="button" data-art-act="full" title="Full screen" aria-label="Full screen">⤢</button>
         </span>
       </div>
       <p class="art-banner" hidden></p>
-      <div class="art-body"></div>`;
+      <div class="art-body" role="tabpanel" aria-label="What is beside"></div>`;
     document.body.appendChild(pane);
     pane.addEventListener('click', e => {
       const act = e.target.closest('[data-art-act]')?.dataset.artAct;
       if (act === 'close') closePanel();
-      else if (act === 'list') backToList();
+      else if (act === 'back') { if (window.Beside) Beside.back(); }
+      else if (act === 'pin') { if (window.Beside) Beside.togglePin(); }
       else if (act === 'tilt') { if (window.Pair) Pair.toggle(); }
       else if (act === 'pair') { if (window.Pair) Pair.pickConversation(e.target.closest('[data-art-act]')); }
       else if (act === 'page') toPage();
@@ -585,85 +585,90 @@
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && pane.classList.contains('art-max')) pane.classList.remove('art-max'); });
     return pane;
   }
+  // ✕ (and Artifacts.closePanel()): the tab shown closes (design/104).
   function closePanel() {
-    if (state && state.key) localStorage.removeItem(stateKey(state.key));
+    if (window.Beside) { Beside.close(); return; }
     hidePanel();
   }
-  // ← Made / Files: the list this was opened from, in the same column.
-  const LIST_NAMES = { made: 'Made', files: 'Files', artifacts: 'Artifacts', programs: 'Programs' };
-  function backToList() {
-    const view = state && state.fromList;
-    closePanel();
-    if (view && typeof setRightFiles === 'function' && typeof rightFilesMode !== 'undefined') {
-      if (typeof rightFilesView !== 'undefined' && LIST_NAMES[view]) { try { rightFilesView = view; } catch {} }
-      setRightFiles(rightFilesMode, true);
-    }
-  }
-  // "full page": the file leaves the panel for the page, as it is.
+  // "full page": the thing shown goes to the middle (an editor moves as it is).
   function toPage() {
+    if (window.Beside && Beside.toMiddle()) return;
     const file = state && (state.kind === 'document' ? state.path : state.editing);
     if (!file) return;
     if (typeof fileWsToPage === 'function' && typeof fileWs !== 'undefined' && fileWs && fileWs.path === file && fileWs.placement === 'beside') fileWsToPage(fileWs);
     else if (typeof openLiveFile === 'function') openLiveFile(file, { project: state.project || null });
   }
-  // What the panel shows beside a conversation, kept for when it comes back.
+  // The conversation `key` will find `spec` beside it when it comes on screen.
   function remember(key, spec) {
     if (!key || !spec) return;
-    try { localStorage.setItem(stateKey(key), JSON.stringify(spec)); } catch {}
+    if (window.Beside) Beside.remember(key, spec);
   }
   // The file beside is paired with another conversation (design/83, "which
-  // conversation"): the panel now belongs to `key`, the editor stays as it
+  // conversation"): the tab now belongs to `key`, the editor stays as it
   // is. A document artifact being edited becomes a plain file: its versions
-  // belong to the conversation that made it. The conversation left keeps
-  // its own memory, like any conversation left with something beside it.
+  // belong to the conversation that made it.
   function rekey(key) {
     if (!state || !key) return;
     const file = state.kind === 'document' ? state.path : state.editing;
     if (!file) return;
     state = state.kind === 'document'
-      ? { ...state, key, fromList: null }
-      : { kind: 'document', key, path: file, title: String(file).split(/[\\/]/).pop(), project: null, fromList: null, version: null, resolved: null };
-    if (!/^draft:/.test(key)) remember(key, savedSpec(state));
+      ? { ...state, key }
+      : { kind: 'document', key, path: file, title: String(file).split(/[\\/]/).pop(), project: null, version: null, resolved: null };
+    if (window.Beside) {
+      const a = Beside.active();
+      if (a && a.spec.kind !== 'document') Beside.update({ kind: 'document', path: file, title: state.title, project: null, key });
+      Beside.rekey(key);
+    }
     applyMode();
     render(false);
   }
-  function savedSpec(spec) {
-    if (spec.kind === 'files') return { path: spec.path, title: spec.title, type: spec.type };
-    if (spec.kind === 'document') return { kind: 'document', path: spec.path, title: spec.title, project: spec.project || null };
-    return null;
-  }
   // spec: { kind: 'files', key, path, title, type }, { kind: 'html', key,
-  // title, html, site } or { kind: 'media', key, title, src } (a picture).
-  // opts.float: open floating (else it keeps the mode it is in).
-  async function openPanel(spec, opts = {}) {
+  // title, html, site }, { kind: 'media', key, title, src } (a picture),
+  // { kind: 'document', path }, { kind: 'file', path } (a PDF, a picture, a
+  // video), { kind: 'folder', project, dir… }, { kind: 'lists', view }.
+  // It goes to Beside (beside.js), which decides the tab; opts.float: open
+  // floating (else it keeps the mode it is in).
+  function openPanel(spec, opts = {}) {
+    if (!window.Beside) return show(spec, opts);
+    const tab = Beside.open(spec, opts);
+    if (tab && opts.float != null && spec.kind !== 'document' && spec.kind !== 'change') setFloating(!!opts.float);
+    return Promise.resolve(tab);
+  }
+  // Draw `spec` in the panel: Beside's tab shown. The same thing again (a
+  // tab chosen again, a conversation coming back) keeps what is on screen,
+  // the editor above all. opts.readOnly: a file's editor is elsewhere (one
+  // file is edited at a time); a copy to read is shown.
+  async function show(spec, opts = {}) {
     ensurePane();
-    await loadConfig().catch(() => {});
+    // Only what is drawn on the preview address needs its configuration:
+    // a file, a folder or the lists show at once.
+    if (spec.kind === 'files' || spec.kind === 'html') await loadConfig().catch(() => {});
     const before = state;
-    // The same thing again (a card clicked twice, a conversation coming back):
-    // keep what is on screen, the editor above all.
-    const same = before && before.kind === spec.kind && before.key === spec.key && (before.path || '') === (spec.path || '')
-      && (before.call || '') === (spec.call || '') && spec.kind !== 'html' && spec.kind !== 'media';
-    // A list in the right column was open: this replaces it, and ← goes back to it.
-    const listOpen = typeof rightFilesOpen !== 'undefined' && rightFilesOpen && document.body.classList.contains('file-side-open');
-    const fromList = spec.fromList || listOpen ? (typeof rightFilesView !== 'undefined' ? rightFilesView : 'files') : (same ? before.fromList : null);
-    // A file shown before is let go (closed, or parked if kept) unless it is the one shown next.
-    const keeps = p => spec.kind === 'document' && spec.path === p;
-    if (window.Pair && before && before.kind === 'document' && !keeps(before.path)) Pair.release(before);
-    else if (window.Pair && before && before.editing && !same && !keeps(before.editing)) Pair.release({ kind: 'document', path: before.editing });
-    state = same ? { ...before, ...spec, fromList, version: before.version, resolved: before.resolved } : { ...spec, fromList, version: null, resolved: null };
-    // The editor and a change live beside the conversation, never floating.
-    if (spec.kind === 'document' || spec.kind === 'change') floating = false;
+    const same = before && before.kind === spec.kind && (before.key || '') === (spec.key || '') && (before.path || '') === (spec.path || '')
+      && (before.call || '') === (spec.call || '') && (before.project || '') === (spec.project || '') && (before.view || '') === (spec.view || '')
+      && !!before.readOnly === !!opts.readOnly && spec.kind !== 'html' && spec.kind !== 'media';
+    // What the panel showed is let go (an editor closed or parked, a folder,
+    // the lists put back) unless it is the one shown next.
+    if (before && !same) letGo(before, spec);
+    state = same ? { ...before, ...spec, version: before.version, resolved: before.resolved, readOnly: !!opts.readOnly }
+      : { ...spec, version: null, resolved: null, readOnly: !!opts.readOnly };
+    // The editor, a change, a folder and the lists live docked, never floating.
+    if (['document', 'change', 'folder', 'lists'].includes(spec.kind)) floating = false;
     else if (opts.float != null) floating = !!opts.float;
-    // One right-hand panel at a time: docked, the artifact replaces the Files
-    // list (which opens again over it from its own button). Floating, it
-    // takes no column and both stay.
-    if (!floating) closeRightFiles();
-    const saved = spec.key && savedSpec(spec);
-    if (saved) remember(spec.key, saved);
     applyMode();
-    if (window.Pair && !floating) Pair.opened();
+    if (window.Pair && !floating) { if (opts.focus === false) Pair.apply(); else Pair.opened(); }
     await render(!same);
   }
+  // The panel stops showing `was` (another thing comes, or it hides).
+  function letGo(was, next = null) {
+    const keeps = p => next && next.kind === 'document' && next.path === p && !next.readOnly;
+    if (window.Pair && was.kind === 'document' && !was.readOnly && !keeps(was.path)) Pair.release(was);
+    else if (window.Pair && was.editing && !keeps(was.editing)) Pair.release({ kind: 'document', path: was.editing });
+    if (was.kind === 'file' && fileReader) { fileReader(); fileReader = null; }
+    if (was.kind === 'folder' && typeof fbDisposeBeside === 'function') fbDisposeBeside();
+    if (was.kind === 'lists' && typeof parkLists === 'function') parkLists();
+  }
+  let fileReader = null;
   function stepVersion(dir) {
     const r = state && state.resolved;
     if (!r) return;
@@ -683,7 +688,7 @@
     if (!state || !pane) return;
     const seq = ++resolveSeq;
     const body = pane.querySelector('.art-body'), banner = pane.querySelector('.art-banner');
-    pane.querySelector('.art-title').textContent = state.title || 'Artifact';
+    pane.querySelector('.art-title').textContent = (window.Beside ? Beside.label(state)[1] : '') || state.title || 'Artifact';
     const vs = pane.querySelector('.art-versions'), newtab = pane.querySelector('.art-newtab');
     banner.hidden = true;
     if (state.kind === 'media') {
@@ -696,12 +701,43 @@
       body.innerHTML = `<div class="art-media"><img alt="${escHtml(state.title || '')}" src="${escHtml(state.src || '')}"></div>`;
       return;
     }
+    pane.querySelector('.art-sub').title = state.path || '';
+    if (state.kind === 'document' && state.readOnly) {
+      vs.hidden = true; newtab.hidden = true;
+      pane.querySelector('.art-sub').textContent = shortPath(state.path) + ' · to read';
+      if (paneBridge) { paneBridge.dispose(); paneBridge = null; }
+      return renderCopy(body, seq);
+    }
     if (state.kind === 'document') {
       vs.hidden = true; newtab.hidden = true;
       pane.querySelector('.art-sub').textContent = shortPath(state.path);
-      pane.querySelector('.art-sub').title = state.path;
       if (paneBridge) { paneBridge.dispose(); paneBridge = null; }
       if (window.Pair) Pair.mountDocument(body, state);
+      return;
+    }
+    if (state.kind === 'file') {
+      vs.hidden = true;
+      newtab.hidden = false; newtab.href = '/api/file/media?' + new URLSearchParams({ path: state.path });
+      pane.querySelector('.art-sub').textContent = shortPath(state.path);
+      if (!reload && fileReader && body.dataset.reader === state.path) return;
+      if (paneBridge) { paneBridge.dispose(); paneBridge = null; }
+      if (fileReader) { fileReader(); fileReader = null; }
+      body.dataset.reader = state.path;
+      if (typeof mountFileReader === 'function') fileReader = mountFileReader(body, { path: state.path });
+      return;
+    }
+    if (state.kind === 'folder') {
+      vs.hidden = true; newtab.hidden = true;
+      pane.querySelector('.art-sub').textContent = (state.project || '') + (state.dir ? ' / ' + state.dir : '');
+      if (paneBridge) { paneBridge.dispose(); paneBridge = null; }
+      if (typeof fbMountBeside === 'function') fbMountBeside(body, state);
+      return;
+    }
+    if (state.kind === 'lists') {
+      vs.hidden = true; newtab.hidden = true;
+      pane.querySelector('.art-sub').textContent = '';
+      if (paneBridge) { paneBridge.dispose(); paneBridge = null; }
+      if (typeof mountLists === 'function') mountLists(body, state.view);
       return;
     }
     if (state.kind === 'change') {
@@ -815,6 +851,32 @@
       body.replaceChildren(div);
     }
   }
+  // A file whose editor is elsewhere: its text, to read, and the way to edit it.
+  async function renderCopy(body, seq) {
+    const path = state.path;
+    body.innerHTML = `<div class="art-read bs-copy"><p class="art-note bs-copy-note" role="status"></p><div class="bs-copy-body">Loading…</div></div>`;
+    const paintNote = () => {
+      const note = body.querySelector('.bs-copy-note');
+      if (!note) return;
+      const other = typeof fileWs !== 'undefined' && fileWs && fileWs.placement !== 'beside' ? fileWs.path : '';
+      const name = p => escHtml(String(p).split(/[\\/]/).pop());
+      note.innerHTML = (other === path ? `<b>${name(path)}</b> is open in the middle. `
+        : other ? `One file is edited at a time, and <b>${name(other)}</b> is open in the middle. ` : '')
+        + `This is ${other === path ? 'it' : 'the file'} as it is on disk, to read. <button type="button" class="bs-copy-edit">Edit it here</button>`;
+      note.querySelector('.bs-copy-edit').onclick = () => { if (window.Beside) Beside.editHere(); };
+    };
+    paintNote();
+    try {
+      const d = await (await fetch('/api/file/read?' + new URLSearchParams({ path }))).json();
+      if (seq !== resolveSeq || !state || state.path !== path || !state.readOnly) return;
+      if (d.error) throw Error(d.error);
+      const host = body.querySelector('.bs-copy-body');
+      if (/\.(md|markdown|mdx|qmd|rmd)$/i.test(path) && typeof mdRender === 'function') host.innerHTML = `<div class="md">${mdRender(d.text, '')}</div>`;
+      else host.innerHTML = `<pre>${escHtml(d.text)}</pre>`;
+    } catch (e) { const host = body.querySelector('.bs-copy-body'); if (host) host.textContent = 'Could not read this file: ' + e.message; }
+    // The file in the middle has its name by now (it opens right after this one closed).
+    paintNote();
+  }
   function askAbout() {
     const box = document.getElementById('agentText');
     if (!box || !state) return;
@@ -856,38 +918,24 @@
     const known = seenArtifacts.get(d.key);
     // Calls a live run already showed stay known.
     seenArtifacts.set(d.key, new Set([...calls.map(m => m.id), ...(known || [])]));
-    // A floating window belongs to no conversation: it stays over this one
-    // and is not replaced by what this one had open last time.
-    if (floating && state && state.key !== d.key) return;
-    // On a phone the panel covers the conversation: it opens only when asked
-    // (the card), never by itself.
-    const narrow = window.matchMedia('(max-width: 700px)').matches;
-    if (narrow && (!state || state.key !== d.key)) { if (state && state.key !== d.key) hidePanel(); return; }
     if (known) {
-      // A new artifact landed while this conversation is open: show it.
+      // A new artifact landed while this conversation is open: show it, or
+      // offer it (design/104: it never takes the screen from what is in use).
       const fresh = calls.filter(m => !known.has(m.id));
       const last = fresh[fresh.length - 1];
       if (last) return showFresh(d.key, last.artifact);
     }
-    if (!state || state.key !== d.key) {
-      // Reopen what was open in this conversation last time.
-      let saved = null;
-      try { saved = JSON.parse(localStorage.getItem(stateKey(d.key)) || 'null'); } catch {}
-      if (saved && saved.path) return openPanel({ kind: saved.kind === 'document' ? 'document' : 'files', key: d.key, ...saved });
-      if (state && state.key !== d.key) hidePanel();
-      return;
-    }
+    // The head moved or the conversation came back: an artifact of it shown
+    // now follows the version at the head.
     if (state && state.key === d.key && state.kind === 'files' && !state.editing) render(false);
   }
-  // A new artifact of the conversation on screen opens beside it; never in
-  // place of a file being edited beside: it is offered instead.
+  // A new artifact of the conversation on screen: beside it, by itself. On a
+  // phone the panel covers the conversation, so it waits behind the pill.
   function showFresh(key, a) {
     const spec = { kind: 'files', key, path: a.path, title: a.title, type: a.type };
-    if (state && state.key === key && (state.kind === 'document' || state.editing) && !(state.editing && state.editing === a.path)) {
-      if (typeof toast === 'function') toast('◧ New: ' + (a.title || a.path) + ' — open it beside', () => openPanel(spec));
-      return;
-    }
-    return openPanel(spec);
+    if (!window.Beside) return show(spec);
+    const narrow = window.matchMedia('(max-width: 700px)').matches;
+    return Beside.open(spec, { auto: true, origin: 'middle', focus: !narrow });
   }
   // Artifacts a live run made in the conversation on screen: the newest one
   // opens, under the rules above, and each is known from then on (the saved
@@ -899,43 +947,45 @@
     const fresh = calls.filter(m => m.artifact.kind === 'files' && !known.has(m.id));
     if (!fresh.length) return;
     for (const m of fresh) known.add(m.id);
-    if (floating && state && state.key !== key) return;
-    if (window.matchMedia('(max-width: 700px)').matches && (!state || state.key !== key)) return;
     showFresh(key, fresh[fresh.length - 1].artifact);
   }
   // The head moved (a card, an arrow, the tree): the version follows.
   function onHeadChange() {
     if (state && state.kind === 'files' && typeof current !== 'undefined' && current && current.key === state.key) { state.version = null; render(false); }
   }
-  // Leaving the conversation hides the panel but keeps it for the return.
-  // Closing a floating window ends it; the next artifact opens docked.
-  function hidePanel() {
+  // Nothing beside here (Beside put away, or no tab follows this place):
+  // the panel goes; Beside keeps its tabs. opts.keepEditor: the file editor
+  // shown leaves with its frame (going full page), it is not closed.
+  function hidePanel({ keepEditor = false } = {}) {
+    // Already away: nothing to undo (this runs at every move of the middle).
+    if (!state && !document.body.classList.contains('artifact-open') && !document.body.classList.contains('artifact-float')) return;
     if (paneBridge) { paneBridge.dispose(); paneBridge = null; }
     const was = state;
     state = null; floating = false;
-    if (was && window.Pair) {
-      if (was.kind === 'document') Pair.release(was);
-      else if (was.editing) Pair.release({ kind: 'document', path: was.editing });
+    if (was) {
+      if (keepEditor && was.kind === 'document') { /* the frame moves on its own */ }
+      else letGo(was);
     }
     document.body.classList.remove('artifact-open', 'artifact-float');
-    if (pane) { pane.querySelector('.art-body').replaceChildren(); pane.classList.remove('art-max', 'art-live'); }
+    if (pane) { if (!keepEditor) pane.querySelector('.art-body').replaceChildren(); pane.classList.remove('art-max', 'art-live'); }
     if (window.Pair) Pair.closed();
   }
-  // The file beside closed by itself (another file opened in its place):
-  // the panel goes too, without closing it a second time.
+  // The file beside closed by itself (another file opened full page): its
+  // tab shows a copy to read (Beside.displaced); without Beside, the panel goes.
   function hideFor(st) {
     if (state !== st) return;
+    if (window.Beside) { Beside.displaced(st.path); return; }
     state = null; floating = false;
     document.body.classList.remove('artifact-open', 'artifact-float');
     if (pane) { pane.querySelector('.art-body').replaceChildren(); pane.classList.remove('art-max', 'art-live'); }
     if (window.Pair) Pair.closed();
   }
-  // A floating window stays over the next page too.
-  function onLeaveConversation() { if (state && !floating) { const keep = state.key; hidePanel(); if (keep) seenArtifacts.delete(keep); } }
+  // Leaving a conversation: Beside decides what stays (beside.js follows the route).
+  function onLeaveConversation() {}
 
   const shortPath = p => typeof shortFilePath === 'function' ? shortFilePath(p) : String(p || '').replace(/^\/home\/[^/]+/, '~');
 
-  window.Artifacts = { wire, salvage, liveStrip, openPanel, closePanel, hideFor, remember, rekey, onConversation, onHeadChange, onLeaveConversation, previewOrigin, hostContext, codePage, setFloating, state: () => state, floating: () => floating };
+  window.Artifacts = { wire, salvage, liveStrip, openPanel, closePanel, show, hide: hidePanel, hideFor, remember, rekey, onConversation, onHeadChange, onLeaveConversation, previewOrigin, hostContext, codePage, setFloating, state: () => state, floating: () => floating };
 })();
 
 /* ---- the artifact library (design/67) --------------------------------------

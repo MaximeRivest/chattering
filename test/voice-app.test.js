@@ -175,7 +175,9 @@ test('always listening: heard, decided, done, asked, dictated, stopped', { timeo
   const order = await ev(rightFiles);
   assert.equal(order.at(-1), 'work/first.md', 'the last one is the one opened first: ' + order.join(', '));
   await hear('open the last file');
-  await until(`fileWs && fileWs.path.endsWith('first.md')`, 'the last file on the right did not open');
+  // The right panel is Beside (design/104): the file opens there, as a copy
+  // to read while second.md is edited in the middle (one editor at a time).
+  await until(`Artifacts.state()?.kind === 'document' && Artifacts.state().path.endsWith('first.md') && fileWs && fileWs.path.endsWith('second.md')`, 'the last file on the right did not open beside');
   assert.deepEqual(await ev(`voice.decisions.at(-1).decision.args`), { place: 'last', list: 'right panel/file' });
 
   // What was said, in Settings: the sentences not understood, and a note on what was meant.

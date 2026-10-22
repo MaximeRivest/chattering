@@ -117,17 +117,19 @@ test('the pair: beside, not in place; one editor that moves; both ways; one side
   assert.equal(await ev(`!!document.querySelector('#artifactPane .art-read')`), false, 'not the read-only page any more');
   await b.screenshot('pair-artifact.png');
 
-  // ---- Made: a row opens beside, and ← Made goes back to the list ----
+  // ---- Made: a tab of Beside (design/104); a row opens in that tab, and ‹ Made goes back to the list ----
   await ev(`Artifacts.closePanel()`);
   await until(`document.querySelector('#convChanges') && !document.querySelector('#convChanges').hidden`, 'no Made chip');
   await ev(`document.querySelector('#convChanges').click()`);
-  await until(`document.querySelector('#rightFileList [data-made-open]')`, 'Made did not list the file');
-  await ev(`document.querySelector('#rightFileList [data-made-open]').click()`);
-  await until(`Artifacts.state()?.kind === 'document' && fileWs && fileWs.placement === 'beside' && !document.body.classList.contains('file-side-open')`, 'the Made row did not open beside');
-  assert.equal(await ev(`document.querySelector('#artifactPane [data-art-act="list"]').textContent`), '← Made');
-  await ev(`document.querySelector('#artifactPane [data-art-act="list"]').click()`);
-  await until(`document.body.classList.contains('file-side-open') && !Artifacts.state() && !fileWs && document.querySelector('#rightFileList .made')`, '← Made did not go back to the list');
-  await ev(`setRightFiles(rightFilesMode, false)`);
+  await until(`Artifacts.state()?.kind === 'lists' && document.querySelector('#artifactPane #rightFileList [data-made-open]')`, 'Made did not list the file, beside');
+  await ev(`(() => { const b = document.querySelector('#rightFileList [data-made-open]'); b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); b.click(); })()`);
+  await until(`Artifacts.state()?.kind === 'document' && fileWs && fileWs.placement === 'beside'`, 'the Made row did not open in its tab');
+  assert.equal(await ev(`Beside.visible().filter(t => t.lists).length`), 1, 'in the same tab, not a new one');
+  assert.equal(await ev(`document.querySelector('#artifactPane [data-art-act="back"] .bs-back-name').textContent`), 'Made');
+  await ev(`document.querySelector('#artifactPane [data-art-act="back"]').click()`);
+  await until(`Artifacts.state()?.kind === 'lists' && rightFilesOpen && document.querySelector('#artifactPane #rightFileList .made')`, '‹ Made did not go back to the list');
+  await ev(`Beside.hideLists()`);
+  await until(`!Beside.tabs().some(t => t.lists)`);
 
   // ---- the ask box's "details", from a file full page: its conversation comes beside it ----
   await ev(`openLiveFile(${JSON.stringify(note)}, { project: null })`);
@@ -137,7 +139,7 @@ test('the pair: beside, not in place; one editor that moves; both ways; one side
 
   // ---- Shift+click and the menu: full page, as before ----
   await until(`document.querySelector('#view [data-transcript-path]')`, 'the conversation beside the file did not draw');
-  assert.match(await ev(`(() => { openFileActionMenu(fileControlContext(document.querySelector('#view [data-transcript-path]')), 10, 10); const t = [...document.querySelectorAll('.file-action-menu [role=menuitem]')].map(b => b.textContent); closeFileActionMenu(); return t.join('|'); })()`), /Open the file beside\|Open the file full page/);
+  assert.match(await ev(`(() => { openFileActionMenu(fileControlContext(document.querySelector('#view [data-transcript-path]')), 10, 10); const t = [...document.querySelectorAll('.file-action-menu [role=menuitem]')].map(b => b.textContent); closeFileActionMenu(); return t.join('|'); })()`), /Open the file beside\|Open in a new tab beside\|Open the file full page/);
 
   // ---- which conversation: the head names it; another one takes its place, the file stays ----
   const OTHER = 'pi:fixture/media.jsonl';
@@ -171,7 +173,7 @@ test('the pair: beside, not in place; one editor that moves; both ways; one side
   assert.equal(await ev(`attachedContext().some(c => c.type === 'file' && c.path === ${JSON.stringify(note)})`), true, 'the file rides along as context');
   assert.match(await ev(`document.querySelector('#artifactPane [data-art-act="pair"]').textContent`), /new conversation/);
   await b.screenshot('pair-draft.png');
-  assert.equal(await ev(`localStorage.getItem('chattering.artifact.v1:' + activeRel)`), null, 'a draft leaves no memory of its own');
+  assert.equal(await ev(`Beside.tabs().filter(t => t.owner === activeRel).length <= 1`), true, 'one tab for the file');
   // Sent, the draft becomes a conversation that keeps the file beside it.
   await ev(`(() => { const d = loadDraft(activeRel.slice(6)); return !!(d && d.beside && d.beside.path === ${JSON.stringify(note)}); })()`).then(ok => assert.equal(ok, true, 'the draft remembers the file'));
   await ev(`Pair.carryInto(${JSON.stringify(KEY)}, { path: ${JSON.stringify(note)} })`);

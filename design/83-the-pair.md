@@ -1,5 +1,9 @@
 # 83 — The pair: a conversation and what it made, side by side
 
+*Extended by design/104 (Beside, 2026-10-22): the panel holds tabs, kept
+per device, pinned or following the place they were opened in; anything
+can go beside any page, not only a conversation.*
+
 *2026-09-29. A study, then built the same day (below); the study follows as written.
 Asked by Maxime after the ask box's "details" panel (design/80): "it feels
 risky to create another conversation view … something responsive, almost
