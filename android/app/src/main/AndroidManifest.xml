@@ -10,6 +10,17 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Talking with the frog as a call (FrogCallService, design/102): a
+         self-managed call in Android's call system, a foreground service of
+         the phone-call and microphone kinds, awake and on Wi-Fi meanwhile;
+         the frog's call rings full-screen on a locked phone. -->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Notifications keep coming after a restart (BootReceiver). -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Android 11+ package visibility: without this the app can neither see
@@ -58,6 +69,8 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="chattering" android:host="pair" />
             </intent-filter>
+            <!-- Long-press the app's icon: "Call the frog" (res/xml/shortcuts.xml). -->
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
         <!-- Keeps one connection to the relay's mailbox, where the person's
              computers leave their (encrypted) notifications, so a finished
@@ -71,6 +84,38 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Keeps a connection to the user's own notification mailbox, where their Chattering computers leave encrypted notifications of finished agent replies, and shows them." />
+        </service>
+        <!-- Talking with the frog as a call (design/102). The ring page is
+             the only one shown over a locked phone, with the screen turned on. -->
+        <activity
+            android:name=".FrogRingActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@style/Theme.Chattering" />
+        <service
+            android:name=".FrogCallService"
+            android:exported="false"
+            android:foregroundServiceType="phoneCall|microphone" />
+        <!-- The headset's button out of a call: Android sends it to the app
+             that played last (the frog's call counts as playing). -->
+        <receiver android:name=".FrogCallButtonReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+        <!-- "Call the frog" in the quick-settings panel. -->
+        <service
+            android:name=".FrogCallTile"
+            android:exported="true"
+            android:icon="@drawable/ic_stat_rockfrog"
+            android:label="Call the frog"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
         </service>
         <receiver android:name=".BootReceiver" android:exported="false">
             <intent-filter>

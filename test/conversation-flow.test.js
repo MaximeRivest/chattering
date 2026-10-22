@@ -82,6 +82,11 @@ test('snapshot checks allow settings but reject new messages and a different bra
   assert.equal(F.sameContext([...entries, { type: 'thinking_level_change', id: 'think', parentId: 'answer' }], 'answer'), true);
   assert.equal(F.sameContext([...entries, { type: 'message', id: 'new', parentId: 'answer' }], 'answer'), false);
   assert.equal(F.sameContext([...entries, { type: 'label', id: 'branch', parentId: 'p' }], 'answer'), false);
+  // An extension's records and a mode carried over are bookkeeping too (the
+  // frog's newer mode was cut off by a send that branched around it);
+  // a custom_message is context, and counts as new.
+  assert.equal(F.sameContext([...entries, { type: 'custom', customType: 'mode-switch', id: 'm', parentId: 'answer', data: { mode: 'frog' } }, { type: 'custom', customType: 'chattering-speed', id: 's', parentId: 'm' }], 'answer'), true);
+  assert.equal(F.sameContext([...entries, { type: 'custom_message', customType: 'frog-event', id: 'ev', parentId: 'answer' }], 'answer'), false);
 });
 test('new parallel and include-all entries preserve typed provenance across reintegration retries', () => {
   const line = d => JSON.stringify(d) + '\n';

@@ -7,6 +7,11 @@ const path = require('node:path');
 function homeEnv(home) {
   return { HOME: home, USERPROFILE: home,
     APPDATA: path.join(home, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
+    // The XDG folders too: programs that follow them before HOME (Muse
+    // Code's sessions, for one) would otherwise read the machine's, which
+    // this shell sets on NixOS and other desktops.
+    XDG_DATA_HOME: path.join(home, '.local', 'share'), XDG_CONFIG_HOME: path.join(home, '.config'),
+    XDG_CACHE_HOME: path.join(home, '.cache'), XDG_STATE_HOME: path.join(home, '.local', 'state'),
     // The FunctAI call log Chattering's AI programs write to (design/74). The
     // default follows XDG_DATA_HOME, which a test inherits from the machine.
     FUNCTAI_LOG_CALLS: path.join(home, 'functai', 'calls') };

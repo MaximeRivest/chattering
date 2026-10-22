@@ -33,7 +33,8 @@ test('Codex conversations in the page: composer, controls, streaming, approvals,
   assert.ok(!(await b.evaluate(`document.querySelector('#view').textContent.includes('AGENTS.md instructions')`)), 'no injected instructions shown');
   assert.ok(await b.evaluate(`document.querySelector('#view').textContent.includes('The parrot said quack')`));
   // Codex's controls, from Codex's own menus.
-  assert.equal(await b.evaluate(`!!document.querySelector('#agentMode')`), false, 'no Pi modes on a Codex conversation');
+  // Prompt modes reach Codex too (agent-modes.js): the button, no mode yet.
+  assert.equal(await b.evaluate(`!!document.querySelector('#agentMode')`), true, 'the prompt mode button on a Codex conversation');
   await b.until(`/ChatGPT pro · 40% of the 7-day limit used/.test(document.querySelector('#ctxMeter')?.textContent || '')`, 'plan usage in the usage line, not a per-message cost');
   assert.ok(!(await b.evaluate(`document.querySelector('#ctxMeter').textContent.includes('cost unknown')`)));
   await b.evaluate(`document.querySelector('#modelPick').click()`);

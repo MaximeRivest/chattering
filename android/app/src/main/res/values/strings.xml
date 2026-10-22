@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Chattering</string>
+    <string name="shortcut_frog_call">Call the frog</string>
+    <string name="shortcut_frog_call_long">Talk with the frog, hands-free</string>
 </resources>

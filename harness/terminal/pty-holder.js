@@ -247,8 +247,12 @@ function client(s, token) {
     if (m.t === 'reply') { const w = waiting.get(m.n); if (w) { waiting.delete(m.n); m.error ? w.reject(new Error(m.error)) : w.resolve(m); } return; }
     const p = ptys.get(m.id);
     if (!p) return;
-    if (m.t === 'o') for (const f of p.data) f(m.d);
-    else if (m.t === 'exit') { ptys.delete(m.id); for (const f of p.exit) f({ exitCode: m.exitCode, signal: m.signal }); }
+    // Output and the exit that arrive before a listener is on (a program
+    // that drew its screen in the same chunk as the holder's "started"
+    // reply, read while the spawn's promise has not yet resumed) wait for
+    // the listener: nothing of a program's first moments is lost.
+    if (m.t === 'o') { if (p.data.length) for (const f of p.data) f(m.d); else p.early.push(m); }
+    else if (m.t === 'exit') { const e = { exitCode: m.exitCode, signal: m.signal }; if (p.exit.length) { ptys.delete(m.id); for (const f of p.exit) f(e); } else p.early.push({ t: 'exit', id: m.id, e }); }
   });
   s.on('close', () => {
     closed = true;
@@ -262,23 +266,41 @@ function client(s, token) {
   s.on('error', () => {});
   send({ t: 'hello', token });
 
+  // Known before the holder answers, so that what it sends about the
+  // program from its first moment is kept (see the 'o' and 'exit' above).
+  const expect = id => { if (!ptys.has(id)) ptys.set(id, { data: [], exit: [], early: [] }); return ptys.get(id); };
   const ptyFor = program => {
-    const p = { data: [], exit: [] };
-    ptys.set(program.id, p);
+    const p = expect(program.id);
+    const flush = () => {
+      const early = p.early; p.early = [];
+      for (const m of early) {
+        if (m.t === 'o') { if (p.data.length) for (const f of p.data) f(m.d); else p.early.push(m); }
+        else if (p.exit.length) { ptys.delete(m.id); for (const f of p.exit) f(m.e); } else p.early.push(m);
+      }
+    };
     return {
       pid: program.pid, id: program.id,
       write: d => send({ t: 'write', id: program.id, d }),
       resize: (cols, rows) => send({ t: 'resize', id: program.id, cols, rows }),
       kill: signal => send({ t: 'kill', id: program.id, signal }),
-      onData: f => { p.data.push(f); },
-      onExit: f => { p.exit.push(f); },
+      onData: f => { p.data.push(f); flush(); },
+      onExit: f => { p.exit.push(f); flush(); },
       // Chattering lets go; the program goes on in the holder.
       detach: () => { ptys.delete(program.id); send({ t: 'detach', id: program.id }); },
     };
   };
   return ready.then(() => ({
-    async spawn(opts) { const id = opts.id || crypto.randomUUID(); const r = await request({ t: 'spawn', ...opts, id }); return ptyFor(r.program); },
-    async attach(id, { scrollback = 0 } = {}) { const r = await request({ t: 'attach', id, scrollback }); return { pty: ptyFor(r.program), program: r.program, screen: r.screen }; },
+    async spawn(opts) {
+      const id = opts.id || crypto.randomUUID();
+      expect(id);
+      try { const r = await request({ t: 'spawn', ...opts, id }); return ptyFor(r.program); }
+      catch (e) { ptys.delete(id); throw e; }
+    },
+    async attach(id, { scrollback = 0 } = {}) {
+      expect(id);
+      try { const r = await request({ t: 'attach', id, scrollback }); return { pty: ptyFor(r.program), program: r.program, screen: r.screen }; }
+      catch (e) { ptys.delete(id); throw e; }
+    },
     async list() { return (await request({ t: 'list' })).programs; },
     meta: (id, meta) => request({ t: 'meta', id, meta }),
     get pid() { return helloPid; },

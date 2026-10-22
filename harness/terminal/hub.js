@@ -69,7 +69,9 @@ function nowWindow(snap, doc, sent) {
   return rows.length ? rows.map(l => l.runs) : null;
 }
 
-function createHub({ host, profile, journal = null, events = null, liveOnly = false, onState = null }) {
+// prefix: () → text to put before the person's next message, or null (a
+// prompt mode for Muse Code, agent-modes.js); onPrefixed once it went.
+function createHub({ host, profile, journal = null, events = null, liveOnly = false, onState = null, prefix = null, onPrefixed = null }) {
   const clients = new Map();
   const stats = { frames: 0, messages: 0, bytesSent: 0, fullBytes: 0, maxPatch: 0, oversize: 0 };
   let typist = null, current = null, actionQueue = Promise.resolve();
@@ -197,9 +199,30 @@ function createHub({ host, profile, journal = null, events = null, liveOnly = fa
       const now = readDocument(host.snapshot({ screenOnly: true }), profile);
       if (now.choice && !now.composer) throw new Error('it asks something first: answer it, then send');
     }
-    const d = await submitComposer(host, text, { profile });
-    pending = d.sentBy === 'choice' ? { text, until: Date.now() + 15 * 60000 } : null;
+    const pre = prefix && !/^\s*\//.test(text) ? prefix() : null; // a /command is not a message
+    // With a mode before it, the message is taller than a small screen's
+    // box: for the moment it is typed, checked and sent, the screen is made
+    // tall enough to show it whole (the closed loop never sends blind).
+    const size = pre && host.rows < 60 ? { cols: host.cols, rows: host.rows } : null;
+    if (size) { host.resize(size.cols, 60); await quiet(host, 150, 1500); }
+    let d;
+    try { d = await submitComposer(host, pre ? pre + text : text, { profile }); }
+    finally { if (size) host.resize(size.cols, size.rows); }
+    pending = d.sentBy === 'choice' ? { text: pre ? pre + text : text, until: Date.now() + 15 * 60000 } : null;
+    if (pre && d.sentBy !== 'choice' && onPrefixed) onPrefixed();
     return d;
+  }
+  // Enter typed into the program's own box, a message in it, nothing else
+  // on screen asking: when something is to go before the message, the
+  // message is sent the closed-loop way, with it.
+  function enterWithPrefix() {
+    if (!prefix || !current) return false;
+    const doc = current.doc;
+    if (!doc.composer || !doc.composer.text.trim() || doc.menu || doc.choice || doc.status || /^\s*\//.test(doc.composer.text)) return false;
+    if (!prefix()) return false;
+    const text = doc.composer.text;
+    serial(() => send(text).catch(e => logEvent({ ev: 'prefix-send-failed', error: e.message })));
+    return true;
   }
   host.on('frame', () => {
     if (!pending || !current) return;
@@ -242,7 +265,10 @@ function createHub({ host, profile, journal = null, events = null, liveOnly = fa
       const act = async fn => { try { reply('done', await fn() || {}); } catch (e) { reply('error', { error: e.message }); } };
       const modes = () => host.snapshot({ screenOnly: true }).modes;
       if (m.t === 'text') host.input(String(m.text), id);
-      else if (m.t === 'key') { const bytes = encodeKey(m, modes()); if (bytes) host.input(bytes, id); }
+      else if (m.t === 'key') {
+        if (m.key === 'Enter' && !m.shift && !m.alt && !m.ctrl && enterWithPrefix()) return reply('done', {});
+        const bytes = encodeKey(m, modes()); if (bytes) host.input(bytes, id);
+      }
       else if (m.t === 'stop') { stoppedAt = Date.now(); const k = (profile && profile.keys && profile.keys.stop) || { key: 'Escape' }; host.input(encodeKey(k, modes()), id); }
       else if (m.t === 'paste') host.paste(String(m.text), id);
       else if (m.t === 'choose') serial(() => act(() => choose(host, m.index, { profile }).then(() => ({}))));

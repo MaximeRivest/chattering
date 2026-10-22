@@ -105,10 +105,43 @@ function build(t) {
   return { records, entries, live, semantic, notesDir, noteA, intent };
 }
 
-test('shortId: pi and claude file names', () => {
+test('shortId: pi, claude, codex, agy and muse file names', () => {
   assert.equal(R.shortId(KEY_A), '0a1b2c3d');
   assert.equal(R.shortId(KEY_C), '5e5e5e5e');
   assert.equal(R.shortId('pi:x/odd-name.jsonl'), 'odd-name');
+  assert.equal(R.shortId('codex:2025/08/21/rollout-2025-08-21T12-52-33-a66983ba-089d-4dc7-b997-400e6c7859db.jsonl'), 'a66983ba');
+  assert.equal(R.shortId('agy:0e8d1bed-73dc-4ac4-bdfc-b9f81c1d7013.db'), '0e8d1bed');
+  assert.equal(R.shortId('muse:2026/10/12/01a131df-3c27-72a0-b5cb-ec76be7993fe/session.jsonl'), '01a131df');
+  // A folder name can hold a uuid too: the session's is the last one.
+  assert.equal(R.shortId('pi:--tmp-claude-fbe447d9-4a1c-46c6-80ff-e649367a53d4-scratchpad--/2026-07-04T19-51-01-562Z_019f2eaf-32ba-77b7-93f3-98b2b02f6605.jsonl'), '019f2eaf');
+  // Older Pi files carry 8 characters only; the entry's sessionId wins when it is there.
+  assert.equal(R.shortId('pi:--p--/2026-07-27T18-08-59.382Z_be67d0c2.jsonl'), 'be67d0c2');
+  assert.equal(R.shortId('pi:--p--/2026-07-27T18-08-59.382Z_be67d0c2.jsonl', { sessionId: 'be67d0c2-6a69-46ea-b726-b6b952974609' }), 'be67d0c2');
+});
+
+test('two conversations sharing the first 8 characters print longer ids, and the short one is refused', async t => {
+  const { records, entries } = build(t);
+  // Started 84 ms after KEY_A's twin would be: same first 8 hex of a UUIDv7.
+  const KEY_D = 'pi:--home-me-Projects-alpha--/2026-08-20T09-00-00-084Z_0a1b2c3d-2222-7000-8000-000000000004.jsonl';
+  entries[KEY_D] = { title: 'Flux capacitor, second take', source: 'pi', cwd: '/home/me/Projects/alpha',
+    firstTs: '2026-08-20T09:00:00Z', lastTs: '2026-08-20T09:20:00Z', userCount: 1, realUserCount: 1, assistantCount: 1 };
+  const convs = await records.run('conversations', { project: 'alpha' });
+  assert.match(convs.text, /^0a1b2c3d2222  /m, 'the newcomer gets 12 characters');
+  assert.match(convs.text, /^0a1b2c3d1111  /m, 'and so does the one it clashes with');
+  assert.match(convs.text, /^9f8e7d6c  /m, 'the others keep 8');
+  await assert.rejects(records.run('show', { id: '0a1b2c3d' }), /matches 2 conversations[\s\S]*0a1b2c3d2222 .*second take[\s\S]*0a1b2c3d1111 .*Fix the flux/);
+  assert.equal(records.resolveKey('0a1b2c3d2222'), KEY_D);
+  assert.equal(records.resolveKey('0a1b2c3d-1111'), KEY_A, 'the uuid\u2019s own dashes are fine');
+  assert.equal(records.resolveKey('0a1b2c3d-1111-7000-8000-000000000001'), KEY_A, 'the whole uuid too');
+  const shown = await records.run('show', { id: '0a1b2c3d1111' });
+  assert.equal(shown.id, '0a1b2c3d1111');
+  assert.match(shown.text, /^id 0a1b2c3d1111 /m);
+  assert.match(shown.text, /show 0a1b2c3d1111 --at N/, 'the follow-up commands use the id that works');
+  const found = await records.run('search', { q: 'capacitor', project: 'alpha' });
+  assert.match(found.text, /show 0a1b2c3d1111 --at/, 'search hits too');
+  // Gone again: the plain id comes back.
+  delete entries[KEY_D];
+  assert.match((await records.run('conversations', { project: 'alpha' })).text, /^0a1b2c3d  /m);
 });
 
 test('sinceToIso: durations and dates', () => {

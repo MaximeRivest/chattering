@@ -27,7 +27,8 @@ import java.util.concurrent.Executors
  *
  * Listening pauses while the app is not on screen (Android gives no
  * microphone to an app in the background without a foreground service, and
- * a room should not be heard with the screen off) and resumes when it is.
+ * a room should not be heard with the screen off) and resumes when it is;
+ * except in a call with the frog, which is such a service (FrogCallService).
  *
  * Page API (ChatteringListen): start(windowSeconds), stop(), setWindow(s),
  * isListening(). Events to the page: the server's own JSON, plus
@@ -98,8 +99,11 @@ class ListenBridge(
         else { wanted = false; emitNative("error", "Microphone access was not allowed.") }
     }
 
-    /** The app left the screen: stop hearing the room, keep the wish. */
+    /** The app left the screen: stop hearing the room, keep the wish. Not
+     *  in a call with the frog (FrogCallService): then the room is heard
+     *  with the screen off, as on any call. */
     fun onPause() {
+        if (FrogCallService.onCall) return
         if (!wanted || !capturing) return
         close(sayStop = true)
         emitNative("paused", "paused while the app is in the background")
@@ -165,7 +169,7 @@ class ListenBridge(
         val buffer = ByteArray((rate / 10) * 2)
         val down = if (rate == TARGET_RATE) null else SpeechBridge.Downsampler(rate)
         try {
-            while (capturing && socket === ws) {
+            while (capturing && socket === ws && !reopen) {
                 val read = record.read(buffer, 0, buffer.size)
                 if (read < 0) throw IllegalStateException("AudioRecord returned $read")
                 if (read == 0) continue
@@ -177,6 +181,13 @@ class ListenBridge(
         } finally {
             try { record.stop() } catch (_: Exception) {}
             record.release()
+        }
+        if (reopen && capturing && socket === ws) activity.runOnUiThread {
+            reopen = false
+            val next = try { openAudioRecord() } catch (e: Exception) { close(sayStop = false); emitNative("error", "Microphone error: ${e.message ?: "unknown"}"); return@runOnUiThread }
+            audioRecord = next
+            next.startRecording()
+            audioExecutor.execute { captureLoop(next, ws) }
         }
     }
 
@@ -194,9 +205,16 @@ class ListenBridge(
     }
 
     // Plain microphone: the page asks for no noise suppression or gain
-    // either (they hurt recognition). VOICE_RECOGNITION as the fallback.
+    // either (they hurt recognition). VOICE_RECOGNITION as the fallback. In
+    // a call with the frog, the call's microphone (the headset's), with echo
+    // cancelling (MicBridge.sources says why).
     private fun openAudioRecord(): AudioRecord =
-        Microphone.open(intArrayOf(MediaRecorder.AudioSource.MIC, MediaRecorder.AudioSource.VOICE_RECOGNITION))
+        Microphone.open(if (FrogCallService.onCall) intArrayOf(MediaRecorder.AudioSource.VOICE_COMMUNICATION, MediaRecorder.AudioSource.MIC)
+            else intArrayOf(MediaRecorder.AudioSource.MIC, MediaRecorder.AudioSource.VOICE_RECOGNITION))
+
+    @Volatile private var reopen = false
+    /** A call with the frog began or ended: the same connection goes on with the microphone that fits. */
+    fun callChanged() { if (capturing) reopen = true }
 
     fun destroy() {
         wanted = false

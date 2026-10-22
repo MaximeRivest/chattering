@@ -299,7 +299,7 @@ test('side panel layout, inbox marks, and recent files', { timeout: 60000 }, asy
   await evaluate(`document.querySelector('#view').scrollTop=0`);
   assert.equal(await evaluate(`document.querySelector('#sideNew span').textContent + '|' + document.querySelector('#sideNewMore').hidden`), 'new here|false', '+ new starts here, ▾ offers the rest');
   await evaluate(`document.querySelector('#sideNewMore').click()`);
-  assert.equal(await evaluate(`[...document.querySelectorAll('.ag-menu [data-ag-action]')].map(b=>b.textContent).join('|')`), 'New here · work|New, no project|✎ Note · work');
+  assert.equal(await evaluate(`[...document.querySelectorAll('.ag-menu [data-ag-action]')].map(b=>b.textContent).join('|')`), 'New here · work|New, no project|✎ Note · work|New project…|Frog · talk to all your conversations');
   await evaluate(`document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
   // Opening reads it; the open conversation is marked in the column; the
   // read reaches the server. (The list itself: open-list.test.js.)

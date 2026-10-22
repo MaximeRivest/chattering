@@ -318,6 +318,37 @@ function createCodexDriver(hooks = {}) {
     return handle;
   }
 
+  // Items added to a conversation without a message (a prompt mode switch
+  // before Codex's own program opens it): model-visible, kept in the thread.
+  // Its process lets go at once, so the program can take the conversation.
+  async function injectItems(target, items) {
+    if (!target.threadId) throw new Error('no conversation to add to');
+    if (busy(target.threadId)) throw Object.assign(new Error('Codex is answering in this conversation.'), { status: 409 });
+    claims.add(target.threadId);
+    try {
+      const opened = await openThread(target);
+      await opened.srv.request('thread/inject_items', { threadId: opened.threadId, items });
+    } finally {
+      claims.delete(target.threadId);
+      await release(target.threadId).catch(() => {});
+    }
+  }
+
+  // A new conversation that starts with a history and no message yet (a
+  // conversation moving here, to be continued in Codex's own program:
+  // harness/handoff.js). Codex writes its file at once; its process lets
+  // go so the program can open it. target: { cwd, env, bin, model,
+  // sandboxMode, approvalPolicy, developerInstructions }.
+  async function startInjected(target, items) {
+    const opened = await openThread({ ...target, threadId: null });
+    try {
+      await opened.srv.request('thread/inject_items', { threadId: opened.threadId, items });
+    } finally {
+      await release(opened.threadId).catch(() => {});
+    }
+    return { threadId: opened.threadId, path: opened.path, model: opened.model };
+  }
+
   // Codex's own fork (thread/fork): a new conversation through a turn of
   // this one. Codex refers to the original's history rather than copying
   // it; only conversations with saved turn ids (Codex 0.150+) can fork at a
@@ -382,7 +413,7 @@ function createCodexDriver(hooks = {}) {
   }
   function holding() { return [...conversations.entries()].map(([threadId, s]) => ({ threadId, pid: s.child && s.child.pid, busy: s.threads.size > 0 })); }
 
-  return { codexHeadlessRun, compactThread, forkThread, codexMenus, codexFileSuggestions, release, busy, holding, stopCodex };
+  return { codexHeadlessRun, compactThread, forkThread, injectItems, startInjected, codexMenus, codexFileSuggestions, release, busy, holding, stopCodex };
 }
 
 module.exports = { ...createCodexDriver(), createCodexDriver, lockedError };

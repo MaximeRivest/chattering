@@ -160,7 +160,10 @@
       if (id === expectedLeaf) return true;
       seen.add(id);
       const entry = byId.get(id);
-      if (!entry || !(['model_change', 'thinking_level_change', 'label'].includes(entry.type) || (entry.type === 'custom' && entry.customType === 'mode-switch'))) return false;
+      // Bookkeeping, never read by the model: settings changes, labels,
+      // session info, and every `custom` entry (a mode switch, an
+      // extension's own records); `custom_message` is context and counts.
+      if (!entry || !(['model_change', 'thinking_level_change', 'label', 'session_info', 'custom'].includes(entry.type))) return false;
       id = entry.parentId;
     }
     return false;

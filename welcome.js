@@ -143,7 +143,7 @@
   // A new conversation, its box focused, with an example already written.
   function startWith(text) {
     W.finish();
-    if (typeof startNewConversation === 'function') startNewConversation();
+    if (typeof startNewConversation === 'function') startNewConversation({ fresh: true });
     const put = (tries = 0) => {
       const ta = document.getElementById('agentText');
       if (!ta || (typeof isDraftOpen === 'function' && !isDraftOpen())) { if (tries < 40) setTimeout(() => put(tries + 1), 50); return; }

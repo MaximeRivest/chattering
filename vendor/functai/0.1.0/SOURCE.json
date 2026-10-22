@@ -1,6 +1,10 @@
 {
   "patches": [
-    "definedAt skips the bundle file itself and either path separator (FunctAI fn.ts)"
+    {
+      "file": "functai.mjs",
+      "what": "replyProbabilities reads lm15 RawNumber probabilities (a sure Jev answer's 1.0 / 0.0) as numbers instead of refusing the reply",
+      "upstream": "lmcc ts/src/core.ts probabilityOf (2026-10-17)"
+    }
   ],
   "functai": {
     "version": "0.1.0",

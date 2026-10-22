@@ -124,6 +124,16 @@
 @media (max-width: 720px) { .people-panel { top: auto; bottom: 8px; right: 8px; left: 8px; width: auto; } }
 /* what other people did here lately (design/55) */
 .pdid h3 .dim { font-weight: 400; }
+/* The section folds behind its heading, styled like the other section headings. */
+.pdid-fold > summary { display: flex; align-items: center; gap: 6px; cursor: pointer; list-style: none; color: var(--text-faint); border-bottom: 1px solid var(--border); padding-bottom: 4px; margin: 0 0 8px; }
+.pdid-fold > summary::-webkit-details-marker { display: none; }
+.pdid-fold > summary::before { content: '▸'; font-size: 11px; width: 10px; flex-shrink: 0; }
+.pdid-fold[open] > summary::before { content: '▾'; }
+.pdid-fold > summary h3 { font-size: var(--fs-label); color: inherit; margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pdid-fold > summary:hover h3 { color: var(--text); }
+.pdid-who { display: inline-flex; gap: 2px; flex-shrink: 0; }
+.pdid-who .user-bubble { width: 16px; height: 16px; font-size: 8px; }
+.pdid-fold[open] .pdid-who { display: none; }
 .pdid-rows { display: flex; flex-direction: column; gap: 4px; }
 .pdid-person { border: 1px solid var(--border); border-radius: var(--r); background: var(--surface-1); }
 .pdid-person > summary { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; list-style: none; }

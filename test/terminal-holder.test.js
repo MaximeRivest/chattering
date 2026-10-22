@@ -96,3 +96,43 @@ test('the holder ends once it holds nothing', { skip, timeout: 20000 }, async t 
   assert.ok(exited, 'the holder ended');
   assert.ok(!fs.existsSync(path.join(dir, 'holder.token')), 'and took its token with it');
 });
+
+// The holder's "started" reply and the program's first screen can arrive
+// in one chunk when Chattering is busy for a moment: the screen was read
+// before the spawn's promise resumed and the listener was on, and lost
+// (the reader then waited for a box that had already been drawn). A
+// stand-in holder sends both at once, and an exit the same way.
+test('output and exit in the same chunk as the holder\'s reply reach the listener, in order', { skip: process.platform === 'win32' ? 'a Unix socket' : false, timeout: 15000 }, async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pty-holder-race-'));
+  const { PROTOCOL } = require('../harness/terminal/pty-holder');
+  fs.writeFileSync(path.join(dir, 'holder.token'), 'tok\n');
+  const server = net.createServer(sock => {
+    let buf = '';
+    sock.setEncoding('utf8');
+    sock.on('data', chunk => {
+      buf += chunk;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const m = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1);
+        if (m.t === 'hello') sock.write(JSON.stringify({ t: 'hello', protocol: PROTOCOL, pid: 1 }) + '\n');
+        else if (m.t === 'spawn') sock.write([
+          JSON.stringify({ t: 'reply', n: m.n, program: { id: m.id, pid: 2, cols: 80, rows: 24, meta: {}, startedAt: 1, exited: null } }),
+          JSON.stringify({ t: 'o', id: m.id, d: 'first screen' }),
+          JSON.stringify({ t: 'o', id: m.id, d: ', then more' }),
+          JSON.stringify({ t: 'exit', id: m.id, exitCode: 3, signal: 0 }),
+        ].join('\n') + '\n');
+      }
+    });
+  });
+  await new Promise(r => server.listen(socketPath(dir), r));
+  t.after(() => { server.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const holder = await connectHolder({ dir });
+  const pty = await holder.spawn({ command: 'x', args: [], cwd: dir, env: {}, cols: 80, rows: 24 });
+  const got = [];
+  await sleep(50); // whatever came in with the reply is already in the past
+  pty.onData(d => got.push('o:' + d));
+  pty.onExit(e => got.push('exit:' + e.exitCode));
+  await until(() => got.length === 3, 2000, 'the first screen and the exit');
+  assert.deepEqual(got, ['o:first screen', 'o:, then more', 'exit:3']);
+  holder.close();
+});

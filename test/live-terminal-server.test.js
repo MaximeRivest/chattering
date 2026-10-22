@@ -217,6 +217,8 @@ function lanIp() {
 // not, on the routes or the socket.
 test('who may: the owner and a household member; not a walled member, not a guest', { skip: skip || (!lanIp() && 'no LAN address'), timeout: 120000 }, async t => {
   const s = setup();
+  fs.mkdirSync(path.join(s.home, '.claude-accounts', 'work'), { recursive: true });
+  fs.writeFileSync(path.join(s.home, '.claude-accounts', 'work', '.credentials.json'), '{}', { mode: 0o600 });
   const srv = await boot(t, s, { lan: true });
   const remote = 'http://' + lanIp() + ':' + srv.port;
   const cookieOf = r => (r.headers.get('set-cookie') || '').split(';')[0];
@@ -234,7 +236,12 @@ test('who may: the owner and a household member; not a walled member, not a gues
   const added = await (await as(owner, '/api/users/add', { name: 'Lilly' })).json();
   const lilly = cookieOf(await fetch(remote + '/?token=' + encodeURIComponent(new URL(added.inviteLink).searchParams.get('token')), { redirect: 'manual' }));
   const st = await (await as(lilly, '/api/live-terminal/status')).json();
-  assert.deepEqual(st.refusals, { claude: null, pi: null, codex: null }, 'a household member may, every agent');
+  assert.deepEqual(st.refusals, { claude: null, pi: null, codex: null, agy: null, muse: null }, 'a household member may, every agent');
+  // …as the main Claude account only: the others are the owner's.
+  assert.equal(st.claudeAccounts, null, 'no Claude account picker for a member');
+  assert.equal((await as(lilly, '/api/conversation/claude-account', { id: key, account: 'work' })).status, 403);
+  assert.equal((await as(lilly, '/api/claude-accounts')).status, 403);
+  assert.equal((await as(lilly, '/api/claude-accounts/add', { name: 'mine' })).status, 403);
   assert.equal(await socket(lilly), 'open');
   assert.equal((await (await as(lilly, '/api/session?id=' + encodeURIComponent(key))).json()).liveTerminal.use, true);
   // A guest, invited to the project.
@@ -258,6 +265,8 @@ test('who may: the owner and a household member; not a walled member, not a gues
   const walledSt = await (await as(lilly, '/api/live-terminal/status')).json();
   assert.match(walledSt.refusals.claude, /signs in as this computer's owner/);
   assert.match(walledSt.refusals.codex, /signs in as this computer's owner/);
+  assert.match(walledSt.refusals.agy, /signs in as this computer's owner/);
+  assert.match(walledSt.refusals.muse, /signs in as this computer's owner/);
   assert.equal(await socket(lilly), 'refused', 'a walled member: the socket');
   // Settings are the owner's.
   assert.equal((await as(lilly, '/api/live-terminal/settings', { record: false })).status, 403);
@@ -267,8 +276,8 @@ test('who may: the owner and a household member; not a walled member, not a gues
 test('switched off for every agent: no strip, nothing offered, nothing starts', { skip, timeout: 60000 }, async t => {
   const s = setup();
   const srv = await boot(t, s);
-  const off = await api(srv.base, '/api/live-terminal/settings', { agents: { claude: 'off', pi: 'off', codex: 'off' } });
-  assert.deepEqual(off.body.agents, { claude: 'off', pi: 'off', codex: 'off' });
+  const off = await api(srv.base, '/api/live-terminal/settings', { agents: { claude: 'off', pi: 'off', codex: 'off', agy: 'off', muse: 'off' } });
+  assert.deepEqual(off.body.agents, { claude: 'off', pi: 'off', codex: 'off', agy: 'off', muse: 'off' });
   for (const source of ['claude', 'pi', 'codex']) {
     const key = await keyOf(srv.base, source);
     const page = (await api(srv.base, '/api/session?id=' + encodeURIComponent(key))).body;
@@ -278,4 +287,39 @@ test('switched off for every agent: no strip, nothing offered, nothing starts', 
   }
   // Kept across a restart of the settings file's reader.
   assert.equal((await api(srv.base, '/api/live-terminal/status')).body.agents.claude, 'off');
+});
+
+// More than one Claude subscription (claude-accounts.js): a Claude Code
+// conversation answers as the account chosen for it; its program starts
+// with that account's folder, finds the conversation through it, and
+// restarts on the same conversation when the account is switched.
+test('a Claude Code conversation answers as the account chosen for it', { skip, timeout: 120000 }, async t => {
+  const s = setup();
+  const acct = path.join(s.home, '.claude-accounts', 'work');
+  fs.mkdirSync(acct, { recursive: true });
+  fs.writeFileSync(path.join(acct, '.credentials.json'), '{"claudeAiOauth":{"accessToken":"WORK"}}', { mode: 0o600 });
+  fs.mkdirSync(path.join(s.home, '.claude-accounts', 'signed-out'));
+  const srv = await boot(t, s);
+  const key = await keyOf(srv.base, 'claude');
+  const conf = (await api(srv.base, '/api/live-terminal/status')).body;
+  assert.deepEqual(conf.claudeAccounts, [{ id: 'default', name: 'personal' }, { id: 'work', name: 'work' }], 'signed-in accounts only');
+  let page = (await api(srv.base, '/api/session?id=' + encodeURIComponent(key))).body;
+  assert.deepEqual(page.liveTerminal.account, { id: 'default', name: 'personal' });
+  assert.equal((await api(srv.base, '/api/conversation/claude-account', { id: key, account: 'signed-out' })).status, 403);
+  const sw = await api(srv.base, '/api/conversation/claude-account', { id: key, account: 'work' });
+  assert.equal(sw.status, 200, JSON.stringify(sw.body));
+  assert.equal(sw.body.when, 'when its program next starts');
+  const log = path.join(s.home, 'agent-log.jsonl');
+  const starts = () => fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(JSON.parse).filter(x => x.argv) : [];
+  assert.equal((await api(srv.base, '/api/live-terminal/start', { id: key })).status, 200);
+  const d = await device(srv.base, key);
+  await d.until(st => st.composer && st.mode === 'compose', 'its box (as work)');
+  assert.equal(starts().at(-1).configDir, acct, 'started with the work folder');
+  assert.equal(fs.readlinkSync(path.join(acct, 'projects')), path.join(s.home, '.claude', 'projects'), 'the conversations are shared');
+  assert.ok(starts().at(-1).argv.includes('--resume'), 'the same conversation, found through the shared folder');
+  // Back to the main account while it is idle: it restarts at once.
+  const back = await api(srv.base, '/api/conversation/claude-account', { id: key, account: 'default' });
+  assert.match(back.body.when, /^now/);
+  await until(() => starts().length >= 2 && starts().at(-1).configDir === null, 'restarted as the main account');
+  d.close();
 });

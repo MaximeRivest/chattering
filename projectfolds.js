@@ -37,7 +37,21 @@ function isLooseCwd(cwd) {
   if (/^(?:\/private)?\/var\/folders\/[^/]+\/[^/]+\/T(?:\/|$)/.test(c)) return true;
   const tmp = tempRoot();
   if (tmp && (c === tmp || c.startsWith(tmp + '/'))) return true;
+  for (const cache of cacheRoots()) if (c === cache || c.startsWith(cache + '/')) return true;
   return false;
+}
+// This host's cache folders: disposable by definition, so a program run
+// there is not a project (agent test runs that need a home-side folder use
+// ~/.cache). Host-specific, like tempRoot: XDG_CACHE_HOME or ~/.cache, and
+// macOS ~/Library/Caches. A cache folder that holds the home folder itself
+// (a test home under the real ~/.cache) is not a cache for that home.
+function cacheRoots() {
+  let home = '';
+  try { home = String(os.homedir() || '').replace(/\\/g, '/').replace(/\/+$/, ''); } catch { return []; }
+  if (!home) return [];
+  const xdg = String(process.env.XDG_CACHE_HOME || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  const roots = [xdg.startsWith('/') ? xdg : '', home + '/.cache', home + '/Library/Caches'];
+  return roots.filter(r => r && r !== '/' && r !== home && !home.startsWith(r + '/'));
 }
 // The temporary directory this host actually uses: a custom $TMPDIR, which
 // no fixed pattern can know. Host-specific by nature; records from another

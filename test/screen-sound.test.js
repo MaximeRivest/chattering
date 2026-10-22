@@ -27,6 +27,21 @@ test('the screen a sound plays on: the visible one touched last, else any open o
   assert.equal(soundScreen([], now), null);
 });
 
+test('a screen talking with the frog is where its voice sounds, hidden and untouched or not', () => {
+  const now = 10 * 60 * 1000;
+  const book = new HereBook();
+  // The phone in a pocket, in a call: hidden, last touched ten minutes ago.
+  book.set('phone', 'u', { visible: false, idleMs: 10 * 60 * 1000, local: false, talking: true }, now - 30 * 1000);
+  book.set('laptop', 'u', { visible: true, focused: true, idleMs: 0, local: false }, now - 1000);
+  assert.equal(soundScreen(book.forUser('u'), now).conn, 'phone');
+  // Talk reports keep coming while it lasts; one that stopped (the page
+  // gone) no longer claims the sound.
+  assert.equal(soundScreen(book.forUser('u'), now + FRESH_MS).conn, 'laptop');
+  // Two talking screens: the one touched last.
+  book.set('tablet', 'u', { visible: true, idleMs: 0, local: false, talking: true }, now);
+  assert.equal(soundScreen(book.forUser('u'), now).conn, 'tablet');
+});
+
 test('where the person was last is remembered after the screen closes', () => {
   const book = new HereBook();
   assert.equal(book.lastFor('u'), null);

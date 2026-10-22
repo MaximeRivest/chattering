@@ -59,6 +59,11 @@ dependencies {
     implementation "androidx.core:core-ktx:1.15.0"
     implementation "androidx.appcompat:appcompat:1.7.0"
     implementation "com.squareup.okhttp3:okhttp:3.14.9"
+    // Talking with the frog as a call in Android's own call system
+    // (FrogCallService, design/102): the headset's button and its
+    // microphone, the sound routed as for any call, the screen off.
+    implementation "androidx.core:core-telecom:1.0.1"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1"
     // Scan the pairing code from inside the app: Google's code scanner (the
     // camera UI is Google Play services', so the app asks for no camera
     // permission and sees only the scanned text).

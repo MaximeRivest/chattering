@@ -21,11 +21,6 @@
 .draft-setup .ds-folder-input { flex: 1 1 auto; min-width: 0; font-family: var(--font); }
 .draft-setup .ds-folder-status { line-height: 1.5; min-height: 1.5em; }
 .draft-setup .ds-folder-status.warn { color: var(--warn, var(--yellow, var(--text))); font-weight: 700; }
-.draft-setup .ds-browser { border: 1px solid var(--border); padding: 6px; max-height: 32vh; overflow: auto; }
-.draft-setup .ds-browser-head { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; }
-.draft-setup .ds-path { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
-.draft-setup .ds-folders { display: flex; flex-wrap: wrap; gap: 2px 6px; }
-.draft-setup .ds-folders button { min-height: 28px; height: 28px; padding: 0 8px; }
 .draft-setup .ds-instr { width: 100%; resize: vertical; font-family: var(--font); font-size: var(--fs-label); }
 .draft-setup .ds-hint { line-height: 1.45; }
 .draft-setup .ds-foot { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -54,4 +49,14 @@ body.draft #agentSlash, body.draft #agentTree { display: none !important; }
   .draft-setup .ds-toggle { min-height: 36px; height: 36px; }
   .draft-setup .ds-panel { max-height: 55dvh; overflow: auto; }
 }
-:root[data-theme-mode="binary"] .draft-setup .ds-panel, :root[data-theme-mode="binary"] .draft-setup .ds-browser { border-color: var(--text); }
+:root[data-theme-mode="binary"] .draft-setup .ds-panel, :root[data-theme-mode="binary"] .draft-setup .fsel-list { border-color: var(--text); }
+
+/* Right after project setup: what was made, where, and a way back. */
+.draft-made { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; justify-content: space-between;
+  margin-bottom: var(--sp-3); padding: var(--sp-2) var(--sp-3); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  background: var(--surface-1); border-radius: var(--r); }
+.draft-made > span { overflow-wrap: anywhere; }
+.draft-made-undo { min-height: 32px; }
+.ds-make-project { font: inherit; padding: 2px 8px; }
+/* The folder list grows the setup panel; keep the composer reachable. */
+.draft-setup .ds-folder-list .fsel-list { max-height: min(260px, 32vh); }

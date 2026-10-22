@@ -135,3 +135,50 @@ test('Codex turns a spinner in its title even when idle: its title does not say 
   const d = readDocument({ ...screen(['', '› ', '', '  gpt low · ~/w'], { x: 2, y: 1 }), title: '⠋ laptop-codex' }, codex);
   assert.equal(d.mode, 'compose');
 });
+
+// Antigravity CLI 1.3.4 and Muse Code 1.4.6, screens recorded 2026-10-14.
+const { PROFILES } = require('../harness/terminal/profiles');
+test('Muse Code\'s trust question numbers its options with a wide gap, not a dot: "1  Trust and continue"', () => {
+  const d = readDocument(screen(['Do you trust this workspace?', 'Workspace: /home/me/work', '', 'Only trust this workspace when you trust its contents.',
+    '> 1  Trust and continue', '  2  Quit', '', 'Use Up/Down or 1/2, then Enter. Esc quits.'], { x: 0, y: 0 }), PROFILES.muse);
+  assert.equal(d.mode, 'choice');
+  assert.deepEqual(d.choice.options.map(o => [o.number, o.label]), [['1', 'Trust and continue'], ['2', 'Quit']]);
+});
+test('Muse Code\'s / menu inside the box\'s frame, under "❯ /": the box holds "/", the rows are its menu', () => {
+  const item = (l, d, sel) => ({ text: '  ' + l.padEnd(29) + d, runs: [{ s: '||', t: '  ' }, { s: sel ? '|p12|' : '|p7|', t: l.padEnd(29) + d }] });
+  const d = readDocument(screen([' ', '  Muse Code 1.4.6', '', RULE, '❯ /', item('/bug', 'Report a bug', true), item('/clear', 'Clear terminal', false), item('/compact', 'Summarize the conversation', false),
+    '  ↓ 50 more', RULE, '  muse-wonder-1.0 · high · ~/work'], { x: 3, y: 4 }), PROFILES.muse);
+  assert.equal(d.composer.text, '/');
+  assert.deepEqual(d.menu.items.map(i => i.label), ['/bug', '/clear', '/compact']);
+  assert.equal(d.menu.selected, 0);
+  // Typed text that is not a command keeps the box as it was.
+  const typed = readDocument(screen([RULE, '❯ hello echo', RULE, '  echo · ~/work'], { x: 12, y: 1 }), PROFILES.muse);
+  assert.equal(typed.composer.text, 'hello echo'); assert.equal(typed.menu, null);
+});
+test('Muse Code at work: its "esc to interrupt" line, and the spinner in its window title', () => {
+  const d = readDocument(screen(['❯ hello', '', '◇ Thinking (2s · esc to interrupt)', '', RULE, '❯ ', RULE], { x: 2, y: 5 }), PROFILES.muse);
+  assert.equal(d.mode, 'working'); assert.equal(d.status.working, true);
+  const titled = readDocument({ ...screen([RULE, '❯ ', RULE], { x: 2, y: 1 }), title: '⠹ work' }, PROFILES.muse);
+  assert.equal(titled.status && titled.status.working, true);
+  const idle = readDocument({ ...screen([RULE, '❯ ', RULE], { x: 2, y: 1 }), title: 'work' }, PROFILES.muse);
+  assert.equal(idle.status, null);
+});
+test('Antigravity: its box, its / list read as a choice, "Generating...", and its question before a command', () => {
+  const box = readDocument(screen([RULE, '> ', RULE, '? for shortcuts                                  Gemini 3.8 Flash · high'], { x: 2, y: 1 }), PROFILES.agy);
+  assert.equal(box.mode, 'compose'); assert.equal(box.composer.text, '');
+  const working = readDocument(screen(['> Run it', '⣽  Generating...', RULE, '> ', RULE, 'esc to cancel'], { x: 2, y: 3 }), PROFILES.agy);
+  assert.equal(working.mode, 'working');
+  const ask = readDocument(screen(['Requesting permission for:', '   sleep 6; echo done', '', 'Run this command?', '> 1. Yes, run command',
+    '  2. Yes, and always allow in this conversation', '  4. No, cancel', '', '  ↑/↓ Navigate · tab Amend', 'esc to cancel'], { x: 0, y: 10 }), PROFILES.agy);
+  assert.equal(ask.mode, 'choice');
+  assert.deepEqual(ask.choice.options.map(o => o.label), ['Yes, run command', 'Yes, and always allow in this conversation', 'No, cancel']);
+});
+test('Muse Code\'s hint in its empty box (a plain grey, not dim) is not text; typed text is', () => {
+  const hint = { text: '❯ Type @ to search and insert workspace file paths', runs: [{ s: '||', t: '❯ ' }, { s: '|r6777972|', t: 'Type @ to search and insert workspace file paths' }] };
+  const d = readDocument(screen([RULE, hint, RULE], { x: 2, y: 1 }), PROFILES.muse);
+  assert.equal(d.composer.text, ''); assert.equal(d.composer.placeholder, 'Type @ to search and insert workspace file paths');
+  const typed = readDocument(screen([RULE, '❯ Type @ to search', RULE], { x: 18, y: 1 }), PROFILES.muse);
+  assert.equal(typed.composer.text, 'Type @ to search');
+  // Other programs keep reading such a line as text.
+  assert.equal(readDocument(screen([RULE, hint, RULE], { x: 2, y: 1 })).composer.text, 'Type @ to search and insert workspace file paths');
+});

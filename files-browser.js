@@ -309,15 +309,236 @@ function fbPaint(s) {
     const events = e.directory ? s.events.filter(x => x.path.startsWith(e.path + '/')) : s.groups.get(e.path) || [];
     return { ...e, events };
   }).filter(e => !s.only || e.events.length);
-  $('fbList').innerHTML = entries.map((e, i) => `<div class="fb-row${e.events.length ? ' changed' : ''}"><button data-fb-entry="${i}" ${e.link ? 'disabled title="Symbolic links are not opened by this browser"' : ''}><span aria-hidden="true">${e.directory ? '▸' : '·'}</span> ${esc(s.query ? e.rel : e.name)}${e.link ? ' ↗' : ''}</button><div>${e.directory || typeof presenceFileSlotHtml !== 'function' ? '' : presenceFileSlotHtml(e.path)}${fbBadge(s, e.events)}${e.directory || typeof OpenFiles === 'undefined' ? '' : OpenFiles.keepButtonHtml(e.path, s.project, { cls: 'fb-keep' })}</div>${e.snippet != null ? `<code class="fb-snippet">${e.line}: ${esc(e.snippet)}</code>` : ''}</div>`).join('') || '<div class="empty">No matching files.</div>';
+  s.rows = entries;
+  $('fbList').innerHTML = entries.map((e, i) => `<div class="fb-row${e.events.length ? ' changed' : ''}" data-fb-row="${i}"><button data-fb-entry="${i}" ${e.link ? 'aria-disabled="true" title="Symbolic links are not opened by this browser"' : ''} aria-keyshortcuts="F2 Delete"><span aria-hidden="true">${e.directory ? '▸' : '·'}</span> ${esc(s.query ? e.rel : e.name)}${e.link ? ' ↗' : ''}</button><div>${e.directory || typeof presenceFileSlotHtml !== 'function' ? '' : presenceFileSlotHtml(e.path)}${fbBadge(s, e.events)}<span class="fb-row-acts">${e.directory || typeof OpenFiles === 'undefined' ? '' : OpenFiles.keepButtonHtml(e.path, s.project, { cls: 'fb-keep' })}<button type="button" class="fb-more" data-fb-menu="${i}" aria-haspopup="menu" aria-label="More actions for ${esc(e.name)}" title="Rename, duplicate, delete">⋯</button></span></div>${e.snippet != null ? `<code class="fb-snippet">${e.line}: ${esc(e.snippet)}</code>` : ''}</div>`).join('') || '<div class="empty">No matching files.</div>';
   if (typeof renderPresenceMarks === 'function') renderPresenceMarks();
-  $('fbList').querySelectorAll('[data-fb-entry]').forEach(b => b.onclick = () => {
+  $('fbList').querySelectorAll('[data-fb-entry]').forEach(b => {
     const e = entries[Number(b.dataset.fbEntry)];
-    if (e.directory) { s.dir = e.rel; s.query = ''; $('fbSearch').value = ''; fbLoad(s); }
-    else fbOpenFile(s, e.path, e.line);
+    b.onclick = () => {
+      // A link stays focusable (its actions work by keyboard) but does not open.
+      if (e.link) return;
+      if (e.directory) { s.dir = e.rel; s.query = ''; $('fbSearch').value = ''; fbLoad(s); }
+      else fbOpenFile(s, e.path, e.line);
+    };
+    b.onkeydown = ev => {
+      if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.isComposing) return;
+      if (ev.key === 'F2') { ev.preventDefault(); ev.stopPropagation(); fbStartRename(s, e); }
+      else if (ev.key === 'Delete' || (ev.key === 'Backspace' && ev.shiftKey)) { ev.preventDefault(); ev.stopPropagation(); fbDelete(s, e); }
+      else if (ev.key === 'ContextMenu' || (ev.key === 'F10' && ev.shiftKey)) { ev.preventDefault(); ev.stopPropagation(); fbEntryMenu(s, e, b); }
+    };
   });
+  $('fbList').querySelectorAll('[data-fb-menu]').forEach(b => b.onclick = ev => {
+    ev.stopPropagation();
+    fbEntryMenu(s, entries[Number(b.dataset.fbMenu)], b);
+  });
+  $('fbList').oncontextmenu = ev => {
+    const row = ev.target.closest('[data-fb-row]');
+    if (!row || ev.target.closest('input, .fb-snippet')) return;
+    ev.preventDefault();
+    fbEntryMenu(s, entries[Number(row.dataset.fbRow)], null, ev.clientX, ev.clientY);
+  };
   $('fbBody').querySelectorAll('[data-fb-dir]').forEach(b => b.onclick = () => { s.dir = b.dataset.fbDir; s.query = ''; $('fbSearch').value = ''; fbLoad(s); });
   if (s.tree.readme && !s.only) fbReadme(s, s.tree.readme, $('fbReadme'));
+  fbPaintDeleted(s);
+  // After a rename, a copy or a delete: the place the person is working.
+  const after = s.after; s.after = null;
+  if (after) {
+    const i = after.rel != null ? entries.findIndex(e => e.rel === after.rel) : Math.min(after.index, entries.length - 1);
+    if (i >= 0) {
+      if (after.rename) fbStartRename(s, entries[i]);
+      else $('fbList').querySelector(`[data-fb-entry="${i}"]`)?.focus();
+    }
+  }
+}
+
+// ---- rename, duplicate, delete (file-ops.js on the server) ----
+// Delete moves to “Recently deleted”, restorable for 30 days; every action
+// offers Undo. Nothing is overwritten: the server refuses a taken name.
+async function fbFileOp(s, body) {
+  const r = await fetch('/api/files/op', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: s.project, root: s.root, ...body }) });
+  const d = await r.json().catch(() => ({ error: 'The server did not answer.' }));
+  if (!r.ok || d.error) throw new Error(d.error || 'That did not work.');
+  return d;
+}
+// Paths this page just changed: their watcher echo is not “new activity”.
+function fbOwnOp(s, ...paths) {
+  const until = Date.now() + 20000;
+  s.ownOps = (s.ownOps || []).filter(o => o.until > Date.now()).concat(paths.filter(Boolean).map(path => ({ path, until })));
+}
+const fbUnder = (p, base) => p === base || p.startsWith(base + '/') || p.startsWith(base + '\\');
+// A conversation's remembered place in Files follows its file.
+function fbMovePlaces(from, to) {
+  for (const [key, place] of filesBrowserPlaces) {
+    if (!place?.file || !fbUnder(place.file, from)) continue;
+    if (to) filesBrowserPlaces.set(key, { ...place, file: to + place.file.slice(from.length) });
+    else filesBrowserPlaces.set(key, place.context);
+  }
+}
+function fbRowOf(s, e) {
+  const i = (s.rows || []).indexOf(e);
+  return i < 0 ? null : $('fbList')?.querySelector(`[data-fb-row="${i}"]`);
+}
+function fbEntryMenu(s, e, anchor, x = 0, y = 0) {
+  if (!fbCurrent(s) || !e) return;
+  closeFileActionMenu();
+  const items = [
+    ['Rename', 'F2', () => fbStartRename(s, e)],
+    ['Duplicate', '', () => fbDuplicate(s, e)],
+    ['Delete', 'Del', () => fbDelete(s, e), 'Moves it to Recently deleted, where it stays 30 days'],
+  ];
+  const menu = document.createElement('div');
+  menu.className = 'file-action-menu fb-entry-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', e.name);
+  menu.innerHTML = `<div class="file-action-head">${esc(e.rel)}${e.directory ? '/' : ''}</div>` + items.map(([label, key, , title], i) =>
+    `<button type="button" role="menuitem" data-fb-action="${i}"${title ? ` title="${esc(title)}"` : ''}>${esc(label)}${key ? `<kbd>${key}</kbd>` : ''}</button>`).join('');
+  document.body.appendChild(menu);
+  if (anchor) { const r = anchor.getBoundingClientRect(); x = r.right - menu.offsetWidth; y = r.bottom + 2; anchor.setAttribute('aria-expanded', 'true'); }
+  menu.style.left = Math.max(8, Math.min(x, window.innerWidth - menu.offsetWidth - 8)) + 'px';
+  menu.style.top = Math.max(8, Math.min(y, window.innerHeight - menu.offsetHeight - 8)) + 'px';
+  const buttons = [...menu.querySelectorAll('[data-fb-action]')];
+  const back = () => { anchor?.setAttribute('aria-expanded', 'false'); };
+  buttons.forEach(b => b.onclick = ev => { ev.stopPropagation(); closeFileActionMenu(); back(); items[Number(b.dataset.fbAction)][2](); });
+  menu.onkeydown = ev => {
+    const at = buttons.indexOf(document.activeElement);
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); buttons[(at + (ev.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length].focus(); }
+    else if (ev.key === 'Tab') { ev.preventDefault(); closeFileActionMenu(); back(); fbFocusEntry(s, e); }
+  };
+  // Escape (app.html) closes every action menu; focus returns to the row.
+  new MutationObserver((_, obs) => { if (!menu.isConnected) { obs.disconnect(); back(); if (!document.activeElement || document.activeElement === document.body) fbFocusEntry(s, e); } }).observe(document.body, { childList: true });
+  buttons[0].focus();
+}
+function fbFocusEntry(s, e) { fbRowOf(s, e)?.querySelector('[data-fb-entry]')?.focus(); }
+
+// The name is edited where it is shown. Enter or leaving the field keeps
+// it; Escape keeps the old one. A refusal (taken, invalid) stays in the
+// field with the reason, so nothing typed is lost.
+function fbStartRename(s, e) {
+  const row = fbRowOf(s, e);
+  if (!fbCurrent(s) || !row || row.querySelector('.fb-rename')) return;
+  const button = row.querySelector('[data-fb-entry]');
+  const form = document.createElement('form');
+  form.className = 'fb-rename';
+  form.innerHTML = `<input type="text" aria-label="New name for ${esc(e.name)}" spellcheck="false" autocomplete="off" autocapitalize="off" enterkeyhint="done"><span class="fb-rename-error" role="alert"></span>`;
+  const input = form.querySelector('input'), error = form.querySelector('.fb-rename-error');
+  input.value = e.name;
+  button.hidden = true;
+  button.after(form);
+  input.focus();
+  // The name, not its ending: typing replaces “report” in “report.md”.
+  const ending = e.directory ? null : /(\.ink\.svg|\.tar\.(?:gz|bz2|xz|zst)|\.d\.ts|\.[^.]+)$/i.exec(e.name);
+  input.setSelectionRange(0, ending && ending.index > 0 ? ending.index : e.name.length);
+  let done = false;
+  const finish = (focus = true) => {
+    done = true; form.remove(); button.hidden = false;
+    if (focus) button.focus();
+  };
+  const commit = async ({ leaving = false } = {}) => {
+    if (done || form.dataset.busy) return;
+    const name = input.value.trim();
+    if (!name || name === e.name) return finish(!leaving);
+    if (name.includes('/')) { error.textContent = 'A name cannot contain “/”.'; input.setAttribute('aria-invalid', 'true'); if (!leaving) input.focus(); return; }
+    form.dataset.busy = '1'; input.readOnly = true;
+    try {
+      const out = await fbFileOp(s, { op: 'rename', rel: e.rel, to: name });
+      done = true;
+      fbOwnOp(s, out.from, out.to);
+      fbMovePlaces(out.from, out.to);
+      const oldName = e.name;
+      toast('Renamed to ' + name + ' · Undo', () => fbUndo(s, { op: 'rename', rel: out.rel, to: oldName }, 'Renamed back to ' + oldName, { from: out.to, to: out.from }), '', { repeat: true });
+      s.after = leaving ? null : { rel: out.rel };
+      fbLoad(s);
+    } catch (err) {
+      delete form.dataset.busy; input.readOnly = false;
+      if (!form.isConnected) return errToast(err.message);
+      error.textContent = err.message; input.setAttribute('aria-invalid', 'true');
+      // Leaving a refused name: say so, and keep the field for a second try.
+      if (leaving) errToast(err.message); else { input.focus(); input.select(); }
+    }
+  };
+  form.onsubmit = ev => { ev.preventDefault(); commit(); };
+  input.oninput = () => { error.textContent = ''; input.removeAttribute('aria-invalid'); };
+  input.onkeydown = ev => {
+    ev.stopPropagation(); // typing a name is not a shortcut
+    if (ev.key === 'Escape') { ev.preventDefault(); finish(); }
+  };
+  input.onblur = () => setTimeout(() => { if (!done && form.isConnected && document.activeElement !== input) commit({ leaving: true }); });
+}
+
+async function fbDuplicate(s, e) {
+  try {
+    const out = await fbFileOp(s, { op: 'duplicate', rel: e.rel });
+    fbOwnOp(s, out.to);
+    const name = out.rel.split('/').pop();
+    toast('Duplicated as ' + name + ' · Undo', () => fbUndo(s, { op: 'delete', rel: out.rel }, 'Removed the copy (it is in Recently deleted)', { from: out.to }), '', { repeat: true });
+    // The copy, ready to be named; Enter keeps “… copy”. In a search the
+    // copy may not match the query: the list is refreshed and nothing more.
+    s.after = { rel: out.rel, rename: true };
+    fbLoad(s);
+  } catch (err) { errToast(err.message); }
+}
+
+async function fbDelete(s, e) {
+  const row = fbRowOf(s, e);
+  if (row?.dataset.busy) return;
+  if (row) row.dataset.busy = '1';
+  try {
+    const out = await fbFileOp(s, { op: 'delete', rel: e.rel });
+    fbOwnOp(s, out.from);
+    fbMovePlaces(out.from, null);
+    toast('Deleted ' + e.name + ' · Undo', () => fbRestore(s, out.id), '', { repeat: true });
+    s.after = { index: Math.max(0, (s.rows || []).indexOf(e)) };
+    fbLoad(s);
+  } catch (err) {
+    if (row) delete row.dataset.busy;
+    errToast(err.message);
+  }
+}
+async function fbUndo(s, body, message, own) {
+  try {
+    const out = await fbFileOp(s, body);
+    fbOwnOp(s, own.from, own.to);
+    if (body.op === 'rename') fbMovePlaces(own.from, own.to);
+    toast(message);
+    if (fbCurrent(s)) { s.after = out.rel ? { rel: out.rel } : null; fbLoad(s); }
+  } catch (err) { errToast('Could not undo: ' + err.message); }
+}
+async function fbRestore(s, id, root = '') {
+  try {
+    const out = await fbFileOp(s, { op: 'restore', id, ...(root ? { root } : {}) });
+    fbOwnOp(s, out.to);
+    toast(out.renamed ? 'Restored as ' + out.to.split(/[\\/]/).pop() + ' (its name was taken)' : 'Restored ' + out.to.split(/[\\/]/).pop());
+    if (fbCurrent(s)) { s.after = !root || root === s.root ? { rel: out.rel } : null; fbLoad(s); }
+  } catch (err) { errToast('Could not restore: ' + err.message); }
+}
+
+// Recently deleted: under the list, folded, only when something is there.
+function fbPaintDeleted(s) {
+  const host = document.createElement('section');
+  host.id = 'fbDeleted';
+  $('fbList').after(host);
+  const n = s.tree.deleted || 0;
+  if (!n || s.query) return;
+  host.innerHTML = `<button type="button" class="fb-deleted-toggle" aria-expanded="${!!s.deletedOpen}" aria-controls="fbDeletedList">Recently deleted (${n})</button><div id="fbDeletedList"${s.deletedOpen ? '' : ' hidden'}></div>`;
+  const list = host.querySelector('#fbDeletedList');
+  const toggle = host.querySelector('.fb-deleted-toggle');
+  const load = async () => {
+    list.textContent = 'Loading…';
+    try {
+      const d = await fbJSON('/api/files/deleted?' + new URLSearchParams({ name: s.project }));
+      if (!list.isConnected) return;
+      const many = new Set(d.items.map(i => i.root)).size > 1;
+      list.innerHTML = `<p class="fb-deleted-note">Kept for 30 days, then removed for good.</p>` + (d.items.map((item, i) => `<div class="fb-deleted-row"><span title="${esc(item.root + '/' + item.rel)}">${esc(many ? item.root.split(/[\\/]/).pop() + '/' + item.rel : item.rel)}${item.directory ? '/' : ''}</span><span class="dim">deleted ${fbTimeHTML(item.at)}</span><button type="button" data-fb-restore="${i}">Restore</button></div>`).join('') || '<div class="empty">Nothing is waiting here any more.</div>');
+      list.querySelectorAll('[data-fb-restore]').forEach(b => b.onclick = () => { b.disabled = true; const item = d.items[Number(b.dataset.fbRestore)]; fbRestore(s, item.id, item.root); });
+    } catch (err) { if (list.isConnected) list.textContent = err.message; }
+  };
+  toggle.onclick = () => {
+    s.deletedOpen = !s.deletedOpen;
+    toggle.setAttribute('aria-expanded', String(s.deletedOpen));
+    list.hidden = !s.deletedOpen;
+    if (s.deletedOpen) load();
+  };
+  if (s.deletedOpen) load();
 }
 async function fbReadme(s, path, host) {
   try {
@@ -404,6 +625,8 @@ function fbActivity(d) {
   const s = filesBrowser;
   if (!s || !fbCurrent(s)) return;
   if (d.project && d.project !== s.project) return;
+  // The echo of a rename, copy or delete made here: the list already shows it.
+  if (d.path && (s.ownOps || []).some(o => o.until > Date.now() && fbUnder(d.path, o.path))) return;
   // Never replace a review or move focus under the reader. Refresh is explicit.
   $('fbNotice').textContent = 'New file activity is available. Refresh to include it; your current review stays in place.';
 }

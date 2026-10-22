@@ -264,6 +264,49 @@ function definitions(t) {
     outputs: { digest: t.string() },
     voice: true, maxTokens: 400,
   });
+  // The frog's walkie-talkie (design/102): after each utterance, did the
+  // person hand the turn over? On Jev (TypeSafe's System One), which picks
+  // between the declared answers with a probability for each: fast and
+  // nearly free, and every call is logged, so judged calls become the
+  // training set of a classifier of its own later.
+  add('frog_turn_end', {
+    description: 'A person talks to their AI assistant, the frog, like on a walkie-talkie: they speak for as long as they like, pausing to think, and hand the turn over with words such as "over", "over to you", "your turn", "go ahead", "done", "that is it", "back to you". Did the last words they said hand the turn over? Only when such words close what they said, as a hand-over: "over" or "done" inside a sentence ("the training is over", "I am done with the paper, and next") is not one. A pause is never a hand-over by itself.',
+    inputs: {
+      before: s('what the person said earlier in this turn, transcribed (may be empty)'),
+      last: s('the words they said last, after their latest pause, transcribed'),
+    },
+    outputs: { turn: t.enum('handed_over', 'still_talking') },
+    jev: true,
+  });
+  // Barge-in (design/102): the person spoke while the frog's reply was
+  // being read aloud and the reading paused for them. What did they mean?
+  add('frog_barge', {
+    description: 'A person listens to their AI assistant, the frog, reading its reply aloud, and starts talking over it; the reading pauses at once. Given the sentence the frog was saying when they cut in (and the one before), and what they said, decide what they meant. "reaction": a backchannel or a remark that wants no answer and no change: "mm-hmm", "yeah", "right", "okay", "interesting", "go on", "I see", a laugh, a word repeated after the frog; the reading should simply go on. "wants_answer": a complete question, request, objection or instruction to the frog that wants an answer now ("wait, which run?", "no, do the other one first", "stop, that is wrong", "what do you mean by cached?", "tell the paper one to use the new title"); also anything closed with a hand-over word such as "over", "your turn", "go ahead". "still_talking": an unfinished thought, a fragment or a false start that is clearly going to continue ("so about the", "hmm, actually I think", "one thing"), where the frog should wait for the rest. Transcription is imperfect; judge the intent, not the exact words.',
+    inputs: {
+      before: s('the frog\u2019s sentence before the one it was saying (may be empty)'),
+      cut_into: s('the sentence the frog was saying when the person cut in (may be empty)'),
+      said: s('what the person said, transcribed'),
+    },
+    outputs: { meaning: t.enum('reaction', 'wants_answer', 'still_talking') },
+    jev: true,
+  });
+  // The frog's memory (design/102, part 3; OptMem's design rebuilt): the
+  // turns about to leave its context become one-line memories, and runs of
+  // memories become one-line summaries. Both on the frog's own model.
+  add('frog_memory_lines', {
+    description: 'A person talks, often by voice, with their assistant, the frog, in one conversation that never ends; the frog steers the person’s other AI work conversations (sends their words there, starts and organizes them, watches them, reports). The turns given are about to leave the frog’s context for good: write the memory lines that will stand for them. Each line is one self-contained fact with lasting effect, in plain words, at most 280 bytes: what the person asked for and decided; what was sent to which conversation (its title and project) and what came of it; what the person said about their life, the people around them, their preferences and how they want things done; what the frog promised or left open; a mistake not to repeat. Leave out what was only true for the moment (what was running, context sizes, the workspace of that minute), routine checks, greetings, and anything already in the known lines. Invent nothing; keep names and titles as said; dates as given. Most groups of turns need one to four lines; none is right when nothing lasts.',
+    inputs: {
+      transcript: s('the turns, in order: the person’s words, the frog’s answers, its tool steps in one line each'),
+      known: t.list(t.string(), { description: 'memory lines already recorded, oldest first: do not repeat them' }),
+      today: s('today’s date'),
+    },
+    outputs: { lines: t.list(t.string(), { description: 'the memory lines, oldest first, each one line of at most 280 bytes, no bullet, no date' }) },
+  });
+  add('frog_memory_merge', {
+    description: 'Compress a run of memory lines of a long-running conversation between a person and their assistant (or the summaries of its two halves) into one line of at most 280 bytes. Keep what has lasting effect: decisions, facts about the person and their work, what was done in which conversation, what stays open. Drop what does not. Invent nothing; keep names as written; plain words, no markdown.',
+    inputs: { range: s('which memories, like #0-15'), lines: t.list(t.string(), { description: 'the memories, or the two halves’ summaries, oldest first' }) },
+    outputs: { line: s('one line of at most 280 bytes') },
+  });
   add('voice_gate', {
     description: 'Decide what to do with speech, for a coding-agent app: the user just heard a spoken summary of an agent reply, the microphone opened, and the user paused; the transcript is everything captured so far. The user often thinks in silence between phrases, so an unfinished thought is normal. "send" ONLY when the user clearly ended the message with a send word such as: send, done, go, submit, enter, control enter, ship it, that is all; text is then the cleaned message with the trailing send word removed. "wait" when the user dictated something addressed to the agent but no send word ended it yet — they are still thinking; keep the microphone open. "command" for short standalone app commands: "mute" (also: stop, be quiet, shut up, pause notifications), "skip" (also: next, dismiss), "status" (also: what is running, what is done), "read" (read a reply aloud — matches: read it, read the reply, read me the last reply, what did it say; target is any named conversation or project, empty means the one that just spoke), "goto" (open something on screen — matches: go to, open, show me; target is the named conversation or project). "ignore" ONLY when the transcript is clearly not addressed to the app: background noise, other people talking to each other, phone calls, or the user talking to someone else in the room. The topic does not matter — the user may ask the agent anything, including casual requests. The strongest signal that speech is addressed to the app is a trailing send word; a message that ends with one is a send even when the topic is casual. Transcription is imperfect: stray trailing words after the send word (like "complete" or "thank you") still count as a send. Examples: "can you tell me a joke? send" is send with text "can you tell me a joke?". "I will pick it up on the way home no worries" is ignore. "refactor the queue and add tests, send" is send. "maybe we should split that function" is wait.',
     inputs: { transcript: t.string() },
@@ -330,11 +373,12 @@ function definitions(t) {
  * @param {(url, body, timeoutMs) => Promise<{status, json}>} o.chatPost
  * @param {() => {url, model, timeoutMs}} o.voiceEndpoint
  * @param {() => string} o.lm                     the model the Pi router uses, as "provider/model"
+ * @param {() => string} [o.jevModel]             the Jev model of the programs marked jev (FunctAI's TypeSafe wire)
  * @param {() => string|false} o.logFolder        the FunctAI call log, or false
  * @param {number} [o.contentLimit]               inputs larger than this are logged as sizes only
  * @param {object} [o.live]                       programs-live.js: who watches the calls as they run
  */
-function createAiPrograms({ piExec, chatPost, voiceEndpoint, lm, logFolder, contentLimit = 128 * 1024, live = null }) {
+function createAiPrograms({ piExec, chatPost, voiceEndpoint, lm, jevModel = () => 'jev-latest', logFolder, contentLimit = 128 * 1024, live = null }) {
   let built = null;
   // A program whose whole reply is its answer (the document commands): its
   // text as the model writes it, untouched, leading space and all. FunctAI's
@@ -352,8 +396,11 @@ function createAiPrograms({ piExec, chatPost, voiceEndpoint, lm, logFolder, cont
     const defs = definitions(lib.t);
     const fns = {};
     for (const [name, d] of Object.entries(defs)) {
-      const { voice: isVoice, maxTokens, command, ...def } = d;
-      fns[name] = lib.ai({ ...def, definedIn: 'chattering', router: isVoice ? voice : pi, capabilities: TEXT_ONLY, ...(maxTokens ? { maxTokens } : {}) });
+      const { voice: isVoice, jev: isJev, maxTokens, command, ...def } = d;
+      // Jev is reached by FunctAI's own router (its TypeSafe wire): it
+      // answers typed questions, not text, so neither of ours can carry it.
+      fns[name] = isJev ? lib.ai({ ...def, definedIn: 'chattering' })
+        : lib.ai({ ...def, definedIn: 'chattering', router: isVoice ? voice : pi, capabilities: TEXT_ONLY, ...(maxTokens ? { maxTokens } : {}) });
     }
     built = { lib, defs, fns, pi };
     return built;
@@ -378,7 +425,7 @@ function createAiPrograms({ piExec, chatPost, voiceEndpoint, lm, logFolder, cont
     const fn = fns[name];
     if (!fn) throw new Error('no AI program named ' + name);
     const def = defs[name];
-    return execute(fn, { voice: !!def.voice, raw: !!def.template, outputs: def.outputs ? Object.keys(def.outputs) : [fn.answerName] }, inputs, opts);
+    return execute(fn, { voice: !!def.voice, jev: !!def.jev, raw: !!def.template, outputs: def.outputs ? Object.keys(def.outputs) : [fn.answerName] }, inputs, opts);
   }
 
   // Programs people make here (design/75): built from FunctAI's definition
@@ -434,7 +481,7 @@ function createAiPrograms({ piExec, chatPost, voiceEndpoint, lm, logFolder, cont
    * as a plain call; the stream only lets `onText` and the live Programs
    * pages see it. Closing it (the signal) stops the call.
    */
-  async function execute(fn, { voice, raw, outputs }, inputs, { caller = {}, onText = null, onEvent = null, signal = null, lm: model = null } = {}) {
+  async function execute(fn, { voice, jev = false, raw, outputs }, inputs, { caller = {}, onText = null, onEvent = null, signal = null, lm: model = null } = {}) {
     const { lib } = await load();
     const folder = logFolder();
     // A transcript-sized input is logged as its size only: the log keeps
@@ -447,12 +494,19 @@ function createAiPrograms({ piExec, chatPost, voiceEndpoint, lm, logFolder, cont
     const settings = {
       // `model`: the caller sent this call to another model than the
       // settings one (piExec's context says which); the log names it.
-      lm: voice ? (voiceEndpoint().model || 'voice') : model || lm(),
+      lm: jev ? jevModel() : voice ? (voiceEndpoint().model || 'voice') : model || lm(),
       logCalls: folder || false,
       logContent: content,
       caller: who,
     };
     return lib.withSettings(settings, async () => {
+      // Jev answers in one piece (no stream to watch): one plain call, logged
+      // like the others; the Programs pages show it once it is written.
+      if (jev) {
+        if (signal && signal.aborted) throw stopped();
+        const p = await fn.predict(inputs);
+        return { outputs: p.outputs, answer: p.answer, callId: p.callId, response: p.response, version: fn.version, probabilities: replyProbabilities(p.response) };
+      }
       let tracker = null;
       const early = []; // raw text written before the tracker exists
       const onRaw = raw ? piece => { if (onText) onText(piece); if (tracker) tracker.raw(piece); else if (live) early.push(piece); } : null;
@@ -480,7 +534,7 @@ function createAiPrograms({ piExec, chatPost, voiceEndpoint, lm, logFolder, cont
       try {
         const p = await st.prediction;
         if (reading) await reading;
-        return { outputs: p.outputs, answer: p.answer, callId: p.callId, response: p.response, version: fn.version };
+        return { outputs: p.outputs, answer: p.answer, callId: p.callId, response: p.response, version: fn.version, probabilities: replyProbabilities(p.response) };
       } catch (e) {
         if (signal && signal.aborted) throw stopped(e);
         throw e;
@@ -489,6 +543,21 @@ function createAiPrograms({ piExec, chatPost, voiceEndpoint, lm, logFolder, cont
       }
     });
   }
+  // What a model that measures its answers (Jev) gave each one: {output:
+  // {answer: p}}, from the reply's data parts. FunctAI 0.1.0 checks them and
+  // keeps them in the log's exchange, but does not hand them on.
+  const replyProbabilities = response => {
+    const out = {};
+    const parts = response && response.message && response.message.parts || [];
+    for (const part of parts) {
+      if (!part || part.type !== 'data' || !part.probabilities || typeof part.probabilities !== 'object') continue;
+      for (const [field, dist] of Object.entries(part.probabilities)) {
+        if (!dist || typeof dist !== 'object') continue;
+        out[field] = Object.fromEntries(Object.entries(dist).map(([k, v]) => [k, Number(v && typeof v === 'object' && 'raw' in v ? v.raw : v)]));
+      }
+    }
+    return Object.keys(out).length ? out : null;
+  };
   // The raw text of a reply (for the document commands, whose reply is the
   // new text as written, leading space and all).
   const replyText = response => {

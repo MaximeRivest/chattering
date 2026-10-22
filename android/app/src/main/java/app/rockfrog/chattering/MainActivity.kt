@@ -50,6 +50,8 @@ import androidx.appcompat.app.AppCompatActivity
 
 class MainActivity : AppCompatActivity() {
     companion object {
+        /** The one activity, for the call service to reach its page (null when none). */
+        @Volatile var current: MainActivity? = null; private set
         private const val SPEECH_PERMISSION_REQUEST = 4107
         private const val LISTEN_PERMISSION_REQUEST = 4110
         private const val FILE_CHOOSER_REQUEST = 4108
@@ -92,6 +94,81 @@ class MainActivity : AppCompatActivity() {
 
     private fun tellPageNotify(on: Boolean) {
         PageCall.run(web, "w.nativeNotifyChanged&&w.nativeNotifyChanged($on)")
+    }
+
+    // Talking with the frog as a call (FrogCallService, design/102). The page
+    // turns Talk on and off; the call keeps its microphone and its voice
+    // going with the screen off, and gives the headset's button its job.
+    inner class CallBridge {
+        /** Talk on: a call with the frog begins (or the one ringing is answered). */
+        @JavascriptInterface
+        fun start() {
+            runOnUiThread {
+                FrogCallService.start(this@MainActivity)
+                askBatteryOnce()
+            }
+        }
+        /** Talk off: the call ends. */
+        @JavascriptInterface
+        fun end() { runOnUiThread { FrogCallService.hangUp(this@MainActivity) } }
+        @JavascriptInterface
+        fun state(): String = FrogCallService.state
+        /** The frog's voice: "speaking", "paused" or "quiet" (from 0.3.16). */
+        @JavascriptInterface
+        fun frogVoice(v: String) { FrogCallService.frogVoiceIs(this@MainActivity, v) }
+        /** The page's frog code is loaded: a call that waited for it may go on. */
+        @JavascriptInterface
+        fun ready() { pageReady = true }
+        /** Why the app was opened, once: "start" (place a call), "answered",
+         *  "ringing" (the frog's call waits for an answer), or "". */
+        @JavascriptInterface
+        fun takeOpen(): String { val how = pendingOpen ?: ""; pendingOpen = null; return how }
+    }
+    @Volatile var pageReady = false; private set
+    @Volatile private var pendingOpen: String? = null
+    @Volatile private var resumed = false
+    /** A page that can carry a call: loaded, and its frog code has reported in. */
+    val pageLoaded: Boolean get() = pageReady && ::web.isInitialized && web.visibility == View.VISIBLE
+
+    fun pageCall(body: String) { if (::web.isInitialized) PageCall.run(web, body) }
+
+    /** The call began or ended: the microphone that is open changes kind. */
+    fun micCallChanged() {
+        if (::mic.isInitialized) mic.callChanged()
+        if (::listen.isInitialized) listen.callChanged()
+    }
+
+    /** The call ended while the app was behind: what onPause skipped for it. */
+    fun callEnded() {
+        runOnUiThread {
+            if (resumed) return@runOnUiThread
+            if (::listen.isInitialized) listen.onPause()
+            if (::mic.isInitialized) mic.onPause()
+            if (::web.isInitialized) web.onPause()
+        }
+    }
+
+    /** Opened for a call (a notification, the tile, the headset's button,
+     *  the ring page's Answer): the page opens the frog and turns Talk on. */
+    private fun openedForCall(how: String) {
+        pendingOpen = how
+        if (::web.isInitialized) PageCall.run(web, "w.frogCallOpen&&w.frogCallOpen(${JSONObject.quote(how)})")
+    }
+
+    /** Samsung and others stop a sleeping app's network and timers after a
+     *  while; a call must not drop. Asked once; Settings → Battery →
+     *  Unrestricted does the same. */
+    private fun askBatteryOnce() {
+        val prefs = getSharedPreferences("chattering", Context.MODE_PRIVATE)
+        if (prefs.getBoolean("asked_battery", false)) return
+        prefs.edit().putBoolean("asked_battery", true).apply()
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            if (pm.isIgnoringBatteryOptimizations(packageName)) return
+            @SuppressLint("BatteryLife")
+            val i = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+            startActivity(i)
+        } catch (_: Exception) {}
     }
 
     // The pending <input type=file> callback. The WebView contract: answer
@@ -220,6 +297,7 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        current = this
         setContentView(R.layout.activity_main)
         web = findViewById(R.id.web)
         ink = findViewById(R.id.ink)
@@ -262,6 +340,7 @@ class MainActivity : AppCompatActivity() {
             else -> openAnywhere(null)
         }
         NotifyService.startIfEnabled(this)
+        if (intent?.action == FrogCallService.ACTION_OPEN) openedForCall(intent.getStringExtra(FrogCallService.EXTRA_HOW) ?: "start")
     }
 
     // A tapped notification lands here (singleTask): jump the loaded page to
@@ -270,6 +349,7 @@ class MainActivity : AppCompatActivity() {
         super.onNewIntent(intent)
         val link = intent?.data
         if (anywhere.isRelay(link) || anywhere.isPairingLink(link)) { openAnywhere(link.toString()); return }
+        if (intent?.action == FrogCallService.ACTION_OPEN) { openedForCall(intent.getStringExtra(FrogCallService.EXTRA_HOW) ?: "start"); return }
         val key = intent?.getStringExtra(NotifyService.EXTRA_KEY) ?: return
         if (web.visibility != View.VISIBLE) return
         // Through the encrypted link the shell opens it, at the computer the
@@ -294,7 +374,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        resumed = true
         NotifyService.appOnScreen = true
+        FrogCallService.onScreen(this)
         if (::web.isInitialized) web.onResume()
         if (::listen.isInitialized) listen.onResume()
         if (::mic.isInitialized) mic.onResume()
@@ -304,8 +386,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        resumed = false
         NotifyService.appOnScreen = false
         if (::ink.isInitialized) ink.clearAll()
+        // In a call with the frog the page goes on behind the screen: its
+        // microphone and its voice are the call's (FrogCallService; the
+        // bridges skip their pause too). callEnded() pauses it when the
+        // call ends with the app still behind.
+        if (FrogCallService.onCall) { super.onPause(); return }
         if (::listen.isInitialized) listen.onPause()
         if (::mic.isInitialized) mic.onPause()
         if (::web.isInitialized) {
@@ -387,12 +475,18 @@ class MainActivity : AppCompatActivity() {
             displayZoomControls = false
             cacheMode = WebSettings.LOAD_DEFAULT
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            // The computer sends this page sounds to play: a finished reply's
+            // chime, the frog's voice while you talk with it (design/100, 102).
+            // A WebView refuses media no tap started by default, and the frog's
+            // turns are hands-free ("over"), so they would never be heard.
+            mediaPlaybackRequiresUserGesture = false
         }
         web.addJavascriptInterface(InkBridge(), "ChatteringInk")
         web.addJavascriptInterface(speech, "ChatteringSpeech")
         web.addJavascriptInterface(listen, "ChatteringListen")
         web.addJavascriptInterface(mic, "ChatteringMic")
         web.addJavascriptInterface(NotifyBridge(), "ChatteringNotify")
+        web.addJavascriptInterface(CallBridge(), "ChatteringCall")
         web.addJavascriptInterface(AppBridge(), "ChatteringApp")
         web.setDownloadListener { url, userAgent, disposition, mime, _ ->
             downloadMedia(url, userAgent, disposition, mime)
@@ -489,6 +583,7 @@ class MainActivity : AppCompatActivity() {
                 anywhere.intercept(request)
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                pageReady = false
                 view?.evaluateJavascript(deviceScript(), null)
             }
 
@@ -958,6 +1053,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        if (current === this) current = null
+        // No page, no call: its microphone and voice were the page's. (Not
+        // on a recreation for a changed setting: the new page takes it up.)
+        if (isFinishing && FrogCallService.onCall) FrogCallService.hangUp(this)
         hideFullscreenVideo()
         if (::speech.isInitialized) speech.destroy()
         if (::listen.isInitialized) listen.destroy()

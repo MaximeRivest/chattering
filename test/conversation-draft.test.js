@@ -189,7 +189,8 @@ function draftHarness() {
   vm.createContext(context);
   const source = fs.readFileSync(path.join(__dirname, '../conversation-draft.js'), 'utf8');
   vm.runInContext(source.slice(0, source.indexOf('// ---- the draft as the composer')), context);
-  return { ...context, store };
+  context.store = store; // the context itself: a test may load more of the file into it
+  return context;
 }
 
 test('a draft is saved only once it has content, is listed, and can be discarded', () => {
@@ -249,4 +250,53 @@ test('stale drafts are dropped from the list; corrupt records are ignored', () =
   h.store.set('chattering.draft.v1:broken', '{not json');
   assert.deepEqual(plain(h.listDrafts()), []);
   assert.equal(h.store.has('chattering.draft.v1:' + old.id), false);
+});
+
+// "+ new" after typing and going elsewhere brings the words back; a draft
+// left on purpose (another "+ new" on it, or "start a blank one") is set
+// aside: kept, not brought back, until it is written in again.
+test('"+ new" brings back the unsent words, unless that draft was set aside', () => {
+  const h = draftHarness();
+  const source = fs.readFileSync(path.join(__dirname, '../conversation-draft.js'), 'utf8');
+  vm.runInContext(slice(source, 'function draftToResume(', 'async function showDraft('), h);
+  const shown = [];
+  // The draft on screen, or null elsewhere (draftState is the file's own `let`).
+  let onDraft = null;
+  const put = d => { onDraft = d; h.__on = d; vm.runInContext('draftState = __on ? { d: __on } : null', h); };
+  h.showDraft = (id, opts = {}) => { shown.push({ id, resumed: !!opts.resumed }); put(id ? h.loadDraft(id) : null); };
+  h.isDraftOpen = () => !!onDraft;
+  h.$ = () => ({ value: onDraft ? onDraft.text : '', focus() {} });
+  const at = t => { const d = h.newDraft(); d.text = t; h.saveDraft(d); return d; };
+  // Nothing unsent: a blank page.
+  h.startNewConversation();
+  assert.deepEqual(plain(shown.pop()), { id: null, resumed: false });
+  // Typed, went elsewhere, "+ new": the words come back, said so.
+  const a = at('half a thought');
+  put(null);
+  h.startNewConversation();
+  assert.deepEqual(plain(shown.pop()), { id: a.id, resumed: true });
+  // The welcome's examples ask for a blank page.
+  put(null);
+  h.startNewConversation({ fresh: true });
+  assert.deepEqual(plain(shown.pop()), { id: null, resumed: false });
+  // "+ new" on the draft with words: a blank page, and that one is set aside…
+  put(h.loadDraft(a.id));
+  h.startNewConversation();
+  assert.deepEqual(plain(shown.pop()), { id: null, resumed: false });
+  assert.equal(h.loadDraft(a.id).setAside, true);
+  assert.equal(h.listDrafts().length, 1, '…kept with the unsent drafts');
+  put(null);
+  h.startNewConversation();
+  assert.deepEqual(plain(shown.pop()), { id: null, resumed: false }, 'not brought back');
+  // The newest unsent one that is not set aside comes back; a continuation
+  // of another conversation never does ("+ new" is a new conversation).
+  const b = at('a second thought');
+  const c = h.newDraft(); c.text = 'for Codex'; c.continues = { key: 'pi:x', targets: [] }; h.saveDraft(c);
+  put(null);
+  h.startNewConversation();
+  assert.deepEqual(plain(shown.pop()), { id: b.id, resumed: true });
+  // An untouched draft on screen: "+ new" means "write here".
+  put(h.newDraft());
+  h.startNewConversation();
+  assert.equal(shown.length, 0);
 });

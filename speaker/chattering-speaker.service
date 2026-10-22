@@ -1,0 +1,13 @@
+[Unit]
+Description=Chattering voice-print service (TitaNet-large, :8079)
+After=network-online.target
+
+[Service]
+# Any Python with NeMo; on lambda the Parakeet environment.
+Environment=CUDA_VISIBLE_DEVICES=1
+ExecStart=%h/Projects/parakeet-stream/.venv/bin/python %h/Projects/chattering/speaker/speaker_service.py --host 127.0.0.1 --port 8079
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

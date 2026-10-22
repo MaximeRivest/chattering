@@ -10,7 +10,7 @@ const slice = (text, start, end) => text.slice(text.indexOf(start), text.indexOf
 
 function harness() {
   const calls = [], active = { alive: true };
-  const ctx = vm.createContext({
+  const ctx = vm.createContext({ refuseOwnProgramOnly() {}, ownProgramOnly: () => false,
     // Session files held by an agent's own program (design/91): none here.
     liveHeld: new Map(),
     sessionPathsFor: key => ({ entry: { source: 'pi', title: 'Parent' }, sessionPath: '/sessions/' + key, cwd: '/project' }),
@@ -58,7 +58,7 @@ test('forks still enforce delegated-worker ownership before reading or publishin
 
 function browser(overrides = {}) {
   const calls = [];
-  const ctx = vm.createContext({
+  const ctx = vm.createContext({ refuseOwnProgramOnly() {}, ownProgramOnly: () => false,
     fetch: async () => { calls.push('create'); return { ok: true, json: async () => ({ key: 'new-fork' }) }; },
     open: async key => calls.push(['open', key]),
     load: () => { calls.push('refresh-list'); return new Promise(() => {}); },

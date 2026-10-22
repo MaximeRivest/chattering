@@ -49,6 +49,21 @@ test('a pause shows the words; a longer one hands on the utterance, once', async
   assert.ok(l.calls.at(-1) > word(3).length, 'with the earlier words as context');
 });
 
+test('a long quiet after speech is said once, and not for silence alone', async () => {
+  const l = listener();
+  const quiets = () => l.events.filter(e => e.type === 'quiet').length;
+  await say(l, pause(6000));
+  assert.equal(quiets(), 0, 'nothing was said: no quiet');
+  await say(l, word(1), pause(3000));
+  assert.equal(quiets(), 0, 'not yet: three seconds');
+  await say(l, pause(1500));
+  assert.equal(quiets(), 1, 'four seconds after speech');
+  await say(l, pause(8000));
+  assert.equal(quiets(), 1, 'once per quiet');
+  await say(l, word(2), pause(4500));
+  assert.equal(quiets(), 2, 'again after new speech');
+});
+
 test('a short word alone is heard (send)', async () => {
   const l = listener();
   await say(l, frame(3000), frame(3000), frame(3000), pause(1000));
@@ -127,4 +142,62 @@ test('an index follows a word through a revised transcription', () => {
   const rep = 'scroll up send scroll up send scroll up send'.split(' ');
   assert.equal(mapWordIndex(rep, 6, rep.concat('open it'.split(' '))), 6);
   assert.deepEqual([clampWindowSeconds(5), clampWindowSeconds('90'), clampWindowSeconds(999), clampWindowSeconds('x')], [15, 90, 180, 60]);
+});
+
+// The person's side of the woven timeline (design/102): when their speech
+// began and ended, on the wall clock, from the frames themselves; a 'speech'
+// event at the first frame; a 'burst' call half a second in with the audio
+// so far (the barge-in check).
+test('speech onset, burst and utterance times on the wall clock', async () => {
+  let clock = 1_000_000;
+  const events = [], bursts = [];
+  const w = new VoiceWindow({ emit: e => events.push(e), transcribe: async pcm => recognize(pcm), now: () => clock, onBurst: b => bursts.push({ at: b.at, bytes: b.pcm.length, clock }) });
+  // Chunks of 200 ms, the clock advancing with them: 1 s of quiet, a 1.2 s
+  // word, 1 s of quiet.
+  const feed = async pcm => { for (let at = 0; at < pcm.length; at += FRAME_BYTES * 2) { clock += 200; w.feed(pcm.subarray(at, at + FRAME_BYTES * 2)); await w.idle(); } };
+  const long = Buffer.concat(Array.from({ length: 12 }, () => frame(2000)));
+  await feed(Buffer.concat([pause(1000), long, pause(1000)]));
+  const onset = events.find(e => e.type === 'speech');
+  assert.ok(onset, 'speech said at its first frame');
+  // The word began at 1.0 s: the chunk holding its first frame arrived at 1.2 s, with 100 ms of audio after that frame.
+  assert.equal(onset.at, 1_000_000 + 1200 - 100);
+  assert.equal(bursts.length, 1, 'one burst for 1.2 s of speech (the 1.5 s and 3 s stages not reached)');
+  assert.equal(bursts[0].at, onset.at);
+  assert.ok(bursts[0].bytes >= FRAME_BYTES * 5 && bursts[0].bytes <= FRAME_BYTES * 6, 'the audio so far, ~0.5 s: ' + bursts[0].bytes / FRAME_BYTES);
+  assert.equal(bursts[0].clock, 1_000_000 + 1600, 'said half a second in');
+  const u = events.find(e => e.type === 'utterance');
+  assert.ok(u, 'the utterance closed');
+  assert.equal(u.startedAt, onset.at);
+  assert.equal(u.endedAt, 1_000_000 + 2200, 'its last speech frame, at 2.2 s');
+  // A second utterance: its own onset and burst.
+  await feed(Buffer.concat([long, pause(1000)]));
+  assert.equal(events.filter(e => e.type === 'speech').length, 2);
+  assert.equal(bursts.length, 2);
+  // Four seconds of speech in a row: bursts at 0.5, 1.5 and 3 s.
+  await feed(Buffer.concat([Buffer.concat(Array.from({ length: 40 }, () => frame(2000))), pause(1000)]));
+  assert.equal(bursts.length, 5);
+  const u2 = events.filter(e => e.type === 'utterance')[1];
+  assert.ok(u2.startedAt > u.endedAt, 'the second began after the first ended');
+});
+
+
+// A machine in the room (a wood mill, 2026-10-19): noise between 300 and
+// 4000 with dips to 20 holds the gate open (an energy gate cannot tell its
+// bursts from a voice; a 43 s utterance was seen). The cap closes the
+// utterance at the next short pause after 15 s, and the server closes it at
+// once on a hand-over or a command in the live words (closeUtterance).
+test('the gate stuck on for 15 s closes the utterance at the next short pause; closeUtterance() does it at once', async () => {
+  const l = listener();
+  // Loud "speech" with no dip for 16 s, then a short pause.
+  const run = Buffer.concat(Array.from({ length: 160 }, (_, i) => frame(1000 + (i % 3))));
+  await say(l, pause(1000), run, pause(400));
+  assert.equal(l.utterances().length, 1, 'closed by the limit: ' + JSON.stringify(l.utterances()));
+  // closeUtterance: the words so far are handed on without the long pause.
+  await say(l, pause(1000), word(5), pause(400));
+  assert.equal(l.utterances().length, 1);
+  assert.equal(l.w.closeUtterance(), true);
+  await l.w.idle();
+  assert.equal(l.utterances().length, 2);
+  assert.match(l.utterances()[1], /w5/);
+  assert.equal(l.w.closeUtterance(), false, 'nothing pending');
 });

@@ -196,6 +196,13 @@
   let lastInput = Date.now(), reportTimer = 0, lastSent = 0;
   function route() { try { return typeof peopleCurrentRoute === 'function' ? peopleCurrentRoute() : 'home'; } catch { return 'home'; } }
   function conn() { try { return typeof peopleState !== 'undefined' && peopleState.conn ? peopleState.conn : null; } catch { return null; } }
+  // What kind of screen this is, in a few words: the computer's record of
+  // where a sound went names it (design/102).
+  function device() {
+    const ua = navigator.userAgent || '';
+    const kind = typeof window.ChatteringApp === 'object' || window.__anywhereApp ? 'Android app' : /iPhone|iPad/.test(ua) ? 'iPhone or iPad' : /Android/.test(ua) ? 'Android browser' : 'browser';
+    return kind + (window.__anywhereInside ? ' (encrypted link)' : '');
+  }
   // `now`: at once, in this very task (a page that is going away runs no
   // timer after this, and its last word, "hidden", is the one that matters).
   function report(now) {
@@ -206,11 +213,15 @@
     const c = conn();
     if (!c) return;
     lastSent = Date.now();
-    const body = JSON.stringify({ conn: c, visible: !document.hidden && !leaving, focused: !leaving && document.hasFocus(), idleMs: Date.now() - lastInput, route: route() });
+    const body = JSON.stringify({ conn: c, visible: !document.hidden && !leaving, focused: !leaving && document.hasFocus(), idleMs: Date.now() - lastInput, route: route(), device: device(), talking: talking() });
     fetch('/api/push/here', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => {});
   }
+  // This screen talks with the frog (the walkie-talkie, design/102): its
+  // voice sounds here, hidden or not (a phone in a pocket, in a call).
+  function talking() { try { return typeof voice !== 'undefined' && voice.mode === 'walkie' && !leaving; } catch { return false; } }
+  function here() { report(true); }
   for (const t of ['pointerdown', 'keydown', 'touchstart', 'wheel']) {
-    addEventListener(t, () => { const was = lastInput; lastInput = Date.now(); if (lastInput - was > 45000 || Date.now() - lastSent > 60000) report(); }, { capture: true, passive: true });
+    addEventListener(t, () => { const was = lastInput; lastInput = Date.now(); if (lastInput - was > 45000 || Date.now() - lastSent > 10000) report(); }, { capture: true, passive: true });
   }
   document.addEventListener('visibilitychange', () => { report(true); if (!document.hidden) { tidy(); reconcile(); } });
   let leaving = false;
@@ -219,7 +230,7 @@
   addEventListener('focus', () => report());
   addEventListener('blur', () => report());
   addEventListener('chattering:route', () => report());
-  setInterval(() => { if (!document.hidden) send(); }, 60000);
+  setInterval(() => { if (!document.hidden || talking()) send(); }, 60000);
 
   /* ---- honest notifications: read ones go, the icon counts unread ---- */
   let unreadKeys = null, tidyTimer = 0;
@@ -417,7 +428,7 @@
     });
   }
 
-  window.PushUI = { paneHtml, bindPane, enable, disable, unreadChanged, support, load, report };
+  window.PushUI = { paneHtml, bindPane, enable, disable, unreadChanged, support, load, report, here };
   // On start: bring a replaced address up to date, and say where this screen is.
   setTimeout(() => { load().then(() => { reconcile(); report(true); tidy(); }); }, 2500);
 })();

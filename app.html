@@ -308,6 +308,7 @@ body.side-layout #agentsPop[data-panel="inbox"] #agentsLegacy:not(:empty) { bord
 /* List items must keep their natural height; only the list itself shrinks. */
 .mpick.project-scope-picker .mp-row { flex: 0 0 auto; flex-direction: column; align-items: stretch; gap: 3px; padding: 8px 12px; line-height: 1.35; }
 .mpick.project-scope-picker .mp-row b { flex: none; white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.mpick.project-scope-picker .mp-create { border-top: 1px solid var(--border); color: var(--accent); }
 .mpick.project-scope-picker .mp-row small { flex: none; font-size: var(--fs-micro); line-height: 1.35; color: var(--text-dim); white-space: normal; overflow-wrap: anywhere; }
 .mpick.project-scope-picker .mp-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 @media (max-width: 700px) { .mpick.project-scope-picker { width: auto; max-width: 100%; max-height: 72dvh; } }
@@ -758,11 +759,12 @@ body:not(.home) #left, body:not(.home) #ganttResize { display: none !important; 
 .project-row-label:hover { background: var(--surface-2); }
 /* The corner cell above the project rows: the birth place of a new project.
    It lives in the 18px day-label strip, so the chart geometry does not move. */
-.project-new-cell { position: absolute; left: 0; top: 0; width: 168px; height: 18px; line-height: 18px;
-  box-sizing: border-box; padding: 0 8px; overflow: hidden; white-space: nowrap;
-  background: var(--surface-1); border-right: 1px solid var(--border-strong); border-bottom: 1px solid var(--border);
-  color: var(--text-faint); font-size: 10px; pointer-events: auto; cursor: pointer; }
-.project-new-cell:hover, .project-new-cell:focus-visible { color: var(--accent); background: var(--surface-2); }
+.project-new-cell { position: absolute; left: 0; top: 0; width: 168px; height: 32px; line-height: 30px; /* the whole date strip (TimelineChart.HEADER_HEIGHT) */
+  box-sizing: border-box; margin: 0; padding: 0 10px; overflow: hidden; white-space: nowrap; text-align: left;
+  background: var(--surface-1); border: 0; border-right: 1px solid var(--border-strong); border-bottom: 1px solid var(--border); border-radius: 0;
+  color: var(--accent); font: 600 12px var(--font); pointer-events: auto; cursor: pointer; }
+.project-new-cell:hover, .project-new-cell:focus-visible { background: var(--surface-2); text-decoration: underline; }
+.project-new-cell:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .project-labels.narrow .project-new-cell { width: 34px; padding: 0; text-align: center; }
 .project-row-label.hl { background: var(--surface-3); }
 .project-row-label.hl strong { color: var(--accent); }
@@ -1375,32 +1377,60 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
 .cc-foot, .mf-foot { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
 .mf-foot .mf-err { flex: 1 1 auto; color: var(--warn); }
 .mf-body { overflow: auto; display: flex; flex-direction: column; gap: 6px; }
+#claudeAccountsHost .ca-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px 0; border-top: 1px solid var(--border); }
+#claudeAccountsHost .ca-main { flex: 1 1 260px; min-width: 0; }
+#claudeAccountsHost .ca-actions { display: flex; gap: 6px; }
+#claudeAccountsHost .ca-sign { flex: 1 1 100%; display: flex; flex-direction: column; gap: 8px; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: var(--r-menu); }
+#claudeAccountsHost .ca-code { width: min(340px, 100%); }
+#claudeAccountsHost .ca-add { display: flex; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
+.ca-pop { position: fixed; z-index: 80; display: flex; flex-direction: column; gap: 2px; min-width: 160px; padding: 6px; border: 1px solid var(--border-strong); border-radius: var(--r-menu); background: var(--surface-1); box-shadow: 0 4px 16px var(--shadow-soft); }
+.ca-pop button { text-align: left; min-height: 32px; padding: 4px 10px; background: none; border: 0; color: var(--text); border-radius: 6px; }
+.ca-pop button.on { font-weight: 600; }
+.ca-pop button:hover, .ca-pop button:focus-visible { background: var(--surface-2); }
+.draft-setup .ds-account button { margin-left: 2px; }
+.draft-setup .ds-from { max-width: 28ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
+.draft-empty .draft-cont-open { padding: 0 6px; min-height: 24px; font-size: 0.9em; vertical-align: baseline; }
 /* Project setup: readable paths and keyboard/touch controls. */
-.ps-card { width: min(560px, 100%); box-sizing: border-box; max-height: 92dvh; gap: 12px; box-shadow: none; }
+.ps-card { width: min(540px, 100%); box-sizing: border-box; max-height: 92dvh; gap: 14px; padding: 22px 24px 20px; border-radius: var(--r-dialog); box-shadow: 0 18px 50px var(--shadow-color); }
 .ps-card input[type="radio"], .ps-card input[type="checkbox"] { accent-color: var(--accent-strong); }
-.ps-card h2 { font-size: 17px; margin: 0; }
-.ps-body { overflow: auto; min-height: 0; display: flex; flex-direction: column; gap: 16px; }
-.ps-body label { display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
-.ps-body input[type="text"], .ps-body textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: 14px; padding: 9px; }
-.ps-body .ps-choice label, .ps-body .ps-check { flex-direction: row; align-items: center; min-height: 44px; }
-.ps-choice { margin: 0; border: 1px solid var(--border-strong); padding: 8px 12px; }
-.ps-choice legend { font-weight: 700; }
-.ps-create > *, .ps-add > * { margin-bottom: 12px; }
-.ps-help { color: var(--text-dim); font-size: 13px; line-height: 1.5; margin-top: 4px; }
-.ps-path { display: block; overflow-wrap: anywhere; font-size: 14px; }
-.ps-preview { border-left: 3px solid var(--border-strong); padding: 8px; }
-.ps-card button, .ps-card summary { min-height: 44px; font-size: 13px; }
-.ps-card summary { cursor: pointer; line-height: 44px; }
-.ps-status { margin: 0; color: var(--text); overflow-wrap: anywhere; font-size: 13px; }
+.ps-card h2 { font-size: 19px; font-weight: 700; margin: 0; }
+.ps-body { overflow: auto; min-height: 0; display: flex; flex-direction: column; gap: 18px; margin: 0 -4px; padding: 0 4px; }
+.ps-create, .ps-add, .ps-where { display: flex; flex-direction: column; gap: 10px; }
+.ps-field { display: flex; flex-direction: column; gap: 6px; }
+.ps-label { font-size: 13px; font-weight: 600; }
+.ps-optional { font-weight: 400; color: var(--text-dim); font-size: 12px; margin-left: 4px; }
+.ps-card input[type="text"], .ps-card textarea { width: 100%; box-sizing: border-box; height: auto; font: 14px var(--font); padding: 9px 11px; border-radius: var(--r); background: var(--bg); border: 1px solid var(--border-strong); color: var(--text); }
+.ps-card input.ps-big { font-size: 16px; padding: 11px 12px; }
+.ps-card textarea { resize: vertical; min-height: 58px; line-height: 1.45; }
+.ps-card input[type="text"]:focus-visible, .ps-card textarea:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.ps-card ::placeholder { color: var(--text-faint); }
+/* Start from: one choice, drawn as a segmented control over native radios. */
+.ps-seg { display: inline-flex; align-self: flex-start; gap: 2px; padding: 3px; border-radius: var(--r-menu); background: var(--surface-2); }
+.ps-seg label { position: relative; display: block; }
+.ps-seg input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.ps-seg span { display: flex; align-items: center; min-height: 36px; padding: 0 14px; border-radius: calc(var(--r-menu) - 3px); font-size: 13px; color: var(--text-dim); white-space: nowrap; }
+.ps-seg input:checked + span { background: var(--bg); color: var(--text); font-weight: 600; box-shadow: 0 0 0 1px var(--border-strong), 0 1px 3px var(--shadow-color); }
+.ps-seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ps-where-line { margin: -2px 0 0; font-size: 12.5px; color: var(--text-dim); display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.ps-where-text { min-width: 0; overflow-wrap: anywhere; }
+.ps-preview { font: 12px var(--font-mono); color: var(--text); }
+.ps-preview.pending { color: var(--text-dim); }
+.ps-link { background: none; border: 0; padding: 0; min-height: 0; font: 600 12.5px var(--font); color: var(--accent-strong); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
+.ps-link:hover { text-decoration-color: currentColor; }
+.ps-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--r-sm); }
+.ps-where { padding: 12px; border-radius: var(--r); background: var(--surface-2); }
+.ps-check { display: flex; align-items: center; gap: 8px; font-size: 13px; min-height: 32px; }
+.ps-help { color: var(--text-dim); font-size: 12px; line-height: 1.5; margin: 0; }
+.ps-tight { margin-top: -12px; }
+.ps-path { overflow-wrap: anywhere; }
+.ps-status { margin: 0; color: var(--text); overflow-wrap: anywhere; font-size: 13px; padding: 8px 10px; border-radius: var(--r); background: var(--surface-2); }
 .ps-status:empty { display: none; }
-.ps-browser { border: 1px solid var(--border-strong); padding: 8px; }
-.ps-browser-head { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.ps-browser-head .ps-path { flex: 1 1 180px; }
-.ps-folders { max-height: 220px; overflow: auto; margin-top: 8px; }
-.ps-folders button { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; text-align: left; border: 0; border-top: 1px solid var(--border); white-space: normal; overflow-wrap: anywhere; }
-.ps-card :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ps-foot { display: flex; align-items: center; gap: 8px; justify-content: flex-end; padding-top: 4px; }
+.ps-next { flex: 1 1 auto; font-size: 12px; color: var(--text-dim); }
+.ps-foot button { min-height: 44px; padding: 0 18px; font-size: 13px; border-radius: var(--r); }
 .ps-card [hidden] { display: none !important; }
-@media (max-width: 700px) { .project-setup { padding: 8px; } .ps-body input[type="text"], .ps-body textarea { font-size: 16px; } }
+@media (pointer: coarse) { .ps-seg span { min-height: 44px; } }
+@media (max-width: 700px) { .project-setup { padding: 8px; } .ps-card { padding: 18px 16px 16px; } .ps-card input[type="text"], .ps-card textarea { font-size: 16px; } .ps-next { flex-basis: 100%; } .ps-seg { align-self: stretch; } .ps-seg label { flex: 1; } .ps-seg span { justify-content: center; } }
 /* Shared area form styles. */
 .np-card { width: min(480px, 94vw); }
 .np-body { gap: 10px; }
@@ -1886,6 +1916,11 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
 .snip-item .snip-tag { color: var(--text-faint); font-size: 10px; white-space: nowrap; }
 .agent-mic { width: 34px; min-width: 34px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
 .agent-mic[hidden] { display: none; }
+/* The frog's walkie-talkie (design/102): pressed while talking with it. Shape and words carry the state, not colour alone. */
+.frog-talk { white-space: nowrap; }
+/* A sound this screen refused until tapped (design/102). */
+#soundTapToHear { position: fixed; left: 50%; bottom: max(84px, calc(env(safe-area-inset-bottom) + 84px)); transform: translateX(-50%); z-index: 66; padding: 10px 18px; font-weight: 700; border: 2px solid currentColor; background: var(--surface-1); color: var(--text); box-shadow: 0 4px 16px color-mix(in srgb, var(--bg) 60%, transparent); }
+.frog-talk[aria-pressed="true"] { font-weight: 700; box-shadow: inset 0 0 0 2px currentColor; }
 .agent-mic svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: square; }
 .agent-mic.recording { color: var(--accent-ink); background: var(--accent-strong); border-color: var(--accent-strong); }
 .agent-mic.transcribing { border-style: double; }
@@ -2482,6 +2517,7 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <link rel="stylesheet" href="/document-editor.css">
 <link rel="stylesheet" href="/artifacts.css">
 <link rel="stylesheet" href="/conversation-draft.css">
+<link rel="stylesheet" href="/folder-picker.css">
 <link rel="stylesheet" href="/ai-connect.css">
 <script src="/conversation-flow.js"></script>
 <script src="/conversation-tree.js"></script>
@@ -2500,6 +2536,7 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <script src="/timeline-controls.js"></script>
 <link rel="stylesheet" href="/timeline-controls.css">
 <script src="/context-panel.js"></script>
+<script src="/folder-picker.js"></script>
 <script src="/conversation-draft.js"></script>
 <script src="/ai-connect.js"></script>
 <script src="/welcome.js"></script>
@@ -2508,6 +2545,7 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <script src="/harness-composer-ui.js"></script>
 <script src="/codex-ui.js"></script>
 <script src="/live-terminal-ui.js"></script>
+<script src="/claude-accounts-ui.js"></script>
 <script src="/hotkeys-keys.js"></script>
 <script src="/hotkeys-ui.js"></script>
 <link rel="stylesheet" href="/live-terminal.css">
@@ -3194,7 +3232,7 @@ const ScreenSound = (() => {
     done: [[523, 80], [659, 80], [784, 180]],
     attention: [[587, 140], [0, 90], [587, 140], [0, 90], [440, 260]],
   };
-  let ctx = null, chain = Promise.resolve(), audio = null;
+  let ctx = null, chain = Promise.resolve(), audio = null, generation = 0;
   function context() {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return null;
@@ -3225,24 +3263,252 @@ const ScreenSound = (() => {
     }
     return new Promise(r => setTimeout(r, (t - ac.currentTime) * 1000 + 50));
   }
-  function speech(url) {
+  // A screen that wants a tap for each sound (the Android app's WebView,
+  // a browser before its page was touched) refuses one sent by the
+  // computer: it is offered instead, "Tap to hear", never dropped silently.
+  let offer = null;
+  function closeOffer() { if (offer) { const o = offer; offer = null; o.el.remove(); o.resolve(); } }
+  function offerTap(a, frog, error) {
+    closeOffer();
+    const el = document.createElement('button');
+    el.id = 'soundTapToHear';
+    el.type = 'button';
+    el.textContent = frog ? '\u{1F50A} Tap to hear the frog' : '\u{1F50A} Tap to hear';
+    el.title = 'This screen plays a sound only after a tap';
+    el.onclick = () => { a.play().then(() => closeOffer(), () => {}); };
+    document.body.appendChild(el);
+    return new Promise(resolve => { offer = { el, resolve }; });
+  }
+  // The Android app's call shows what the frog's voice does (its
+  // notification's Pause / Go on, the lock screen's media controls).
+  let appVoiceWas = '';
+  function appVoice(v) {
+    if (v === appVoiceWas) return;
+    appVoiceWas = v;
+    try { const c = window.ChatteringCall; if (c && typeof c.frogVoice === 'function') c.frogVoice(v); } catch {}
+  }
+  // The woven timeline (design/102, frog-timeline.js): every play, pause,
+  // seek and end of a frog clip is reported with the clip's own time and
+  // this page's clock, so the computer knows when each sentence really
+  // sounded on this device, not when it was queued.
+  const pageId = (() => { try { return sessionStorage.getItem('chattering.voiceHolder') || null; } catch { return null; } })();
+  const deviceLabel = () => (typeof window.ChatteringApp === 'object' ? 'the Android app' : /Android|iPhone|iPad/.test(navigator.userAgent) ? 'a phone browser' : 'a browser') + (window.__anywhereInside ? ' through the encrypted link' : '');
+  function played(frog, a, state, ms, by) {
+    if (!frog) return;
+    const body = { job: frog.job, clip: frog.clip, state, ms: Math.round((ms != null ? ms : a.currentTime) * 1000), t: Date.now(), page: pageId, rate: a.playbackRate, device: deviceLabel(), by: by || null };
+    fetch('/api/frog/heard', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => {});
+  }
+  function speech(url, rate, frog = null) {
     return new Promise(resolve => {
       const a = new Audio(url);
+      // The frog's speed is a playback rate (pitch kept), as the read button's.
+      if (rate && rate > 0) a.playbackRate = rate;
       audio = a;
-      const done = () => { if (audio === a) { audio = null; renderVoiceUi(false, false, true); } resolve(); };
-      a.onended = done; a.onerror = done;
-      a.onpause = () => { if (audio === a && !a.ended) renderVoiceUi(true, true, true); };
-      a.onplay = () => renderVoiceUi(true, false, true);
-      a.play().catch(done);
+      const done = () => {
+        if (offer && audio === a) closeOffer();
+        if (audio === a) { audio = null; playing = null; renderVoiceUi(false, false, true); }
+        if (frog) setTimeout(() => { if (frogQuiet()) { appVoice('quiet'); dispatchEvent(new CustomEvent('chattering:frog-quiet')); } }, 0);
+        resolve();
+      };
+      a.onended = () => { if (frog && !a.__cut) played(frog, a, 'ended', a.duration || a.currentTime); done(); };
+      a.onerror = done;
+      a.onpause = () => {
+        // A pause this player made itself (a step back, a stop) was reported
+        // first with the place it really stopped: not again with the new place.
+        if (frog && !a.ended && !a.__cut) { if (a.__told) a.__told = false; else played(frog, a, 'pause', null, a.__by || null); a.__by = null; }
+        if (audio === a && !a.ended) { renderVoiceUi(true, true, true); if (frog) appVoice('paused'); }
+      };
+      a.onplay = () => { if (frog) played(frog, a, 'play', null, a.__by || null); a.__by = null; if (pausedHere === a) pausedHere = null; renderVoiceUi(true, false, true); if (frog) { appVoice('speaking'); dispatchEvent(new CustomEvent('chattering:frog-speaking')); } if (frog && !frog.told) { frog.told = true; frogTell(frog, 'started'); } };
+      a.onseeked = () => { if (frog && !a.paused && !a.ended) played(frog, a, 'seek', null, a.__by || null); };
+      a.play().catch(err => {
+        if (audio !== a || !err || err.name !== 'NotAllowedError') return done();
+        if (frog) frogTell(frog, 'refused', err.name);
+        offerTap(a, !!frog, err.name).then(() => { if (a.paused && !a.ended) done(); });
+      });
     });
   }
+  // A cue in the frog's queue: its own "over" after its last words
+  // (voice-commands.js frogCues makes the sound). Then it is quiet.
+  async function cueSound(sound) {
+    try { if (typeof frogCues !== 'undefined' && voice.mode === 'walkie') await frogCues.play(sound.cue); } catch {}
+    if (playing === sound) playing = null;
+    if (sound.frog && frogQuiet()) { appVoice('quiet'); dispatchEvent(new CustomEvent('chattering:frog-quiet')); }
+  }
+  // The computer's record of where the frog's voice went (design/102):
+  // once per turn when it starts, and every refusal.
+  const frogTold = new Set();
+  function frogTell(frog, state, error) {
+    if (state === 'started') { if (frogTold.has(frog.job)) return; frogTold.add(frog.job); }
+    const device = (typeof window.ChatteringApp === 'object' ? 'the Android app' : /Android|iPhone|iPad/.test(navigator.userAgent) ? 'a phone browser' : 'a browser') + (window.__anywhereInside ? ' through the encrypted link' : '');
+    fetch('/api/frog/heard', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ job: frog.job, clip: frog.clip, state, error, device }) }).catch(() => {});
+  }
+  // The frog's speech (design/102): what plays and what waits, to say
+  // where the person stopped hearing it.
+  let playing = null;      // the sound now playing
+  const waiting = [];      // sounds queued, oldest first
+  // While the frog speaks or has more to say, other sounds (another
+  // conversation's chime) wait until it is quiet: never between its pieces.
+  const held = [];
+  addEventListener('chattering:frog-quiet', () => { while (held.length && frogQuiet()) play(held.shift()); });
   function play(sound) {
     if (!sound) return;
-    chain = chain.then(() => sound.audio ? speech(sound.audio) : tone(sound.tone)).catch(() => {});
+    if (!sound.frog && !frogQuiet()) { held.push(sound); if (held.length > 8) held.shift(); return; }
+    const g = generation;
+    waiting.push(sound);
+    chain = chain.then(() => {
+      const i = waiting.indexOf(sound);
+      if (i < 0 || g !== generation) return null; // taken out of the queue (a cut): not played
+      waiting.splice(i, 1);
+      playing = sound;
+      if (sound.cue) return cueSound(sound);
+      return sound.audio ? speech(sound.audio, sound.rate, sound.frog || null) : tone(sound.tone);
+    }).catch(() => {});
   }
-  function pauseToggle() { if (!audio) return; if (audio.paused) audio.play().catch(() => {}); else audio.pause(); }
-  function stop() { if (!audio) return; const a = audio; audio = null; a.pause(); renderVoiceUi(false, false, true); a.onended && a.onended(); }
-  return { play, pauseToggle, stop };
+  // Where the frog is: the clip playing (or paused) and how far in, else
+  // the first one waiting, from its start. Null when it said everything.
+  function frogAt() {
+    if (playing && playing.frog && audio) return { job: playing.frog.job, clip: playing.frog.clip, ms: Math.round(audio.currentTime * 1000), rate: audio.playbackRate };
+    const next = waiting.find(x => x.frog);
+    return next ? { job: next.frog.job, clip: next.frog.clip, ms: 0 } : null;
+  }
+  const frogReport = (at, state) => fetch('/api/frog/heard', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...at, state, t: Date.now(), page: pageId, device: deviceLabel() }) }).catch(() => {});
+  // The clip this player paused itself (a wait, the pause button): waiting,
+  // even at its very start (a step back can bring it to 0).
+  let pausedHere = null;
+  function pauseToggle(by) {
+    if (!audio) return;
+    const at = frogAt();
+    if (audio.paused) { audio.__by = by || 'button'; stoppedAt = 0; audio.play().catch(() => {}); if (at) frogReport(at, 'resumed'); }
+    else { audio.__by = by || 'button'; audio.pause(); pausedHere = audio; if (at) frogReport(at, 'paused'); }
+  }
+  function pause(by) { if (audio && !audio.paused) pauseToggle(by); }
+  // Paused by voice: where the person started speaking, not where they were
+  // understood ("frog, wait" is heard a second or so after it is said):
+  // a step back, reported as where they stopped hearing; "go on" repeats it.
+  // The place it really stopped is reported first (the timeline), then
+  // where it was put.
+  function pauseBack(ms, by) {
+    if (!audio || audio.paused) return;
+    const a = audio, frog = playing && playing.frog;
+    if (frog) { played(frog, a, 'pause', null, by || 'voice'); a.__told = true; }
+    a.pause();
+    pausedHere = a;
+    a.currentTime = Math.max(0, a.currentTime - ms / 1000);
+    const at = frogAt();
+    if (at) frogReport(at, 'paused');
+  }
+  // A barge-in (design/102): the person began talking agoMs ago while this
+  // clip played; the computer says where to go on from (resumeMs: a beat
+  // before the word they cut into, or the start of that sentence). Held
+  // there until what they say decides.
+  function bargePause({ resumeMs, agoMs }) {
+    if (!audio || audio.paused) return false;
+    const a = audio, frog = playing && playing.frog;
+    if (frog) { played(frog, a, 'pause', null, 'barge'); a.__told = true; }
+    a.pause();
+    pausedHere = a;
+    const back = Number.isFinite(resumeMs) && resumeMs >= 0 ? resumeMs / 1000 : Math.max(0, a.currentTime - ((Number(agoMs) || 0) + 400) / 1000 * a.playbackRate);
+    a.currentTime = Math.max(0, Math.min(a.currentTime, back));
+    const at = frogAt();
+    if (at) frogReport(at, 'paused');
+    return true;
+  }
+  // "Stop" (with or without its name): held where it is, like a pause, but
+  // marked as not wanted; "continue" still brings it back (design/102: a
+  // stop that could not be continued). The rest stays queued.
+  function frogStop() {
+    const at = frogAt();
+    if (!at) return false;
+    if (audio && !audio.paused) { const a = audio, frog = playing && playing.frog; if (frog) { played(frog, a, 'pause', null, 'voice'); a.__told = true; } a.pause(); pausedHere = a; }
+    else if (audio) pausedHere = audio;
+    stoppedAt = Date.now();
+    frogReport({ ...at, why: 'stopped' }, 'stopped');
+    return true;
+  }
+  // Where the playing clip's sentences lie ([startMs, endMs] each, from the
+  // computer), and which is sounding now.
+  function sentenceIndex(a, frog) {
+    const ss = frog && Array.isArray(frog.sentences) ? frog.sentences : [];
+    const ms = a.currentTime * 1000;
+    let i = ss.findIndex(([s, e]) => s <= ms && ms < e);
+    if (i < 0) { i = -1; ss.forEach(([s], k) => { if (s <= ms) i = k; }); }
+    return { ss, i };
+  }
+  // "Next sentence" (+1), "the sentence before" (−1), "say that again" (0),
+  // by voice while it speaks or waits. Past the last sentence of a clip,
+  // the next clip; before the first, the clip's start (an earlier clip is
+  // gone from this player: a limit, stated). Plays on from there.
+  function seekSentence(delta) {
+    if (!audio || !(playing && playing.frog)) return false;
+    const a = audio, frog = playing.frog;
+    const { ss, i } = sentenceIndex(a, frog);
+    let target;
+    if (delta > 0) { if (i + 1 < ss.length) target = ss[i + 1][0]; else { a.__by = 'voice'; a.__cut = false; a.currentTime = Math.max(0, (a.duration || 0) - 0.01); if (a.paused) a.play().catch(() => {}); return waiting.some(x => x.frog); } }
+    else if (delta < 0) target = i > 0 ? ss[i - 1][0] : 0;
+    else target = i >= 0 ? ss[i][0] : 0;
+    const wasPaused = a.paused;
+    if (!wasPaused) { played(frog, a, 'pause', null, 'voice'); a.__told = true; a.pause(); }
+    a.currentTime = Math.max(0, target / 1000 - 0.1);
+    stoppedAt = 0;
+    a.__by = 'voice';
+    a.play().catch(() => {});
+    if (wasPaused) { const at = frogAt(); if (at) frogReport(at, 'resumed'); }
+    return true;
+  }
+  function resume(by) { if (audio && audio.paused) pauseToggle(by || 'voice'); }
+  function stop() { closeOffer(); if (!audio) return; const a = audio; audio = null; playing = null; a.__cut = true; a.pause(); renderVoiceUi(false, false, true); a.onended && a.onended(); }
+  // Everything: what plays and what waits.
+  function stopAll() { generation++; waiting.length = 0; stop(); appVoice('quiet'); setTimeout(() => { while (held.length && frogQuiet()) play(held.shift()); }, 0); }
+  // The frog stops for good (a new message to it, talk turned off): the
+  // computer is told where first, then everything stops.
+  // why: 'stopped' when the person stopped it on purpose ("frog, stop"):
+  // the rest is not wanted, and the frog is told so.
+  // jobs: the computer names what it cut (frog-cut). What plays here from
+  // another ledger (the frog's next words, after the cut) goes on.
+  async function frogCut(why, jobs) {
+    const at = frogAt();
+    if (!at) return false;
+    const only = Array.isArray(jobs) && jobs.length ? jobs : null;
+    if (only && !only.includes(at.job)) return false;
+    // Reported as a cut (what any server stops on), with why: a server
+    // that knows reads it.
+    await frogReport(why === 'stopped' ? { ...at, why: 'stopped' } : at, 'cut');
+    if (why === 'stopped') stoppedAt = Date.now();
+    if (!only) { stopAll(); return true; }
+    // Only those: what waits from another ledger plays next.
+    for (let i = waiting.length - 1; i >= 0; i--) if (waiting[i].frog && only.includes(waiting[i].frog.job)) waiting.splice(i, 1);
+    if (playing && playing.frog && only.includes(playing.frog.job)) stop();
+    else if (!playing) setTimeout(() => { if (frogQuiet()) { appVoice('quiet'); dispatchEvent(new CustomEvent('chattering:frog-quiet')); } }, 0);
+    return true;
+  }
+  let stoppedAt = 0;
+  // Stopped on purpose, and nothing new said since: nothing comes back by
+  // itself (the asides' return waits for the person's next message).
+  const frogStopped = () => stoppedAt > 0;
+  addEventListener('chattering:frog-speaking', () => { stoppedAt = 0; });
+  // Faster or slower now, for what plays and what comes.
+  function setRate(rate) {
+    if (!(rate > 0)) return;
+    if (audio && playing && playing.frog) audio.playbackRate = rate;
+    for (const x of waiting) if (x.frog) x.rate = rate;
+  }
+  // Speaking: playing now, or paused where it waits (not a refused one waiting for its tap).
+  // An aside (design/102): "Noted." over the paused reading, then the
+  // reading again from \`ms\` (the start of the sentence that was cut; where
+  // it stopped when unknown).
+  async function asideNoted(ackUrl, rate, ms) {
+    const a = audio;
+    if (a && !a.paused) a.pause();
+    if (ackUrl) await new Promise(resolve => { const n = new Audio(ackUrl); if (rate > 0) n.playbackRate = rate; n.onended = n.onerror = resolve; n.play().catch(resolve); });
+    if (a && audio === a) { if (Number.isFinite(ms) && ms >= 0) a.currentTime = ms / 1000; a.play().catch(() => {}); return true; }
+    return false;
+  }
+  // The frog said all it had: nothing playing or waiting, its last clip ended.
+  const frogQuiet = () => !(playing && playing.frog) && !waiting.some(x => x.frog);
+  const frogSpeaking = () => !!(playing && playing.frog && audio && !offer && (!audio.paused || audio.currentTime > 0 || pausedHere === audio));
+  // Waiting: paused where it was ("frog, wait", the pill's pause), not playing.
+  const frogWaiting = () => !!(playing && playing.frog && audio && !offer && audio.paused && (audio.currentTime > 0 || pausedHere === audio));
+  return { play, pauseToggle, pause, pauseBack, bargePause, frogStop, seekSentence, resume, stop, stopAll, frogCut, frogAt, setRate, frogSpeaking, frogWaiting, frogStopped, asideNoted, frogQuiet };
 })();
 async function voiceSetMuted(muted, minutes = 30) {
   try {
@@ -5579,7 +5845,7 @@ function projectLabelsHtml(layout) {
   if (!layout.projects) return '';
   const phone = phoneDevice();
   // A new project is a new row, so the entry point heads the row column.
-  const bornCell = `<div class="project-new-cell" data-new-project tabindex="0" title="Create a project or add an existing folder (P)">${phone ? '+' : '+ new project'}</div>`;
+  const bornCell = `<button type="button" class="project-new-cell" data-new-project style="height:${LABEL_H}px;line-height:${LABEL_H - 2}px" title="Create a project or add a folder you already have (P)" aria-label="New project">${phone ? '+' : '+ New project'}</button>`;
   return `<div class="project-labels${phone ? ' narrow' : ''}">${bornCell}${layout.projects.map(row => {
     const top = LABEL_H + row.baseLane * PROJECT_LANE_H;
     const height = row.laneCount * PROJECT_LANE_H;
@@ -5666,7 +5932,7 @@ function mobileConversationCard(s) {
   const project = projectOf(s);
   const live = isActive(s) || (s._famMembers || []).some(isActive);
   const work = isWorking(s) || (s._famMembers || []).some(isWorking);
-  const source = s.source === 'pi-remote' ? 'R' : s.source === 'pi' ? 'P' : s.source === 'codex' ? 'X' : 'C';
+  const source = s.source === 'pi-remote' ? 'R' : s.source === 'pi' ? 'P' : s.source === 'codex' ? 'X' : s.source === 'agy' ? 'A' : s.source === 'muse' ? 'M' : 'C';
   return `<div class="item mobile-work${live || work ? ' live' : ''}" data-rel="${esc(s._openKey || s.key)}">
     <div class="mobile-work-mark">${work ? '●' : live ? '○' : source}</div>
     <div class="mobile-work-body"><div class="title">${esc(s.title || s.timelineTitle || '(untitled)')}</div>
@@ -6228,13 +6494,19 @@ function fileHighlightLang(pathValue) {
 function sxTok(cls, text) { return text ? `<span class="sx ${cls}">${esc(text)}</span>` : ''; }
 
 function highlightHtmlTag(tag) {
-  return String(tag).replace(/^(<\/?)([A-Za-z][\w:-]*)|([A-Za-z_:][\w:.-]*)(=)|("[^"]*"|'[^']*')|(\/?>)/g, (all, open, name, attr, eq, str, close) => {
-    if (open) return esc(open) + sxTok('sx-t', name);
-    if (attr) return sxTok('sx-k', attr) + esc(eq);
-    if (str) return sxTok('sx-s', str);
-    if (close) return esc(close);
-    return esc(all);
-  });
+  tag = String(tag);
+  let html = '', at = 0;
+  // Escape gaps too: declarations and incomplete tags may not match a
+  // token. A raw '<!doctype' here would be parsed as markup, not source.
+  for (const match of tag.matchAll(/^(<\/?)([A-Za-z][\w:-]*)|([A-Za-z_:][\w:.-]*)(=)|("[^"]*"|'[^']*')|(\/?>)/g)) {
+    const [all, open, name, attr, eq, str] = match;
+    html += esc(tag.slice(at, match.index));
+    html += open ? esc(open) + sxTok('sx-t', name)
+      : attr ? sxTok('sx-k', attr) + esc(eq)
+      : str ? sxTok('sx-s', str) : esc(all);
+    at = match.index + all.length;
+  }
+  return html + esc(tag.slice(at));
 }
 
 function highlightPlainWords(chunk, lang) {
@@ -8588,6 +8860,13 @@ function mgShowPop(el, key, items) {
 // unreviewed path lives on the transcript's + button (startSiblingConversation).
 async function startReviewedConversation(project, opts = {}) {
   if (!project || project === '?') return errToast('no project to start in');
+  // A project with no conversations has no memory to review: its first
+  // conversation starts on the ordinary new-conversation page in its folder,
+  // where the agent, model and purpose chip are all choices until sending.
+  if (!opts.epicId && !opts.area && !sessions.some(s => projectOf(s) === project)) {
+    const rec = (projectFolds.created || []).find(c => c.name === project);
+    if (rec && rec.cwd) return startDraftIn(rec.cwd);
+  }
   document.querySelectorAll('.ctx-confirm').forEach(el => el.remove());
   const include = { map: true, epics: opts.epicId ? [opts.epicId] : [], notes: false, evidenceKeys: [], epicMemory: opts.epicId || null };
   // The "where" of the start: project root, a declared area (identity +
@@ -8986,6 +9265,8 @@ async function showProjectOverview(name) {
   if (!name) return;
   if (name === LOOSE_PROJECT) return showLooseConversations();
   const seq = ++projectOverviewLoadSeq;
+  // Arriving (not re-rendering in place): the people section starts folded.
+  if ((viewKind !== 'project' || projectOverviewName !== name) && typeof peopleActivityFold === 'function') peopleActivityFold();
   markSettingsClosed();
   lastNavProject = name;
   projectOverviewName = name;
@@ -9860,6 +10141,47 @@ document.addEventListener('toggle', e => {
   d.classList.toggle('opens-down', menu.offsetHeight > room);
 }, true);
 
+// A <details> menu does not close by itself when one of its items is
+// chosen, nor on a click elsewhere: the message menus close like ordinary
+// menus. Items run in their own handlers (some stop propagation), so the
+// choice is seen in the capture phase and the menu closes once the handler
+// has run. An item that shows its own progress (fork: "copying history…",
+// regenerate: "…") disables itself; its menu stays open until it is done.
+function closeMessageMenu(menu) {
+  if (!menu.open) return;
+  const hadFocus = menu.contains(document.activeElement);
+  menu.open = false;
+  // The focused item is now hidden: keep the keyboard on the menu's button,
+  // unless the action already moved focus elsewhere (composer, editor).
+  if (hadFocus) menu.querySelector(':scope > summary')?.focus({ preventScroll: true });
+}
+document.addEventListener('click', e => {
+  const item = e.target.closest?.('.msg-more-actions > div button');
+  if (item) {
+    const menu = item.closest('.msg-more-actions');
+    setTimeout(() => {
+      if (!item.disabled || !item.isConnected) { closeMessageMenu(menu); return; }
+      const watch = new MutationObserver(() => {
+        if (item.disabled && item.isConnected) return;
+        watch.disconnect();
+        closeMessageMenu(menu);
+      });
+      watch.observe(item, { attributes: true, attributeFilter: ['disabled'] });
+    });
+  }
+  document.querySelectorAll('.msg-more-actions[open]').forEach(menu => {
+    if (!menu.contains(e.target)) closeMessageMenu(menu);
+  });
+}, true);
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  const open = document.querySelectorAll('.msg-more-actions[open]');
+  if (!open.length) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  open.forEach(closeMessageMenu);
+}, true);
+
 // Paths occur in transcripts, notes, and project pages. This delegate covers
 // surfaces without local wiring. Conversation controls stop propagation after
 // they use the same handler.
@@ -10026,11 +10348,15 @@ function stepBodyHtml(cls, kind, m, index, open, q, html) {
 }
 // The items of a message's "more…" menu (msgBlock draws the menu closed).
 function messageMenuItemsHtml(m, copyIndex, messageKey) {
+  // Antigravity and Muse Code conversations are read here and continued in
+  // their own program: no edit, other answer, branch or fork from here.
+  const source = (messageKey === current?.key ? current : readerSessions.get(messageKey))?.source;
+  const ownProgram = source === 'agy' || source === 'muse' || !!m.part; // m.part: an earlier part, with another agent
   return (
-      (copyIndex >= 0 && !ConversationFlow.transport(m) && !(((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) === 'codex' && m.role !== 'user') ? `<button type="button" class="msg-edit" data-msg-index="${copyIndex}" title="${['pi', 'pi-remote'].includes((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) ? 'Edit this message on a new path' : 'Edit the original message'}">edit</button>` : '') +
-      (copyIndex >= 0 && !ConversationFlow.transport(m) && m.role === 'assistant' && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) !== 'codex' ? `<button type="button" class="msg-regenerate" data-msg-index="${copyIndex}" title="Create another answer from the node before this reply">regenerate</button>` : '') +
-      (copyIndex >= 0 && !ConversationFlow.transport(m) && m.eid && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) === 'codex' ? `<button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="A new Codex conversation through this turn">fork</button>` : '') +
-      (copyIndex >= 0 && !ConversationFlow.transport(m) && m.eid && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) !== 'codex' ? `<button type="button" data-reader-continue-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Use this conversation context. Files on disk are not rewound.">continue here</button><button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Copy the conversation through this message into a separate conversation">fork</button>` : '') +
+      (copyIndex >= 0 && !ownProgram && !ConversationFlow.transport(m) && !(((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) === 'codex' && m.role !== 'user') ? `<button type="button" class="msg-edit" data-msg-index="${copyIndex}" title="${['pi', 'pi-remote'].includes((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) ? 'Edit this message on a new path' : 'Edit the original message'}">edit</button>` : '') +
+      (copyIndex >= 0 && !ownProgram && !ConversationFlow.transport(m) && m.role === 'assistant' && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) !== 'codex' ? `<button type="button" class="msg-regenerate" data-msg-index="${copyIndex}" title="Create another answer from the node before this reply">regenerate</button>` : '') +
+      (copyIndex >= 0 && !ownProgram && !ConversationFlow.transport(m) && m.eid && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) === 'codex' ? `<button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="A new Codex conversation through this turn">fork</button>` : '') +
+      (copyIndex >= 0 && !ownProgram && !ConversationFlow.transport(m) && m.eid && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) !== 'codex' ? `<button type="button" data-reader-continue-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Use this conversation context. Files on disk are not rewound.">continue here</button><button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Copy the conversation through this message into a separate conversation">fork</button>` : '') +
       (copyIndex >= 0 && m.role === 'user' ? `<button type="button" class="msg-snippet" data-msg-index="${copyIndex}" title="Save this message as a snippet you can insert later">snippet</button>` : ''));
 }
 function fillMessageMenu(menu) {
@@ -10052,6 +10378,16 @@ function msgBlock(m, hl, keepOpen = false, q = '', copyIndex = -1, messageKey = 
     // Marker row: the turn stopped here (browser abort, TUI escape, ^C).
     const anchor = m.ts ? ` data-ts="${esc(m.ts)}"` : '';
     return `<div class="abortbar"${anchor}${idxAttr}>⏹ ${esc(m.text || 'aborted')}</div>`;
+  }
+  if (m.role === 'event' && m.customType === 'handoff') {
+    // The conversation moved to another agent here (harness/handoff.js).
+    const anchor = m.ts ? ` data-ts="${esc(m.ts)}"` : '';
+    return `<div class="abortbar handoff-bar"${anchor}${idxAttr} title="Above: the conversation with the earlier agent, as it was. The new agent was given those messages and answers (its work as notes); not their reasoning.">⇄ ${esc(m.text || 'continued with another agent')}</div>`;
+  }
+  if (m.role === 'event' && m.customType === 'mode-switch') {
+    // Chattering handed the agent a prompt mode here (agent-modes.js).
+    const anchor = m.ts ? ` data-ts="${esc(m.ts)}"` : '';
+    return `<div class="abortbar mode-switch-bar"${anchor}${idxAttr} title="From here on the agent follows this prompt mode">▣ ${esc(m.text || 'mode switch')}</div>`;
   }
   if (m.role === 'event' && m.customType === 'compaction') {
     // pi compacted here: the model reads this summary instead of what came
@@ -10550,6 +10886,7 @@ function bindTtsPlayer(player) {
     e.stopPropagation();
     const value = Number(option.dataset.rate) || 1;
     ttsAudio.playbackRate = value;
+    try { localStorage.setItem('chattering.tts.rate', String(value)); } catch {}
     rate.textContent = value + '×';
     rateMenu.querySelectorAll('button').forEach(item => item.classList.toggle('on', item === option));
     rateMenu.hidden = true;
@@ -10576,7 +10913,7 @@ async function readAloudMessage(btn) {
   try {
     const res = await fetch('/api/tts', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: message.text, rewrite: true }),
+      body: JSON.stringify({ text: message.text, rewrite: true, key: typeof activeRel === 'string' ? activeRel : undefined }),
     });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || 'TTS failed');
@@ -10594,6 +10931,14 @@ async function readAloudMessage(btn) {
         '<button type="button" class="on" data-rate="1">1×</button><button type="button" data-rate="1.25">1.25×</button>' +
         '<button type="button" data-rate="1.5">1.5×</button><button type="button" data-rate="2">2×</button></div>';
       msg.appendChild(player);
+      // The speed chosen last, on this device.
+      let saved = 1;
+      try { saved = Number(localStorage.getItem('chattering.tts.rate')) || 1; } catch {}
+      const pick = player.querySelector('.tts-rate-menu [data-rate="' + saved + '"]');
+      if (pick) {
+        player.querySelectorAll('.tts-rate-menu button').forEach(b => b.classList.toggle('on', b === pick));
+        player.querySelector('.tts-rate').textContent = saved + '×';
+      }
     }
     // Rebind global audio events when playback moves to another message.
     if (player) bindTtsPlayer(player);
@@ -11320,6 +11665,25 @@ async function cycleThinking(level = 'cycle') {
   }
 }
 
+// ---- switching agent (harness/handoff.js) ----
+// "Open where it continues" on an earlier part of a conversation.
+document.addEventListener('click', e => { const b = e.target.closest && e.target.closest('[data-open-key]'); if (b) { e.preventDefault(); open(b.dataset.openKey, 'bottom'); } });
+// Switching agent opens the draft screen as "continue with another agent"
+// (conversation-draft.js, startHandoffDraft): the agent, folder, mode,
+// model, reasoning, context, instructions and images are all still to set
+// before the message goes. It begins with what the box holds now.
+function openHandoffDialog(preset = null) {
+  const d = current;
+  if (!d || d.draft || !(d.handoffTargets || []).length) return errToast('No other agent can continue this conversation here.');
+  const text = ($('agentText') && $('agentText').value) || ($('ltDraft') && $('ltDraft').value) || '';
+  const fromName = (d.liveTerminal && d.liveTerminal.name) || ({ pi: 'Pi', 'pi-remote': 'Pi', codex: 'Codex', claude: 'Claude Code', agy: 'Antigravity', muse: 'Muse Code' })[d.source] || 'this agent';
+  const mode = convModes.get(d.key);
+  const title = d.title || ($('chTitle') && $('chTitle').textContent) || '';
+  startHandoffDraft({ key: d.key, title, source: d.source, name: fromName, cwd: d.cwd || '', targets: d.handoffTargets }, {
+    preset, text, images: (window._agentImages || []).slice(), context: (d.attachedContext || []).slice(), mode: mode ? mode.key : null,
+  });
+}
+
 // ---- prompt mode (modes extension) ----
 // The button left of the reasoning control shows the mode that serves the
 // next reply — read from the session's own mode-switch entries. The picker
@@ -11338,8 +11702,22 @@ function paintModeBtn() {
 }
 // Switching runs pi's own /mode command over RPC — the modes extension
 // persists the switch in the session, so the terminal and resumes agree.
+// Agents other than Pi, and Pi's own program: Chattering keeps the mode and
+// hands it over the agent's way (agent-modes.js); it says when it applies.
+function modeGoesThroughServer(conv) {
+  return !!(current && current.key === conv && (!['pi', 'pi-remote'].includes(current.source) || document.querySelector('[data-live-terminal="1"]')));
+}
 async function setConversationMode(key) {
   if (current && current.draft) return draftSetMode(key); // applied when the session starts
+  if (modeGoesThroughServer(activeRel)) {
+    const conv = activeRel;
+    const out = await postJson('/api/conversation/agent-mode', { id: conv, mode: key }).catch(e => ({ error: e.message }));
+    if (!out || out.error) return errToast('mode not changed: ' + ((out && out.error) || 'no answer'));
+    if (out.mode) convModes.set(conv, out.mode); else convModes.delete(conv);
+    if (conv === activeRel) { paintModeBtn(); if (window.LiveTerminal && LiveTerminal.paintMode) LiveTerminal.paintMode(); }
+    toast((out.mode && out.mode.key ? 'mode: ' + (out.mode.label || out.mode.key) : 'no prompt mode') + ' · applies ' + out.when);
+    return;
+  }
   const btn = $('agentRun');
   if (!btn) return errToast('mode switching needs pi');
   const conv = activeRel;
@@ -11378,7 +11756,9 @@ async function openModePicker(anchor) {
   const list = pop.querySelector('.mp-list');
   const filterInput = pop.querySelector('.mp-filter');
   let hi = -1;
-  const activeKey = (convModes.get(activeRel) || {}).key || 'coding';
+  const throughServer = !(current && current.draft) && modeGoesThroughServer(activeRel) && !['pi', 'pi-remote'].includes(current.source);
+  const draftOther = !!(current && current.draft && typeof draftState !== 'undefined' && draftState && !['pi', undefined].includes(draftState.d.harness));
+  const activeKey = (convModes.get(activeRel) || {}).key || (throughServer || draftOther ? '' : 'coding');
   const visibleRows = () => [...list.querySelectorAll('.mp-row')];
   const setHi = i => {
     const vis = visibleRows();
@@ -11391,13 +11771,14 @@ async function openModePicker(anchor) {
     const terms = filterInput.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const shown = (launcherModes || []).filter(m =>
       terms.every(t => (m.key + ' ' + m.label + ' ' + snippetOf(m)).toLowerCase().includes(t)));
-    list.innerHTML = shown.map(m =>
+    list.innerHTML = (throughServer || draftOther ? `<button class="mp-row${!activeKey ? ' on' : ''}" data-mode=""><span class="mp-check">${!activeKey ? '✓' : ''}</span><b>none</b><span>the agent's own instructions only</span></button>` : '') + shown.map(m =>
       `<button class="mp-row${m.key === activeKey ? ' on' : ''}" data-mode="${esc(m.key)}" title="${esc(snippetOf(m).slice(0, 300))}">` +
         `<span class="mp-check">${m.key === activeKey ? '✓' : ''}</span><b>${esc(m.key)}</b>` +
         `<span>${esc(m.label)}${m.custom ? '' : ' · built-in'}</span>` +
         `<span class="mp-ctx mp-modeedit" role="button" title="${m.custom ? 'edit this mode' : 'override this built-in'}">✎</span></button>`
     ).join('') || '<div class="mp-empty">no matching modes</div>';
     list.querySelectorAll('.mp-row').forEach(b => b.onclick = ev => {
+      if (b.dataset.mode === '') { close(); setConversationMode(null); return; }
       const m = (launcherModes || []).find(x => x.key === b.dataset.mode);
       if (!m) return;
       if (ev.target.closest && ev.target.closest('.mp-modeedit')) {
@@ -11729,14 +12110,30 @@ async function aiEpicRetitle(id) {
 function agentComposerHtml(d) {
   // A shared conversation read by link (design/92, share-page/viewer.js): no composer.
   if (window.CHATTERING_VIEWER) return '';
+  // Agents other than Pi: their prompt mode is Chattering's (agent-modes.js).
+  if (d && d.key && !d.draft && 'agentMode' in d) { if (d.agentMode) convModes.set(d.key, d.agentMode); else convModes.delete(d.key); }
   // A mirror is read here and driven where it lives; forking makes it ours.
   if (d.mirror) return `<div class="composer-dock mirror-dock" id="composerDock" data-conversation-key="${esc(d.key)}">
     <div class="mirror-notice"><b>This conversation lives on ${esc(d.mirror.peerName)}.</b> It is mirrored here read-only and stays current as that machine syncs.
     <span class="hint">Continue it there, or fork it: the fork is a conversation of this machine, in your checkout.</span>
     <button type="button" class="ghost" id="mirrorFork">fork here</button></div></div>`;
-  if (!['claude', 'pi', 'pi-remote', 'codex'].includes(d.source)) return '';
+  if (!['claude', 'pi', 'pi-remote', 'codex', 'agy', 'muse'].includes(d.source)) return '';
+  // This part of the conversation was continued with another agent: the
+  // conversation goes on there (one line of history, no twin).
+  if (d.continuedIn) return `<div class="composer-dock mirror-dock" id="composerDock" data-conversation-key="${esc(d.key)}"><div class="mirror-notice"><b>This conversation continued with ${esc(d.continuedIn.agent || 'another agent')}.</b> This is its earlier part. <button type="button" class="ghost" data-open-key="${esc(d.continuedIn.key)}">open where it continues</button></div></div>`;
   // Continued in its agent's own program (design/91, live-terminal-ui.js).
   if (window.LiveTerminal && LiveTerminal.useFor(d)) return LiveTerminal.dockHtml(d);
+  // Antigravity and Muse Code have no Chattering box: only their own
+  // program writes their conversations. When it cannot run here, say why.
+  if (d.source === 'agy' || d.source === 'muse') {
+    const lt = d.liveTerminal || {};
+    const name = lt.name || (d.source === 'agy' ? 'Antigravity' : 'Muse Code');
+    const why = lt.refusal ? lt.refusal
+      : lt.installed === false ? `${name} is not installed on this computer.`
+      : lt.setting === 'off' ? `${name}'s own program is turned off here (settings → agents).`
+      : 'Its own program is not available here.';
+    return `<div class="composer-dock mirror-dock" id="composerDock" data-conversation-key="${esc(d.key)}"><div class="mirror-notice"><b>Read here; ${esc(name)} continues it in its own program.</b> ${esc(why)}</div></div>`;
+  }
   // A text-only copy the Codex app imported is read here, never continued.
   const codexNotice = window.CodexUI ? CodexUI.noticeHtml(d) : '';
   if (codexNotice && (d.importCopyOf || (d.codex && d.codex.imported))) return `<div class="composer-dock mirror-dock" id="composerDock" data-conversation-key="${esc(d.key)}">${codexNotice}</div>`;
@@ -11759,11 +12156,12 @@ function agentComposerHtml(d) {
       <details class="compose-tools" id="composeTools">
       <summary aria-label="Attachments and conversation options" title="Attachments and conversation options">+</summary>
       <div class="compose-tools-menu">
-      ${d.source !== 'claude' && !codex ? '<button id="agentMode" class="model-pick mode-pick" type="button" hidden></button>' : ''}
+      ${d.source !== 'claude' ? '<button id="agentMode" class="model-pick mode-pick" type="button" hidden></button>' : ''}
       ${d.source !== 'claude' ? `<button id="agentSlash" type="button" title="${codex ? 'Commands: model, reasoning, compaction. Or type /.' : 'Slash commands (extensions, skills, prompts). Or type /.'}">Commands /</button>` : ''}
       <button id="agentAt" type="button" title="Inspect and attach background knowledge to this conversation">Context</button>
       <button id="agentSnip" type="button" title="Insert a snippet at the cursor (alt+;). Or type the trigger while writing.">Snippets ;;</button>
       <button id="agentTree" type="button" title="Open the conversation tree (shift+T): branches, forks, parallel replies">Conversation tree</button>
+      ${!d.draft && (d.handoffTargets || []).length ? '<button id="agentHandoff" type="button" title="Continue this conversation with another agent: it gets the conversation so far">Switch agent…</button>' : ''}
       ${d.source !== 'claude' && !d.draft ? '<button id="agentCompact" type="button" title="Summarize the older messages so the model reads less (or type /compact)">Compact conversation…</button>' : ''}
       ${codex ? '<button id="codexAccess" type="button" hidden></button>' : ''}
       ${codex && !d.draft ? '<button id="codexTerminal" type="button" title="Continue in Codex\'s own terminal. Chattering lets go of the conversation first (Codex allows one writer).">Open in Codex (terminal)</button>' : ''}
@@ -11923,6 +12321,12 @@ async function headlessSendFromComposer(btn, promptOverride) {
   if ($('lsSum')) setLiveText($('lsSum'), '◌ sent — waiting for the model…');
   if ($('liveStrip')) $('liveStrip').hidden = false;
   const key = activeRel;
+  // A message to the frog while it is still talking: it stops, and knows
+  // where it was cut off (design/102).
+  if (typeof frogTalk !== 'undefined' && frogTalk.key && key === frogTalk.key) await ScreenSound.frogCut().catch(() => {});
+  // The screen a message is sent from is where its answer should sound:
+  // the computer hears at once that the person is here (design/100, 102).
+  if (window.PushUI && PushUI.report) PushUI.report(true);
   if (prompt.startsWith('/')) {
     // Executable commands come from the same session as the run. Built-in
     // HTML controls were handled above; never forward an unknown slash to a model.
@@ -12455,7 +12859,8 @@ function contextChipParts(c) {
     const words = String(c.text || '').replace(/\s+/g, ' ').trim();
     return ['instructions', words.slice(0, 28) + (words.length > 28 ? '…' : '')];
   }
-  return [c.project || '?', c.kind || ''];
+  // The intent document is the purpose a person wrote for the project.
+  return [c.project || '?', c.kind === 'intent' ? 'purpose' : c.kind || ''];
 }
 
 function renderAgentContext() {
@@ -13315,13 +13720,14 @@ const appMicrophone = (() => {
     // Resolves once the microphone is open, with stop(), which resolves once
     // the last samples have arrived. paused/resumed: the app left the
     // screen and came back; ended(error): it closed ('' after stop()).
-    open({ pcm, paused = () => {}, resumed = () => {}, ended = () => {} }) {
+    // listening: no time limit (an app from 0.3.15; before, ten minutes).
+    open({ pcm, paused = () => {}, resumed = () => {}, ended = () => {}, listening = false }) {
       const b = bridge();
       if (!b) return Promise.reject(new Error('the app has no microphone for this page'));
       return new Promise((resolve, reject) => {
         let opened = false, done;
         const finished = new Promise(r => { done = r; });
-        const id = b.start();
+        const id = listening && typeof b.listen === 'function' ? b.listen() : b.start();
         const stop = () => { try { b.stop(id); } catch {} return Promise.race([finished, new Promise(r => setTimeout(r, 3000))]); };
         open.set(id, {
           pcm, paused,
@@ -13638,6 +14044,8 @@ function wireAgentComposer() {
   renderAgentContext();
   const treeBtn = $('agentTree');
   if (treeBtn) treeBtn.onclick = () => { if (activeRel) showTree(activeRel); };
+  const handoffBtn = $('agentHandoff');
+  if (handoffBtn) handoffBtn.onclick = () => { if ($('composeTools')) $('composeTools').open = false; openHandoffDialog(); };
   const codexTerm = $('codexTerminal');
   if (codexTerm) codexTerm.onclick = () => { if ($('composeTools')) $('composeTools').open = false; CodexUI.openInCodex(); };
   const compactBtn = $('agentCompact');
@@ -16056,18 +16464,18 @@ $('newLoose').onclick = startLooseConversation;
 $('tabsNew').onclick = startLooseConversation;
 
 // ---- project setup ----
-function openNewProjectForm() {
-  openProjectSetup();
+function openNewProjectForm(opts) {
+  openProjectSetup(opts);
 }
 // Dialog focus stays inside the form. Closing returns to its trigger.
-function projectSetupDialog(title, body) {
+function projectSetupDialog(title, body, { note = '' } = {}) {
   const trigger = document.activeElement;
   const ov = document.createElement('div');
   ov.className = 'ctx-confirm project-setup';
   ov.innerHTML = `<form class="cc-card ps-card" role="dialog" aria-modal="true" aria-labelledby="ps-title" tabindex="-1">
     <h2 id="ps-title">${esc(title)}</h2>${body}
     <p class="ps-status" role="status" aria-live="polite"></p>
-    <div class="cc-foot"><button type="button" class="ghost ps-cancel">Cancel</button><button class="primary ps-submit" type="submit">Save</button></div>
+    <div class="cc-foot ps-foot">${note ? `<span class="ps-next">${esc(note)}</span>` : '<span class="ps-next"></span>'}<button type="button" class="ghost ps-cancel">Cancel</button><button class="primary ps-submit" type="submit">Save</button></div>
   </form>`;
   const form = ov.querySelector('form');
   const q = s => ov.querySelector(s);
@@ -16077,6 +16485,7 @@ function projectSetupDialog(title, body) {
   const close = () => {
     if (busy) return;
     ov.remove(); background.forEach(el => { el.inert = false; });
+    ov.dispatchEvent(new Event('ps-closed'));
     if (trigger && trigger.isConnected) trigger.focus();
   };
   q('.ps-cancel').onclick = close;
@@ -16101,94 +16510,104 @@ function projectSetupDialog(title, body) {
 }
 
 function projectFolderPreview(parent, name) {
-  return (parent || '~/Projects').replace(/\/+$/, '') + '/' + name.trim().replace(/\s+/g, '-');
+  return (parent || '~/Projects').replace(/\/+$/, '') + '/' + name.trim().normalize('NFC').replace(/\s+/g, '-');
 }
+// Letters of any alphabet, digits, ". _ -" and spaces; the server applies the same rule.
+const PROJECT_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{M}\p{N}._ -]{0,80}$/u;
 
-function openProjectSetup() {
+// One form, then straight to the first message. Setup itself starts nothing:
+// it makes or adds the folder and keeps an optional purpose. The next screen
+// is the ordinary new-conversation page in that folder, where nothing runs
+// until the person sends. opts prefill the form; opts.onCreated replaces
+// that next step (a draft that asked for its missing folder keeps its text).
+function openProjectSetup(opts = {}) {
   if (document.querySelector('.project-setup')) return;
-  const d = projectSetupDialog('Set up a project', `<div class="ps-body">
-    <fieldset class="ps-choice"><legend>Where will you work?</legend>
-      <label><input type="radio" name="operation" value="create" checked> Create new project</label>
-      <label><input type="radio" name="operation" value="add"> Add existing folder</label>
-    </fieldset>
+  const d = projectSetupDialog('New project', `<div class="ps-body">
+    <div class="ps-seg" role="radiogroup" aria-label="Start from">
+      <label><input type="radio" name="operation" value="create" checked><span>New folder</span></label>
+      <label><input type="radio" name="operation" value="add"><span>Folder I already have</span></label>
+    </div>
     <div class="ps-create">
-      <label>Project name<input class="ps-name" type="text" maxlength="81" autocomplete="off" aria-describedby="ps-name-hint"></label>
-      <p id="ps-name-hint" class="ps-help">Spaces become hyphens in the new folder name.</p>
-      <label>Parent folder<input class="ps-parent" type="text" autocomplete="off"></label>
-      <p class="ps-help">Folder to create</p><output class="ps-preview ps-path"></output>
-      <details><summary class="ps-git-summary">Version history: Git enabled</summary><label class="ps-check"><input class="ps-git" type="checkbox" checked> Initialize Git version history</label></details>
+      <label class="ps-field"><span class="ps-label">Name</span><input class="ps-name ps-big" type="text" maxlength="81" autocomplete="off" spellcheck="false" aria-describedby="ps-where-line"></label>
+      <p class="ps-where-line" id="ps-where-line"><span class="ps-where-text">Creates <code class="ps-preview ps-path"></code><span class="ps-git-state"></span></span> <button type="button" class="ps-link ps-where-toggle" aria-expanded="false" aria-controls="ps-where">Change</button></p>
+      <div class="ps-where" id="ps-where" hidden>
+        <label class="ps-field"><span class="ps-label">Create it inside</span><input class="ps-parent" type="text" placeholder="Search your folders, or type a path"></label>
+        <div class="ps-parent-list"></div>
+        <label class="ps-check"><input class="ps-git" type="checkbox" checked> Keep version history with Git</label>
+      </div>
     </div>
     <div class="ps-add" hidden>
-      <label>Existing folder<input class="ps-existing" type="text" autocomplete="off" placeholder="Paste a full folder path"></label>
-      <button type="button" class="ps-browse">Browse folders</button>
-      <div class="ps-browser" hidden></div>
-      <p class="ps-help">Files stay where they are. Adding this folder does not change its contents.</p>
+      <label class="ps-field"><span class="ps-label">Folder</span><input class="ps-existing ps-big" type="text" placeholder="Search your folders, or type a path"></label>
+      <div class="ps-existing-list"></div>
+      <p class="ps-help">Files stay where they are. Nothing in the folder changes.</p>
     </div>
-    <p class="ps-help">No agent starts now. You can start a conversation after setup.</p>
-  </div>`);
+    <label class="ps-field"><span class="ps-label">What is it for? <span class="ps-optional">optional</span></span><textarea class="ps-intent" rows="2" maxlength="20000" placeholder="e.g. Write and defend my thesis on soil carbon" aria-describedby="ps-intent-hint"></textarea></label>
+    <p id="ps-intent-hint" class="ps-help ps-tight">Agents read this at the start of every conversation here.</p>
+  </div>`, { note: 'Next: write your first message.' });
   const {q} = d;
-  let operation = 'create', browseVersion = 0;
-  q('.ps-parent').value = localStorage.getItem('chattering.newProjectParent') || '~/Projects';
-  q('.ps-existing').value = '';
+  let operation = opts.operation === 'add' ? 'add' : 'create';
+  d.form.querySelector(`[name="operation"][value="${operation}"]`).checked = true;
+  q('.ps-parent').value = opts.parent || localStorage.getItem('chattering.newProjectParent') || '~/Projects';
+  q('.ps-name').value = opts.name || '';
+  q('.ps-existing').value = opts.path || '';
   const update = () => {
     q('.ps-create').hidden = operation !== 'create'; q('.ps-add').hidden = operation !== 'add';
     q('.ps-submit').textContent = operation === 'create' ? 'Create project' : 'Add project';
-    q('.ps-preview').textContent = q('.ps-name').value.trim() ? projectFolderPreview(q('.ps-parent').value, q('.ps-name').value) : 'Enter a project name to see the folder path.';
+    const name = q('.ps-name').value.trim();
+    q('.ps-preview').textContent = projectFolderPreview(q('.ps-parent').value, name || '…');
+    q('.ps-preview').classList.toggle('pending', !name);
+    q('.ps-git-state').textContent = q('.ps-git').checked ? ' · Git on' : ' · Git off';
     q('.ps-name').required = operation === 'create'; q('.ps-existing').required = operation === 'add';
   };
-  d.form.querySelectorAll('[name="operation"]').forEach(el => el.onchange = () => { operation = el.value; d.status(''); update(); });
-  q('.ps-name').oninput = update; q('.ps-parent').oninput = update;
-  q('.ps-git').onchange = () => { q('.ps-git-summary').textContent = q('.ps-git').checked ? 'Version history: Git enabled' : 'Version history: off'; };
-  async function browse(folder) {
-    const version = ++browseVersion, panel = q('.ps-browser');
-    panel.hidden = false; panel.textContent = 'Loading folders…';
-    try {
-      const response = await fetch('/api/fs/dirs?path=' + encodeURIComponent(folder));
-      const out = await response.json();
-      if (version !== browseVersion || !d.ov.isConnected) return;
-      if (out.error) throw new Error(out.error);
-      panel.innerHTML = `<div class="ps-browser-head"><button type="button" class="ps-up" aria-label="Go to parent folder" ${out.parent ? '' : 'disabled'}>↑ Up</button><span class="ps-path">${esc(out.path)}</span><button type="button" class="ps-use">Choose this folder</button></div>
-        <div class="ps-folders">${out.dirs.map((dir, i) => `<button type="button" data-folder="${i}"><span>${esc(dir.name)}</span>${dir.known ? '<span class="ps-help">Already a project</span>' : '<span aria-hidden="true">›</span>'}</button>`).join('') || '<p>No subfolders. Choose this folder or go up.</p>'}</div>`;
-      panel.querySelector('.ps-up').onclick = () => { if (out.parent) browse(out.parent); };
-      panel.querySelector('.ps-use').onclick = () => {
-        q('.ps-existing').value = out.path; panel.hidden = true; q('.ps-existing').focus(); d.status('Folder selected. Click Add project to finish.');
-      };
-      panel.querySelectorAll('[data-folder]').forEach(b => b.onclick = () => browse(out.path.replace(/\/$/, '') + '/' + out.dirs[Number(b.dataset.folder)].name));
-      panel.querySelector('.ps-use').focus();
-    } catch (e) {
-      if (version !== browseVersion) return;
-      panel.textContent = 'Could not read this folder. Check the path and try Browse folders again.';
-      d.status(e.message);
-    }
-  }
-  q('.ps-browse').onclick = () => browse(q('.ps-existing').value || q('.ps-parent').value || '~/Projects');
+  const showWhere = open => {
+    q('.ps-where').hidden = !open; q('.ps-where-toggle').setAttribute('aria-expanded', String(open));
+    q('.ps-where-toggle').textContent = open ? 'Done' : 'Change';
+    if (open) { q('.ps-parent').focus(); q('.ps-parent').select(); }
+    else parentPicker.close();
+  };
+  d.form.querySelectorAll('[name="operation"]').forEach(el => el.onchange = () => {
+    operation = el.value; d.status(''); update();
+  });
+  q('.ps-name').oninput = update; q('.ps-parent').oninput = update; q('.ps-git').onchange = update;
+  q('.ps-where-toggle').onclick = () => showWhere(q('.ps-where').hidden);
+  // One search box per folder question (folder-picker.js). An existing
+  // project found while adding opens instead: that is what was meant.
+  const openKnown = project => { d.close(); showProjectOverview(project); };
+  const parentPicker = FolderPicker.attach(q('.ps-parent'), { purpose: 'parent', host: q('.ps-parent-list'), onOpenProject: openKnown });
+  const existingPicker = FolderPicker.attach(q('.ps-existing'), { purpose: 'add', host: q('.ps-existing-list'), onOpenProject: openKnown });
+  d.ov.addEventListener('ps-closed', () => { parentPicker.destroy(); existingPicker.destroy(); });
   d.form.onsubmit = async e => {
     e.preventDefault();
-    const name = q('.ps-name').value.trim();
-    if (operation === 'create' && !/^[A-Za-z0-9][A-Za-z0-9._ -]{0,80}$/.test(name)) {
+    const name = q('.ps-name').value.trim().normalize('NFC');
+    if (operation === 'create' && !PROJECT_NAME_RE.test(name)) {
       d.status('Start the name with a letter or number. Use letters, numbers, spaces, dots, hyphens, or underscores.'); q('.ps-name').focus(); return;
     }
-    const parent = q('.ps-parent').value || '~/Projects';
-    const body = operation === 'create' ? {operation, name, parent, git: q('.ps-git').checked} : {operation, path: q('.ps-existing').value};
-    ++browseVersion;
+    const parent = q('.ps-parent').value.trim() || '~/Projects';
+    const purpose = q('.ps-intent').value.trim();
+    const body = operation === 'create' ? {operation, name, parent, git: q('.ps-git').checked, purpose} : {operation, path: q('.ps-existing').value.trim(), purpose};
+    parentPicker.close(); existingPicker.close();
     d.busy(true); d.status(operation === 'create' ? 'Creating project…' : 'Adding project…');
     let out;
     try {
       let capability;
       try { capability = await (await fetch('/api/project/setup')).json(); } catch {}
-      if (!capability || capability.version !== 1) throw new Error('Project setup needs the updated server. Wait for active work to finish, restart Chattering, then retry.');
+      if (!capability || !(capability.version >= 2)) throw new Error('Project setup needs the updated server. Wait for active work to finish, restart Chattering, then retry.');
       out = await postJson('/api/project/create', body);
       if (out.error) throw new Error(out.error);
     }
     catch (error) { d.busy(false); d.status(error.message + ' Your entries are kept.'); return; }
     if (operation === 'create') localStorage.setItem('chattering.newProjectParent', parent);
     d.busy(false); d.close();
-    toast((operation === 'create' ? 'Project created' : 'Project added') + ' · ' + out.cwd);
     if (out.warning) errToast(out.warning);
-    try { await load(); await showProjectOverview(out.project); }
-    catch { errToast('Project saved, but the view could not load. Refresh to find it.'); }
+    try { await load(); } catch { errToast('Project saved, but the lists could not refresh. Refresh the page to see it.'); }
+    const created = { project: out.project, title: out.title || out.project, cwd: out.cwd, adopted: !!out.adopted, at: Date.now() };
+    if (typeof opts.onCreated === 'function') await opts.onCreated(created);
+    else await startDraftIn(out.cwd, { created });
+    // Making a project is choosing it: the side column follows (design/51).
+    if (typeof adoptWorkspaceProject === 'function') adoptWorkspaceProject(out.project, { select: true, stamp: true });
   };
-  update(); q('.ps-name').focus();
+  update();
+  (operation === 'add' ? q('.ps-existing') : q('.ps-name')).focus();
 }
 
 async function editProjectPurpose(project) {
@@ -16605,11 +17024,14 @@ function paneAi() {
   return `<h2>AI accounts</h2>
     <p class="hint">Which AI Chattering talks to on this computer: a plan you already pay for, a key, or a model you run yourself. New conversations use the model chosen here; each conversation can pick another.</p>
     <div id="aiAccountsHost"></div>
+    <div id="claudeAccountsHost" class="set-group"></div>
     <p class="hint">New here, or showing Chattering to someone? <button type="button" class="ghost" id="replayWelcome">Show the welcome again</button></p>`;
 }
 function bindPaneAi(root) {
   const host = root.querySelector('#aiAccountsHost');
   if (host && window.AiConnect) { AiConnect.mount(host); AiConnect.refresh().catch(() => {}); }
+  const claude = root.querySelector('#claudeAccountsHost');
+  if (claude && window.ClaudeAccountsUI) ClaudeAccountsUI.mount(claude);
   const replay = root.querySelector('#replayWelcome');
   if (replay && window.Welcome) replay.onclick = () => Welcome.replay();
 }
@@ -16727,6 +17149,7 @@ function quietMinutesOptions(value) {
 function backgroundAiSectionHtml() {
   const b = settingsOf().backgroundAi || {};
   const can = !!(settingsState && settingsState.canEditSettings);
+  const frogMem = !(settingsState && settingsState.frog && settingsState.frog.memory === false);
   const when = !b.decidedAt ? 'Not decided yet: nothing runs until you choose.'
     : b.decidedAt === 'before-consent' ? 'On since before Chattering asked this question.'
     : 'Decided ' + new Date(b.decidedAt).toLocaleString() + '.';
@@ -16734,12 +17157,22 @@ function backgroundAiSectionHtml() {
     <div class="set-help">Model calls Chattering makes without being asked each time. They send conversation text to the model above.</div>
     <label class="set-check"><input id="setBgNames" type="checkbox"${b.names ? ' checked' : ''}${can ? '' : ' disabled'}> short names for conversations, projects and saved documents</label>
     <label class="set-check"><input id="setBgMemory" type="checkbox"${b.memory ? ' checked' : ''}${can ? '' : ' disabled'}> keep project memory current: re-read a conversation after it changes</label>
-    <div class="set-help">${esc(when)} Buttons you press (build memory, update notes, a new title) always work. Settings → usage shows what these calls used.${can ? '' : ' Only the owner or an admin can change this.'}</div>`;
+    <div class="set-help">${esc(when)} Buttons you press (build memory, update notes, a new title) always work. Settings → usage shows what these calls used.${can ? '' : ' Only the owner or an admin can change this.'}</div>
+    <label class="set-check"><input id="setFrogMemory" type="checkbox"${frogMem ? ' checked' : ''}${can ? '' : ' disabled'}> the frog’s memory: what leaves its context is written down as one-line memories, on the frog’s own model (its conversation only; on by default, apart from the switches above)</label>`;
 }
 
 function bindPaneModel(root) {
   if ($('setBgNames')) $('setBgNames').onchange = () => saveBackgroundAi({ names: $('setBgNames').checked });
   if ($('setBgMemory')) $('setBgMemory').onchange = () => saveBackgroundAi({ memory: $('setBgMemory').checked });
+  if ($('setFrogMemory')) $('setFrogMemory').onchange = async () => {
+    try {
+      const out = await postJson('/api/frog/memory/switch', { on: $('setFrogMemory').checked });
+      if (!out || out.error) throw new Error(out && out.error || 'could not save');
+      if (settingsState) settingsState.frog = { memory: out.on };
+      toast('the frog’s memory ' + (out.on ? 'on' : 'off'));
+    } catch (e) { errToast(e.message); }
+    renderSettings();
+  };
   $('setSimplifyPromptSave').onclick = () => saveSettings({ simplifyPrompt: $('setSimplifyPrompt').value }, 'rewrite prompt saved');
   $('setSimplifyPromptReset').onclick = () => saveSettings({ simplifyPrompt: '' }, 'default rewrite prompt restored');
   $('setResumePromptSave').onclick = () => saveSettings({ resumePrompt: $('setResumePrompt').value }, 'resume message saved');
@@ -16756,6 +17189,8 @@ function bindPaneModel(root) {
     saveSettings({ quietMinutes: m }, m ? 'quiet work reported after ' + $('setQuietMinutes').selectedOptions[0].textContent : 'quiet work not reported');
   };
   $('setSimplifyAnswers').onchange = () => saveSettings({ simplifyAnswers: $('setSimplifyAnswers').checked }, 'simpler answers updated');
+  if ($('setVoiceGateModel')) $('setVoiceGateModel').onchange = () => saveSettings({ voiceGateModel: $('setVoiceGateModel').checked }, $('setVoiceGateModel').checked ? 'new listeners use the voice-activity model' : 'new listeners use the energy gate');
+  if ($('setFrogTurnEndLocal')) $('setFrogTurnEndLocal').onchange = () => saveSettings({ frogTurnEndLocal: $('setFrogTurnEndLocal').checked }, $('setFrogTurnEndLocal').checked ? '“over” decided on this computer' : '“over” decided by Jev');
   bindPlainSteps(root);
   $('setArtifactLibraries').onchange = () => saveSettings({ artifactNetwork: $('setArtifactLibraries').checked ? 'libraries' : 'open' }, 'artifact pages updated');
   bindOptions(root, 'setModelSource', v => {
@@ -16802,8 +17237,8 @@ function paneSound() {
   const can = !!(settingsState && settingsState.canEditSettings);
   const hostLabel = (settingsState && settingsState.hostname) || 'the host';
   const field = (key, label, help, cls = '') => {
-    const envName = { speechUrl: 'SPEECH_URL', ttsUrl: 'KOKORO_URL', ttsVoice: 'KOKORO_VOICE', voiceModelUrl: 'REWRITE_URL', voiceModel: 'REWRITE_MODEL' }[key];
-    const cap = key === 'speechUrl' ? caps.speech : key === 'ttsUrl' || key === 'ttsVoice' ? caps.tts : caps.voiceModel;
+    const envName = { speechUrl: 'SPEECH_URL', myVoiceUrl: 'MYVOICE_URL', ttsUrl: 'KOKORO_URL', ttsVoice: 'KOKORO_VOICE', voiceModelUrl: 'REWRITE_URL', voiceModel: 'REWRITE_MODEL', speakerUrl: 'SPEAKER_URL' }[key];
+    const cap = key === 'speechUrl' ? caps.speech : key === 'myVoiceUrl' ? caps.myVoice : key === 'ttsUrl' || key === 'ttsVoice' ? caps.tts : key === 'speakerUrl' ? caps.speaker : caps.voiceModel;
     const fromEnv = cap && cap.source === 'environment';
     return `<div class="set-field">
       <label for="set_${key}">${esc(label)}</label>
@@ -16822,8 +17257,14 @@ function paneSound() {
     <h3>voice services</h3>
     <div class="set-help">Optional servers you run or trust. Recorded speech and reply text are sent to them. Leave them empty to keep sound on this computer: the chime still plays, and the microphone and read-aloud buttons stay hidden.</div>
     ${field('speechUrl', 'speech-to-text server', 'Dictation and spoken replies. Chattering sends audio to <address>/transcribe and <address>/stream.')}
+    ${field('myVoiceUrl', '“my voice” speech-to-text server', 'A second speech-to-text server, same contract (<address>/transcribe and /stream): the small model trained on one person’s voice (~/Projects/myvoice, served through the same speech bridge as Parakeet). Set, it adds a “speech engine” choice in voice commands above; each person picks their own, and Parakeet stays everyone’s default.')}
     ${field('ttsUrl', 'read-aloud server', 'Reads replies and announcements aloud. Chattering posts text to <address>/tts.')}
     ${field('ttsVoice', 'read-aloud voice', 'A voice name that server knows. Empty: its default voice.', 'medium')}
+    ${field('speakerUrl', 'voice-print server', 'Tells your voice from others while listening (“only my voice”, in voice commands above). Chattering posts each utterance to <address>/check with your voice print. The server is speaker/speaker_service.py in Chattering\u2019s folder.')}
+    <label class="set-check"><input id="setVoiceGateModel" type="checkbox"${s.voiceGateModel ? ' checked' : ''}> use the voice-activity model as the microphone gate</label>
+    <div class="set-help">A small model on this computer (models/voice-vad.json, trained on Maxime’s recordings with a wood mill and other noise mixed in) decides, frame by frame, whether the microphone hears his speech, a pause, or noise. Off: the energy gate, which a machine running nearby keeps open. New listeners only; a listener already open keeps its gate.</div>
+    <label class="set-check"><input id="setFrogTurnEndLocal" type="checkbox"${s.frogTurnEndLocal ? ' checked' : ''}> decide “over” on this computer, not with Jev</label>
+    <div class="set-help">The frog’s end-of-turn check (did the last words hand the turn over?) answered by a rule set learned from the record (frog-turn-end.js), logged like the Jev calls so the Programs page can still mark it ✓ or ✗. Off: Jev.</div>
     ${field('voiceModelUrl', 'spoken-digest model endpoint', 'An OpenAI-compatible chat completions address. Writes the short spoken summaries and understands spoken commands. Without it, announcements read the start of the reply.')}
     ${field('voiceModel', 'spoken-digest model name', 'The model name at that endpoint.', 'medium')}
     <div class="set-help">Saved addresses are not tested for reachability yet. Pick a sound mode above to hear whether read-aloud works.</div>`;
@@ -17638,7 +18079,7 @@ function renderSideNew() {
     $('sideInk').title = 'New note' + (p ? ' in ' + p : '') + ' (N): write with a pen or type, whichever you do first';
     $('sideInk').setAttribute('aria-label', 'New note' + (p ? ' in ' + p : ''));
   }
-  $('sideNewMore').hidden = !p;
+  $('sideNewMore').hidden = false; // always: it also offers "New project…"
   const scope = workspaceScope();
   $('sideProject').querySelector('span').textContent = ProjectScope.label(scope);
   $('sideProject').title = scope && scope !== LOOSE_PROJECT ? 'Open project memory · ' + scope : scope ? 'Open conversations without a project' : 'Browse all projects';
@@ -17684,8 +18125,14 @@ function openWorkspaceProjectPicker(anchor = $('sideProjectMore')) {
     const rows = [{ name: '', title: 'All projects', cwd: 'On this machine' }, { name: LOOSE_PROJECT, title: 'No project', cwd: 'Conversations and files without a project' }, ...sidebarProjectRows()];
     const q = input.value.trim().toLocaleLowerCase();
     const matches = rows.filter(p => !q || `${p.name} ${p.title} ${p.cwd}`.toLocaleLowerCase().includes(q));
-    list.innerHTML = matches.map(p => `<button type="button" class="mp-row${workspaceScope() === p.name ? ' on' : ''}" data-workspace-project="${esc(p.name)}" aria-pressed="${workspaceScope() === p.name}" title="${esc(p.cwd || p.name || p.title)}"><b>${esc(p.name && p.name !== LOOSE_PROJECT ? p.name : p.title)}</b>${p.name && p.name !== LOOSE_PROJECT && p.title && p.title !== p.name ? `<small>${esc(p.title)}</small>` : ''}</button>`).join('') || '<div class="mp-empty">No matching projects.</div>';
+    // Creating sits where projects are chosen. A search with no exact match
+    // offers that name, so "find it, or make it" is one gesture.
+    const typed = input.value.trim();
+    const exact = typed && rows.some(p => [p.name, p.title].some(x => x && x.toLocaleLowerCase() === q));
+    const createRow = `<button type="button" class="mp-row mp-create" data-workspace-create title="Make a new folder a project, or add one you already have"><b>+ New project${typed && !exact ? ` “${esc(typed)}”` : ''}…</b></button>`;
+    list.innerHTML = (matches.map(p => `<button type="button" class="mp-row${workspaceScope() === p.name ? ' on' : ''}" data-workspace-project="${esc(p.name)}" aria-pressed="${workspaceScope() === p.name}" title="${esc(p.cwd || p.name || p.title)}"><b>${esc(p.name && p.name !== LOOSE_PROJECT ? p.name : p.title)}</b>${p.name && p.name !== LOOSE_PROJECT && p.title && p.title !== p.name ? `<small>${esc(p.title)}</small>` : ''}</button>`).join('') || '<div class="mp-empty">No matching projects.</div>') + createRow;
     list.querySelectorAll('[data-workspace-project]').forEach(button => button.onclick = () => { const p = button.dataset.workspaceProject; close(true); chooseWorkspaceProject(p); });
+    list.querySelector('[data-workspace-create]').onclick = () => { close(); openNewProjectForm(typed && !exact ? { name: typed } : {}); };
     position();
   };
   input.oninput = paint;
@@ -17729,11 +18176,25 @@ new MutationObserver(() => $('homeFilters').setAttribute('aria-expanded', String
 $('sideNew').onclick = startScopedConversation;
 if ($('sideInk')) $('sideInk').onclick = () => Notes.create(sideNewProject());
 for (const b of [$('sideArrange'), $('agentsSheetArrange')]) b.onclick = e => { e.stopPropagation(); ListGroups.arrangeMenu(b); };
+// The frog (design/102): one conversation that steers the others. The
+// first open makes its home (the assistant project) and its conversation,
+// pinned in the list; later opens go straight to it.
+async function openFrog() {
+  try {
+    const r = await fetch('/api/frog/home', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.key) throw new Error(d.error || 'HTTP ' + r.status);
+    if (!sessions.some(x => x.key === d.key)) await load();
+    if (typeof frogTalk !== 'undefined') frogTalk.key = d.key;
+    open(d.key);
+  } catch (e) { toast('The frog could not open: ' + e.message, null, 'error'); }
+}
 $('sideNewMore').onclick = e => {
   e.stopPropagation();
   closeFileActionMenu();
   const p = sideNewProject();
-  const items = [['New here · ' + p, startScopedConversation], ['New, no project', () => startLooseConversation()]];
+  const items = [...(p ? [['New here · ' + p, startScopedConversation], ['New, no project', () => startLooseConversation()]] : [['New conversation', () => startLooseConversation()]]),
+    ['New project…', () => openNewProjectForm()], ['Frog · talk to all your conversations', () => openFrog()]];
   // A note (design/98, design/103), before "New project…" when there is one.
   if (typeof Notes !== 'undefined') { const at = items.findIndex(i => i[0] === 'New project…'); items.splice(at < 0 ? items.length : at, 0, ['✎ Note' + (p ? ' · ' + p : ''), () => Notes.create(p)]); }
   const menu = document.createElement('div');
@@ -17945,7 +18406,7 @@ function modalSearchGroups(data) {
   return (data.groups || []).map(g => {
     const n = `${g.semantic ? '≈ ' : ''}${g.matchCount} match${g.matchCount === 1 ? '' : 'es'}`;
     const headAttrs = g.kind === 'conversation' ? `data-rel="${esc(g.key)}"` : `data-md="${esc(g.file)}" data-md-kind="${esc(g.kind)}"`;
-    const head = `<div class="item sr-head" ${headAttrs}><span class="sr-kind">${g.kind === 'conversation' ? (g.source === 'pi' ? 'P' : g.source === 'pi-remote' ? 'R' : g.source === 'codex' ? 'X' : 'C') : (SR_KIND[g.kind] || '✓')}</span><span class="sr-title">${esc(g.title || g.file || '(untitled)')}</span><span class="sr-meta">${esc(g.project || g.kind || '')} · ${n}</span></div>`;
+    const head = `<div class="item sr-head" ${headAttrs}><span class="sr-kind">${g.kind === 'conversation' ? (g.source === 'pi' ? 'P' : g.source === 'pi-remote' ? 'R' : g.source === 'codex' ? 'X' : g.source === 'agy' ? 'A' : g.source === 'muse' ? 'M' : 'C') : (SR_KIND[g.kind] || '✓')}</span><span class="sr-title">${esc(g.title || g.file || '(untitled)')}</span><span class="sr-meta">${esc(g.project || g.kind || '')} · ${n}</span></div>`;
     const hits = (g.matches || []).map(m => {
       const attrs = g.kind === 'conversation'
         ? `data-rel="${esc(g.key)}"${m.i != null ? ` data-i="${m.i}" data-role="${esc(m.role || '')}"` : ''}`
@@ -18096,9 +18557,8 @@ function cornerStack() {
 }
 
 // ---- e-ink touch grammar ----
-// Active only in the binary theme (isEink). Three gestures, nothing more:
+// Active only in the binary theme (isEink):
 // · two-finger vertical drag scrolls the current scroller 1:1 (no inertia)
-// · one-finger tap on quiet space pages: top half up, bottom half down
 // · one-finger horizontal swipe moves between levels: left→right goes up
 //   (transcript → project → home), right→left goes back down.
 // · a long press (500 ms, still) on a message opens its action bar
@@ -18527,7 +18987,8 @@ function helpNow() {
     ] });
   }
   if (viewKind === 'files-browser') {
-    sections.push({ label: 'files', keys: [['t', 'go to file — search files and folders']] });
+    sections.push({ label: 'files', keys: [['t', 'go to file — search files and folders'],
+      ['f2', 'rename the file or folder in focus'], ['del', 'delete it · Undo, or Recently deleted for 30 days'], ['shift+f10', 'its actions: rename, duplicate, delete']] });
   }
   if (viewKind === 'project') {
     sections.push({ label: 'project', keys: [
@@ -18737,7 +19198,7 @@ document.addEventListener('keydown', e => {
       if (e.key === 'ArrowLeft') nav.back(); else nav.forward();
       return;
     }
-    const control = { KeyM: $('modelPick'), KeyO: $('agentMode') }[e.code];
+    const control = { KeyM: $('modelPick'), KeyO: $('agentMode') || $('ltMode') }[e.code];
     if (control) {
       e.preventDefault();
       e.stopPropagation();
@@ -19009,6 +19470,9 @@ live.onmessage = ev => {
   // and the AI programs when their pages are open.
   if (d.type === 'hello' && docState) setTimeout(() => docFollow(docState), 0);
   if (d.type === 'hello' && window.Programs) setTimeout(() => Programs.connected(), 0);
+  // A new stream (first load, or the link came back): the voice session is
+  // claimed again with it, or its holder elsewhere is learned (voice-commands.js).
+  if (d.type === 'hello') setTimeout(() => { if (typeof frogVoiceConnected === 'function') frogVoiceConnected(); }, 0);
   if (peopleLiveEvent(d)) return;
   if (d.type === 'agent-recovery') { applyAgentRecovery(d.recovery); return; }
   if (d.type === 'delegation-update') { delegationUI.invalidate(); return; }
@@ -19090,6 +19554,23 @@ live.onmessage = ev => {
     } else clearLedgers();
     return;
   }
+  if (d.type === 'claude-account') {
+    // The Claude subscription a Claude Code conversation answers as.
+    if (current && current.key === d.key && current.liveTerminal) { current.liveTerminal.account = d.account; if (window.LiveTerminal && LiveTerminal.paintAccount) LiveTerminal.paintAccount(); }
+    return;
+  }
+  if (d.type === 'claude-accounts') {
+    const host = document.getElementById('claudeAccountsHost');
+    if (host && window.ClaudeAccountsUI && !host.querySelector('.ca-sign')) ClaudeAccountsUI.mount(host);
+    if (window.LiveTerminal && LiveTerminal.init) LiveTerminal.init();
+    return;
+  }
+  if (d.type === 'agent-mode') {
+    // A prompt mode switched for a conversation (here or on another device).
+    if (d.mode) convModes.set(d.key, d.mode); else convModes.delete(d.key);
+    if (d.key === activeRel) { paintModeBtn(); if (window.LiveTerminal && LiveTerminal.paintMode) LiveTerminal.paintMode(); }
+    return;
+  }
   if (d.type === 'live-terminal') {
     // A conversation's own program started, ended, works or waits, on this
     // device or another: the strip follows (live-terminal-ui.js).
@@ -19121,6 +19602,17 @@ live.onmessage = ev => {
   if (d.type === 'voice-state') { voiceMutedState = !!d.muted; voiceMutedUntil = Number(d.mutedUntil) || 0; if (settingsOpen) renderSettings(); return; }
   if (d.type === 'voice-playing') { renderVoiceUi(d.playing, d.paused); return; }
   if (d.type === 'done-sound') { if (!voiceMutedState) ScreenSound.play(d); return; }
+  // A new turn with the frog began (here or on another screen): what it
+  // was still saying stops, and the computer hears where.
+  if (d.type === 'frog-cut') { ScreenSound.frogCut(undefined, d.jobs); return; }
+  if (d.type === 'frog-talk') { if (typeof frogTalkElsewhere === 'function') frogTalkElsewhere(d); return; }
+  // The frog's conversation went on in a new segment (design/102, memory):
+  // a screen on the old one follows, and the walkie-talkie knows the new key.
+  if (d.type === 'frog-home') {
+    try { if (typeof frogTalk !== 'undefined' && frogTalk) frogTalk.key = d.key; } catch {}
+    if (current && current.key === d.from && viewKind === 'conversation') open(d.key, 'bottom').catch(() => {});
+    return;
+  }
   if (d.type === 'voice-nav') {
     // A spoken "go to X": follow it on this screen.
     if (d.key) open(d.key, 'bottom').catch(() => {});
@@ -19158,6 +19650,8 @@ live.onmessage = ev => {
         if (current) refreshCtxMeter(current);
       }
     } else { activeRuns.set(d.jobId, d); ledgerAbsorb(d); }
+    // The walkie-talkie's "the frog is working" ticking (voice-commands.js).
+    if (typeof frogCues !== 'undefined') frogCues.run(d);
     if (viewKind === 'conversation' && (activeRel === d.key || activeRel === d.fanoutRootKey)) renderRunCards();
     // A streaming reply sends many events a second; the header and the side
     // list follow in the next batched live paint.

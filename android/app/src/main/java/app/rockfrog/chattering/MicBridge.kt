@@ -21,12 +21,15 @@ import java.util.concurrent.atomic.AtomicInteger
  * records, and hands the page 16 kHz mono PCM; the page sends it through
  * the tunnel, as a browser sends its own recording (app.html, appMicrophone).
  *
- * Page API (ChatteringMic): start() → session number, stop(session).
+ * Page API (ChatteringMic): start() → session number (a recording of at
+ * most ten minutes: dictation), listen() → the same with no limit (from
+ * 0.3.15), stop(session).
  * Events (window.chatteringMicEvent), each with its session:
  *   started  the microphone is open (again, after a pause)
  *   pcm      data: base64 of 16-bit little-endian samples, about 0.2 s
  *   paused   the app left the screen: the room is not heard in the
- *            background; recording resumes ('started') when it is back
+ *            background (except in a call with the frog); recording
+ *            resumes ('started') when it is back
  *   ended    after stop(), once the last samples were sent; or replaced
  *            by a newer session
  *   error    message: the microphone could not be used
@@ -48,10 +51,37 @@ class MicBridge(
     @Volatile private var inBackground = false
     @Volatile private var resumeSession = 0    // paused by the background, to reopen
     @Volatile private var awaitingPermission = 0
+    @Volatile private var reopen = false       // the call began or ended: the microphone is opened again
+
+    /** A call with the frog began or ended (FrogCallService): the recording
+     *  goes on with the microphone that fits, without a gap the page sees. */
+    fun callChanged() { if (current != 0) reopen = true }
+
+    // In a call, the call's microphone: the Bluetooth headset's when there
+    // is one (Android routes VOICE_COMMUNICATION to the call's device), with
+    // the phone's echo cancelling, so the frog's voice on a speaker is not
+    // written into its own box. Out of one, the plain microphone, as before
+    // (no processing: it hurts recognition).
+    private fun sources(): IntArray =
+        if (FrogCallService.onCall) intArrayOf(MediaRecorder.AudioSource.VOICE_COMMUNICATION, MediaRecorder.AudioSource.MIC)
+        else intArrayOf(MediaRecorder.AudioSource.MIC, MediaRecorder.AudioSource.VOICE_RECOGNITION)
+
+    // Recordings with no time limit: listening (voice commands, talking with
+    // the frog), which lasts as long as the person wants. A dictation keeps
+    // its ten minutes. (Before 0.3.15 listening had the dictation's limit: a
+    // call with the frog went deaf after ten minutes.)
+    private val unlimited = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Int, Boolean>())
+
+    /** Like start(), for listening: no time limit. */
+    @JavascriptInterface
+    fun listen(): Int = begin(limited = false)
 
     @JavascriptInterface
-    fun start(): Int {
+    fun start(): Int = begin(limited = true)
+
+    private fun begin(limited: Boolean): Int {
         val id = sessions.incrementAndGet()
+        if (!limited) unlimited.add(id)
         current = id
         activity.runOnUiThread {
             if (current != id) return@runOnUiThread
@@ -78,7 +108,9 @@ class MicBridge(
         if (current == id) executor.execute { record(id) } else emit(id, "ended")
     }
 
-    fun onPause() { inBackground = true }
+    /** Behind the screen the room is not heard; in a call with the frog
+     *  (FrogCallService, a foreground service of the microphone kind) it is. */
+    fun onPause() { if (!FrogCallService.onCall) inBackground = true }
 
     fun onResume() {
         inBackground = false
@@ -94,8 +126,9 @@ class MicBridge(
     private fun record(id: Int) {
         if (current != id) { emit(id, "ended"); return }
         if (inBackground) { resumeSession = id; emit(id, "paused"); return }
+        reopen = false
         val record = try {
-            Microphone.open(intArrayOf(MediaRecorder.AudioSource.MIC, MediaRecorder.AudioSource.VOICE_RECOGNITION))
+            Microphone.open(sources())
         } catch (e: Exception) {
             if (current == id) current = 0
             emit(id, "error", "Microphone error: ${e.message ?: "unknown error"}")
@@ -108,8 +141,8 @@ class MicBridge(
             val buffer = ByteArray(rate * 2 * CHUNK_MS / 1000)
             val down = if (rate == Microphone.RATE) null else SpeechBridge.Downsampler(rate)
             var sent = 0L
-            val cap = Microphone.RATE * 2L * MAX_SECONDS
-            while (current == id && !inBackground && sent < cap) {
+            val cap = if (id in unlimited) Long.MAX_VALUE else Microphone.RATE * 2L * MAX_SECONDS
+            while (current == id && !inBackground && !reopen && sent < cap) {
                 val read = record.read(buffer, 0, buffer.size)
                 if (read < 0) throw IllegalStateException("AudioRecord returned $read")
                 if (read > 0) sent += send(id, down?.process(buffer, read) ?: buffer.copyOf(read))
@@ -128,6 +161,8 @@ class MicBridge(
         } finally {
             record.release()
         }
+        if (current == id && reopen && !inBackground) { executor.execute { record(id) }; return }
+        unlimited.remove(id)
         if (current == id && inBackground) { resumeSession = id; emit(id, "paused") }
         else { if (current == id) current = 0; emit(id, "ended") }
     }

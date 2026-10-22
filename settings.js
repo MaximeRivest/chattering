@@ -60,12 +60,23 @@ const DEFAULT_SETTINGS = {
   // Optional voice services, all set up in settings → sound. Empty: not
   // set up, and the controls that need them say so instead of failing.
   //   speechUrl     — speech-to-text (dictation, the voice reply loop)
+  //   myVoiceUrl    — a second speech-to-text server, a small model of one
+  //                   person's voice (speech-engines.js); each person picks
   //   ttsUrl        — text-to-speech (read aloud, spoken announcements)
   //   ttsVoice      — the voice name the TTS server knows; empty: its default
   //   voiceModelUrl — an OpenAI-compatible chat endpoint for spoken digests
   //   voiceModel    — the model name at that endpoint
+  //   speakerUrl    — the voice-print service (speaker/, "only my voice")
   speechUrl: '',
+  myVoiceUrl: '',
   ttsUrl: '',
+  speakerUrl: '',
+  // The listener's local models (design/102, "two small models"), off until
+  // the person turns them on: the voice-activity model as the microphone
+  // gate (voice-vad.js; off: the energy floor), and the local end-of-turn
+  // check for the frog (frog-turn-end.js; off: Jev).
+  voiceGateModel: false,
+  frogTurnEndLocal: false,
   ttsVoice: '',
   voiceModelUrl: '',
   voiceModel: '',
@@ -161,7 +172,7 @@ const DEFAULT_SETTINGS = {
   // publishing is off for that run), 'both' (Chattering's, and claude.ai
   // when asked to share), 'agent' (its own claude.ai pages only). Pages it
   // publishes to claude.ai are shown here too in every case.
-  liveTerminal: { agents: { claude: 'always', pi: 'choose', codex: 'choose' }, idleMinutes: 30, record: true, args: { claude: [], pi: [], codex: [] }, artifacts: 'chattering' },
+  liveTerminal: { agents: { claude: 'always', pi: 'choose', codex: 'choose', agy: 'always', muse: 'always' }, idleMinutes: 30, record: true, args: { claude: [], pi: [], codex: [], agy: [], muse: [] }, artifacts: 'chattering' },
 };
 
 // What an install from before version 2 ran on without having saved it:
@@ -244,7 +255,7 @@ const MODEL_NAME = /^[\w./:@-]{1,200}$/;
 // types by hand are checked; everything else is normalized as before.
 function settingsInputError(src) {
   if (!src || typeof src !== 'object') return 'settings must be an object';
-  const urls = { semanticUrl: 'the search server', speechUrl: 'the speech-to-text server', ttsUrl: 'the read-aloud server', voiceModelUrl: 'the spoken-digest model endpoint' };
+  const urls = { semanticUrl: 'the search server', speechUrl: 'the speech-to-text server', myVoiceUrl: 'the “my voice” speech-to-text server', ttsUrl: 'the read-aloud server', speakerUrl: 'the voice-print server', voiceModelUrl: 'the spoken-digest model endpoint' };
   for (const [k, what] of Object.entries(urls)) {
     const v = String(src[k] || '').trim();
     if (v && !SERVICE_URL.test(v)) return `${what} needs a full address starting with http:// or https://`;
@@ -432,7 +443,9 @@ function normalizeSettings(input) {
   const semanticSearch = src.semanticSearch === true;
   const semanticUrl = normalizeServiceUrl(src.semanticUrl, { keepPath: false });
   const speechUrl = normalizeServiceUrl(src.speechUrl, { keepPath: false });
+  const myVoiceUrl = normalizeServiceUrl(src.myVoiceUrl, { keepPath: false });
   const ttsUrl = normalizeServiceUrl(src.ttsUrl, { keepPath: false });
+  const speakerUrl = normalizeServiceUrl(src.speakerUrl, { keepPath: false });
   const voiceModelUrl = normalizeServiceUrl(src.voiceModelUrl);
   const ttsVoice = VOICE_NAME.test(String(src.ttsVoice || '').trim()) ? String(src.ttsVoice).trim() : '';
   const voiceModel = MODEL_NAME.test(String(src.voiceModel || '').trim()) ? String(src.voiceModel).trim() : '';
@@ -442,6 +455,8 @@ function normalizeSettings(input) {
   const piEngine = src.piEngine === 'rpc' ? 'rpc' : 'sdk';
   const artifactNetwork = src.artifactNetwork === 'libraries' ? 'libraries' : 'open';
   const programsRecordAgents = src.programsRecordAgents === true;
+  const voiceGateModel = src.voiceGateModel === true;
+  const frogTurnEndLocal = src.frogTurnEndLocal === true;
   const previewBase = /^https:\/\/(?:\{id\}\.)?[a-z0-9.-]+(?::\d+)?$/i.test(String(src.previewBase || '').trim()) ? String(src.previewBase).trim() : '';
   const shareBase = /^https:\/\/(?:\{id\}\.)?[a-z0-9.-]+(?::\d+)?$/i.test(String(src.shareBase || '').trim()) ? String(src.shareBase).trim() : '';
   const simplifyAnswers = src.simplifyAnswers !== false;
@@ -478,7 +493,9 @@ function normalizeSettings(input) {
     semanticUrl,
     semanticNs,
     speechUrl,
+    myVoiceUrl,
     ttsUrl,
+    speakerUrl,
     ttsVoice,
     voiceModelUrl,
     voiceModel,
@@ -489,6 +506,8 @@ function normalizeSettings(input) {
     previewBase,
     shareBase,
     programsRecordAgents,
+    voiceGateModel,
+    frogTurnEndLocal,
     simplifyAnswers,
     simplifyPrompt,
     plainSteps,
@@ -514,12 +533,15 @@ function normalizeSettings(input) {
 }
 
 const LIVE_TERMINAL_CHOICES = ['off', 'choose', 'always'];
+const BOXLESS_AGENTS = ['claude', 'agy', 'muse'];
 function normalizeLiveTerminal(raw) {
   const src = raw && typeof raw === 'object' ? raw : {};
   const agents = {};
   const given = src.agents && typeof src.agents === 'object' ? src.agents : {};
   for (const [id, fallback] of Object.entries(DEFAULT_SETTINGS.liveTerminal.agents)) agents[id] = LIVE_TERMINAL_CHOICES.includes(given[id]) ? given[id] : fallback;
-  if (agents.claude === 'choose') agents.claude = 'always';
+  // Agents only their own program continues (no Chattering box to choose
+  // instead): on or off, never "let me choose".
+  for (const id of BOXLESS_AGENTS) if (agents[id] === 'choose') agents[id] = 'always';
   const idle = Number(src.idleMinutes);
   const args = {};
   const givenArgs = src.args && typeof src.args === 'object' ? src.args : {};
@@ -587,7 +609,8 @@ function buildPiArgs(settings, options = {}) {
     if (s.provider) args.push('--provider', s.provider);
     if (s.model) args.push('--model', s.model);
     // claude-code is a local Pi extension. --no-extensions still allows explicit -e.
-    if (s.provider === 'claude-code' && options.claudeCodeExtension) {
+    // (also claude-code-NAME: another Claude subscription, claude-accounts.js)
+    if ((s.provider === 'claude-code' || /^claude-code-[a-z0-9-]+$/.test(String(s.provider))) && options.claudeCodeExtension) {
       args.push('-e', options.claudeCodeExtension);
     }
   }

@@ -20,7 +20,11 @@ const LOOKING_MS = 15 * 60 * 1000;  // the conversation on a visible screen, tou
 const FRESH_MS = 150 * 1000;        // a visible screen reports at least once a minute
 
 // Kinds of message and the preference that governs each.
-const KIND_PREF = { reply: 'replies', failed: 'problems', quiet: 'problems', question: 'questions', test: null };
+// ask: the person asked for it ("ping me when…", design/102): no switch
+// turns it off and it goes even while they are at a screen.
+// call: the frog calls the person (design/102, part 4): the Android app
+// rings as for a call; a browser shows it as an urgent notification.
+const KIND_PREF = { reply: 'replies', failed: 'problems', quiet: 'problems', question: 'questions', test: null, ask: null, call: null };
 
 // ---- where each screen is ---------------------------------------------------
 // One row per live connection of the app (its event stream): whether the
@@ -30,10 +34,10 @@ const KIND_PREF = { reply: 'replies', failed: 'problems', quiet: 'problems', que
 // are the computer's), as the server saw the stream's request.
 class HereBook {
   constructor() { this.rows = new Map(); this.last = new Map(); }
-  set(conn, userId, { visible, focused, idleMs, route, local } = {}, now = Date.now()) {
+  set(conn, userId, { visible, focused, idleMs, route, local, device, talking } = {}, now = Date.now()) {
     if (!conn || !userId) return;
     const idle = Math.max(0, Math.min(Number(idleMs) || 0, 7 * 24 * 3600 * 1000));
-    const row = { conn, userId, visible: !!visible, focused: !!focused, local: !!local, activeAt: now - idle, route: String(route || '').slice(0, 600), at: now };
+    const row = { conn, userId, visible: !!visible, focused: !!focused, local: !!local, activeAt: now - idle, route: String(route || '').slice(0, 600), at: now, device: String(device || '').slice(0, 60), talking: !!talking };
     this.rows.set(conn, row);
     // The screen this person touched last, kept after it closes: with no
     // screen open, a sound goes where they were.
@@ -50,12 +54,17 @@ class HereBook {
 }
 
 // The one screen a finished-run sound plays on for a person: the one they
-// are at. A visible screen that reported lately, the most recently touched
-// first; else any open one, most recently touched (a minimised window
-// still plays sound). Null when none is open. One screen only: a laptop,
-// a phone and a tablet chiming together is noise.
+// are at. A screen talking with the frog (the walkie-talkie, design/102)
+// that reported lately, first: a phone in a pocket, in a call, is hidden
+// and untouched, and is where its voice must sound. Else a visible screen
+// that reported lately, the most recently touched first; else any open
+// one, most recently touched (a minimised window still plays sound). Null
+// when none is open. One screen only: a laptop, a phone and a tablet
+// chiming together is noise.
 function soundScreen(rows, now) {
   const byTouch = (a, b) => b.activeAt - a.activeAt;
+  const talking = rows.filter(r => r.talking && now - r.at < FRESH_MS).sort(byTouch);
+  if (talking.length) return talking[0];
   const shown = rows.filter(r => seen(r, now)).sort(byTouch);
   if (shown.length) return shown[0];
   return rows.slice().sort(byTouch)[0] || null;
@@ -75,6 +84,7 @@ function decide({ kind, key, prefs, rows = [], now }) {
   const pref = KIND_PREF[kind];
   if (pref === undefined) return { send: false, why: 'unknown kind' };
   if (kind === 'test') return { send: true, why: 'test' };
+  if (kind === 'ask' || kind === 'call') return { send: true, why: 'asked for' };
   if (pref && prefs && prefs[pref] === false) return { send: false, why: 'off for ' + pref };
   if (key && lookingAt(rows, key, now)) return { send: false, why: 'looking at it' };
   if (!(prefs && prefs.whileActive) && atScreen(rows, now)) return { send: false, why: 'at another screen' };
@@ -110,6 +120,8 @@ function messageFor({ kind, key, title, excerpt, detail, count = 1, prefs = {}, 
   else if (kind === 'question') body = preview && detail ? 'Waiting for you: ' + clip(detail, 160) : 'Waiting for your answer';
   else if (kind === 'quiet') body = preview && detail ? clip(detail, 180) : 'No news for a while';
   else if (kind === 'test') body = clip(detail, 180) || 'Notifications work on this device.';
+  else if (kind === 'ask') body = clip(detail, 240) || 'You asked to be told';
+  else if (kind === 'call') body = clip(detail, 240) || 'The frog is calling you';
   const msg = {
     v: 1, kind, title: kind === 'test' ? 'Chattering' : name, body, at,
     tag: key ? tagFor(home.id, key) : 'chattering-' + kind,
@@ -119,7 +131,7 @@ function messageFor({ kind, key, title, excerpt, detail, count = 1, prefs = {}, 
     // A newer reply in the same conversation buzzes again; the open
     // notification is replaced either way.
     renotify: kind !== 'quiet',
-    urgent: kind === 'question' || kind === 'failed',
+    urgent: kind === 'question' || kind === 'failed' || kind === 'ask' || kind === 'call',
   };
   if (Number.isFinite(badge)) msg.badge = Math.max(0, Math.floor(badge));
   // The tags of conversations still unread: the device closes its other
@@ -150,6 +162,8 @@ function deliveryFor(kind) {
   if (kind === 'failed') return { ttl: 12 * 3600, urgency: 'high' };
   if (kind === 'quiet') return { ttl: 3600, urgency: 'normal' };
   if (kind === 'test') return { ttl: 120, urgency: 'high' };
+  if (kind === 'ask') return { ttl: 6 * 3600, urgency: 'high' };
+  if (kind === 'call') return { ttl: 90, urgency: 'high' }; // a ring an hour late is a wrong one
   return { ttl: 24 * 3600, urgency: 'high' };
 }
 

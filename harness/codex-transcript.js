@@ -30,6 +30,8 @@ const path = require('node:path');
 const readline = require('node:readline');
 
 const ROLLOUT_NAME = /^rollout-.*\.jsonl?$/;
+const { switchOf } = require('../agent-modes.js');
+const handoff = require('./handoff.js');
 const MAX_TEXT = 4000;
 
 // Text Codex (or the IDE extension) puts into the model's context as a user
@@ -238,8 +240,10 @@ async function parseCodexRollout(absPath, { mtimeMs = null, depth = 0 } = {}) {
   const tag = tagOf(threadIdOfFile || path.basename(absPath));
   const eid = line => idOf(tag, line);
   const ordinalOf = new Map(items.map(i => [eid(i.line), i.ordinal]));
+  let inCarry = false;
   const push = (msg, line, ts) => {
     msg.eid = eid(line); msg.ts = ts || null;
+    if (inCarry) msg.carried = true;
     if (turnId) msg.turnId = turnId;
     messages.push(msg);
   };
@@ -312,7 +316,17 @@ async function parseCodexRollout(absPath, { mtimeMs = null, depth = 0 } = {}) {
     const type = item.type;
     if (type === 'message') {
       const role = item.role;
-      if (role === 'developer' || role === 'system') continue;
+      if (role === 'developer' || role === 'system') {
+        // The conversation's earlier part, carried here when it moved to
+        // Codex (harness/handoff.js): between a start and an end mark.
+        const carry = handoff.markOf(contentText(item.content, ['input_text', 'text']));
+        if (carry) { inCarry = carry.part === 'start'; continue; }
+        // Chattering's prompt-mode switches (agent-modes.js) are shown;
+        // other instructions are Codex's own context.
+        const mode = switchOf(contentText(item.content, ['input_text', 'text']));
+        if (mode) { order.push(eid(line)); push({ role: 'event', customType: 'mode-switch', text: mode.key ? 'mode: ' + (mode.label || mode.key) : 'no prompt mode', mode }, line, ts); meta.codex.mode = mode; }
+        continue;
+      }
       if (role === 'user') {
         const raw = contentText(item.content, ['input_text', 'text']);
         // Early files keep the folder only in Codex's environment note.

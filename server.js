@@ -32,6 +32,7 @@ const memoryFingerprint = require('./memory-fingerprint.js');
 const { openSearchIndex, SearchIndex } = require('./searchindex.js');
 const foldsLib = require('./projectfolds.js');
 const inkNotes = require('./ink-notes.js');
+const folderIndexLib = require('./folder-index.js');
 const areasLib = require('./areas.js');
 const gitmeta = require('./gitmeta.js');
 const lineDiff = require('./linediff.js');
@@ -50,6 +51,9 @@ const { createClaudeChain } = require('./claude-chain.js');
 const codexTranscript = require('./harness/codex-transcript.js');
 const codexDiffs = require('./harness/codex-diffs.js');
 const codexLinks = require('./harness/codex-links.js');
+const agyTranscript = require('./harness/agy-transcript.js');
+const handoffLib = require('./harness/handoff.js');
+const museTranscript = require('./harness/muse-transcript.js');
 const conversationTree = require('./conversation-tree.js');
 const fanoutMerge = require('./fanoutmerge.js');
 const usageLib = require('./usageanalytics.js');
@@ -87,7 +91,31 @@ const SOURCES = {
   // Codex (design/87): read here, written only by Codex (its own files, its
   // own app-server for new turns).
   codex: path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'sessions'),
+  // Antigravity CLI (Google) and Muse Code (Meta): read here, written only
+  // by their own programs, continued only in them (live terminal).
+  agy: agyTranscript.agyConversationsDir(),
+  muse: museTranscript.museSessionsDir(),
 };
+// Conversations that moved between agents: which part continues which.
+const chains = require('./harness/chains.js').createChains({ file: path.join(DATA_DIR, 'chains.json') });
+// Which source a conversation file belongs to, from where it is.
+function sourceOfPath(absPath) {
+  for (const [source, base] of Object.entries(SOURCES)) {
+    const rel = path.relative(base, absPath);
+    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return source;
+  }
+  return null;
+}
+// A conversation file's size and time as the index compares them. An
+// Antigravity conversation is a SQLite database in write-ahead mode: while
+// its program runs, new steps are in <file>-wal and the file itself does
+// not change, so both count.
+async function statTranscript(source, absPath) {
+  const st = await fsp.stat(absPath);
+  if (source !== 'agy') return st;
+  const wal = await fsp.stat(absPath + '-wal').catch(() => null);
+  return wal ? { mtimeMs: Math.max(st.mtimeMs, wal.mtimeMs), size: st.size + wal.size } : st;
+}
 // The name this machine goes by in memory documents and towards peers.
 const HOST_NAME = String(process.env.CHATTERING_HOSTNAME || '').trim() || os.hostname();
 // The name people see in the machine switcher. WSL takes the Windows
@@ -97,6 +125,11 @@ const HOST_NAME = String(process.env.CHATTERING_HOSTNAME || '').trim() || os.hos
 const MACHINE_NAME = String(process.env.CHATTERING_HOSTNAME || '').trim() || (platform.IS_WSL ? os.hostname() + ' (Linux)' : os.hostname());
 const CACHE_DIR = path.resolve(DIRS.cache);
 const NOTES_DIR = DIRS.notes;
+// Whether this server was started with a TypeSafe key in its environment
+// (it then wins over the saved one). FunctAI's Jev wire reads the key from
+// there only, so the frog's end-of-turn check puts the saved key there
+// (jevKeyReady); agents are not given it unless it came this way.
+const TYPESAFE_KEY_FROM_BOOT = !!process.env.TYPESAFE_API_KEY;
 const SESS_DIR = path.join(CACHE_DIR, 'sessions');
 const INDEX_FILE = path.join(CACHE_DIR, 'index.json');
 const USAGE_DB_FILE = path.join(CACHE_DIR, 'usage.db');
@@ -994,7 +1027,48 @@ function isNoise(text) {
 
 // Any conversation file: Codex rollouts have their own reader (three
 // generations of its format); Pi and Claude Code files are parseFile's.
+// A part of a conversation that moved between agents (harness/chains.js)
+// reads with its earlier parts above it.
 async function parseConversationFile(absPath) {
+  return withEarlierParts(absPath, await parseOwnFile(absPath));
+}
+const AGENT_NAMES = { pi: 'Pi', 'pi-remote': 'Pi', claude: 'Claude Code', codex: 'Codex', agy: 'Antigravity', muse: 'Muse Code' };
+// A file's key from where it is, listed yet or not.
+function keyOfPath(absPath) {
+  for (const [source, base] of Object.entries(SOURCES)) if (platform.isInside(absPath, base)) return sessionKey(source, path.relative(base, absPath));
+  return null;
+}
+function withEarlierParts(absPath, parsed) {
+  const key = keyOfPath(absPath);
+  const src = sourceOfPath(absPath);
+  const ownName = AGENT_NAMES[src] || null;
+  const link = key && chains.prevOf(key);
+  if (!link) return parsed;
+  let earlier = null;
+  try { earlier = JSON.parse(fs.readFileSync(cachePathFor(link.key), 'utf8')); } catch { return parsed; }
+  const earlierName = AGENT_NAMES[(index[link.key] || {}).source] || 'another agent';
+  const before = (earlier.messages || []).map(m => ({ ...m, eid: m.eid || m._eid, inherited: true, part: m.part || link.key, agentName: m.agentName || earlierName }));
+  const divider = { role: 'event', customType: 'handoff', eid: 'handoff:' + key, ts: link.at || null,
+    text: 'continued with ' + (ownName || 'another agent') + ' (from ' + earlierName + ')', from: link.key };
+  const own = parsed.messages.filter(m => !m.carried).map(m => ({ ...m, agentName: ownName }));
+  // One line of entries: the earlier part up to where it ended, the
+  // line where it moved, then this part (its first entries, the carried
+  // copies, now hang under that line).
+  const lastEarlier = [...before].reverse().find(m => m.eid && !m.off);
+  const earlierParents = earlier.entryParents || [];
+  const ownParents = (parsed.entryParents || []).map(([id, parent]) => [id, parent == null ? divider.eid : parent]);
+  const out = { ...parsed, messages: [...before, divider, ...own], entryParents: [...earlierParents, [divider.eid, lastEarlier ? lastEarlier.eid : null], ...ownParents] };
+  out.meta = { ...parsed.meta, firstTs: earlier.firstTs && (!parsed.meta.firstTs || earlier.firstTs < parsed.meta.firstTs) ? earlier.firstTs : parsed.meta.firstTs };
+  return out;
+}
+async function parseOwnFile(absPath) {
+  const source = sourceOfPath(absPath);
+  if (source === 'agy' || source === 'muse') {
+    const st = await statTranscript(source, absPath).catch(() => null);
+    return source === 'agy'
+      ? agyTranscript.parseAgyConversation(absPath, { mtimeMs: st ? st.mtimeMs : null })
+      : museTranscript.parseMuseSession(absPath, { mtimeMs: st ? st.mtimeMs : null });
+  }
   if (codexTranscript.isRollout(absPath)) {
     const st = await fsp.stat(absPath).catch(() => null);
     return codexTranscript.parseCodexRollout(absPath, { mtimeMs: st ? st.mtimeMs : null });
@@ -1123,6 +1197,10 @@ async function parseFile(absPath) {
       }
     }
     const text = textOf(content);
+    // Claude Code's own filler when it resumes a conversation that ends on
+    // a hidden note (its screen does not show it either); its other
+    // synthetic messages (limits, model trouble) are shown.
+    if (d.type === 'assistant' && d.message && d.message.model === '<synthetic>' && text.trim() === 'No response requested.') continue;
     const turnImages = directImagesOf(content, eid);
     // Interruptions become their own marker row, not a chat bubble.
     // Claude Code records the user's interrupt as a user message; pi
@@ -1134,6 +1212,9 @@ async function parseFile(absPath) {
     }
     if ((text.trim() || turnImages.length) && !(role === 'user' && isNoise(text))) {
       const msg = { role, text, images: turnImages, ts: d.timestamp || null, _eid: eid,
+        // Carried over from the conversation's earlier part with another
+        // agent (harness/handoff.js): the original is shown, not this copy.
+        carried: d.chatteringCarried ? true : undefined,
         operation: d.chattering || d.aiconvo || conversationFlow.operation({ text, role }) || undefined,
         rewriteOf: role === 'assistant' ? (d.message?.chatteringRewrite || d.message?.aiconvoRewrite)?.sourceEntryId : undefined };
       // Both formats store the generating model on the assistant entry
@@ -1240,6 +1321,11 @@ function keepClaudeArtifacts(messages) {
 async function transcriptImage(key, entry, blockPath) {
   if (!index[key] || !entry || !/^\d+(?:\.\d+)*$/.test(blockPath || '')) throw new Error('bad image reference');
   if (index[key].source === 'codex') return codexTranscript.codexImageAt(absPathForKey(key), entry, blockPath);
+  if (index[key].source === 'agy' || index[key].source === 'muse') {
+    const media = index[key].source === 'agy' ? agyTranscript.agyImageAt(absPathForKey(key), entry, blockPath) : null;
+    if (!media) throw Object.assign(new Error('image not found'), { status: 404 });
+    return media;
+  }
   const wanted = blockPath.split('.').map(Number);
   const stream = fs.createReadStream(absPathForKey(key), { encoding: 'utf8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -1917,7 +2003,7 @@ async function indexFile(source, relPath, stat) {
     scheduleProjectFoldRefresh(meta.cwd);
     // Local transcript tools have explicit paths and completion results.
     // Remote-only paths must never be offered as local files.
-    if (source === 'pi' || source === 'claude' || source === 'codex') {
+    if (source === 'pi' || source === 'claude' || source === 'codex' || source === 'agy' || source === 'muse') {
       const activity = recentFilesLib.fromMessages(messages, {
         project: projectOfEntry(entry, key), key,
         resolvePath: p => {
@@ -1932,7 +2018,7 @@ async function indexFile(source, relPath, stat) {
       if (recentFilesLib.merge(recentFileState, activity)) recentFilesChanged();
     }
     saveIndexSoon();
-    broadcast({ type: 'update', key, ...entry, project: projectNameOf(entry.cwd, key) });
+    if (!blankAgentRun(entry)) broadcast({ type: 'update', key, ...entry, project: projectNameOf(entry.cwd, key) });
     markLeafDirty(key, prev, entry, stat.mtimeMs);
     if (entry.source === 'codex' ? entry.codex && entry.codex.imported : true) scheduleCodexImportLinks();
     if (searchIdx && !entry.importCopyOf) {
@@ -1982,9 +2068,18 @@ function linkCodexImports() {
 }
 
 // Skip subagent/sidechain transcript files.
-function isMainTranscript(relPath) {
+function isMainTranscript(relPath, source) {
+  if (source === 'agy') return agyTranscript.isAgyConversation(relPath);
+  if (source === 'muse') return museTranscript.isMuseSession(relPath);
   // Codex's mid-2025 conversations are single JSON documents (rollout-*.json).
   return (relPath.endsWith('.jsonl') && !relPath.includes('subagents')) || codexTranscript.isRollout(relPath);
+}
+// The conversation file a changed file belongs to, or null: itself, or
+// for an Antigravity database its write-ahead file (its shared-memory
+// file changes on every read, this app's included: never followed).
+function transcriptOfChange(relPath, source) {
+  if (source === 'agy' && relPath.endsWith('.db-wal')) relPath = relPath.slice(0, -4);
+  return isMainTranscript(relPath, source) ? relPath : null;
 }
 
 // A person's own notes kept under the notes folder (design/103,
@@ -2024,11 +2119,11 @@ async function fullScan() {
   let n = 0;
   for (const [source, baseDir] of Object.entries(SOURCES)) {
     for await (const relPath of walk(baseDir, baseDir)) {
-      if (!isMainTranscript(relPath)) continue;
+      if (!isMainTranscript(relPath, source)) continue;
       const key = sessionKey(source, relPath);
       seen.add(key);
       let stat;
-      try { stat = await fsp.stat(path.join(baseDir, relPath)); } catch { continue; }
+      try { stat = await statTranscript(source, path.join(baseDir, relPath)); } catch { continue; }
       const cur = index[key];
       if (!cur || cur.v !== CACHE_VERSION || cur.mtimeMs !== stat.mtimeMs || cur.size !== stat.size || indexStale(cur, stat)) {
         await indexFile(source, relPath, stat);
@@ -2100,7 +2195,7 @@ function reindexIfChanged(key) {
     const baseDir = SOURCES[source];
     if (!baseDir) return;
     let stat;
-    try { stat = await fsp.stat(path.join(baseDir, relPath)); }
+    try { stat = await statTranscript(source, path.join(baseDir, relPath)); }
     catch (e) { if (e.code === 'ENOENT') dropIndexed(key); else console.error('reindex stat failed:', key, e.message); return; }
     const cur = index[key];
     if (cur && cur.v === CACHE_VERSION && cur.mtimeMs === stat.mtimeMs && cur.size === stat.size && !indexStale(cur, stat)) return;
@@ -2125,7 +2220,7 @@ function reindexIfChanged(key) {
 // Directories that appear later get their own watch; directories that
 // vanish drop theirs. Files already inside a newly watched directory are
 // handed to onFile once (the scheduler skips unchanged bytes).
-function watchTree(baseDir, onFile) {
+function watchTree(baseDir, onFile, source = null) {
   const watchers = new Map(); // absolute directory → FSWatcher
   const remove = dir => {
     for (const [d, w] of watchers) {
@@ -2139,8 +2234,8 @@ function watchTree(baseDir, onFile) {
       w = fs.watch(dir, (event, name) => {
         if (!name) return;
         const abs = path.join(dir, name);
-        const rel = path.relative(baseDir, abs);
-        if (isMainTranscript(rel)) { onFile(rel); return; }
+        const rel = transcriptOfChange(path.relative(baseDir, abs), source);
+        if (rel) { onFile(rel); return; }
         // Only a rename (create, delete, move) can change the directory set.
         if (event !== 'rename') return;
         fs.stat(abs, (err, st) => {
@@ -2156,7 +2251,7 @@ function watchTree(baseDir, onFile) {
       for (const e of entries) {
         const abs = path.join(dir, e.name);
         if (e.isDirectory()) add(abs);
-        else if (e.isFile()) { const rel = path.relative(baseDir, abs); if (isMainTranscript(rel)) onFile(rel); }
+        else if (e.isFile()) { const rel = path.relative(baseDir, abs); if (isMainTranscript(rel, source)) onFile(rel); }
       }
     });
   };
@@ -2169,7 +2264,7 @@ const treeWatchers = new Map(); // source → watchTree handle
 function watch() {
   for (const [source, baseDir] of Object.entries(SOURCES)) {
     if (!fs.existsSync(baseDir)) continue;
-    treeWatchers.set(source, watchTree(baseDir, rel => scheduleIndex(sessionKey(source, rel))));
+    treeWatchers.set(source, watchTree(baseDir, rel => scheduleIndex(sessionKey(source, rel)), source));
     console.log('watching', baseDir);
   }
   setInterval(() => { sweepIndexDrift().catch(e => console.error('drift sweep failed:', e.message)); }, DRIFT_SWEEP_MS);
@@ -2196,7 +2291,7 @@ async function sweepIndexDrift() {
       const baseDir = SOURCES[source];
       if (!baseDir) continue;
       let stat;
-      try { stat = await fsp.stat(path.join(baseDir, relPath)); }
+      try { stat = await statTranscript(source, path.join(baseDir, relPath)); }
       catch (err) { if (err.code === 'ENOENT') dropIndexed(key); continue; }
       if (e.mtimeMs !== stat.mtimeMs || e.size !== stat.size) { drifted++; scheduleIndex(key); }
       if ((++i & 63) === 0) await new Promise(r => setImmediate(r));
@@ -2644,7 +2739,7 @@ function codexTreeNodes(parsed) {
     const words = ms.find(m => m.role === 'user' || m.role === 'assistant');
     const tool = ms.find(m => m.role === 'tool');
     const node = { id, parent, role: words ? words.role : null, text: words ? words.text : '', ts: (ms[0] && ms[0].ts) || null };
-    if (words && words.role === 'assistant') { node.model = words.model; node.provider = 'codex'; }
+    if (words && words.role === 'assistant') { node.model = words.model; node.provider = words.provider || 'codex'; }
     if (tool) { node.names = [tool.name]; node.calls = 1; }
     if (ms.some(m => m.role === 'toolresult')) node.tres = true;
     if (ms.some(m => m.role === 'event' && m.customType === 'compaction')) node.compaction = { tokensBefore: null };
@@ -2701,7 +2796,8 @@ async function familyEntryGraph(key) {
     const e = index[k];
     let raw;
     try { raw = await fsp.readFile(absPathForKey(k), 'utf8'); } catch { continue; }
-    const nodes = e.source === 'codex' ? codexTreeNodes(await parseConversationFile(absPathForKey(k))) : parseTreeEntries(e.source === 'claude' ? 'claude' : 'pi', raw);
+    // Codex, Antigravity and Muse Code conversations are one line each.
+    const nodes = ['codex', 'agy', 'muse'].includes(e.source) ? codexTreeNodes(await parseConversationFile(absPathForKey(k))) : parseTreeEntries(e.source === 'claude' ? 'claude' : 'pi', raw);
     for (const parsedNode of nodes) {
       let n = byId.get(parsedNode.id);
       if (!n) {
@@ -2853,7 +2949,7 @@ async function conversationContextResponse(key, leafId) {
     const e = index[key], p = codexRuns().prefsOf(key);
     const used = (e.ctx && e.ctx.used) || 0, window = (e.ctx && e.ctx.window) || null;
     return { key, source: 'codex', harness: 'codex', leaf: null, provider: 'codex', model: p.model || (e.ctx && e.ctx.model) || (e.codex && e.codex.model) || null,
-      thinking: p.effort || null, access: p.access, mode: null, ctxTokens: window, usedTokens: used,
+      thinking: p.effort || null, access: p.access, mode: agentModes.publicState(key), ctxTokens: window, usedTokens: used,
       leftTokens: window ? Math.max(0, window - used) : null,
       pctLeft: window ? Math.max(0, Math.min(100, Math.round(100 * (1 - used / window)))) : null,
       traceCost: 0, familyCost: 0, usedModel: e.ctx && e.ctx.model || null, usedTs: e.lastTs || null, estimate: !used };
@@ -3000,7 +3096,7 @@ async function indexNewSessionFile(newAbs) {
   for (const [source, base] of Object.entries(SOURCES)) {
     const rel = path.relative(base, newAbs);
     if (rel.startsWith('..') || path.isAbsolute(rel)) continue;
-    await indexFile(source, rel, await fsp.stat(newAbs));
+    await indexFile(source, rel, await statTranscript(source, newAbs));
     return sessionKey(source, rel);
   }
   throw new Error('pi wrote the fork outside the known session folders: ' + newAbs);
@@ -3096,6 +3192,7 @@ async function forkSession(key, nodeId) {
   if (syncLib.isMirrorKey(key)) return forkMirroredSession(key, nodeId);
   const { entry, sessionPath, cwd } = sessionPathsFor(key);
   if (entry.source === 'codex') return forkCodexSession(key, nodeId);
+  if (entry.source === 'agy' || entry.source === 'muse') throw Object.assign(new Error(`${agentNameOf(entry)} conversations cannot be copied here: its own program owns its file.`), { status: 409 });
   await assertDelegationOwnership(sessionPath);
   // Copying immutable saved history is not a mutation of the source. Never
   // wait behind its live turn or stop its warm runtime. This native utility
@@ -3126,6 +3223,7 @@ async function forkSessionForEdit(key, nodeId) {
     return forkCodexSession(key, nodeId, { before: true });
   }
   if (entry.source === 'claude') throw new Error('Editing a past message needs pi. Claude conversations can only fork.');
+  refuseOwnProgramOnly(entry, 'Editing a past message');
   await assertDelegationOwnership(sessionPath);
   const forked = await pisdk.piForkBefore({ sessionPath, cwd }, nodeId);
   const newKey = await indexNewSessionFile(forked.file);
@@ -3153,6 +3251,7 @@ async function branchSession(key, nodeId, expectedLeaf = null) {
     throw new Error('Claude cannot branch in place — its CLI always continues at the file end. Use fork instead.');
   if (entry.source === 'codex')
     throw Object.assign(new Error('A Codex conversation is one line: it continues from its newest message. Fork to continue from an earlier point.'), { status: 409 });
+  refuseOwnProgramOnly(entry, 'Continuing from an earlier point');
   const sessionPath = absPathForKey(key);
   if (headlessRuns.has(sessionPath) || [...agentRunJobs.values()].some(j => j.fanoutRootKey === key && j.status === 'running')) {
     throw new Error('Wait for the active answers to finish, or stop them, before changing continuation.');
@@ -3401,6 +3500,8 @@ function piProviderExtraArgs() {
     '-e', path.join(__dirname, 'extensions', 'delegation.ts'),
     '-e', path.join(__dirname, 'extensions', 'records.ts'),
     '-e', path.join(__dirname, 'extensions', 'artifacts.ts'),
+    // The frog's tools: opt-in, only its mode has them (design/102).
+    '-e', path.join(__dirname, 'extensions', 'frog.ts'),
     // Old images stop going out before a request passes the provider's size limit.
     '-e', path.join(__dirname, 'extensions', 'image-budget.ts')];
 }
@@ -3473,6 +3574,8 @@ function broadcastRunFinal(job, key) {
     fanoutId: job.fanoutId, fanoutRootKey: job.fanoutRootKey, fanoutNode: job.fanoutNode,
     fanoutIndex: job.fanoutIndex, fanoutCount: job.fanoutCount, final: true, finishedAt, title, excerpt });
   pushRunFinal(job, key);
+  try { frogRunEnded({ key: job.fanoutRootKey || key, status: job.status, statusText: job.statusText, error: job.error, excerpt: replyExcerpt(job.lastAssistantText || '', 600) }); }
+  catch (e) { console.error('[frog] ' + e.message); }
 }
 
 // First plain words of a reply: code blocks and markdown marks dropped.
@@ -3594,6 +3697,7 @@ function runEventForwarder(job) {
           }
         }
         cur.text = [...cur.parts.values()].filter(p => p.type === 'text').map(p => p.text).join('\n');
+        if (ev.type === 'text_delta' && typeof frogStreamSpeech === 'function') frogStreamSpeech(job, cur, false);
         cur.think = [...cur.parts.values()].filter(p => p.type === 'thinking').map(p => p.text).join('\n');
         job.statusText = cur.text.length ? 'streaming · ' + cur.text.length + ' chars' + liveSpeedText(speed.live(speedAt), cur.provider, cur.model)
           : cur.think.length ? 'thinking · ' + cur.think.length + ' chars' : 'streaming';
@@ -3630,6 +3734,9 @@ function runEventForwarder(job) {
           // Capture for the spoken completion summary: the live tail gets
           // pruned by indexFile before finish() reads it.
           if (cur.text.trim()) job.lastAssistantText = cur.text;
+          // The frog's words not spoken yet, now that its message is whole
+          // (what it says before its tools is heard while they run).
+          if (typeof frogStreamSpeech === 'function') frogStreamSpeech(job, cur, true);
           const think = content.filter(c => c && c.type === 'thinking' && typeof c.thinking === 'string').map(c => c.thinking).join('\n');
           if (think) cur.think = think;
           cur.done = true;
@@ -3725,6 +3832,13 @@ function runEventForwarder(job) {
 // and level are already fixed (the reply says so: briefDropped).
 async function startAgentRun(key, { node, provider, modelId, message, images, force, allowQueue, fanout, context, customMessage, expectedLeaf, expectedVersion, recoveryAttempts = 0, principal = null, input = 'keyboard', coauthors = null, brief = null, thinking = null, intent = null }) {
   const { entry, sessionPath, cwd } = sessionPathsFor(key);
+  // The frog thinks with its own model, whoever starts its turn (design/102).
+  if (typeof theFrog !== 'undefined' && key === theFrog.key && !fanout) {
+    const m = theFrog.modelParts();
+    if (m) { provider = m.provider; modelId = m.modelId; }
+    if (!customMessage) frogNewTurn();
+    await frogCarryOver(key).catch(e => console.error('[frog] carry over: ' + e.message));
+  }
   // One writer (design/91): checked again where the run is registered.
   if (liveHeld.has(sessionPath)) throw Object.assign(new Error('This conversation is open in its agent\'s own program here: use its box below, or go back to Chattering\'s box first.'), { status: 409 });
   principal = await principalInProject(principal || principalFor(null), projectNameOf(entry.cwd, key));
@@ -3734,6 +3848,7 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
   // rpc engine cannot, so the sidecar remembers it for the indexer.
   const author = customMessage ? null : { id: principal.user.id, name: principal.user.name, input, coauthors: coauthors || undefined };
   if (conversationKind(entry) === 'claude') throw new Error('Headless runs need pi. Claude conversations use the terminal.');
+  refuseOwnProgramOnly(entry, 'Writing a reply from Chattering\'s box');
   if (conversationKind(entry) === 'codex') {
     // Codex runs in Codex (harness/codex-runs.js): its own models only.
     if (customMessage) throw new Error('This action needs a Pi conversation.');
@@ -3742,6 +3857,11 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
     return codexRuns().send(key, { message, images, principal, model: modelId || null, effort: thinking || null, author, input, coauthors, node, allowQueue, brief });
   }
   let modelNote = '';
+  // Another Claude account than the main one is the owner's: named here, or
+  // the model this conversation answers with when none is named.
+  if (!principalIsOwner(principal)) {
+    assertClaudeAccountAllowed(provider || (normalizePickedModels(modelPrefs.conversations[key])[0] || {}).provider, principal);
+  }
   if (principal.guest) {
     // The guest's Pi holds only the providers the key proxy can serve.
     const choice = guestModelChoice(provider, modelId, await guestProviderList());
@@ -3861,7 +3981,14 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
       }
       if (node) {
         const leaf = await lastEntryIdOf(sessionPath);
-        if (leaf !== node) {
+        // Only bookkeeping since the entry the sender saw (a mode carried
+        // over, a setting, an extension's record): the same conversation,
+        // go on from its end. Branching there cut those entries off (the
+        // frog's newer mode, with its asides tool, was orphaned that way,
+        // design/102).
+        let sameAsLeaf = leaf === node;
+        if (!sameAsLeaf) { try { sameAsLeaf = conversationFlow.sameContext((await fsp.readFile(sessionPath, 'utf8')).split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean), node); } catch {} }
+        if (!sameAsLeaf) {
           // A warm session still has the old leaf in memory: kill it so the
           // next one loads the file after the branch anchor.
           stopAnyWarmSession(sessionPath);
@@ -4432,6 +4559,7 @@ async function compareGroupsResponse(key) {
 async function startMerge(key, { question, answers, provider, modelId, instruction, force, principal }) {
   const { entry } = sessionPathsFor(key);
   if (conversationKind(entry) === 'claude') throw new Error('Merging needs a Pi conversation.');
+  refuseOwnProgramOnly(entry, 'Merging answers');
   const data = JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8'));
   const T = conversationTree.build({ ...data, messages: data.messages.map(m => ({ ...m, eid: m.eid || m._eid })) });
   if (!conversationTree.isQuestion(T, question)) throw new Error('That question is not in this conversation.');
@@ -4452,6 +4580,7 @@ async function startMerge(key, { question, answers, provider, modelId, instructi
 async function startRegenerate(key, { question, provider, modelId, force, principal }) {
   const { entry, sessionPath } = sessionPathsFor(key);
   if (conversationKind(entry) === 'claude') throw new Error('Claude conversations cannot branch in place. Fork to try again.');
+  refuseOwnProgramOnly(entry, 'Another answer');
   if (conversationKind(entry) === 'codex') throw Object.assign(new Error('Codex keeps one line of answers. To ask again, fork before the question (edit it) or fork at its answer.'), { status: 409 });
   if (typeof question !== 'string' || !question) throw new Error('which question?');
   const raw = await fsp.readFile(sessionPath, 'utf8');
@@ -4520,6 +4649,7 @@ async function ensureBothBridge(key, node) {
 async function setConversationThinking(key, level, force) {
   const { entry, sessionPath, cwd } = sessionPathsFor(key);
   if (conversationKind(entry) === 'claude') throw new Error('Reasoning control needs pi.');
+  refuseOwnProgramOnly(entry, 'Reasoning control');
   if (conversationKind(entry) === 'codex') {
     // Codex takes the effort with each message; the choice is kept here.
     if (typeof level !== 'string' || !/^[a-z][a-z-]{0,23}$/.test(level) || level === 'cycle') throw new Error('Pick one of the reasoning levels the model offers.');
@@ -4566,6 +4696,7 @@ async function compactConversation(key, instructions, force) {
   const { entry, sessionPath, cwd } = sessionPathsFor(key);
   assertNotLive(key);
   if (conversationKind(entry) === 'claude') throw new Error('Compacting needs pi. Claude conversations compact in the terminal.');
+  refuseOwnProgramOnly(entry, 'Compacting');
   if (conversationKind(entry) === 'codex') {
     // Codex's own compaction (its /compact). It takes no focus instructions.
     if (headlessRuns.has(sessionPath)) throw new Error('A reply is being written in this conversation. Wait for it to finish, or stop it, then compact.');
@@ -4804,6 +4935,8 @@ function agentReadFinished(key, at) {
 function agentReadMark(keys) {
   const merged = { read: {} };
   let any = false;
+  // Reading the frog's answer is receiving what it told (design/102).
+  if (typeof theFrog !== 'undefined' && theFrog.key && keys.includes(theFrog.key)) setImmediate(() => frogReceived('read the frog'));
   if (pushState) for (const key of keys) pushState.notifier.cancel(key);
   for (const key of keys) {
     if (!key || !index[key]) continue;
@@ -4888,6 +5021,1258 @@ function agentReadPruneGroups() {
 }
 setTimeout(agentReadPruneGroups, 10 * 60 * 1000).unref();
 setInterval(agentReadPruneGroups, 24 * 3600 * 1000).unref();
+
+// ---- The frog (design/102) -------------------------------------------
+// One conversation, in the assistant project, that steers all the others:
+// its tools (extensions/frog.ts) call /api/frog/<op>. The rules
+// that are its own (asks, events, the workspace picture) are in frog-assistant.js.
+const frogLib = require('./frog-assistant.js');
+const speechScript = require('./speech-script.js');
+const speechLevel = require('./speech-level.js');
+// It was called the Navigator on its first day: its records move once.
+try {
+  const was = path.join(NOTES_DIR, 'navigator'), now = path.join(NOTES_DIR, 'frog');
+  if (fs.existsSync(was) && !fs.existsSync(now)) { fs.renameSync(was, now); console.log('[frog] moved ' + was + ' to ' + now); }
+} catch (e) { console.error('[frog] could not move the Navigator records: ' + e.message); }
+const FROG_FOLDER = path.resolve(process.env.CHATTERING_FROG_FOLDER || path.join(os.homedir(), 'Projects', 'assistant'));
+const theFrog = frogLib.createFrog({ dir: path.join(NOTES_DIR, 'frog'), homeFolder: FROG_FOLDER, log: m => console.log('[frog] ' + m) });
+const FROG_MODE_FILE = path.join(__dirname, 'extensions', 'modes', 'frog.json');
+const FROG_PURPOSE = 'The assistant: the home of the frog, the one conversation Maxime talks to (by voice too) that steers all his other conversations, and of what it builds for itself: watchers, timers, notifications, pipelines that wake it up.';
+const FROG_AGENTS_MD = `# The assistant
+
+This folder is the home of the frog (Chattering design/102): the one
+conversation the person talks to, which sends work to their other
+conversations, organizes them, and tells them what happened.
+
+Conversations started here build what the frog needs for itself:
+watchers ("call me if I get an email from X"), timers, notifications,
+small pipelines. Keep each one in its own folder under \`automations/\`, with
+a README saying what it does, how it runs, and how to turn it off.
+
+## Waking the frog from a script
+
+Anything running on this computer can tell the frog something. It
+arrives in its conversation as an event, and the frog decides whether
+to tell the person, ping their phone, or keep it for later:
+
+\`\`\`sh
+curl -s -X POST http://127.0.0.1:\${CHATTERING_PORT:-7433}/api/frog/event \\
+  -H "Authorization: Bearer $(cat ~/.cache/chattering/lan-token)" \\
+  -H 'Content-Type: application/json' \\
+  -d '{"source": "mail-watcher", "text": "New email from Lilly: dinner at 7?"}'
+\`\`\`
+
+Add \`"notify": true\` to also ping the person's phone at once.
+
+## Running things on this machine
+
+This machine is NixOS. A long-running watcher is a user service; a quick
+one can start without a rebuild:
+
+\`\`\`sh
+systemd-run --user --unit=assistant-NAME --on-calendar='*:0/5' /path/to/script
+systemctl --user list-timers 'assistant-*'
+\`\`\`
+
+One that should survive a rebuild belongs in ~/Projects/os (Home Manager),
+named \`assistant-*\` so they can all be listed together.
+`;
+
+// Written below the first day's text (which carry-over recognizes as is).
+const FROG_AGENTS_MORE = `
+## What the frog keeps here
+
+- \`preferences.md\`: what the person asked it to remember (who is who, what
+  not to report, how they like things), one dated line each.
+- \`automations/\`: what it built to watch and wake itself.
+`;
+
+// The frog's prompt mode, in Pi's modes folder (where both Pi and this
+// server read modes). Installed when missing; a person's edited copy stays.
+// Kept in step with this checkout while nobody edited the installed copy:
+// what was installed last is remembered by its hash.
+function ensureFrogMode() {
+  const dir = path.join(PI_AGENT_DIR, 'modes'), target = path.join(dir, 'frog.json');
+  const shipped = fs.readFileSync(FROG_MODE_FILE, 'utf8');
+  const hash = t => crypto.createHash('sha256').update(t).digest('hex');
+  const stamp = path.join(NOTES_DIR, 'frog', 'mode-installed.sha256');
+  let installed = null, last = null;
+  try { installed = fs.readFileSync(target, 'utf8'); } catch {}
+  try { last = fs.readFileSync(stamp, 'utf8').trim(); } catch {}
+  // The first day's mode file, as it was installed (never edited by a person).
+  try {
+    const old = path.join(dir, 'navigator.json');
+    if (/^You are the Navigator: the one conversation/.test(JSON.parse(fs.readFileSync(old, 'utf8')).opener || '')) fs.rmSync(old);
+  } catch {}
+  if (installed === shipped) { if (last !== hash(shipped)) { fs.mkdirSync(path.dirname(stamp), { recursive: true }); fs.writeFileSync(stamp, hash(shipped) + '\n'); } return false; }
+  if (installed !== null && last !== hash(installed)) return false; // the person's own version
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(target, shipped);
+  fs.mkdirSync(path.dirname(stamp), { recursive: true });
+  fs.writeFileSync(stamp, hash(shipped) + '\n');
+  return true;
+}
+
+// The frog's conversation goes on in the frog mode as installed now: Pi
+// keeps a copy of a conversation's mode in it, so a newer frog mode (new
+// tools, new words) or its first day's Navigator mode is replaced by the
+// mode by name, after its last entry; Pi then records the new copy itself.
+// Its first day's title goes too. Checked at its turns, once per version.
+const frogCarried = new Set(); // key + installed mode's hash
+const frogModeShape = d => d ? JSON.stringify(['label', 'opener', 'appendix', 'systemPrompt', 'removeSections', 'tools'].map(k => d[k] === undefined ? null : d[k])) : null;
+async function frogCarryOver(key) {
+  if (!key || !index[key] || index[key].source !== 'pi') return;
+  ensureFrogMode();
+  let installed = null;
+  try { installed = JSON.parse(fs.readFileSync(path.join(PI_AGENT_DIR, 'modes', 'frog.json'), 'utf8')); } catch {}
+  const version = key + '\n' + crypto.createHash('sha256').update(frogModeShape(installed) || '').digest('hex');
+  if (frogCarried.has(version)) return;
+  const abs = absPathForKey(key);
+  if (headlessRuns.has(abs) || liveHeld.has(abs)) return; // at its next turn
+  await withSessionOp(abs, async () => {
+    const raw = await fsp.readFile(abs, 'utf8');
+    // The mode on the conversation's branch (from its last entry back to
+    // the start), as Pi reads it: a mode-switch left on a side branch by an
+    // earlier send is not the conversation's (one was, and the frog stayed
+    // on an older mode without its asides tool, design/102).
+    const byId = new Map();
+    let last = null;
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      let d; try { d = JSON.parse(line); } catch { continue; }
+      if (d.type !== 'session' && typeof d.id === 'string') { last = d; byId.set(d.id, d); }
+    }
+    let mode = null;
+    for (let d = last, n = 0; d && n < 200000; d = byId.get(d.parentId), n++) {
+      if (d.type === 'custom' && d.customType === 'mode-switch' && d.data) { mode = d.data; break; }
+    }
+    const key0 = mode && (mode.mode || (mode.definition && mode.definition.key));
+    // A mode by name not yet read by Pi, or the same frog mode: nothing to do.
+    const stale = key0 === 'navigator' || (key0 === 'frog' && mode.definition && installed && frogModeShape(mode.definition) !== frogModeShape(installed));
+    if (stale && last) {
+      stopAnyWarmSession(abs);
+      await fsp.appendFile(abs, JSON.stringify({ type: 'custom', customType: 'mode-switch', id: crypto.randomBytes(4).toString('hex'), parentId: last.id, timestamp: new Date().toISOString(), data: { mode: 'frog' } }) + '\n');
+      await reindexIfChanged(key);
+      console.log('[frog] ' + key + ' goes on in the frog mode as installed now');
+    }
+  });
+  const e = index[key];
+  if (e && (e.timelineTitle === 'Navigator' || e.title === 'Navigator')) { try { await setConversationTitle(key, 'The frog', { by: null }); } catch {} }
+  frogCarryFiles();
+  frogCarried.add(version);
+}
+// Its first day's files in the assistant project: the instructions file as
+// it was written then (unedited) is written again; the preferences it kept
+// get their plain name.
+function frogCarryFiles() {
+  const folder = theFrog.folder || FROG_FOLDER;
+  try {
+    const agents = path.join(folder, 'AGENTS.md');
+    const firstDay = FROG_AGENTS_MD.replace(/the frog/g, 'the Navigator').replace(/The frog/g, 'The Navigator').replace('/api/frog/event', '/api/navigator/event');
+    if (fs.existsSync(agents) && fs.readFileSync(agents, 'utf8') === firstDay) fs.writeFileSync(agents, FROG_AGENTS_MD + FROG_AGENTS_MORE);
+  } catch (e) { console.error('[frog] AGENTS.md: ' + e.message); }
+  try {
+    const was = path.join(folder, 'navigator-preferences.md'), now = path.join(folder, 'preferences.md');
+    if (fs.existsSync(was) && !fs.existsSync(now)) {
+      fs.writeFileSync(now, fs.readFileSync(was, 'utf8').replace(/the Navigator/g, 'the frog'));
+      fs.rmSync(was);
+    }
+  } catch (e) { console.error('[frog] preferences: ' + e.message); }
+}
+setTimeout(() => { frogCarryOver(theFrog.key).catch(e => console.error('[frog] carry over: ' + e.message)); }, 8000).unref();
+
+// The assistant project (created when missing) and the frog's
+// conversation in it (started when missing or gone), pinned in the list.
+async function ensureFrogHome(identity) {
+  ensureFrogMode();
+  const folder = FROG_FOLDER;
+  const warnings = [];
+  if (!fs.existsSync(folder)) {
+    await createProject({ operation: 'create', name: path.basename(folder), parent: path.dirname(folder), purpose: FROG_PURPOSE });
+  } else if (!projectMetaFor(projectNameOf(folder))) {
+    try { await createProject({ operation: 'add', path: folder, purpose: FROG_PURPOSE }); }
+    catch (e) { warnings.push('the folder exists but could not be added as a project: ' + e.message); }
+  }
+  const agentsMd = path.join(folder, 'AGENTS.md');
+  if (!fs.existsSync(agentsMd)) fs.writeFileSync(agentsMd, FROG_AGENTS_MD + FROG_AGENTS_MORE);
+  fs.mkdirSync(path.join(folder, 'automations'), { recursive: true });
+  let key = theFrog.key;
+  if (!key || !index[key]) {
+    const started = await startConversationFromDraft({ folder, mode: 'frog', models: [theFrog.modelParts()] }, principalFor(identity));
+    key = started.key;
+    theFrog.setHome({ key, folder });
+    try { await setConversationTitle(key, 'The frog', { by: null }); } catch (e) { warnings.push('title: ' + e.message); }
+  }
+  await frogCarryOver(key).catch(e => warnings.push('carrying the first conversation over: ' + e.message));
+  agentReadOpen([key]);
+  if (!agentRead.pinned[key]) agentReadPin({ [key]: true });
+  return { key, id: frogLib.refOf(index, key), folder, project: projectNameOf(folder, key), model: theFrog.model, talk: theFrog.talk, speed: frogRate(), warnings };
+}
+
+// A ref the frog typed → one key. Several conversations fitting it is an
+// error that lists them with their ids as they are now, never a pick.
+function frogKeyOf(ref, identity) {
+  const r = frogLib.resolveRef(index, ref);
+  if (!r.key && r.keys.length) throw Object.assign(new Error(`The id "${ref}" fits ${r.keys.length} conversations; use one of these ids:\n${frogLib.describeRef(index, r.keys).join('\n')}`), { status: 409 });
+  if (!r.key) throw Object.assign(new Error(`No conversation has the id "${ref}". Use the ids that workspace or find_conversations printed.`), { status: 404 });
+  const key = r.key;
+  if (identity && !receiverFor(identity).key(key)) throw Object.assign(new Error('That conversation is not yours to see.'), { status: 403 });
+  return key;
+}
+function frogRow(key) {
+  const e = index[key] || {};
+  return { id: frogLib.refOf(index, key), title: e.timelineTitle || e.title || 'Untitled', project: projectNameOf(e.cwd, key) || 'loose' };
+}
+
+// Runs by conversation: the running one, else the newest that ended.
+function frogRunsByKey() {
+  const out = new Map();
+  for (const job of agentRunJobs.values()) {
+    if (job.type !== 'agent-run') continue;
+    const key = job.fanoutRootKey || job.key;
+    const cur = out.get(key);
+    if (!cur || (job.status === 'running' && cur.status !== 'running') || (cur.status !== 'running' && (job.startedAt || 0) > (cur.startedAt || 0))) out.set(key, job);
+  }
+  return out;
+}
+
+// How full each conversation's context is: its last reply's tokens against
+// its model's window (the catalog's, else the assumed one), as the
+// composer's meter shows it.
+let frogCatalog = { at: 0, models: [] };
+async function frogContextSize(entry) {
+  if (Date.now() - frogCatalog.at > 5 * 60 * 1000) {
+    try { frogCatalog = { at: Date.now(), models: (await listPiModels(false)).models || [] }; } catch { frogCatalog.at = Date.now(); }
+  }
+  const c = entry && entry.ctx;
+  if (!c || !(c.used > 0)) return null;
+  const ms = frogCatalog.models;
+  const hit = c.model ? ms.find(m => m.provider === c.provider && m.model === c.model) || ms.find(m => m.model === c.model || m.id === c.model) : null;
+  const size = (hit && hit.context) || piContextTokens();
+  return size ? { used: c.used, size, pct: Math.min(100, Math.round(100 * c.used / size)), model: c.provider && c.model ? c.provider + '/' + c.model : c.model || null, sized: !!(hit && hit.context) } : null;
+}
+async function frogContextList({ id, all }, identity) {
+  const can = receiverFor(identity);
+  const keys = id ? [frogKeyOf(id, identity)] : Object.keys(index).filter(k => can.key(k) && (agentReadLib.isListed(agentRead, k, index[k].mtimeMs || 0) || all === 'true' || all === true));
+  const rows = [];
+  for (const key of keys) {
+    const c = await frogContextSize(index[key]);
+    rows.push({ ...frogRow(key), context: c ? { used: c.used, window: c.size, percent: c.pct, model: c.model, windowKnown: c.sized } : null });
+  }
+  rows.sort((a, b) => ((b.context && b.context.percent) || 0) - ((a.context && a.context.percent) || 0));
+  return { conversations: rows.slice(0, 60), planLimits: 'not readable here: neither Chattering nor the Claude provider keeps the subscription\u2019s usage limits' };
+}
+
+async function frogWorkspace(identity) {
+  if (Date.now() - frogCatalog.at > 5 * 60 * 1000) await frogContextSize({ ctx: { used: 1 } }).catch(() => {});
+  const can = receiverFor(identity);
+  const runs = frogRunsByKey();
+  let terminals = new Set();
+  try { terminals = new Set(runningAgentKeys()); } catch {}
+  const keys = new Set([...Object.keys(agentRead.opened), ...runs.keys(), ...terminals]);
+  const rows = [];
+  for (const key of keys) {
+    const entry = index[key];
+    if (!entry || !can.key(key)) continue;
+    const listed = agentReadLib.isListed(agentRead, key, entry.mtimeMs || 0);
+    const run = runs.get(key);
+    if (!listed && !(run && run.status === 'running') && !terminals.has(key)) continue;
+    const gid = agentRead.member[key];
+    const ctx = entry.ctx && entry.ctx.used > 0 ? (() => { const ms = frogCatalog.models, c = entry.ctx; const hit = ms.find(m => m.provider === c.provider && m.model === c.model) || ms.find(m => m.model === c.model); const size = (hit && hit.context) || piContextTokens(); return size ? Math.round(100 * c.used / size) : 0; })() : 0;
+    rows.push({ key, entry, listed, contextPct: ctx, unread: !!agentReadLib.unreadAt(agentRead, key, entry.mtimeMs || 0),
+      group: gid && agentRead.groups[gid] ? agentRead.groups[gid].name : null, pinned: !!agentRead.pinned[key] });
+  }
+  const counts = {};
+  for (const gid of Object.values(agentRead.member)) counts[gid] = (counts[gid] || 0) + 1;
+  const groups = Object.entries(agentRead.groups).sort((a, b) => a[1].order - b[1].order)
+    .map(([gid, g]) => ({ name: g.name, folded: g.folded, count: counts[gid] || 0 }));
+  return theFrog.workspace({ rows, runs, terminals, groups, index, projectOf: (cwd, key) => projectNameOf(cwd, key) });
+}
+
+// Conversations by words in their titles and projects, newest first.
+function frogFind({ q, project, limit }, identity) {
+  const can = receiverFor(identity);
+  const words = String(q || '').toLowerCase().split(/\s+/).filter(Boolean);
+  const proj = String(project || '').toLowerCase().trim();
+  const runs = frogRunsByKey();
+  const hits = [];
+  for (const [key, e] of Object.entries(index)) {
+    if (!e || e.hiddenFanout || e.importCopyOf || key === theFrog.key || !can.key(key)) continue;
+    if (chains.nextOf(key) && index[chains.nextOf(key)]) continue;
+    const p = (projectNameOf(e.cwd, key) || 'loose').toLowerCase();
+    if (proj && p !== proj) continue;
+    const hay = [e.timelineTitle, e.title, p, e.last && e.last.text].filter(Boolean).join(' ').toLowerCase();
+    let score = 0;
+    for (const w of words) { if (!hay.includes(w)) { score = -1; break; } score += String(e.timelineTitle || e.title || '').toLowerCase().includes(w) ? 2 : 1; }
+    if (score < 0) continue;
+    hits.push({ key, e, score });
+  }
+  hits.sort((a, b) => (b.score - a.score) || ((b.e.mtimeMs || 0) - (a.e.mtimeMs || 0)));
+  const n = Math.max(1, Math.min(40, Number(limit) || 12));
+  return { total: hits.length, conversations: hits.slice(0, n).map(({ key, e }) => {
+    const run = runs.get(key);
+    return { ...frogRow(key), when: e.lastTs || null, listed: agentReadLib.isListed(agentRead, key, e.mtimeMs || 0),
+      state: run && run.status === 'running' ? 'working' : e.last && e.last.asks ? 'waiting for the person' : 'idle',
+      lastWords: frogLib.clip(e.last && e.last.text, 160), agent: e.source };
+  }) };
+}
+
+async function frogRead({ id, last, at }, identity) {
+  const key = frogKeyOf(id, identity);
+  const entry = index[key];
+  const n = Math.max(1, Math.min(60, Number(last) || 12));
+  if (entry.source === 'pi') {
+    const raw = await fsp.readFile(absPathForKey(key), 'utf8');
+    return { ...frogRow(key), ...frogLib.piBranchMessages(raw, { last: n, at: at ? String(at) : null }) };
+  }
+  if (at) throw new Error('reading around an entry works for Pi conversations only');
+  const shown = await recordsApi().run('show', { id: key, last: String(n) });
+  return { ...frogRow(key), text: shown.text };
+}
+
+// A message to a conversation, the way its agent takes messages here: Pi and
+// Codex through Chattering's own runs (queued behind a running turn), a
+// conversation held by its agent's own program through that program, a
+// Claude Code terminal through its terminal.
+async function frogSend({ id, text }, identity) {
+  const key = frogKeyOf(id, identity);
+  if (key === theFrog.key) throw new Error('That is your own conversation.');
+  const body = String(text || '').trim();
+  if (!body) throw new Error('empty message');
+  assertCan(identity, 'act', targetOf(key), 'this conversation');
+  const entry = index[key];
+  const { sessionPath } = sessionPathsFor(key);
+  const principal = principalFor(identity);
+  let out;
+  if (liveHeld.has(sessionPath)) {
+    out = { via: 'its own program', ...(await liveTerminals().send(key, body)) };
+  } else if (entry.source === 'pi' || entry.source === 'codex') {
+    const r = await startAgentRun(key, { message: body, allowQueue: true, principal, input: 'frog' });
+    out = r && r.queued ? { via: 'chattering', queued: true } : { via: 'chattering', job: jobView(r) };
+  } else {
+    const live = liveTerminalFor(key, identity);
+    if (live && live.setting !== 'off' && !live.refusal) {
+      await liveStartExisting(key, identity);
+      liveChooses(key, 'program');
+      out = { via: 'its own program', ...(await liveTerminals().send(key, body)) };
+    } else {
+      const r = await sendToConversation(key, { text: body, input: 'frog' }, principal);
+      out = { via: 'terminal', submitted: r.submitted !== false };
+    }
+  }
+  agentReadOpen([key]);
+  return { sent: true, ...frogRow(key), ...out };
+}
+
+async function frogStart(p, identity) {
+  let folder = String(p.folder || '').trim();
+  if (!folder && p.project) {
+    const meta = projectMetaFor(String(p.project));
+    if (!meta || !meta.cwd) throw Object.assign(new Error(`No project is called "${p.project}". Use create_project first, or give a folder.`), { status: 404 });
+    folder = meta.cwd;
+  }
+  if (!folder) throw new Error('say where: a project or a folder');
+  const where = describeStartFolder(folder);
+  if (!where.exists) throw Object.assign(new Error('folder not found: ' + where.display), { status: 404 });
+  assertPathAccess(identity, where.path, 'act');
+  const models = p.model && String(p.model).includes('/') ? [{ provider: String(p.model).split('/')[0], modelId: String(p.model).split('/').slice(1).join('/') }] : undefined;
+  const started = await startConversationFromDraft({ folder: where.path, prompt: String(p.prompt || ''), models, mode: p.mode || undefined, input: 'frog' }, principalFor(identity));
+  agentReadOpen([started.key]);
+  const out = { started: true, ...frogRow(started.key), job: started.job || null, runError: started.runError || undefined, warnings: started.warnings };
+  if (p.title) { try { await setConversationTitle(started.key, String(p.title), { by: null }); out.title = String(p.title); } catch (e) { out.warnings.push('title: ' + e.message); } }
+  if (p.group) frogOrganize({ group: { name: String(p.group), ids: [started.key] } }, identity);
+  return out;
+}
+
+async function frogStop({ id }, identity) {
+  const key = frogKeyOf(id, identity);
+  assertCan(identity, 'act', targetOf(key), 'this conversation');
+  const record = headlessRuns.get(path.resolve(absPathForKey(key)));
+  if (record && record.handle && record.handle.abort) {
+    record.yielded = 'stopped by the frog';
+    await record.handle.abort();
+    return { stopped: true, ...frogRow(key) };
+  }
+  const lt = liveTerminalsLib;
+  // Its agent's own program has no "stop this turn" from here yet: the
+  // program ends (the conversation and its box's text are kept).
+  if (lt && lt.status(key).running && lt.stop(key, { keepDraft: true })) return { stopped: true, via: 'its own program, which was closed (the conversation is kept)', ...frogRow(key) };
+  throw new Error('Nothing of it is running from Chattering (it may be a terminal outside Chattering).');
+}
+
+// The side list, as the person arranges it (design/59, 96). Group names, not
+// ids: a group is found by its name and made when there is none.
+function frogOrganize(p, identity) {
+  const keys = list => (Array.isArray(list) ? list : []).map(r => frogKeyOf(r, identity));
+  const done = [];
+  if (p.open) { const k = keys(p.open); agentReadOpen(k); done.push('opened ' + k.length); }
+  if (p.close) { const k = keys(p.close).filter(x => x !== theFrog.key); agentReadDismiss(k); done.push('closed ' + k.length); }
+  if (p.pin) { const k = keys(p.pin); agentReadPin(Object.fromEntries(k.map(x => [x, true]))); done.push('pinned ' + k.length); }
+  if (p.unpin) { const k = keys(p.unpin); agentReadPin(Object.fromEntries(k.map(x => [x, false]))); done.push('unpinned ' + k.length); }
+  const groupId = (name, create) => {
+    const want = String(name || '').trim().toLowerCase();
+    const found = Object.entries(agentRead.groups).find(([, g]) => g.name.toLowerCase() === want);
+    if (found) return found[0];
+    if (!create) throw new Error('no group is called "' + name + '"');
+    return 'g' + crypto.randomBytes(6).toString('hex');
+  };
+  if (p.group && p.group.name) {
+    const k = keys(p.group.ids);
+    agentReadOpen(k);
+    const gid = groupId(p.group.name, true);
+    const was = agentRead.groups[gid];
+    // An existing group keeps its name as the person wrote it.
+    const name = was ? was.name : String(p.group.name);
+    const order = was ? was.order : Math.max(-1, ...Object.values(agentRead.groups).map(g => g.order)) + 1;
+    agentReadGroups({ groups: { [gid]: { name, order, ...(p.group.folded !== undefined ? { folded: !!p.group.folded } : {}) } }, member: Object.fromEntries(k.map(x => [x, gid])) }, identity);
+    done.push(`${k.length} in group "${name}"${was ? '' : ' (new)'}`);
+  }
+  if (p.ungroup) { const k = keys(p.ungroup); agentReadGroups({ member: Object.fromEntries(k.map(x => [x, ''])) }, identity); done.push('took ' + k.length + ' out of their group'); }
+  if (p.fold && p.fold.name) { const gid = groupId(p.fold.name, false); agentReadGroups({ groups: { [gid]: { folded: p.fold.folded !== false } } }, identity); done.push((p.fold.folded !== false ? 'folded "' : 'unfolded "') + p.fold.name + '"'); }
+  if (p.rename && p.rename.from && p.rename.to) { const gid = groupId(p.rename.from, false); agentReadGroups({ groups: { [gid]: { name: String(p.rename.to) } } }, identity); done.push(`renamed "${p.rename.from}" to "${p.rename.to}"`); }
+  if (!done.length) throw new Error('nothing to do: give open, close, pin, unpin, group, ungroup, fold or rename');
+  return { done };
+}
+
+// What the frog told the person, marked read once they have its answer;
+// or, when they ask, read or unread now (design/102). A conversation's
+// news is its last message or its last run's end, not its file's time
+// (bookkeeping lines are written after a reply).
+function frogActivity(key) {
+  const e = index[key] || {};
+  return Math.max(Date.parse(e.lastTs || '') || 0, Number(agentRead.finished[key]) || 0);
+}
+function frogReceived(how) {
+  const keys = theFrog.received(frogActivity).filter(k => index[k]);
+  if (keys.length) { agentReadMark(keys); console.log('[frog] ' + how + ': ' + keys.length + ' told repl' + (keys.length === 1 ? 'y' : 'ies') + ' marked read'); }
+  return keys;
+}
+function frogMarkRead(p, identity) {
+  const keys = [...new Set((Array.isArray(p.ids) ? p.ids : [p.id]).filter(Boolean).map(r => frogKeyOf(r, identity)))].filter(k => k !== theFrog.key);
+  if (!keys.length) throw new Error('which conversations?');
+  const as = p.as || 'told';
+  if (as === 'told') {
+    theFrog.toldAbout(keys, p.why);
+    return { conversations: keys.map(frogRow), waiting: true,
+      note: 'Each becomes read once the person has your answer (they read it, or write to you next), unless it says something new before then.' };
+  }
+  theFrog.untold(keys);
+  if (as === 'read') agentReadMark(keys);
+  else if (as === 'unread') agentReadMarkUnread(keys);
+  else throw new Error('as is told, read or unread');
+  return { conversations: keys.map(frogRow), marked: as };
+}
+
+// A notification to the person's devices, on the frog's conversation
+// (a tap opens it). Asked for, so it goes even while they are at a screen.
+// `call`: the phone rings as for a call (the Android app from 0.3.12,
+// design/102 part 4; answering opens the frog with Talk on); a browser
+// shows it as an urgent notification.
+function frogNotify({ title, text, urgent, call }) {
+  if (!theFrog.key) throw new Error('The frog has no conversation yet.');
+  const body = frogLib.clip(text, 300);
+  if (!body) throw new Error('say what to tell them');
+  pushing().notifier.notify(call ? 'call' : 'ask', { key: theFrog.key, title: frogLib.clip(title || 'Frog', 80), detail: body, urgent: urgent !== false }, { wait: 0 });
+  return call ? { notified: true, called: true, note: 'The phone rings as for a call (the Android app; a browser shows an urgent notification). Answered, the person is in Talk with you: greet them and say why you called.' }
+    : { notified: true, note: 'A notification went to every device with notifications on.' };
+}
+
+// What waits for the frog reaches it as one turn, when it is not busy.
+let frogDelivering = false;
+async function frogDeliver() {
+  const key = theFrog.key;
+  if (!key || !index[key] || frogDelivering) return;
+  const events = theFrog.pendingEvents();
+  if (!events.length) return;
+  const { sessionPath } = sessionPathsFor(key);
+  if (headlessRuns.has(sessionPath) || liveHeld.has(sessionPath) || compactingSessions.has(path.resolve(sessionPath))) return; // its run's end delivers them
+  frogDelivering = true;
+  try {
+    await startAgentRun(key, { message: 'Frog events', customMessage: theFrog.eventMessage(events) }); // the frog's model: startAgentRun
+    theFrog.ack(events.map(e => e.id));
+  } catch (e) { console.error('[frog] delivery waits: ' + e.message); }
+  finally { frogDelivering = false; }
+}
+setInterval(() => { frogDeliver().catch(() => {}); }, 30000).unref();
+
+function frogEvent({ text, source, notify, title }) {
+  const ev = theFrog.pushEvent({ text, source });
+  if (notify && theFrog.key) { try { frogNotify({ title: title || source, text }); } catch (e) { console.error('[frog] ' + e.message); } }
+  setImmediate(() => frogDeliver().catch(() => {}));
+  return { queued: ev.id };
+}
+
+// A run ended somewhere: the asks on it fire; the frog's own run ending
+// lets the next events in.
+function frogRunEnded({ key, status, statusText, error, excerpt }) {
+  if (!key) return;
+  if (key === theFrog.key) {
+    theFrog.turnEnded();
+    // A fresh segment it asked for comes first; else its memory work (what
+    // left its context is written down, between turns), then the events.
+    if (frogSegmentWanted) { const w = frogSegmentWanted; setImmediate(() => frogSegment(w).catch(e => console.error('[frog] segment: ' + e.message)).then(() => frogDeliver().catch(() => {}))); return; }
+    setImmediate(() => frogDeliver().catch(() => {}));
+    setTimeout(() => { frogMemoryWork().catch(() => {}); }, 1500).unref();
+    return;
+  }
+  const e = index[key] || {};
+  const fired = theFrog.runEnded({ key, title: e.timelineTitle || e.title, status, statusText, error, excerpt, asks: !!(e.last && e.last.role === 'assistant' && e.last.asks) });
+  for (const f of fired) {
+    if (f.watch.then === 'notify' || f.watch.then === 'call') {
+      try { frogNotify({ title: (f.outcome === 'failed' ? 'Stopped: ' : f.outcome === 'question' ? 'Waiting: ' : 'Done: ') + (f.watch.title || e.timelineTitle || e.title || 'a conversation'), text: excerpt || statusText || f.outcome, call: f.watch.then === 'call' }); }
+      catch (err) { console.error('[frog] ' + err.message); }
+    }
+    theFrog.pushEvent({ text: f.text, source: 'ask ' + f.watch.id, details: { key, outcome: f.outcome } });
+  }
+  if (fired.length) setImmediate(() => frogDeliver().catch(() => {}));
+}
+
+// The walkie-talkie (design/102): after each utterance the page asks
+// whether the person handed the turn over. \`text\` is the message so far
+// (the box, typed edits included), \`last\` what was just said. One Jev call
+// (the AI program frog_turn_end), logged for judging and for a dataset.
+function jevKeyReady() {
+  const k = typesafeKey();
+  if (!k) throw Object.assign(new Error('No TypeSafe key yet: add it in Settings → sound → voice commands.'), { status: 503 });
+  if (process.env.TYPESAFE_API_KEY !== k) process.env.TYPESAFE_API_KEY = k;
+}
+// The same check on this computer (frog-turn-end.js: a rule set learned
+// from the record, design/102 "two small models"), when the setting says
+// so. Logged as a call of frog_turn_end in the same log, kind "code", so
+// the Programs page shows it next to Jev's and takes ✓/✗ on it.
+const frogTurnEndLocal = require('./frog-turn-end.js');
+let frogTurnEndRulesVersion = null;
+function frogTurnEndLocally(before, last, identity) {
+  const t0 = process.hrtime.bigint();
+  const r = frogTurnEndLocal.classify(before, last);
+  const seconds = Number(process.hrtime.bigint() - t0) / 1e9;
+  if (!frogTurnEndRulesVersion) { try { frogTurnEndRulesVersion = 'sha256:' + crypto.createHash('sha256').update(fs.readFileSync(path.join(__dirname, 'frog-turn-end.js'))).digest('hex'); } catch { frogTurnEndRulesVersion = 'rules'; } }
+  let callId = null;
+  try {
+    const rec = programLog().appendCall({
+      program: { name: 'frog_turn_end', kind: 'code', module: 'chattering', version: frogTurnEndRulesVersion, answer: 'turn', file: path.join(__dirname, 'frog-turn-end.js'), line: 1 },
+      seconds, content: true, inputs: { before, last }, outputs: { turn: r.turn },
+      sizes: { inputs: { before: before.length, last: last.length }, outputs: { turn: r.turn.length } },
+      error: null, model: 'frog-turn-end rules', usage: null, confidence: r.probabilities.turn[r.turn],
+      exchanges: [{ model: 'frog-turn-end rules', provider: 'local', seconds, cached: false, finish: 'stop',
+        response: { message: { role: 'assistant', parts: [{ type: 'data', value: { turn: r.turn }, probabilities: r.probabilities, why: r.why }] } } }],
+      caller: { conversation: theFrog.key || undefined, user: identity && identity.user ? identity.user.id : undefined, purpose: 'frog turn end' },
+      process: { host: HOST_NAME, language: 'javascript' },
+    });
+    callId = rec.id;
+    programLogChanged();
+  } catch (e) { console.log('[frog] turn-end log: ' + e.message); }
+  return { outputs: { turn: r.turn }, probabilities: r.probabilities, callId, why: r.why, local: true };
+}
+async function frogTurnEnd(p, identity) {
+  const text = String(p.text || '').slice(-20000), last = String(p.last || '').trim().slice(0, 2000);
+  if (!last) throw new Error('what was said last?');
+  const at = text.lastIndexOf(last);
+  const before = (at >= 0 ? text.slice(0, at) : text).trim().split(/\s+/).slice(-80).join(' ');
+  const t0 = Date.now();
+  let r;
+  if (appSettings.frogTurnEndLocal) r = frogTurnEndLocally(before, last, identity);
+  else {
+    jevKeyReady();
+    r = await aiProgram('frog_turn_end', { before, last }, { timeoutMs: 6000, purpose: 'frog turn end',
+      caller: { conversation: theFrog.key || undefined, user: identity && identity.user ? identity.user.id : undefined } });
+  }
+  const d = frogLib.turnDecision(r.probabilities, { strength: frogLib.handOverStrength(last) });
+  const out = { turn: r.outputs.turn, handedOver: d.handedOver, send: d.send, ask: d.ask, strength: d.strength, ms: Date.now() - t0, callId: r.callId };
+  if (d.send && d.handedOver < frogLib.TURN_SEND_AT) console.log('[frog] turn end: sent on the words ("' + frogLib.clip(last, 50) + '", ' + d.strength + ') with Jev at ' + d.handedOver);
+  // Jev picked "handed over" without measuring it (it always measures):
+  // trusted as sure, its pick is what the log shows.
+  if (!r.probabilities && r.outputs.turn === 'handed_over') Object.assign(out, { handedOver: 1, send: true, ask: false });
+  if (out.send || out.ask) Object.assign(out, frogLib.stripHandOver(text || last));
+  return out;
+}
+
+// Said while the frog's voice was held for the person (a barge-in,
+// "pause", the button; design/102): a reaction to go on over ("mm-hmm",
+// "right", a laugh), a complete question or instruction that wants an
+// answer now (then the frog's own turn, with the woven view, decides
+// whether to pick its reading up or change course), or a thought still
+// going (the words wait; the reading goes on when they fall quiet). One
+// Jev call (the AI program frog_barge); without a key, or when it fails, a
+// plain rule: a short backchannel goes on, a hand-over word sends, the
+// rest waits.
+const BACKCHANNEL = /^\W*(?:(?:mm+-?hm+|mhm+|uh-?huh|hm+|yeah|yep|yes|ok(?:ay)?|right|sure|i see|got it|go on|continue|keep going|carry on|interesting|good|great|fine|true|exactly|indeed|wow|oh|ah|haha|aha|nice|cool|alright|really)\W*){1,3}$/i;
+async function frogBarge(p, identity) {
+  const text = String(p.text || '').trim().slice(0, 4000);
+  const last = String(p.last || text).trim().slice(0, 2000);
+  if (!last) return { do: 'resume', why: 'nothing said' };
+  const job = String(p.job || '');
+  const w = frogTimeline.weave(job);
+  // What the frog was saying when they cut in: the sentence at the cut and the one before.
+  let cutInto = '', before = '';
+  if (w) {
+    const s = w.sentences.filter(x => x.status !== 'unsent');
+    const i = s.findIndex(x => x.status !== 'heard');
+    const k = i >= 0 ? i : s.length - 1;
+    cutInto = k >= 0 ? s[k].text : '';
+    before = k > 0 ? s[k - 1].text : '';
+  }
+  const t0 = Date.now();
+  const hand = frogLib.stripHandOver(text);
+  let out = null;
+  if (typesafeKey()) {
+    try {
+      jevKeyReady();
+      const r = await aiProgram('frog_barge', { before, cut_into: cutInto, said: text }, { timeoutMs: 6000, purpose: 'frog barge-in',
+        caller: { conversation: theFrog.key || undefined, user: identity && identity.user ? identity.user.id : undefined } });
+      const pr = r.probabilities && r.probabilities.meaning;
+      const pick = r.outputs.meaning;
+      const sure = pr ? pr[pick] : 1;
+      out = { do: pick === 'reaction' ? 'resume' : pick === 'wants_answer' ? 'send' : 'wait', meaning: pick, sure: Math.round((sure || 0) * 100) / 100, callId: r.callId, probabilities: pr || null };
+      // Unsure that they want an answer, and no hand-over word: wait (a pause never sends).
+      if (out.do === 'send' && sure < 0.6 && !hand.phrase) out.do = 'wait';
+      // A hand-over word is always a hand-over, whatever Jev made of the rest.
+      if (hand.phrase && out.do !== 'send') out = { ...out, do: 'send', meaning: 'wants_answer', handOver: true };
+    } catch (e) { console.log('[frog] barge check failed, using the rule: ' + e.message); out = null; }
+  }
+  if (!out) out = hand.phrase ? { do: 'send', meaning: 'wants_answer', rule: true } : BACKCHANNEL.test(last) ? { do: 'resume', meaning: 'reaction', rule: true } : { do: 'wait', meaning: 'still_talking', rule: true };
+  if (out.do === 'send') Object.assign(out, hand);
+  out.ms = Date.now() - t0;
+  out.cutInto = cutInto;
+  console.log('[frog] barge: "' + frogLib.clip(last, 60) + '" → ' + out.do + (out.rule ? ' (rule)' : ' (' + out.sure + ')') + (cutInto ? ' · cut into "' + frogLib.clip(cutInto, 50) + '"' : ''));
+  return out;
+}
+
+// The frog's replies, spoken while the person talks with it (talk on):
+// sentence pieces in order, each sent as soon as Kokoro made it, on the
+// screen the person is at. Tool steps are never spoken.
+// One run's speech is one line: what it said before its tools, then its
+// answer, in the order said, whatever Kokoro takes for each.
+// The frog's speed is a playback rate, as the read button's: its speech is
+// made at Kokoro's own speed (1) and played at the frog's rate by the
+// page, which keeps Kokoro's rhythm. 1 by default: the read button as it
+// plays, which the person found best (corrected 2026-10-17, from 1.25).
+// A computer's own speakers cannot change the rate: for another speed their
+// copy is made at that speed by Kokoro instead.
+const FROG_RATE = 1;
+const frogRate = () => theFrog.speed || FROG_RATE;
+// What the frog said aloud, in order (design/102): each piece's clip and
+// its sentences' places in it, the pieces not yet made too. A page that
+// stops it says which clip and where; that is where the person stopped
+// hearing. The last few are kept, in memory.
+// A cut ends a ledger, not the run: a message sent to the frog while it
+// runs (or talk turned off) cancels the ledger, and the rest of the message
+// being said stays unspoken, as asked. But the run goes on (the message is
+// queued into it, or its tools were still running), and the frog's next
+// message in that run is new words: it is said, on a fresh ledger. Before
+// (2026-10-18), the one ledger per run stayed cancelled, and every word of
+// the rest of that run, the answer to the queued message included, went
+// unspoken. A ledger's id is the run's id for its first, then run#2,
+// run#3…: what the pages see as the frog's "job" and report back.
+const frogSpoken = new Map(); // ledger id → { id, n, job, key, block, items: [{ texts, clip, runs, sent }], cancelled }
+const frogLedgerOf = new WeakMap(); // job → its current ledger
+function frogSpokenFor(job, block) {
+  let led = frogLedgerOf.get(job);
+  if (!led || (led.cancelled && block !== undefined && block !== led.block)) {
+    const n = led ? led.n + 1 : 1;
+    led = { id: n === 1 ? job.id : job.id + '#' + n, n, job: job.id, key: job.key, block, items: [], cancelled: false };
+    frogLedgerOf.set(job, led);
+    frogSpoken.set(led.id, led);
+    while (frogSpoken.size > 6) frogSpoken.delete(frogSpoken.keys().next().value);
+  }
+  if (block !== undefined) led.block = block;
+  return led;
+}
+const frogSpeechLines = new WeakMap(); // job → its speech, in order (never in the job's JSON)
+// The woven timeline (design/102, frog-timeline.js): each sentence of the
+// frog's speech with the moments its audio played on the person's device,
+// and each thing the person said with the moments they spoke, on this
+// computer's clock. Every event also goes to a log file, so a test can be
+// read back afterwards ("what did each utterance do, and when?").
+const FROG_TIMELINE_LOG = path.join(DATA_DIR, 'frog-timeline.jsonl');
+const frogTimeline = require('./frog-timeline.js').createTimeline({ log: e => {
+  try { fs.appendFileSync(FROG_TIMELINE_LOG, JSON.stringify(e) + '\n', { mode: 0o600 }); } catch {}
+} });
+// block: which of the run's messages the text is from (frogStreamSpeech).
+function speakFrogText(job, text, block) {
+  const led = frogSpokenFor(job, block);
+  const pieces = speechScript.speechPieces(speechScript.toSpeech(text));
+  const items = pieces.map(piece => ({ piece, texts: piece.map(sg => sg.text), clip: null, runs: null, sent: false }));
+  led.items.push(...items); // on the record (/api/frog/spoken) even when not said
+  const line = (frogSpeechLines.get(job) || Promise.resolve()).then(async () => {
+    if (voiceMuted() || !items.length) return;
+    // The rest of a message that was cut off (a new message to the frog,
+    // talk turned off): not wanted, not sent, and the record says so
+    // (soundTargets would log a destination nothing went to).
+    if (led.cancelled) { console.log('[frog] ' + items.length + ' piece(s) not spoken: the message was cut off'); return; }
+    const targets = soundTargets(job.key, job.askedBy);
+    for (const item of items) {
+      if (led.cancelled) return;
+      const rate = frogRate();
+      let clip;
+      try { clip = await synthesizeSpeech(item.texts.join(' '), false, 1, { segments: item.piece }); }
+      catch (e) { console.log('[frog] speech failed: ' + e.message); return playTargetsTone(targets, 'done', job); }
+      if (led.cancelled) return;
+      item.clip = clip.id; item.runs = clip.runs || null;
+      // Its sentences' places in the clip, for the timeline and for the
+      // page ("next sentence", "say that again").
+      const sentences = frogTimeline.sentencesOf(clip.runs || [{ text: item.texts.join(' '), startMs: 0, endMs: clip.durationMs || 0 }]);
+      frogTimeline.addClip(led.id, clip.id, sentences);
+      if (targets.host) {
+        try { const fast = rate === 1 ? clip : await synthesizeSpeech(item.texts.join(' '), false, rate, { segments: item.piece }); enqueueAnnouncement({ job, wavPath: path.join(TTS_DIR, fast.id + '.wav'), listen: false }); }
+        catch (e) { console.log('[frog] speech failed: ' + e.message); }
+      }
+      for (const conn of targets.screens) sendScreenSound(conn, { audio: '/api/tts/audio?id=' + clip.id, rate, frog: { job: led.id, clip: clip.id, sentences: sentences.map(x => [x.startMs, x.endMs]) } });
+      item.sent = true;
+    }
+  }).catch(e => console.log('[frog] speech: ' + e.message));
+  frogSpeechLines.set(job, line);
+  return line;
+}
+
+// The frog's own "over" (design/102): when its reply has been said to the
+// end, a short sound tells the person it is their turn. Sent after the last
+// piece of its speech, in the same queue, so it plays right after it, not
+// when the writing ended (the last pieces are still being made then). None
+// for a reply that was cut or stopped, or that said nothing aloud.
+async function frogSpeechEnd(job) {
+  try { await frogSpeechLines.get(job); } catch {}
+  const led = frogLedgerOf.get(job);
+  if (!led || led.cancelled || !led.items.some(i => i.sent) || voiceMuted()) return;
+  const targets = soundTargets(job.key, job.askedBy);
+  for (const conn of targets.screens) sendScreenSound(conn, { cue: 'over', frog: { job: led.id, end: true } });
+}
+
+// Where the person stopped hearing the frog: { job, clip, ms } from the page
+// that played it, \`state\` paused (it may go on), cut (it will not) or
+// resumed (it goes on: what was noted is void). The note waits for the
+// frog's next turn (design/102).
+let frogCut = null;
+let frogCutAwaited = 0; // a cut was asked of the pages; a report may be on its way
+const FROG_PLAYER_EVENTS = new Set(['play', 'pause', 'seek', 'ended']);
+function frogHeard({ job, clip, ms, state, error, device, why, t, page, rate, by }) {
+  if (state === 'cut' && why === 'stopped') state = 'stopped';
+  // The player's own events (play, pause, seek, ended), each with the
+  // clip's time and the page's clock: the frog's side of the woven timeline.
+  if (FROG_PLAYER_EVENTS.has(state)) { frogTimeline.playback({ job: String(job || ''), clip, state, ms, t, page, rate, by, device }); return { ok: true }; }
+  if (state === 'cut' || state === 'stopped') frogTimeline.playback({ job: String(job || ''), clip, state, ms, t, page, by, device, why });
+  if (state === 'resumed') { frogCut = null; return { cut: null }; }
+  // The page could not play it (a phone that wants a tap for each sound):
+  // it offered "Tap to hear" instead. Kept in the record of sounds.
+  if (state === 'refused' || state === 'started') {
+    const rec = { at: new Date().toISOString(), for: 'the frog', went: [(device || 'a screen') + (state === 'refused' ? ' refused to play it (' + String(error || 'no reason given').slice(0, 80) + '); it offered Tap to hear' : ' started playing it')], screens: [] };
+    soundDecisions.push(rec); if (soundDecisions.length > 40) soundDecisions.shift();
+    console.log('[sound] the frog \u2192 ' + rec.went[0]);
+    return { ok: true };
+  }
+  const led = frogSpoken.get(String(job || ''));
+  if (!led) return { cut: frogCut };
+  // cut (a new turn, talk off): the rest is not made. stopped ("stop",
+  // "frog, stop"): held where it is and the rest still made, since
+  // "continue" after a stop must work (it did nothing, design/102); the
+  // note says it was stopped on purpose only if it was never resumed.
+  if (state === 'cut') led.cancelled = true;
+  const split = frogLib.heardSplit(led.items, clip, ms);
+  if (!split) return { cut: frogCut }; // that clip is not this turn's
+  const { heard, partial, unheard } = split;
+  frogCut = unheard.length || partial ? { at: Date.now(), state: state === 'cut' || state === 'stopped' ? state : 'paused', heard, partial, unheard } : null;
+  frogCutAwaited = 0;
+  return { cut: frogCut };
+}
+// The person starts a new turn with the frog: its last answer stops being
+// spoken, wherever it is. A page that played it reports where (it is told,
+// and the send path reports first); pieces never sent were not heard.
+// The pages are told which ledgers were cut, so a piece of what it says
+// next (a fresh ledger, on its way to the page) is never stopped with them.
+function frogNewTurn() {
+  const cut = [];
+  for (const led of frogSpoken.values()) {
+    if (led.cancelled) continue;
+    led.cancelled = true;
+    const unsent = led.items.filter(i => !i.sent);
+    frogTimeline.cancelled(led.id, { unsaid: unsent.flatMap(i => i.texts) });
+    frogTimeline.newTurn(led.id);
+    if (unsent.length && !frogCut) frogCut = { at: Date.now(), state: 'cut', heard: null, partial: null, unheard: unsent.flatMap(i => i.texts) };
+    if (led.items.some(i => i.sent)) cut.push(led.id);
+  }
+  if (cut.length) { frogCutAwaited = Date.now() + 900; broadcast({ type: 'frog-cut', jobs: cut }); }
+}
+// For the frog's next turn: where it was cut off, said once.
+async function frogCutNote() {
+  while (frogCutAwaited && Date.now() < frogCutAwaited) await sleep(100);
+  const c = frogCut;
+  frogCut = null;
+  // The woven view when the last spoken ledger has one (what played, where
+  // they cut in, what they said, what was left unsaid); the older note
+  // from the clip ledger when no page reported playback.
+  const last = [...frogSpoken.keys()].pop();
+  let woven = '';
+  try { woven = last && !frogNoted.has(last) ? frogTimeline.note(last) : ''; } catch (e) { console.log('[frog] timeline note: ' + e.message); }
+  if (woven) { frogNoted.add(last); while (frogNoted.size > 20) frogNoted.delete(frogNoted.values().next().value); }
+  const cut = woven || (c && Date.now() - c.at < 6 * 3600 * 1000 ? frogLib.cutNote(c) : '');
+  return { text: [cut, theFrog.asidesText()].filter(Boolean).join('\n\n') };
+}
+const frogNoted = new Set(); // ledgers whose weave was already told
+
+// An aside (design/102): said while the frog was speaking. Its reading
+// waits, the aside is kept as a thread, "Noted." is said, and the reading
+// goes on from the start of the sentence that was cut.
+async function frogAside({ text, job, clip, ms }) {
+  const words = String(text || '').trim();
+  if (!words) throw new Error('what was the aside?');
+  const led = frogSpoken.get(String(job || ''));
+  const split = led ? frogLib.heardSplit(led.items, clip, ms) : null;
+  const during = split ? split.partial || split.heard[split.heard.length - 1] || null : null;
+  const resumeMs = led ? frogLib.resumePoint(led.items, clip, ms) : null;
+  const aside = theFrog.addAside({ text: words, during });
+  frogCut = null; // the reading goes on: nothing was missed
+  let ack = null;
+  try { const c = await synthesizeSpeech('Noted.', false, 1); ack = '/api/tts/audio?id=' + c.id; } catch (e) { console.log('[frog] noted: ' + e.message); }
+  console.log('[frog] aside ' + aside.id + ' noted' + (during ? ' during "' + frogLib.clip(during, 60) + '"' : ''));
+  return { aside: aside.id, ack, rate: frogRate(), resumeMs, open: theFrog.openAsides().length };
+}
+// Its reply was heard to the end and the person said nothing after: the
+// frog comes back to the asides, the first one first.
+let frogReturnAt = 0;
+let frogReturnedFor = '';
+async function frogAsidesReturn() {
+  const open = theFrog.openAsides();
+  const key = theFrog.key;
+  if (!open.length || !key || !index[key]) return { started: false, why: 'no open aside' };
+  const { sessionPath } = sessionPathsFor(key);
+  if (headlessRuns.has(sessionPath) || liveHeld.has(sessionPath)) return { started: false, why: 'the frog is busy' };
+  if (Date.now() - frogReturnAt < 60000) return { started: false, why: 'just did' };
+  // Once per set of open asides: the frog raised them and the person said
+  // nothing, so it does not raise the same ones again every minute (it did,
+  // design/102). A new aside, or one closed, and it may come back.
+  const set = open.map(a => a.id).sort().join(',');
+  if (set === frogReturnedFor) return { started: false, why: 'already raised these' };
+  frogReturnedFor = set;
+  frogReturnAt = Date.now();
+  await startAgentRun(key, { message: 'Back to the asides', customMessage: { customType: 'frog-asides', details: { asides: open.map(a => a.id) },
+    content: 'Your reply was read aloud to the end, and the person has said nothing since. Come back now to the first open aside, briefly: what you make of it, or the one question it needs. Then ask whether to take the next one.\n\n' + theFrog.asidesText() } });
+  return { started: true, open: open.length };
+}
+
+// A fresh conversation from an old one (design/102): its messages only,
+// not its tool calls or their results, then a message of ours. In the same
+// folder, with the same model and mode, in the same side-list group.
+async function frogFresh({ id, message, title }, identity) {
+  const key = frogKeyOf(id, identity);
+  const entry = index[key];
+  const text = String(message || '').trim();
+  if (!text) throw new Error('the message to start it with');
+  assertCan(identity, 'act', targetOf(key), 'this conversation');
+  // Its own conversation: a new segment with its memory in front (below),
+  // once this turn is over.
+  if (key === theFrog.key) return frogSegmentLater({ message: text, why: 'asked' });
+  const data = JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8'));
+  const said = (data.messages || []).filter(m => (m.role === 'user' || m.role === 'assistant') && String(m.text || '').trim());
+  const { turns, left } = handoffLib.turnsOf(said.map(m => ({ ...m, agentName: AGENT_NAMES[entry.source] || null })));
+  const cwd = entry.cwd || os.homedir();
+  const sessionId = require('./harness/live-terminal.js').newId('uuidv7');
+  const file = piSessionFileFor(cwd, sessionId);
+  const modeDef = await currentModeDef(key).catch(() => null);
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await writeFileAtomic(file, handoffLib.piSessionLines({ sessionId, cwd, turns, mode: modeDef, from: key }).map(e => JSON.stringify(e)).join('\n') + '\n');
+  const newKey = await indexNewSessionFile(file);
+  const c = entry.ctx;
+  const model = c && c.provider && c.model ? { provider: c.provider, modelId: c.model } : null;
+  if (model) saveConversationModels(newKey, [model]);
+  agentReadOpen([newKey]);
+  const gid = agentRead.member[key];
+  if (gid && agentRead.groups[gid]) agentReadGroups({ member: { [newKey]: gid } }, identity);
+  const out = { started: true, ...frogRow(newKey), from: frogRow(key), carried: { turns: turns.length, droppedForLength: left || 0, toolStepsCarried: 0 } };
+  try { await setConversationTitle(newKey, String(title || ((entry.timelineTitle || entry.title || 'Conversation') + ' · fresh')).slice(0, 120), { by: null }); out.title = title || undefined; } catch {}
+  out.job = jobView(await startAgentRun(newKey, { message: text, principal: principalFor(identity), input: 'frog', provider: model && model.provider, modelId: model && model.modelId }));
+  return out;
+}
+// ---- The frog's memory (design/102, part 3) ----------------------------
+// OptMem's design, rebuilt (frog-memory.js): an append-only log of one-line
+// memories, a tree of summaries that get shorter as they age, a print
+// within a fixed budget. Between the frog's turns, the oldest turns of its
+// context (in steps of STEP, the last KEEP kept whole) are written as
+// memories by its own model, the summaries the print needs are written the
+// same way, and a Pi compaction entry is added to its conversation: from
+// there on the model reads the print and the kept turns, and the file keeps
+// everything (the reader shows it all). This is the one conversation
+// Chattering compacts by itself, an exception the person asked for.
+// A new segment (a new file, chained to the old, the memory in front) when
+// the file grows large or the frog asks for a fresh start.
+const frogMemoryLib = require('./frog-memory.js');
+const theMemory = frogMemoryLib.createMemory({ dir: path.join(NOTES_DIR, 'frog', 'memory') });
+const FROG_MEMORY_DEFAULTS = { keep: frogMemoryLib.KEEP, step: frogMemoryLib.STEP, budget: frogMemoryLib.BUDGET, segmentBytes: 48 * 1024 * 1024 };
+// ~/notes/chattering/frog/memory/config.json may set any of them.
+function frogMemoryConfig() {
+  let over = {};
+  try { over = JSON.parse(fs.readFileSync(path.join(theMemory.dir, 'config.json'), 'utf8')) || {}; } catch {}
+  const cfg = { ...FROG_MEMORY_DEFAULTS };
+  for (const k of Object.keys(cfg)) if (Number.isFinite(Number(over[k])) && Number(over[k]) > 0) cfg[k] = Number(over[k]);
+  return cfg;
+}
+const frogMemoryHealth = createModelHealth({ baseCooldownMs: 5 * 60 * 1000 });
+const frogMemoryCall = (name, inputs) => aiProgram(name, inputs, {
+  automatic: true, background: 'frog-memory', thinking: 'off', timeoutMs: 240000,
+  model: (() => { const m = theFrog.modelParts(); return m ? { provider: m.provider, model: m.modelId } : undefined; })(),
+  health: frogMemoryHealth, caller: { conversation: theFrog.key || undefined },
+});
+// The turns of one chunk → memory lines (the AI program frog_memory_lines).
+async function frogMemoryLines(chunk) {
+  const n = theMemory.count();
+  const known = theMemory.slice(Math.max(0, n - 12), n).map(e => e.text);
+  const { outputs } = await frogMemoryCall('frog_memory_lines', { transcript: chunk.text, known, today: new Date().toISOString().slice(0, 10) });
+  return (Array.isArray(outputs.lines) ? outputs.lines : []).map(frogMemoryLib.cleanLine).filter(Boolean);
+}
+// A block of memories (or its halves' summaries) → one line (frog_memory_merge).
+async function frogMemoryMerge({ id, lines }) {
+  const { outputs } = await frogMemoryCall('frog_memory_merge', { range: id, lines });
+  return String(outputs.line || '');
+}
+const frogFileBusy = abs => headlessRuns.has(abs) || liveHeld.has(abs) || compactingSessions.has(path.resolve(abs));
+const parseJsonl = raw => { const out = []; for (const line of String(raw || '').split('\n')) { if (!line.trim()) continue; try { out.push(JSON.parse(line)); } catch {} } return out; };
+
+// One pass: digest what is due, write the summaries the print needs, add
+// the compaction entry at a quiet moment. Single-flight; asked again while
+// running, it runs once more after.
+let frogMemoryBusy = false, frogMemoryAgain = false, frogMemoryLast = null;
+async function frogMemoryWork(opts = {}) {
+  if (frogMemoryBusy) { frogMemoryAgain = true; return { busy: true, last: frogMemoryLast }; }
+  frogMemoryBusy = true;
+  try { frogMemoryLast = { at: new Date().toISOString(), ...(await frogMemoryPass(opts)) }; return frogMemoryLast; }
+  catch (e) { console.error('[frog] memory: ' + e.message); frogMemoryLast = { at: new Date().toISOString(), error: e.message }; return frogMemoryLast; }
+  finally {
+    frogMemoryBusy = false;
+    if (frogMemoryAgain) { frogMemoryAgain = false; setTimeout(() => frogMemoryWork().catch(() => {}), 3000).unref(); }
+    else if (frogSegmentWanted && !frogSegmenting) { const w = frogSegmentWanted; setImmediate(() => frogSegment(w).catch(e => console.error('[frog] segment: ' + e.message))); }
+  }
+}
+async function frogMemoryPass({ force = false } = {}) {
+  const key = theFrog.key;
+  if (!key || !index[key] || index[key].source !== 'pi') return { skipped: 'no frog conversation' };
+  if (!theFrog.memoryOn()) return { skipped: 'the frog\u2019s memory is off' };
+  const abs = absPathForKey(key);
+  const cfg = frogMemoryConfig();
+  const out = { digested: 0, merged: 0, compacted: false };
+  for (let round = 0; round < 3; round++) {
+    const entries = parseJsonl(await fsp.readFile(abs, 'utf8'));
+    const was = theMemory.digestedOf(key);
+    const plan = frogMemoryLib.planCompaction(entries, { keep: cfg.keep, step: cfg.step, digested: was && was.entryId, force });
+    if (plan && plan.toDigest.length) {
+      for (const chunk of frogMemoryLib.digestChunks(plan.toDigest)) {
+        const lines = await frogMemoryLines(chunk);
+        for (const line of lines) theMemory.note(line, { src: { conv: frogLib.refOf(index, key), from: chunk.from, to: chunk.to } });
+        theMemory.setDigested(key, chunk.to);
+        out.digested += lines.length;
+        console.log('[frog] memory: ' + chunk.turns + ' turns → ' + lines.length + ' memories (' + theMemory.count() + ' kept)');
+      }
+    }
+    const nap = await theMemory.nap({ merge: frogMemoryMerge, budget: cfg.budget });
+    out.merged += nap.built.length;
+    if (nap.failed.length) { out.mergeFailed = nap.failed.length; console.log('[frog] memory: ' + nap.failed.length + ' summaries failed: ' + nap.failed.map(f => f[2]).join('; ')); }
+    if (!plan) { out.why = 'nothing due'; break; }
+    const done = await frogMemoryCompact(key, abs, cfg, force);
+    Object.assign(out, done);
+    if (done.compacted || done.why !== 'new turns to digest first') break;
+  }
+  out.memories = theMemory.count();
+  // A large file is slow to load at each turn: a new segment, when the
+  // person is not mid-talk (their screen would have to follow it).
+  try { const size = (await fsp.stat(abs)).size; out.fileBytes = size; if (size > cfg.segmentBytes && !theFrog.talk && !frogSegmentWanted) { out.segment = await frogSegment({ why: 'the file passed ' + Math.round(cfg.segmentBytes / 1048576) + ' MB' }); } } catch {}
+  return out;
+}
+// The compaction entry: planned again on the file as it is now (a turn may
+// have come meanwhile), everything it drops already in the memory.
+async function frogMemoryCompact(key, abs, cfg, force) {
+  if (frogFileBusy(abs)) return { compacted: false, why: 'the frog is busy; at its next quiet moment' };
+  return withSessionOp(abs, async () => {
+    if (frogFileBusy(abs)) return { compacted: false, why: 'the frog is busy; at its next quiet moment' };
+    const entries = parseJsonl(await fsp.readFile(abs, 'utf8'));
+    const was = theMemory.digestedOf(key);
+    const plan = frogMemoryLib.planCompaction(entries, { keep: cfg.keep, step: cfg.step, digested: was && was.entryId, force });
+    if (!plan) return { compacted: false, why: 'nothing due' };
+    if (plan.toDigest.length) return { compacted: false, why: 'new turns to digest first' };
+    const summary = frogMemoryLib.printText(theMemory, { budget: cfg.budget });
+    const entry = { type: 'compaction', id: crypto.randomBytes(4).toString('hex'), parentId: plan.leafId, timestamp: new Date().toISOString(), summary, firstKeptEntryId: plan.firstKeptEntryId, tokensBefore: plan.tokensBefore, fromHook: true,
+      details: { frogMemory: { memories: theMemory.count(), budget: cfg.budget, dropped: plan.drop, kept: plan.keep } } };
+    stopAnyWarmSession(abs);
+    await fsp.appendFile(abs, JSON.stringify(entry) + '\n');
+    await reindexIfChanged(key);
+    console.log('[frog] memory: compacted ' + plan.drop + ' turns away, ' + plan.keep + ' kept whole, ' + theMemory.count() + ' memories in front (was ' + plan.tokensBefore + ' tokens)');
+    return { compacted: true, dropped: plan.drop, kept: plan.keep, tokensBefore: plan.tokensBefore, summaryChars: summary.length };
+  });
+}
+
+// A new segment: a new Pi file in the same folder, chained to the old one
+// (the reader shows both as one conversation; the old one can no longer be
+// written to), with the frog mode, the memory print as its compaction and
+// the last turns copied as they were. The frog's identity moves to it; a
+// screen on the old one follows (frog-home). Everything older is digested
+// first. Asked for during a turn, it happens when the turn ends.
+let frogSegmentWanted = null; // { message, why }
+function frogSegmentLater({ message = null, why = 'asked' } = {}) {
+  const key = theFrog.key;
+  if (!key || !index[key]) throw new Error('The frog has no conversation yet.');
+  if (!frogFileBusy(absPathForKey(key))) { setImmediate(() => frogSegment({ message, why }).catch(e => console.error('[frog] segment: ' + e.message))); return { started: true, when: 'now', note: 'The fresh conversation is being made; your memory goes in front of it and the last turns are copied as they were.' }; }
+  frogSegmentWanted = { message, why, at: Date.now() };
+  return { started: true, when: 'after this turn', note: 'Your conversation continues fresh when this turn ends: your memory in front, the last turns as they were, the rest written into your memory. Finish this turn; the person\u2019s next message reaches the new one. Say so in one sentence.' };
+}
+let frogSegmenting = false;
+async function frogSegment({ message = null, why = 'asked' } = {}) {
+  const key = theFrog.key;
+  if (!key || !index[key] || index[key].source !== 'pi') return { started: false, why: 'no frog conversation' };
+  if (frogSegmenting) return { started: false, why: 'already making one' };
+  const abs = absPathForKey(key);
+  if (frogFileBusy(abs)) { frogSegmentWanted = { message, why, at: Date.now() }; return { started: false, why: 'the frog is busy; when its turn ends' }; }
+  frogSegmenting = true;
+  frogSegmentWanted = null;
+  try {
+    const cfg = frogMemoryConfig();
+    const entry = index[key];
+    // Everything but the last turns into the memory (and the summaries the print needs).
+    if (frogMemoryBusy) { frogSegmentWanted = { message, why, at: Date.now() }; return { started: false, why: 'the memory is being written; after that' }; }
+    frogMemoryBusy = true;
+    let passed;
+    try { passed = await frogMemoryPass({ force: true }); } finally { frogMemoryBusy = false; }
+    if (passed.error) throw new Error(passed.error);
+    return await withSessionOp(abs, async () => {
+      if (frogFileBusy(abs)) { frogSegmentWanted = { message, why, at: Date.now() }; return { started: false, why: 'the frog is busy; when its turn ends' }; }
+      const entries = parseJsonl(await fsp.readFile(abs, 'utf8'));
+      const turns = frogMemoryLib.turnsOf(frogMemoryLib.sessionPath(entries));
+      if (turns.length > cfg.keep + cfg.step) throw new Error('its turns are not all in the memory yet (' + turns.length + ' left); try again');
+      const cwd = entry.cwd || FROG_FOLDER;
+      const sessionId = require('./harness/live-terminal.js').newId('uuidv7');
+      const file = piSessionFileFor(cwd, sessionId);
+      const ts = new Date().toISOString();
+      const lines = [{ type: 'session', version: 3, id: sessionId, timestamp: ts, cwd }];
+      let parent = null;
+      const add = e => { const id = crypto.randomBytes(4).toString('hex'); lines.push({ ...e, id, parentId: parent }); parent = id; return id; };
+      add({ type: 'custom', customType: 'mode-switch', timestamp: ts, data: { mode: 'frog' } });
+      const comp = add({ type: 'compaction', timestamp: ts, summary: frogMemoryLib.printText(theMemory, { budget: cfg.budget }), firstKeptEntryId: null, tokensBefore: 0, fromHook: true, details: { frogMemory: { memories: theMemory.count(), budget: cfg.budget, segmentOf: key, why } } });
+      lines[lines.length - 1].firstKeptEntryId = comp;
+      let copied = 0;
+      for (const t of turns) for (const e of t.entries) {
+        if (e.type !== 'message' && e.type !== 'custom_message' && e.type !== 'custom') continue;
+        const { id: _id, parentId: _p, ...rest } = e;
+        add({ ...rest, chatteringCarried: key });
+        copied++;
+      }
+      await fsp.mkdir(path.dirname(file), { recursive: true });
+      await writeFileAtomic(file, lines.map(e => JSON.stringify(e)).join('\n') + '\n');
+      const newKey = await indexNewSessionFile(file);
+      const m = theFrog.modelParts();
+      if (m) saveConversationModels(newKey, [m]);
+      chains.link(newKey, key, { from: 'pi', to: 'pi' });
+      theFrog.setHome({ key: newKey });
+      try { await setConversationTitle(newKey, 'The frog', { by: null }); } catch {}
+      agentReadOpen([newKey]);
+      agentReadPin({ [newKey]: true, [key]: false });
+      const gid = agentRead.member[key];
+      if (gid && agentRead.groups[gid]) agentReadGroups({ member: { [newKey]: gid } }, { tier: 'console' });
+      broadcast({ type: 'frog-home', key: newKey, from: key });
+      console.log('[frog] a new segment (' + why + '): ' + newKey + ', ' + turns.length + ' turns copied (' + copied + ' entries), ' + theMemory.count() + ' memories in front; the old part ' + key);
+      const out = { started: true, key: newKey, id: frogLib.refOf(index, newKey), from: key, turnsCopied: turns.length, memories: theMemory.count(), why };
+      if (message) {
+        try { await startAgentRun(newKey, { message: 'Fresh start', customMessage: { customType: 'frog-fresh', details: { from: key }, content: 'Your conversation continues here, fresh: your memory is above, the last turns as they were. What you asked to do next: ' + message } }); out.turn = 'started'; }
+        catch (e) { out.turn = 'not started: ' + e.message; }
+      }
+      return out;
+    });
+  } finally { frogSegmenting = false; }
+}
+// Its memory, for the person and for scripts: the print, searches, zooms.
+async function frogMemoryApi(op, post, p, identity) {
+  const cfg = frogMemoryConfig();
+  switch (op) {
+    case 'memory': return { on: theFrog.memoryOn(), ...theMemory.stats(), config: cfg, digested: theFrog.key ? theMemory.digestedOf(theFrog.key) : null, last: frogMemoryLast, text: frogMemoryLib.printText(theMemory, { budget: cfg.budget }) };
+    case 'memory/switch': if (post) {
+      // The frog's own switch (on by default). Turned on, a pass runs now.
+      if (!usersLib.canManageUsers(identity)) throw Object.assign(new Error('only the owner or an admin decides what runs on this machine'), { status: 403 });
+      const on = theFrog.setMemory(p.on !== false);
+      console.log('[frog] memory ' + (on ? 'on' : 'off') + ' (by ' + (identity && identity.user ? identity.user.name : 'the console') + ')');
+      if (on) setTimeout(() => { frogMemoryWork().catch(() => {}); }, 500).unref();
+      return { on };
+    } break;
+    case 'memory/recall': return theMemory.recall(String(p.q || p.query || ''), { limit: Math.max(1, Math.min(200, Number(p.limit) || 40)), regex: p.regex === true || p.regex === 'true' });
+    case 'memory/zoom': return theMemory.zoom(String(p.id || p.range || ''));
+    case 'memory/note': if (post) {
+      let from = null;
+      try { from = theFrog.key && index[theFrog.key] ? await lastEntryIdOf(absPathForKey(theFrog.key)) : null; } catch {}
+      const e = theMemory.note(String(p.text || ''), { by: p.by ? String(p.by).slice(0, 40) : 'frog', src: theFrog.key && index[theFrog.key] ? { conv: frogLib.refOf(index, theFrog.key), from, to: from } : null });
+      return { saved: '#' + e.i, text: e.text, memories: theMemory.count() };
+    } break;
+    case 'memory/forget': if (post) {
+      const b = frogMemoryLib.parseBlockId(String(p.id || ''));
+      if (!b) throw new Error('a range like #16-31');
+      return { forgot: theMemory.forget(b[0], b[1]).map(([lo, hi]) => frogMemoryLib.blockId(lo, hi)) };
+    } break;
+    case 'memory/compact': if (post) return frogMemoryWork({ force: p.force === true }); break;
+    case 'memory/segment': if (post) return frogSegmentLater({ message: p.message ? String(p.message) : null, why: 'asked' }); break;
+  }
+  throw Object.assign(new Error('unknown frog operation: ' + op), { status: 404 });
+}
+setTimeout(() => { frogMemoryWork().catch(() => {}); }, 45000).unref();
+setInterval(() => { frogMemoryWork().catch(() => {}); }, 10 * 60 * 1000).unref();
+
+async function speakFrogReply(job) { return speakFrogText(job, job.doneSpeechSource || ''); }
+
+// The frog speaks as it writes (design/102, the opener decided 2026-10-17:
+// no second model; its own first sentence, heard the moment it is written).
+// While its text streams: its first sentence alone, as soon as it ends;
+// then whole paragraphs (a long one at its last sentence end). A list or a
+// code block waits for its end, so it is announced and counted whole. The
+// rest when the message is whole.
+const frogStreams = new WeakMap(); // job → { block, at, any }
+const FROG_LIST_OR_CODE = /^\s*(?:[-*+•]|\d{1,3}[.)])\s|```/m;
+function frogStreamSpeech(job, cur, final) {
+  if (typeof theFrog === 'undefined' || !cur || job.key !== theFrog.key || !theFrog.talk) return;
+  let st = frogStreams.get(job);
+  if (!st) { st = { block: null, at: 0, any: false }; frogStreams.set(job, st); }
+  // Each message of the run anew: the first sentence of its answer after
+  // its tools is heard as soon as it ends, as the words before them were.
+  if (st.block !== cur.id) { st.block = cur.id; st.at = 0; st.any = false; }
+  const pending = String(cur.text || '').slice(st.at);
+  let cut = -1;
+  if (final) cut = pending.length;
+  else {
+    const para = pending.lastIndexOf('\n\n');
+    const open = (pending.slice(0, para >= 0 ? para : 0).match(/```/g) || []).length % 2 === 1;
+    if (para >= 0 && !open) cut = para + 2;
+    else if (!FROG_LIST_OR_CODE.test(pending) && (!st.any || pending.length > 400)) {
+      const ends = [...pending.matchAll(/[.!?…]["')\]]*\s+/g)].map(m => m.index + m[0].length);
+      if (ends.length) cut = st.any ? ends[ends.length - 1] : ends[0];
+    }
+  }
+  if (cut <= 0) return;
+  const piece = pending.slice(0, cut);
+  st.at += cut;
+  if (!piece.trim()) return;
+  st.any = true;
+  speakFrogText(job, piece, cur.id);
+}
+
+async function frogApi(op, method, p, identity) {
+  const post = method === 'POST';
+  switch (op) {
+    case 'home': return post ? ensureFrogHome(identity) : { ...theFrog.home(), id: theFrog.key && index[theFrog.key] ? frogLib.refOf(index, theFrog.key) : null };
+    case 'workspace': return frogWorkspace(identity);
+    case 'context': return frogContextList(p, identity);
+    case 'fresh': if (post) return frogFresh(p, identity); break;
+    case 'aside': if (post) return frogAside(p); break;
+    case 'asides':
+      if (post && Array.isArray(p.done)) return { closed: theFrog.closeAsides(p.done.map(String)), open: theFrog.openAsides() };
+      return { open: theFrog.openAsides() };
+    case 'asides/return': if (post) return frogAsidesReturn(); break;
+    case 'find': return frogFind(p, identity);
+    case 'read': return frogRead(p, identity);
+    case 'send': if (post) return frogSend(p, identity); break;
+    case 'start': if (post) return frogStart(p, identity); break;
+    case 'project': if (post) {
+      const out = await createProject({ operation: 'create', name: String(p.name || ''), parent: String(p.parent || path.join(os.homedir(), 'Projects')), purpose: typeof p.purpose === 'string' ? p.purpose : '' });
+      return { created: true, project: out.project || out.name || p.name, cwd: out.cwd, warnings: out.warnings || [] };
+    } break;
+    case 'stop': if (post) return frogStop(p, identity); break;
+    case 'fork': if (post) {
+      const key = frogKeyOf(p.id, identity);
+      assertCan(identity, syncLib.isMirrorKey(key) ? 'see' : 'act', targetOf(key), 'this conversation');
+      const at = p.at || await lastEntryIdOf(absPathForKey(key));
+      const out = await forkSession(key, at);
+      agentReadOpen([out.key]);
+      return { forked: true, from: frogRow(key), ...frogRow(out.key) };
+    } break;
+    case 'branch': if (post) {
+      const key = frogKeyOf(p.id, identity);
+      assertCan(identity, 'act', targetOf(key), 'this conversation');
+      if (!p.at) throw new Error('branch needs the entry id of the message to continue from (read_conversation prints them)');
+      await branchSession(key, String(p.at));
+      return { branched: true, ...frogRow(key), continuesFrom: String(p.at) };
+    } break;
+    case 'title': if (post) {
+      const key = frogKeyOf(p.id, identity);
+      assertCan(identity, 'act', targetOf(key), 'this conversation');
+      return { ...frogRow(key), ...(await setConversationTitle(key, String(p.title || ''), { by: null })) };
+    } break;
+    case 'organize': if (post) return frogOrganize(p, identity); break;
+    case 'mark-read': if (post) return frogMarkRead(p, identity); break;
+    case 'asks': return { asks: theFrog.listWatches().map(w => ({ ...w, conversation: index[w.key] ? frogRow(w.key) : null, key: undefined })) };
+    case 'ask': if (post) {
+      const key = frogKeyOf(p.id, identity);
+      const w = theFrog.addWatch({ key, title: index[key].timelineTitle || index[key].title, when: p.when, then: p.then, note: p.note, repeat: p.repeat });
+      return { added: w.id, ...frogRow(key), when: w.when, then: w.then, repeat: w.repeat };
+    } break;
+    case 'ask/cancel': if (post) return theFrog.removeWatch(String(p.ask || '')); break;
+    case 'notify': if (post) return frogNotify(p); break;
+    case 'event': if (post) return frogEvent(p); break;
+    case 'model':
+      if (post) { theFrog.setModel(p.model); if (theFrog.key && index[theFrog.key]) saveConversationModels(theFrog.key, [theFrog.modelParts()]); }
+      return { model: theFrog.model, default: frogLib.DEFAULT_MODEL };
+    case 'talk':
+      if (post) {
+        const v = frogVoiceClaim(p, identity);
+        if (v.refused) return { talk: theFrog.talk, speed: theFrog.speed, defaultSpeed: FROG_RATE, ...v };
+        const r = theFrog.setTalk({ on: p.on === undefined ? undefined : p.on === true, speed: p.speed });
+        return { ...r, defaultSpeed: FROG_RATE, ...v };
+      }
+      { const s = identity && identity.user ? voiceSessions.get(identity.user.id) : null;
+        return { talk: theFrog.talk, speed: theFrog.speed, defaultSpeed: FROG_RATE, owner: s ? s.conn : null, session: s ? s.kind : null }; }
+    case 'turn-end': if (post) return frogTurnEnd(p, identity); break;
+    case 'heard': if (post) return frogHeard(p); break;
+    case 'barge': if (post) return frogBarge(p, identity); break;
+    case 'said': if (post) { frogTimeline.acted(Number(p.start), String(p.what || '').slice(0, 120)); return { ok: true }; } break;
+    case 'timeline': return { turns: frogTimeline.dump(), note: frogTimeline.note() };
+    case 'sounds': return { sounds: soundDecisions.slice().reverse() };
+    case 'interrupted': if (post) return frogCutNote(); break;
+    case 'spoken': {
+      // What its last spoken turn said, piece by piece: the clips and their sentences.
+      const last = [...frogSpoken].pop();
+      return last ? { job: last[0], cancelled: last[1].cancelled, items: last[1].items.map(i => ({ clip: i.clip, texts: i.texts, runs: i.runs, sent: i.sent })) } : { job: null, items: [] };
+    }
+  }
+  if (op === 'memory' || op.startsWith('memory/')) return frogMemoryApi(op, post, p, identity);
+  throw Object.assign(new Error('unknown frog operation: ' + method + ' ' + op), { status: 404 });
+}
+// The voice session (design/102, voice-session.js): one per person, the one
+// rule. "When a call with the frog is on, that call is the truth: messages
+// come back there, I talk there, information comes there, even if
+// Chattering is also open on my computer or on the phone's screen." The
+// holder's screen gets every sound for that person; only it listens (the
+// others are told, 'frog-talk', and stop listening until it ends); a Talk
+// elsewhere does not take a call. A holder whose stream blinks keeps its
+// session for a grace, and what was said meanwhile waits for it.
+const voiceSessions = require('./voice-session.js').createVoiceSessions();
+function sendToUserScreens(userId, ev, except = null) {
+  const line = 'data: ' + JSON.stringify(ev) + '\n\n';
+  for (const [conn, c] of sseByConn) {
+    if (conn === except || !c.identity || !c.identity.user || c.identity.user.id !== userId) continue;
+    try { c.res.write(line); } catch {}
+  }
+}
+const voiceHolderLabel = s => s && s.kind === 'call' ? 'your phone call with the frog' : 'Talk on another screen';
+// POST /api/frog/talk {on, conn, holder, kind}: claim (on: true, also the
+// keep-alive), release (on: false). Returns what the page must know.
+function frogVoiceClaim(p, identity) {
+  const conn = typeof p.conn === 'string' ? p.conn.slice(0, 80) : null;
+  const userId = identity && identity.user ? identity.user.id : null;
+  const holder = typeof p.holder === 'string' ? p.holder.slice(0, 80) : conn;
+  if (!conn || !userId) return {};
+  if (p.on === true) {
+    const r = voiceSessions.claim(userId, { conn, holder, kind: p.kind });
+    if (!r.ok) return { refused: r.refused, holder: voiceHolderLabel(r.session) };
+    if (r.created) { sendToUserScreens(userId, { type: 'frog-talk', on: true, conn, kind: r.session.kind }, conn); console.log('[voice] a ' + r.session.kind + ' holds the voice' + (r.replaced ? ' (it took over a ' + r.replaced.kind + ')' : '')); }
+    for (const sound of r.pending || []) sendScreenSound(conn, sound);
+    if (r.pending && r.pending.length) console.log('[voice] ' + r.pending.length + ' sound(s) that waited for the ' + r.session.kind + ' delivered');
+    return { session: r.session.kind };
+  }
+  if (p.on === false) {
+    const s = voiceSessions.release(userId, { conn, holder });
+    if (s) { sendToUserScreens(userId, { type: 'frog-talk', on: false, conn, kind: s.kind }, conn); console.log('[voice] the ' + s.kind + ' ended by its screen'); }
+  }
+  return {};
+}
+// Sessions whose holder is gone past the grace, or silent past the keep-
+// alive: ended, the screens told, the frog stops speaking.
+setInterval(() => {
+  for (const s of voiceSessions.sweep()) {
+    console.log('[voice] the ' + s.kind + ' lapsed (its screen did not come back)');
+    sendToUserScreens(s.userId, { type: 'frog-talk', on: false, conn: s.conn, kind: s.kind });
+    if (typeof theFrog !== 'undefined' && !voiceSessions.get(s.userId)) theFrog.setTalk({ on: false });
+  }
+}, 10 * 1000).unref();
+
 // A name for a group of conversations, from their titles (the picker asks
 // when the conversations come from several projects; one project names
 // itself). One short model call, made when a person asks.
@@ -5098,7 +6483,7 @@ function saveConversationContext(key, raw) {
   return items;
 }
 async function inferredConversationModels(key, cached) {
-  if (conversationKind(index[key]) === 'claude') return [];
+  if (ownProgramOnly(index[key])) return [];
   const stored = normalizePickedModels(modelPrefs.conversations[key]);
   if (stored.length) return stored;
   const remember = models => {
@@ -5630,11 +7015,14 @@ function backgroundAllowed(kind) {
   // Plain-language steps are their own switch (settings → model): turning
   // it on is the consent, and it names the model it sends to.
   if (kind === 'steps') return !!(appSettings.plainSteps && appSettings.plainSteps.on);
+  // The frog's memory (design/102, part 3) is the frog's own switch, on by
+  // default: it reads one conversation, the frog's, on the frog's model.
+  if (kind === 'frog-memory') return typeof theFrog !== 'undefined' && theFrog.memoryOn();
   const b = appSettings.backgroundAi || {};
   return !!b.decidedAt && b[kind] === true;
 }
 function backgroundRefusal(kind) {
-  const e = new Error(kind === 'names' ? 'automatic names are off (settings → model)' : kind === 'steps' ? 'steps in plain words are off (settings → model)' : 'automatic memory is off (settings → model)');
+  const e = new Error(kind === 'names' ? 'automatic names are off (settings → model)' : kind === 'steps' ? 'steps in plain words are off (settings → model)' : kind === 'frog-memory' ? 'the frog\u2019s memory is off (settings → model)' : 'automatic memory is off (settings → model)');
   e.code = 'BACKGROUND_AI_OFF';
   return e;
 }
@@ -6228,10 +7616,10 @@ function projectFolders() {
 }
 function projectOfPath(abs, folders = projectFolders()) {
   const p = String(abs || '');
-  let best = '', bestName = null;
   // The deepest project folder that contains the path (separators and
   // letter case as this system has them).
   const at = p ? platform.comparablePath(p) : '';
+  let best = '', bestName = null;
   for (const f of folders) if (f.cwd.length > best.length && platform.isInsideComparable(at, f.at)) { best = f.cwd; bestName = f.name; }
   if (bestName) return bestName;
   const m = p.match(/[\\/]Projects[\\/]([^\\/]+)/i);
@@ -6287,6 +7675,8 @@ function readyProviders() {
       ready.add('claude-code');
     }
   } catch {}
+  // Other Claude accounts: their login is in their own folder.
+  for (const a of claudeAccounts.list()) if (!a.main && a.signedIn) ready.add(claudeAccountsLib.providerOf(a.id));
   // Custom providers (models.json) carry their own baseUrl/apiKey — a
   // homelab endpoint needs no login, so it counts as ready.
   try {
@@ -6606,6 +7996,8 @@ function settingsResponse(identity = ownerIdentity()) {
     publicKey: installKey.publicKey,
     canManageUsers: manages,
     canEditSettings: manages,
+    // The frog's memory switch (design/102), its own, beside the background work.
+    frog: { memory: typeof theFrog !== 'undefined' ? theFrog.memoryOn() : true },
     resolved: {
       provider: appSettings.usePiDefault ? piDefault.provider : appSettings.provider,
       model: appSettings.usePiDefault ? piDefault.model : appSettings.model,
@@ -7523,6 +8915,9 @@ const aiPrograms = require('./ai-programs.js').createAiPrograms({
     const model = appSettings.usePiDefault ? d.model : appSettings.model;
     return provider && model ? provider + '/' + model : 'pi-default';
   },
+  // The programs marked jev (the frog's end-of-turn check): the voice
+  // commands' Jev model.
+  jevModel: () => VOICE_JEV_MODEL,
   // $FUNCTAI_LOG_CALLS=0 (or off) keeps Chattering's programs out of the log too.
   logFolder: () => (OFF_WORDS.has(String(process.env.FUNCTAI_LOG_CALLS || '').trim().toLowerCase()) ? false : platform.functaiCallsDir()),
   live: programsLive,
@@ -9615,6 +11010,25 @@ function codexBin() {
     || firstExisting([path.join(os.homedir(), '.nix-profile/bin/codex'), path.join(os.homedir(), '.local/bin/codex'), '/usr/local/bin/codex', '/run/current-system/sw/bin/codex'])
     || 'codex';
 }
+// Antigravity CLI and Muse Code: an override (CHATTERING_AGY,
+// CHATTERING_MUSE), else the program found on the PATH agents run with.
+function agentProgramBin(name) {
+  const override = process.env['CHATTERING_' + name.toUpperCase()];
+  if (override) return override;
+  const dirs = agentPath(String(process.env.PATH || '')).split(path.delimiter).filter(Boolean);
+  const names = platform.IS_WIN ? [name + '.exe', name + '.cmd', name] : [name];
+  return firstExisting(dirs.flatMap(d => names.map(n => path.join(d, n)))) || name;
+}
+// Which agents' own programs are on this machine, to offer only those.
+// Checked at most once a minute: only offered choices depend on it.
+let agentsInstalledAt = 0, agentsInstalledWas = {};
+function agentsInstalled() {
+  if (Date.now() - agentsInstalledAt < 60000) return agentsInstalledWas;
+  const has = bin => bin.includes('/') || bin.includes('\\') ? fs.existsSync(bin) : false;
+  agentsInstalledWas = { pi: true, claude: has(claudeBin()) || !!process.env.CHATTERING_CLAUDE, codex: codexInstalled(), agy: has(agentProgramBin('agy')), muse: has(agentProgramBin('muse')) };
+  agentsInstalledAt = Date.now();
+  return agentsInstalledWas;
+}
 // Whether Codex is on this machine (the chosen binary, or `codex` on PATH).
 // Checked at most once a minute: only offered choices depend on it.
 let codexInstalledAt = 0, codexInstalledWas = false;
@@ -9650,6 +11064,12 @@ function codexRuns() {
     broadcastRunFinal, speakRunDone, recordAuthorship, indexNewSessionFile,
     agentEnv: principal => agentEnv(principal), codexBin, withSessionOp, sleep,
     repaintRun: job => { const t = liveRunTails.get(job.id); if (t && t.push) t.push(true); },
+    modeFor: key => {
+      if (!agentModes.pending(key, 'codex')) return null;
+      const c = agentModes.get(key);
+      return { id: c.mode.id, text: agentModesLib.switchText(c.mode.def) };
+    },
+    modeGiven: (key, id) => agentModes.given(key, 'codex', id),
     contextFor: async key => {
       const items = conversationContextOf(key);
       const sig = contextSig(items);
@@ -9714,6 +11134,341 @@ const liveHeld = new Map();     // session file → conversation key, while its 
 const liveStates = new Map();   // key → the program's last state (the list's "working" mark)
 const livePending = new Map();  // a new conversation's temporary key → { harness, cwd, sessionId, startedAt, key }
 const LIVE_CHOICES_FILE = path.join(DATA_DIR, 'live-terminal', 'choices.json');
+// ---- More than one Claude subscription (claude-accounts.js, design/87) ----
+// The main account is ~/.claude as always; others are folders of their own.
+// A Claude Code conversation answers as the account chosen for it (its
+// program starts with that folder); Pi picks one by its provider
+// ("claude-code-work"). The accounts are the owner's: other people of the
+// household and guests use the main one, as before.
+const claudeAccountsLib = require('./claude-accounts.js');
+const claudeAccounts = claudeAccountsLib.createClaudeAccounts();
+const CLAUDE_ACCOUNT_CHOICES_FILE = path.join(DATA_DIR, 'claude-account-choices.json');
+const claudeAccountChoices = new Map((() => { try { return Object.entries(JSON.parse(fs.readFileSync(CLAUDE_ACCOUNT_CHOICES_FILE, 'utf8'))); } catch { return []; } })());
+function saveClaudeAccountChoices() {
+  try { fs.mkdirSync(path.dirname(CLAUDE_ACCOUNT_CHOICES_FILE), { recursive: true, mode: 0o700 }); writeFileAtomic(CLAUDE_ACCOUNT_CHOICES_FILE, JSON.stringify(Object.fromEntries(claudeAccountChoices))).catch(e => console.error('[claude accounts] ' + e.message)); }
+  catch (e) { console.error('[claude accounts] ' + e.message); }
+}
+// The account a Claude Code conversation answers as: its choice while that
+// account is still signed in here, else the main one.
+function claudeAccountOf(key) {
+  const id = claudeAccountChoices.get(key);
+  return id && claudeAccounts.list().some(a => a.id === id && a.signedIn) ? id : 'default';
+}
+function setClaudeAccount(key, id) {
+  if (!id || id === 'default') claudeAccountChoices.delete(key); else claudeAccountChoices.set(key, id);
+  saveClaudeAccountChoices();
+}
+const principalIsOwner = principal => !principal || policy.isOwnerTier({ tier: (principal.user && principal.user.role) || 'member' });
+// Who signed in to each account, from Claude Code itself (a minute's cache).
+const claudeAccountEmails = new Map(); // id → { at, email, plan }
+async function claudeAccountsView({ fresh = false } = {}) {
+  const list = claudeAccounts.list();
+  await Promise.all(list.filter(a => a.signedIn).map(async a => {
+    const have = claudeAccountEmails.get(a.id);
+    if (have && !fresh && Date.now() - have.at < 60000) return;
+    try {
+      const out = await new Promise((resolve, reject) => execFile(claudeBin(), ['auth', 'status', '--json'], { timeout: 15000, env: { ...process.env, ...claudeAccounts.envFor(a.id) } }, (e, so) => e && !so ? reject(e) : resolve(so)));
+      const st = JSON.parse(out);
+      claudeAccountEmails.set(a.id, { at: Date.now(), email: st.email || null, plan: st.subscriptionType || null, ok: !!st.loggedIn });
+    } catch { claudeAccountEmails.set(a.id, { at: Date.now(), email: null, plan: null, ok: false }); }
+  }));
+  return list.map(a => ({ id: a.id, name: a.name, main: a.main, signedIn: a.signedIn, dir: a.dir, provider: claudeAccountsLib.providerOf(a.id), ...(claudeAccountEmails.get(a.id) || {}), at: undefined }));
+}
+// For pickers: the accounts a conversation may answer as (signed in), or
+// nothing when there is only the main one, or for anyone but the owner.
+function claudeAccountChoicesFor(identity) {
+  if (!policy.isOwnerTier(identity)) return null;
+  // The main account always (Claude Code's own login, wherever it keeps it).
+  const list = claudeAccounts.list().filter(a => a.main || a.signedIn);
+  return list.length > 1 ? list.map(a => ({ id: a.id, name: a.name })) : null;
+}
+// Claude Code in a terminal window, as the conversation's account: the
+// folder named before the program (the window's shell does not have it).
+function claudeAsAccount(key, args) {
+  const id = claudeAccountOf(key);
+  return id === 'default' ? [claudeBin(), ...args] : ['env', 'CLAUDE_CONFIG_DIR=' + claudeAccounts.envFor(id).CLAUDE_CONFIG_DIR, claudeBin(), ...args];
+}
+const claudeAccountView = key => { const id = claudeAccountOf(key); const a = claudeAccounts.list().find(x => x.id === id); return { id, name: a ? a.name : id }; };
+// A Pi model of another account than the main one is the owner's alone.
+function assertClaudeAccountAllowed(provider, principal) {
+  const acct = claudeAccountsLib.accountOfProvider(provider);
+  if (acct && acct !== 'default' && !principalIsOwner(principal)) throw Object.assign(new Error('That Claude account (' + acct + ') is the owner\'s. Pick another model.'), { status: 403 });
+}
+// ---- Prompt modes for every agent (agent-modes.js, design/87) ----
+// Pi switches with its own /mode (its session records it). For the other
+// agents Chattering keeps the mode and hands each switch over the way that
+// agent can take it:
+//   Claude Code  in its system prompt (--append-system-prompt, its
+//                snapshot off so a new one applies); a switch restarts its
+//                program on the same conversation once it is idle
+//   Codex        a "from now on" developer message before the next reply
+//                (thread/inject_items): from Chattering's box at once, for
+//                its own program just before it restarts (once idle); a new
+//                conversation starts with it as its developer instructions
+//   Antigravity  a system message from a hook it runs before each model call
+//                (harness/agy-mode-hook.js), no restart
+//   Muse Code    put before the person's next message (no other way in)
+//   Pi, in its own program: Chattering types /mode <key> once it is idle.
+const agentModesLib = require('./agent-modes.js');
+const agentModes = agentModesLib.createAgentModes({ file: path.join(DATA_DIR, 'agent-modes.json') });
+const AGY_MODE_HOOK = path.join(__dirname, 'harness', 'agy-mode-hook.js');
+const modeRestarts = new Set();     // key → its program restarts with the new mode once idle
+const piModeQueue = new Map();      // key → mode key for Pi's own program, typed once idle
+const liveIdentity = new Map();     // key → who started its program (to start it again)
+function promptModeDef(key) {
+  if (!key) return null;
+  const def = listPromptModes().find(m => m.key === String(key).trim().toLowerCase());
+  if (!def) throw Object.assign(new Error('no such mode: ' + key), { status: 404 });
+  return def;
+}
+// Whether this Claude Code takes --system-prompt-snapshot (2.1.29x+): an
+// older one rejects an unknown option, and did not keep its prompt anyway.
+let claudeSnapshotFlag = null;
+function claudeTakesSnapshotFlag() {
+  if (claudeSnapshotFlag == null) {
+    try { claudeSnapshotFlag = String(execFileSync(claudeBin(), ['--help'], { encoding: 'utf8', timeout: 8000 })).includes('--system-prompt-snapshot'); }
+    catch { claudeSnapshotFlag = false; }
+  }
+  return claudeSnapshotFlag;
+}
+// Antigravity's hook, in its own settings (~/.gemini/config/hooks.json) under
+// one name of its own; other hooks there are kept as they are. It acts only
+// for an `agy` Chattering started (harness/agy-mode-hook.js).
+function ensureAgyModeHook() {
+  const file = path.join(os.homedir(), '.gemini', 'config', 'hooks.json');
+  // The shell answers "nothing" itself unless Chattering started this agy:
+  // outside Chattering no program runs, even if this node moved since.
+  const command = '[ -z "$CHATTERING_MODE_FILE" ] && echo "{}" || ' + JSON.stringify(process.execPath) + ' ' + JSON.stringify(AGY_MODE_HOOK);
+  let hooks = {};
+  try { hooks = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch (e) { if (e.code !== 'ENOENT') { console.error('[agent modes] ' + file + ' is not readable JSON; its hook was not added: ' + e.message); return false; } }
+  const want = { PreInvocation: [{ type: 'command', command, timeout: 10 }] };
+  if (JSON.stringify(hooks['chattering-modes']) === JSON.stringify(want)) return true;
+  hooks['chattering-modes'] = want;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = file + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(hooks, null, 2) + '\n', { mode: 0o600 });
+    fs.renameSync(tmp, file);
+    return true;
+  } catch (e) { console.error('[agent modes] Antigravity hook: ' + e.message); return false; }
+}
+// The file an Antigravity program reads its mode from (one per conversation,
+// kept across restarts so the hook knows what it already handed over).
+function agyModeFile(key) {
+  return agentModes.note(key, 'agyFile') || path.join(DATA_DIR, 'agent-modes', 'agy-' + crypto.createHash('sha256').update(key).digest('hex').slice(0, 20) + '.json');
+}
+function writeAgyModeFile(file, key) {
+  const c = agentModes.get(key);
+  if (!c || !c.mode) return;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, JSON.stringify({ id: c.mode.id, text: agentModesLib.switchText(c.mode.def) }), { mode: 0o600 });
+  } catch (e) { console.error('[agent modes] ' + e.message); }
+}
+// What the person is told about when a switch applies.
+function deliverAgentMode(key) {
+  const entry = index[key], pend = livePending.get(key);
+  const harness = entry ? entry.source : pend ? pend.harness : null;
+  const running = !!(liveTerminalsLib && liveTerminalsLib.status(key).running);
+  if (harness === 'agy') {
+    writeAgyModeFile(agyModeFile(key), key);
+    return running ? 'at its next step' : 'when it next starts';
+  }
+  if (harness === 'muse') return 'with your next message';
+  if (harness === 'codex' && !running) return 'with your next message';
+  if (harness === 'claude' || harness === 'codex') {
+    if (!running) return 'when it next starts';
+    modeRestarts.add(key);
+    return applyPendingModes(key) ? 'now (its program restarts on this conversation)' : 'once it finishes (its program then restarts on this conversation)';
+  }
+  return 'next';
+}
+// A program that waits for a mode switch takes it once it is idle: its
+// box shown, nothing running, no question open.
+function liveIdle(key) {
+  const st = liveTerminalsLib && liveTerminalsLib.status(key);
+  const d = st && st.running && st.state;
+  return !!(d && d.mode === 'compose' && !d.working && !d.waiting);
+}
+function applyPendingModes(key) {
+  if (!liveIdle(key) || key.startsWith('live:')) return false;
+  if (piModeQueue.has(key)) {
+    const s = liveTerminalsLib.sessions.get(key);
+    const doc = s && s.hub.state && require('./harness/terminal/reader.js').readDocument(s.host.snapshot({ screenOnly: true }), s.profile);
+    if (!doc || (doc.composer && doc.composer.text.trim())) return false; // the person is typing there
+    const mode = piModeQueue.get(key); piModeQueue.delete(key);
+    s.hub.submit('/mode ' + mode).catch(e => console.error('[agent modes] Pi /mode: ' + e.message));
+    return true;
+  }
+  if (!modeRestarts.has(key)) return false;
+  modeRestarts.delete(key);
+  restartLiveForMode(key).catch(e => console.error('[agent modes] restart ' + key + ': ' + e.message));
+  return true;
+}
+async function restartLiveForMode(key) {
+  const identity = liveIdentity.get(key);
+  if (!identity) return;
+  const s = liveTerminalsLib.sessions.get(key);
+  const pid = s && s.host && s.host.pid;
+  liveTerminalsLib.stop(key, { keepDraft: true });
+  // The old program has let go of the conversation before the new one opens it.
+  for (let i = 0; pid && i < 50; i++) { try { process.kill(pid, 0); } catch { break; } await sleep(100); }
+  await liveStartExisting(key, identity);
+}
+// ---- Switching agent (harness/handoff.js, harness/chains.js, design/87) ----
+// A conversation continues with another agent in a new part, that agent's
+// own conversation, holding the history in its own form; the parts are
+// linked and read as one. Pi and Codex parts are written and answered from
+// here; Claude Code's file is written here and its program answers (the
+// page sends the message there); Antigravity and Muse Code take the
+// history before the person's first message, in their own program.
+const HANDOFF_AGENTS = ['pi', 'codex', 'claude', 'agy', 'muse'];
+const liveHandoffs = new Map(); // live key → { from, block } (Antigravity, Muse Code: before the first message)
+function handoffTargetsFor(key, identity) {
+  const entry = index[key];
+  if (!entry || syncLib.isMirrorKey(key) || !canDo(identity, 'act', targetOf(key)) || chains.nextOf(key)) return [];
+  const own = conversationKind(entry), inst = agentsInstalled();
+  const ltOk = liveTerminalsLib ? liveTerminalsLib.status('').available !== false : true;
+  return HANDOFF_AGENTS.filter(h => h !== own && inst[h] !== false).filter(h => {
+    if (h === 'pi') return true;
+    if (liveTerminalRefusal(identity, h)) return false;
+    if (h === 'codex') return true;
+    return ltOk && (liveTerminalConf().agents[h] || 'off') !== 'off';
+  }).map(h => ({ id: h, name: AGENT_NAMES[h] }));
+}
+// The mode a conversation's next reply is served in: Pi's from its session,
+// the others' from agent-modes.js. A ModeDef, or null.
+async function currentModeDef(key) {
+  const entry = index[key];
+  if (conversationKind(entry) === 'pi') {
+    const c = await conversationContextResponse(key).catch(() => null);
+    const k = c && c.mode && c.mode.key;
+    return k ? listPromptModes().find(m => m.key === k) || null : null;
+  }
+  const m = agentModes.current(key);
+  return m && m.def ? m.def : null;
+}
+async function handoffTurns(key) {
+  const data = JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8'));
+  const ownName = AGENT_NAMES[index[key].source];
+  return handoffLib.turnsOf((data.messages || []).map(m => m.agentName ? m : { ...m, agentName: ownName }));
+}
+function piSessionFileFor(cwd, sessionId, now = new Date()) {
+  return path.join(SOURCES.pi, runtimeLib.piSessionDirName(cwd), now.toISOString().replace(/[:.]/g, '-') + '_' + sessionId + '.jsonl');
+}
+// opts, from the draft screen (conversation-draft.js, startHandoffDraft):
+// prompt, images, models, thinking, context, access (Codex), folder (the
+// old conversation's by default), mode (a key; null: none; undefined: the
+// old conversation's), inProgram (Pi or Codex in its own program: the file
+// is written, the page sends the message there).
+async function startHandoff(key, { harness, prompt, identity, input = 'keyboard', images = [], models = [], thinking = null, context = [], access = 'config', folder = null, mode, inProgram = false, account = null }) {
+  const entry = index[key];
+  if (!entry) throw Object.assign(new Error('conversation not found'), { status: 404 });
+  assertCan(identity, 'act', targetOf(key), 'this conversation');
+  if (chains.nextOf(key)) throw Object.assign(new Error('This conversation already continued with another agent: continue it there.'), { status: 409 });
+  if (!handoffTargetsFor(key, identity).some(t => t.id === harness)) throw Object.assign(new Error((AGENT_NAMES[harness] || 'That agent') + ' is not available for this conversation here.'), { status: 409 });
+  const inProgramHere = inProgram && (harness === 'pi' || harness === 'codex');
+  if (!String(prompt || '').trim() && !['agy', 'muse'].includes(harness) && !inProgramHere) throw new Error('write the message to send');
+  let cwd = entry.cwd || os.homedir();
+  if (folder != null && String(folder).trim()) {
+    const where = describeStartFolder(folder);
+    if (!where.exists) throw new Error('folder not found: ' + where.display);
+    assertPathAccess(identity, where.path, 'act');
+    cwd = where.path;
+  }
+  const { turns, left } = await handoffTurns(key);
+  const modeDef = mode === undefined ? await currentModeDef(key) : (typeof mode === 'string' && mode ? promptModeDef(mode) : null);
+  const info = { from: key, fromName: AGENT_NAMES[entry.source] || 'another agent', toName: AGENT_NAMES[harness] };
+  const link = newKey => chains.link(newKey, key, { from: entry.source, to: harness });
+  const principal = principalFor(identity);
+  const items = normalizeContextItems(context);
+  const picked = normalizePickedModels(models);
+  for (const m of picked) assertClaudeAccountAllowed(m.provider, principal);
+  const level = typeof thinking === 'string' && settingsLib.THINKING_LEVELS.includes(thinking) ? thinking : null;
+  const warnings = [];
+  if (harness === 'pi') {
+    const sessionId = require('./harness/live-terminal.js').newId('uuidv7');
+    const file = piSessionFileFor(cwd, sessionId);
+    await fsp.mkdir(path.dirname(file), { recursive: true });
+    await writeFileAtomic(file, handoffLib.piSessionLines({ sessionId, cwd, turns, mode: modeDef, from: key }).map(e => JSON.stringify(e)).join('\n') + '\n');
+    link(keyOfPath(file));
+    const newKey = await indexNewSessionFile(file);
+    if (items.length) saveConversationContext(newKey, items);
+    if (picked.length) saveConversationModels(newKey, picked);
+    if (level) {
+      try { await setConversationThinking(newKey, level, false); }
+      catch (e) { warnings.push('reasoning “' + level + '” not applied: ' + e.message); }
+    }
+    if (inProgramHere) {
+      // Pi's own program answers: the page sends the message there.
+      liveChooses(newKey, 'program');
+      return { key: newKey, left, warnings, sendInProgram: true };
+    }
+    const out = { key: newKey, left, warnings };
+    if (picked.length >= 2) out.runs = await startFanOut(newKey, { node: null, models: picked, message: prompt, images: rpcImagesOf(images), force: false, principal, input });
+    else out.job = jobView(await startAgentRun(newKey, { message: prompt, images: rpcImagesOf(images), principal, input, provider: picked[0] && picked[0].provider, modelId: picked[0] && picked[0].modelId, allowQueue: false }));
+    return out;
+  }
+  if (harness === 'codex') {
+    if (inProgramHere) {
+      // Codex's own program answers: the conversation is created with the
+      // history (Codex writes its file at once) and the page sends there.
+      const model = picked.find(m => m.provider === 'codex');
+      const made = await codexDriver.startInjected({ cwd, env: agentEnv((await liveLauncher(identity, cwd)).principal), bin: codexBin(), model: model ? model.modelId : null,
+        developerInstructions: modeDef ? agentModesLib.switchText(modeDef) : null }, handoffLib.codexItems(turns, info));
+      if (!made.path || !fs.existsSync(made.path)) throw new Error('Codex did not create the conversation file.');
+      link(keyOfPath(made.path));
+      const newKey = await indexNewSessionFile(made.path);
+      if (model) saveConversationModels(newKey, [model]);
+      if (modeDef) { agentModes.set(newKey, modeDef); agentModes.given(newKey, 'codex'); }
+      liveChooses(newKey, 'program');
+      return { key: newKey, left, warnings, sendInProgram: true };
+    }
+    const started = await startCodexConversation({ folder: cwd, prompt, images: rpcImagesOf(images), principal, models: picked, effort: level, access: typeof access === 'string' ? access : 'config', items, input,
+      modeDef, injectItems: handoffLib.codexItems(turns, info), beforeIndex: p => link(keyOfPath(p)) });
+    return { key: started.key, left, warnings, job: jobView(started.job) };
+  }
+  if (harness === 'claude') {
+    const sessionId = crypto.randomUUID();
+    const file = path.join(SOURCES.claude, path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, '-'), sessionId + '.jsonl');
+    await fsp.mkdir(path.dirname(file), { recursive: true });
+    await writeFileAtomic(file, handoffLib.claudeSessionLines({ sessionId, cwd, turns, from: key, gitBranch: entry.gitBranch || '' }).map(e => JSON.stringify(e)).join('\n') + '\n');
+    link(keyOfPath(file));
+    const newKey = await indexNewSessionFile(file);
+    if (modeDef) agentModes.set(newKey, modeDef);
+    if (account && account !== 'default') {
+      if (!(claudeAccountChoicesFor(identity) || []).some(a => a.id === account)) throw Object.assign(new Error('That Claude account is not available here.'), { status: 403 });
+      setClaudeAccount(newKey, account);
+    }
+    // Its program answers: the page sends the message there (it starts it).
+    return { key: newKey, left, warnings, sendInProgram: true };
+  }
+  // Antigravity, Muse Code: the page starts the program; the history goes
+  // before the first message (/api/live-terminal/new with handoffFrom).
+  return { startNew: { harness, folder: cwd, mode: modeDef ? modeDef.key : null }, left, warnings };
+}
+
+// A person switches the mode of a conversation that is not Pi's (or of
+// Pi's own program). Returns what the page shows.
+async function switchAgentMode(key, modeKey, identity) {
+  const entry = index[key], pend = livePending.get(key);
+  const harness = entry ? entry.source : pend ? pend.harness : null;
+  if (!harness) throw Object.assign(new Error('conversation not found'), { status: 404 });
+  const def = promptModeDef(modeKey);
+  if (harness === 'pi') {
+    if (!(liveTerminalsLib && liveTerminalsLib.status(key).running)) throw Object.assign(new Error('Pi switches modes with its own /mode command.'), { status: 409 });
+    if (!def) throw Object.assign(new Error('Pi always has a mode: pick one.'), { status: 400 });
+    piModeQueue.set(key, def.key);
+    return { mode: { key: def.key, label: def.label }, when: applyPendingModes(key) ? 'now' : 'once it is idle and its box is empty' };
+  }
+  if (!['claude', 'codex', 'agy', 'muse'].includes(harness)) throw Object.assign(new Error('This conversation cannot take a prompt mode.'), { status: 400 });
+  const before = (agentModes.get(key) || {}).mode;
+  const after = agentModes.set(key, def).mode;
+  if ((before && before.id) === (after && after.id)) return { mode: agentModes.publicState(key), when: 'already (it is the current mode)' };
+  const when = deliverAgentMode(key);
+  broadcast({ type: 'agent-mode', key, mode: agentModes.publicState(key), when });
+  return { mode: agentModes.publicState(key), when };
+}
 const liveChoices = new Map((() => { try { return Object.entries(JSON.parse(fs.readFileSync(LIVE_CHOICES_FILE, 'utf8'))); } catch { return []; } })());
 function saveLiveChoices() {
   try { fs.mkdirSync(path.dirname(LIVE_CHOICES_FILE), { recursive: true, mode: 0o700 }); fs.writeFileSync(LIVE_CHOICES_FILE, JSON.stringify(Object.fromEntries(liveChoices)), { mode: 0o600 }); }
@@ -9728,14 +11483,48 @@ function liveTerminals() {
       // The owner's options for this program (settings → agents), after the
       // profile's: for this run only, never written into the agent's config.
       const own = (liveTerminalConf().args || {})[profile.id] || [];
-      if (profile.program === 'claude') return [claudeBin(), ...args, ...liveClaudeTools(ctx), ...own];
+      const mode = ctx.key ? agentModes.current(ctx.key) : null;
+      if (profile.program === 'claude') {
+        // Its prompt mode rides in its system prompt. Once a mode was ever
+        // chosen here, its prompt is built afresh each request (not kept
+        // from the first one), so a switch applies after a restart.
+        const snapshotOff = ctx.key && agentModes.has(ctx.key) && claudeTakesSnapshotFlag() ? ['--system-prompt-snapshot', 'off'] : [];
+        const out = [claudeBin(), ...args, ...liveClaudeTools(ctx, mode && mode.def ? agentModesLib.modeText(mode.def) : ''), ...snapshotOff, ...own];
+        if (ctx.key && mode) agentModes.given(ctx.key, 'claude');
+        return out;
+      }
       // Pi has Chattering's artifact tools in its own program too, as in
-      // Chattering's box (its own extensions load as always).
-      if (profile.program === 'pi') return piArgv([...args, '-e', path.join(__dirname, 'extensions', 'artifacts.ts'), ...own]);
-      if (profile.program === 'codex') return [codexBin(), ...args, ...own];
+      // Chattering's box (its own extensions load as always). A new
+      // conversation starts in the mode chosen for it.
+      if (profile.program === 'pi') return piArgv([...args, '-e', path.join(__dirname, 'extensions', 'artifacts.ts'), ...(ctx.isNew && ctx.mode ? ['--prompt-mode', ctx.mode] : []), ...own]);
+      if (profile.program === 'codex') {
+        // A new conversation starts with its mode as developer instructions
+        // (TOML string: JSON's quoting is valid there).
+        const dev = ctx.isNew && mode && mode.def ? ['-c', 'developer_instructions=' + JSON.stringify(agentModesLib.switchText(mode.def))] : [];
+        if (dev.length) agentModes.given(ctx.key, 'codex');
+        return [codexBin(), ...args, ...dev, ...own];
+      }
+      if (profile.program === 'agy') { ensureAgyModeHook(); return [agentProgramBin('agy'), ...args, ...own]; }
+      if (profile.program === 'muse') return [agentProgramBin('muse'), ...args, ...own];
       throw new Error(profile.name + ' has no program here');
     },
     envFor: principal => agentEnv(principal),
+    // Antigravity reads its prompt mode from this conversation's file.
+    extraEnvFor: (key, profile) => {
+      // Claude Code as the account chosen for this conversation.
+      if (profile.id === 'claude') { const id = claudeAccountOf(key); return id === 'default' ? null : claudeAccounts.envFor(id); }
+      if (profile.id !== 'agy') return null;
+      const file = agyModeFile(key);
+      writeAgyModeFile(file, key);
+      return { CHATTERING_MODE_FILE: file };
+    },
+    // Muse Code: its prompt mode goes before the next message after a switch.
+    messagePrefix: (key, profileId) => {
+      const carried = liveHandoffs.get(key);
+      const mode = profileId === 'muse' && agentModes.pending(key, 'muse') ? agentModesLib.messagePrefix(agentModes.get(key).mode.def) : '';
+      return (carried ? carried.block : '') + mode || null;
+    },
+    onPrefixed: key => { liveHandoffs.delete(key); if (agentModes.has(key)) agentModes.given(key, 'muse'); },
     settings: () => liveTerminalConf(),
     onState: (key, st) => liveStateChanged(key, st),
     log: m => console.error(m),
@@ -9750,9 +11539,9 @@ function liveTerminals() {
 // HTML here); with 'chattering', its own claude.ai publishing off for the
 // run. Its file is given to the tools so they name this conversation.
 const LIVE_MCP = path.join(__dirname, 'harness', 'terminal', 'chattering-mcp.js');
-function liveClaudeTools({ sessionId, sessionPath, cwd }) {
+function liveClaudeTools({ sessionId, sessionPath, cwd }, promptMode = '') {
   const mode = liveTerminalConf().artifacts || 'chattering';
-  if (mode === 'agent') return [];
+  if (mode === 'agent') return promptMode ? ['--append-system-prompt=' + promptMode] : [];
   const session = sessionPath || (sessionId && cwd ? path.join(SOURCES.claude, path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, '-'), sessionId + '.jsonl') : '');
   const config = { mcpServers: { chattering: { type: 'stdio', command: process.execPath, args: [LIVE_MCP],
     env: { CHATTERING_SESSION: session, CHATTERING_PORT: String(PORT), CHATTERING_TOKEN_FILE: LAN_TOKEN_FILE } } } };
@@ -9761,7 +11550,7 @@ function liveClaudeTools({ sessionId, sessionPath, cwd }) {
     + 'Small visuals that belong in your answer (a chart, a diagram, a tiny interactive) go inline with mcp__chattering__show. '
     + (mode === 'both' ? 'Publish to claude.ai with the Artifact tool only when the user asks for a link to share.' : '');
   return ['--mcp-config=' + JSON.stringify(config), '--allowedTools=mcp__chattering__artifact,mcp__chattering__show',
-    ...(mode === 'chattering' ? ['--disallowedTools=Artifact'] : []), '--append-system-prompt=' + note];
+    ...(mode === 'chattering' ? ['--disallowedTools=Artifact'] : []), '--append-system-prompt=' + [note, promptMode].filter(Boolean).join('\n\n')];
 }
 // The holder starts in a systemd user scope of its own where there is one:
 // a service restart stops everything in the service's group, detached or
@@ -9816,13 +11605,16 @@ function liveTerminalFor(key, identity) {
   const refusal = liveTerminalRefusal(identity, entry.source);
   const choice = liveChoices.get(key);
   const use = st.running || (setting === 'always' && choice !== 'box') || (setting === 'choose' && choice === 'program');
+  const installed = !!st.running || agentsInstalled()[entry.source] !== false;
   return {
-    harness: entry.source, name: profile.name, setting, running: !!st.running,
-    use: !refusal && setting !== 'off' && use, offer: !refusal && setting === 'choose' && !use,
-    // Pi and Codex have Chattering's own box to go back to; Claude Code
-    // set to 'always' has only its program.
-    canLeave: entry.source !== 'claude',
+    harness: entry.source, name: profile.name, setting, running: !!st.running, installed,
+    use: !refusal && installed && setting !== 'off' && use, offer: !refusal && installed && setting === 'choose' && !use,
+    // Pi and Codex have Chattering's own box to go back to; Claude Code,
+    // Antigravity and Muse Code have only their own program.
+    canLeave: profile.box !== false,
     refusal, state: st.state || null, notice: st.notice || null, keptDraft: !!st.keptDraft,
+    // Claude Code: the subscription it answers as, and the others it may.
+    ...(entry.source === 'claude' ? { account: claudeAccountView(key), accounts: claudeAccountChoicesFor(identity) } : {}),
   };
 }
 // One writer per conversation (see above).
@@ -9858,8 +11650,8 @@ function liveStateChanged(key, st) {
   const ended = !st || st.mode === 'ended' || !!st.exited;
   pushLiveState(key, liveStates.get(key) || null, ended ? null : st);
   soundLiveState(key, liveStates.get(key) || null, ended ? null : st);
-  if (ended) { liveStates.delete(key); for (const [f, k] of liveHeld) if (k === key) liveHeld.delete(f); }
-  else liveStates.set(key, st);
+  if (ended) { liveStates.delete(key); for (const [f, k] of liveHeld) if (k === key) liveHeld.delete(f); modeRestarts.delete(key); piModeQueue.delete(key); }
+  else { liveStates.set(key, st); if (modeRestarts.has(key) || piModeQueue.has(key)) setImmediate(() => applyPendingModes(key)); }
   const out = ended ? { mode: 'ended', working: false, waiting: false } : { mode: st.mode, working: !!st.working, waiting: !!st.waiting };
   broadcast({ type: 'live-terminal', key, harness: st && st.harness, state: out });
   refreshAgentsSignal();
@@ -9878,6 +11670,14 @@ async function liveStartExisting(key, identity) {
   await assertDelegationOwnership(sessionPath);
   if (entry.source === 'codex') {
     if (!entry.sessionId) throw new Error('This Codex conversation has no thread id.');
+    // A prompt mode switched since Codex last read one goes in first, as a
+    // developer message (Codex keeps the instructions it began with).
+    if (agentModes.pending(key, 'codex')) {
+      const c = agentModes.get(key);
+      await codexDriver.injectItems({ threadId: entry.sessionId, cwd, env: agentEnv((await liveLauncher(identity, cwd, key)).principal), bin: codexBin() },
+        [{ type: 'message', role: 'developer', content: [{ type: 'input_text', text: agentModesLib.switchText(c.mode.def) }] }]);
+      agentModes.given(key, 'codex', c.mode.id);
+    }
     await codexDriver.release(entry.sessionId);
   }
   stopAnyWarmSession(sessionPath);
@@ -9885,6 +11685,7 @@ async function liveStartExisting(key, identity) {
   // would be: nothing can begin writing in between.
   if (headlessRuns.has(sessionPath) || liveHeld.has(sessionPath)) throw Object.assign(new Error('Something else started writing this conversation. Try again.'), { status: 409 });
   liveHeld.set(sessionPath, key);
+  liveIdentity.set(key, identity);
   try {
     await lt.start(key, { profileId: entry.source, cwd, sessionId: entry.sessionId, sessionPath, ...(await liveLauncher(identity, cwd, key)) });
   } catch (e) { liveHeld.delete(sessionPath); throw e; }
@@ -9941,6 +11742,53 @@ function liveNewFile(pend, programPid) {
     }
     return candidates[0] || null;
   }
+  if (pend.harness === 'agy') {
+    // Antigravity writes conversations/<id>.db with the first message: a
+    // database new since the program started, for this folder, no other
+    // program's; more than one (two new ones here at once): the one this
+    // program holds open, else wait.
+    let names = [];
+    try { names = fs.readdirSync(SOURCES.agy); } catch { return null; }
+    const candidates = [];
+    for (const n of names) {
+      if (!agyTranscript.isAgyConversation(n)) continue;
+      const f = path.join(SOURCES.agy, n);
+      if (liveHeld.has(f)) continue;
+      let st; try { st = fs.statSync(f); } catch { continue; }
+      if ((st.birthtimeMs || st.mtimeMs) < pend.startedAt - 5000) continue;
+      let cwd = null;
+      try { cwd = agyTranscript.parseAgyConversation(f).meta.cwd; } catch { continue; }
+      if (cwd && path.resolve(cwd) === path.resolve(pend.cwd)) candidates.push(f);
+    }
+    if (candidates.length > 1) {
+      const held = openFilesUnder(programPid);
+      const mine = held ? candidates.filter(f => held.has(f)) : [];
+      return mine.length === 1 ? mine[0] : null;
+    }
+    return candidates[0] || null;
+  }
+  if (pend.harness === 'muse') {
+    // Muse Code makes sessions/YYYY/MM/DD/<id>/ as it starts and records
+    // its own process id there: the new folder whose process is this
+    // program (or one of its children), never a guess by time alone.
+    const procs = new Set([programPid].filter(Boolean));
+    if (programPid) { const all = processesLib.list(); for (let grew = true; grew;) { grew = false; for (const p of all) if (procs.has(p.ppid) && !procs.has(p.pid)) { procs.add(p.pid); grew = true; } } }
+    const days = new Set();
+    for (const t of [pend.startedAt, Date.now()]) { const d = new Date(t); days.add(path.join(String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0'))); }
+    for (const day of days) {
+      let ids = [];
+      try { ids = fs.readdirSync(path.join(SOURCES.muse, day)); } catch { continue; }
+      for (const id of ids) {
+        const f = path.join(SOURCES.muse, day, id, 'session.jsonl');
+        if (liveHeld.has(f)) continue;
+        let head = '';
+        try { const fd = fs.openSync(f, 'r'); try { const b = Buffer.alloc(65536); head = b.subarray(0, fs.readSync(fd, b, 0, b.length, 0)).toString('utf8'); } finally { fs.closeSync(fd); } } catch { continue; }
+        const facts = /"payload_type":\s*"runtime\.session\.route_facts"[^\n]*"pid":\s*(\d+)/.exec(head);
+        if (facts && procs.has(Number(facts[1]))) return f;
+      }
+    }
+    return null;
+  }
   return null;
 }
 // The files a process and its children hold open; null where the system
@@ -9966,9 +11814,19 @@ function watchNewLiveConversation(temp, pend) {
     const file = liveNewFile(pend, s && s.host.pid);
     if (!file) return setTimeout(tick, 400).unref?.();
     try {
+      // A continuation of another conversation: linked before it is read.
+      if (pend.handoffFrom) chains.link(keyOfPath(file), pend.handoffFrom, { from: (index[pend.handoffFrom] || {}).source || null, to: pend.harness });
       const key = await indexNewSessionFile(file);
       pend.key = key;
       liveHeld.set(file, key);
+      if (liveHandoffs.has(temp)) { liveHandoffs.set(key, liveHandoffs.get(temp)); liveHandoffs.delete(temp); }
+      // Its prompt mode, and the file Antigravity already reads it from.
+      const agyFile = pend.harness === 'agy' ? agyModeFile(temp) : null;
+      agentModes.rekey(temp, key);
+      if (claudeAccountChoices.has(temp)) { setClaudeAccount(key, claudeAccountChoices.get(temp)); claudeAccountChoices.delete(temp); saveClaudeAccountChoices(); }
+      if (agyFile) agentModes.note(key, 'agyFile', agyFile);
+      if (liveIdentity.has(temp)) { liveIdentity.set(key, liveIdentity.get(temp)); liveIdentity.delete(temp); }
+      for (const set of [modeRestarts]) if (set.has(temp)) { set.delete(temp); set.add(key); }
       lt.rekey(temp, key);
       liveChooses(key, 'program');
       broadcast({ type: 'live-terminal', key, from: temp, harness: pend.harness, state: { mode: 'compose', working: true, waiting: false } });
@@ -10029,6 +11887,9 @@ function agentEnv(principal = null) {
     CHATTERING_PORT: String(PORT),
     ...((principal || principalFor(null)).env),
   };
+  // Put in this process's environment for FunctAI's Jev wire only.
+  if (typeof TYPESAFE_KEY_FROM_BOOT !== 'undefined' && !TYPESAFE_KEY_FROM_BOOT) delete env.TYPESAFE_API_KEY;
+
   return platform.withPath(env, agentPath(platform.pathEntries(process.env).join(path.delimiter)).split(path.delimiter));
 }
 
@@ -10041,8 +11902,29 @@ function agentLaunch(principal, file, args = [], { cwd } = {}) {
 function conversationKind(entry) {
   if (entry.source === 'claude') return 'claude';
   if (entry.source === 'codex') return 'codex';
+  if (entry.source === 'agy' || entry.source === 'muse') return entry.source;
   if (entry.source === 'pi' || entry.source === 'pi-remote') return 'pi';
   return null;
+}
+
+// Conversations only their agent's own program continues (Claude Code,
+// Antigravity, Muse Code): Chattering reads them; its own box, branches,
+// regenerated answers, merges and the rest work on Pi's files (or Codex's
+// through Codex) and refuse these, by the agent's name.
+const OWN_PROGRAM_ONLY = new Set(['claude', 'agy', 'muse']);
+function ownProgramOnly(entry) { return !!entry && OWN_PROGRAM_ONLY.has(conversationKind(entry)); }
+function agentNameOf(entry) {
+  return (liveTerminalProfiles.PROFILES[entry && entry.source] || {}).name || 'This agent';
+}
+function refuseOwnProgramOnly(entry, what) {
+  if (!ownProgramOnly(entry)) return;
+  throw Object.assign(new Error(`${what} needs a Pi conversation. ${agentNameOf(entry)} conversations continue in ${agentNameOf(entry)}'s own program.`), { status: 409 });
+}
+// An Antigravity or Muse Code program that was opened and left without a
+// message still leaves a conversation file (Muse Code makes its folder as
+// it starts): nothing to read, so not listed until it holds a message.
+function blankAgentRun(entry) {
+  return !!entry && (entry.source === 'agy' || entry.source === 'muse') && !entry.userCount && !entry.assistantCount;
 }
 
 function windowTitleFor(key) {
@@ -10064,8 +11946,26 @@ function parseCmdline(pid) {
   return found ? found.argv : null;
 }
 
+// Antigravity CLI or Muse Code running interactively, as the process
+// itself (both are native programs): 'agy' | 'muse' | null. Their other
+// commands (`agy models`, `muse exec`, `agy -p …`) are not conversations
+// being written. Command names from `agy --help` 1.3.4, `muse --help` 1.4.6.
+const OWN_PROGRAM_COMMANDS = {
+  agy: new Set(['agent', 'agents', 'changelog', 'help', 'install', 'mcp', 'mic-serve', 'models', 'plugin', 'plugins', 'remote-control', 'update']),
+  muse: new Set(['exec', 'config', 'export', 'trace', 'model-profile', 'skills', 'voice', 'plugins', 'sandbox', 'schema', 'serve', 'session-message', 'mcp', 'auth', 'login', 'logout', 'init', 'help']),
+};
+const NOT_A_CONVERSATION = new Set(['-p', '--print', '--prompt', '-h', '--help', '-V', '--version']);
+function ownProgramKindOf(args) {
+  const kind = args && args.length ? agentArgName(args[0]) : null;
+  if (kind !== 'agy' && kind !== 'muse') return null;
+  const rest = args.slice(1).map(String);
+  if (rest.some(a => NOT_A_CONVERSATION.has(a) || OWN_PROGRAM_COMMANDS[kind].has(a))) return null;
+  return kind;
+}
+
 function isInteractiveAgent(args) {
   if (!args || !args.length) return false;
+  if (ownProgramKindOf(args)) return true;
   if (args.includes('--no-session') || args.includes('-p') || args.includes('--print')) return false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--mode' && args[i + 1] === 'rpc') return false;
@@ -10098,7 +11998,9 @@ function matchArgsToKey(args) {
       if (e.sessionId && (session === e.sessionId || e.sessionId.startsWith(session) || session.startsWith(e.sessionId))) return key;
     }
   }
-  const resume = flagValue(args, ['--resume', '-r', '--session-id']);
+  // Muse Code: `muse resume <id>`.
+  const museResume = ownProgramKindOf(args) === 'muse' ? args.indexOf('resume', 1) : -1;
+  const resume = flagValue(args, ['--resume', '-r', '--session-id', '--conversation']) || (museResume > 0 && args[museResume + 1] && !String(args[museResume + 1]).startsWith('-') ? args[museResume + 1] : null);
   if (resume) {
     for (const [key, e] of Object.entries(index)) {
       if (e.sessionId && (resume === e.sessionId || e.sessionId.startsWith(resume) || resume.startsWith(e.sessionId))) return key;
@@ -10156,10 +12058,14 @@ function listRunningAgents() {
   for (const { pid, argv: args } of procs) {
     if (own.has(pid)) continue;
     if (!isInteractiveAgent(args)) continue;
-    const key = matchArgsToKey(args);
+    let key = matchArgsToKey(args);
     const title = flagValue(args, ['--title', '-t']);
     const names = args.map(agentArgName);
-    const kind = names.includes('claude') ? 'claude' : names.includes('pi') ? 'pi' : null;
+    const ownKind = ownProgramKindOf(args);
+    const kind = ownKind || (names.includes('claude') ? 'claude' : names.includes('pi') ? 'pi' : null);
+    // Antigravity and Muse Code started without an id: the conversation
+    // file they hold open (Muse Code: its session folder's cron.db).
+    if (!key && ownKind) key = keyFromOpenFiles(pid, ownKind);
     if (!key && !(title && title.startsWith('chattering-'))) continue;
     const id = key || title;
     if (!id || seen.has(id)) continue;
@@ -10177,6 +12083,19 @@ function listRunningAgents() {
     });
   }
   return running;
+}
+
+function keyFromOpenFiles(pid, kind) {
+  const held = openFilesUnder(pid);
+  if (!held) return null;
+  for (const f of held) {
+    const file = kind === 'agy' ? (f.endsWith('.db-wal') ? f.slice(0, -4) : f)
+      : path.join(path.dirname(f), 'session.jsonl');
+    if (sourceOfPath(file) !== kind) continue;
+    const key = keyForSessionPath(file);
+    if (key && index[key]) return key;
+  }
+  return null;
 }
 
 function findRunningConversation(key) {
@@ -10207,6 +12126,16 @@ function refreshAgentsSignal() {
   const keys = runningAgentKeys();
   const sig = keys.join('|');
   if (sig === runningAgentsSig) return;
+  // A conversation an agent's program (or a terminal) was working in, and
+  // no longer is: its run ended, for the frog's asks (design/102).
+  if (runningAgentsSig) {
+    const now = new Set(keys);
+    for (const key of runningAgentsSig.split('|').filter(Boolean)) {
+      if (now.has(key) || !index[key]) continue;
+      try { frogRunEnded({ key, status: 'done', excerpt: index[key].last && index[key].last.role === 'assistant' ? index[key].last.text : '' }); }
+      catch (e) { console.error('[frog] ' + e.message); }
+    }
+  }
   runningAgentsSig = sig;
   broadcast({ type: 'agents', keys });
 }
@@ -10478,10 +12407,11 @@ async function openConversationInTerminal(key, opts) {
     // Codex allows one writer per conversation: Chattering lets go first.
     if (kind === 'codex') await codexDriver.release(entry.sessionId);
     const argv = kind === 'claude'
-      ? [claudeBin(), '--resume', entry.sessionId]
+      ? claudeAsAccount(key, ['--resume', entry.sessionId])
       : kind === 'codex' ? [codexBin(), 'resume', entry.sessionId]
+      : kind === 'agy' || kind === 'muse' ? [agentProgramBin(kind), ...liveTerminalProfiles.fill(liveTerminalProfiles.PROFILES[kind].resume, { sessionId: entry.sessionId, sessionPath })]
       : piArgv(['--session', sessionPath]);
-    if (!argv[2]) throw new Error('This conversation has no session identifier.');
+    if (kind === 'claude' ? !entry.sessionId : !argv[2]) throw new Error('This conversation has no session identifier.');
     await assertDelegationLaunch(file);
     await spawnAlacritty(cwd, title, argv);
     return { ok: true, created: true, focused: false, title, kind, cwd };
@@ -10706,7 +12636,7 @@ async function sendFileFeedback(body, identity = null) {
   if (kind === 'codex' && (entry.importCopyOf || (entry.codex && entry.codex.imported))) throw new Error('This is a text-only copy Codex imported from another agent. Send the feedback to the original.');
   if (kind !== 'claude' && kind !== 'codex' && kind !== 'pi') throw new Error('This conversation cannot take file feedback.');
   const argv = kind === 'claude'
-    ? [claudeBin(), '--resume', entry.sessionId, prompt]
+    ? claudeAsAccount(key, ['--resume', entry.sessionId, prompt])
     : kind === 'codex' ? [codexBin(), 'resume', entry.sessionId, '--image', pngPath, prompt]
     : piArgv(['--session', sessionPath, '@' + pngPath, prompt]);
   await assertDelegationOwnership(sessionPath);
@@ -12086,9 +14016,13 @@ async function updateWatchedProjectFile(root, relativePath, project = '') {
   if (next) rememberProjectFileSnapshot(file, next); else projectFileSnapshots.delete(file);
   scheduleWorkspaceCheckpoint(root, 'filesystem-observation');
   if (!fileLedger) return;
+  // A rename, copy, delete or restore made in the Files browser is the
+  // person's who clicked it, not an unknown writer's.
+  const by = fileOpBy(file);
   const row = {
     id: `watch:${Date.now()}:${crypto.randomBytes(3).toString('hex')}`, ts: Date.now(), path: file, repo_root: root,
-    project: project || projectNameOf(root), producer: 'watch', actor: 'external', outcome: 'applied', ...delta, input: 'filesystem',
+    project: project || projectNameOf(root), producer: 'watch', actor: by ? 'human' : 'external', outcome: 'applied', ...delta,
+    input: by ? 'files-browser' : 'filesystem', user_id: by?.userId || null,
   };
   if (archiveTo && archiveTo !== archiveFrom) {
     try { fileArchive.link(row.id, file, archiveFrom, archiveTo); } catch (e) { console.error('File history link:', e.message); }
@@ -12633,6 +14567,7 @@ async function filesAskResponse(body, identity) {
   const brief = await fileAskBriefFor(abs, item, key, include, askSelectedOf(body));
   // Which agent answers: the conversation's own, or the one chosen for a new one.
   const harness = key ? conversationKind(index[key]) : body.harness === 'codex' ? 'codex' : 'pi';
+  if (key) refuseOwnProgramOnly(index[key], 'Asking about a file from here');
   if (harness === 'codex') return filesAskCodex({ abs, body, pick, key, prompt, item, include, brief, images, principal, identity });
   let context, created = false;
   if (!key) {
@@ -13561,6 +15496,114 @@ function imageMimeForPath(file) {
   return fileMedia.mediaKind(file) === 'image' ? fileMedia.mediaType(file) : null;
 }
 
+// ---- rename, duplicate, delete from the Files browser (file-ops.js) ----
+// The browser names an entry by project, repository root and its path in
+// that root, the same three things /api/files/browse lists by.
+const fileOps = require('./file-ops.js');
+const deletedFiles = fileOps.createTrash(path.join(DATA_DIR, 'deleted-files'));
+async function browsableRoot(identity, project, rootParam) {
+  const meta = projectMetaFor(project || '');
+  if (!meta) throw Object.assign(new Error('project not found'), { status: 404 });
+  if (!projectVisible(identity, project)) throw Object.assign(new Error('This project is not shared with you.'), { status: 403 });
+  const candidates = [meta.cwd, ...await projectGitRepositories(meta)].filter(Boolean);
+  const roots = [...new Set(await Promise.all(candidates.map(p => fsp.realpath(p).catch(() => null))))].filter(Boolean);
+  const root = rootParam ? path.resolve(String(rootParam)) : roots[0];
+  if (!root || !roots.includes(root)) throw new Error('Repository is not part of this project');
+  return { root, roots };
+}
+// The watcher sees what the browser did a moment later; for a short while,
+// writes at or under these paths are this person's, not "unknown".
+const fileOpsByPerson = new Map(); // abs path → { userId, until }
+function rememberFileOp(identity, ...paths) {
+  const until = Date.now() + 15000;
+  for (const [p, v] of fileOpsByPerson) if (v.until < Date.now()) fileOpsByPerson.delete(p);
+  for (const p of paths) if (p) fileOpsByPerson.set(p, { userId: identity?.user?.id || null, until });
+}
+function fileOpBy(file) {
+  const now = Date.now();
+  for (const [p, v] of fileOpsByPerson) if (v.until >= now && (file === p || file.startsWith(p + path.sep))) return v;
+  return null;
+}
+// Before a file moves or goes: anyone else typing in it would keep typing
+// into a file that is no longer there, so that waits for them. Shared
+// copies held by this person (another tab, a kept file) are written to disk
+// and closed, and every save in flight lands first: a late save would
+// otherwise bring the old file back.
+async function releaseSharedFilesUnder(identity, abs) {
+  const prefix = 'file:' + abs;
+  const names = collab.stats().docs.map(d => d.name).filter(n => n === prefix || n.startsWith(prefix + path.sep));
+  const me = identity?.user?.id || null;
+  for (const name of names) {
+    const other = collab.people(name).find(p => p.id !== me);
+    if (other) throw Object.assign(new Error(`${other.name || 'Someone'} has ${path.basename(name.slice(5))} open right now. Try again once they have left it.`), { status: 409 });
+  }
+  for (const name of names) collab.close(name);
+  await Promise.allSettled([...collabSaving]);
+}
+async function filesOpResponse(identity, body) {
+  const op = String(body.op || '');
+  const { root } = await browsableRoot(identity, body.name, body.root);
+  if (op === 'restore') {
+    const record = await deletedFiles.read(String(body.id || ''));
+    if (!record || record.project !== body.name) throw Object.assign(new Error('This deleted item is no longer kept.'), { status: 404 });
+    assertPathAccess(identity, record.from, 'act');
+    const out = await deletedFiles.restore(record.id, async r => {
+      // Its folder may be gone too: made again, but only inside the root.
+      const base = r.root && (await browsableRoot(identity, body.name, r.root).catch(() => null))?.root || root;
+      const rel = path.relative(base, r.from);
+      if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) throw new Error('Its folder is no longer part of this project.');
+      const parent = path.resolve(base, path.dirname(rel));
+      await fsp.mkdir(parent, { recursive: true });
+      const real = await fsp.realpath(parent);
+      if (real !== base && !real.startsWith(base + path.sep)) throw new Error('Its folder now leads outside this project.');
+      const target = path.join(real, r.name);
+      rememberFileOp(identity, target);
+      return target;
+    });
+    rememberFileOp(identity, out.to); // when it came back under another name
+    let changed = false;
+    for (const f of record.openFiles || []) {
+      const p = out.to + f.path.slice(record.from.length);
+      changed = openFilesLib.restore(openFileState, { ...f, path: p }) || changed;
+    }
+    if (changed) openFilesChanged();
+    return { ok: true, op, to: out.to, rel: platform.toPortable(path.relative(root, out.to)), renamed: out.renamed, directory: out.directory };
+  }
+  const entry = await fileOps.entryAt(root, body.rel);
+  assertPathAccess(identity, entry.abs, 'act');
+  if (op === 'rename') {
+    const name = fileOps.checkName(body.to);
+    if (name !== entry.name) await releaseSharedFilesUnder(identity, entry.abs);
+    rememberFileOp(identity, entry.abs, path.join(entry.parent, name));
+    const out = await fileOps.renameEntry(root, body.rel, name);
+    if (out.changed && openFilesLib.move(openFileState, out.from, out.to, path.sep)) openFilesChanged();
+    return { ok: true, op, from: out.from, to: out.to, rel: out.rel, directory: out.directory, changed: out.changed };
+  }
+  if (op === 'duplicate') {
+    // Only the copy is new; the original's shared text, if any, stays.
+    const out = await fileOps.duplicateEntry(root, body.rel);
+    rememberFileOp(identity, out.to);
+    return { ok: true, op, from: out.from, to: out.to, rel: out.rel, directory: out.directory };
+  }
+  if (op === 'delete') {
+    await releaseSharedFilesUnder(identity, entry.abs);
+    rememberFileOp(identity, entry.abs);
+    const openFiles = openFilesLib.closeUnder(openFileState, entry.abs, path.sep);
+    let record;
+    try { record = await deletedFiles.put(entry.abs, { project: String(body.name), root, rel: platform.toPortable(path.relative(root, entry.abs)), user: identity?.user?.id || null, openFiles }); }
+    catch (e) { for (const f of openFiles) openFilesLib.restore(openFileState, f); throw e; }
+    if (openFiles.length) openFilesChanged();
+    return { ok: true, op, from: entry.abs, id: record.id, directory: record.directory, keptDays: Math.round(fileOps.RETAIN_MS / 86400000) };
+  }
+  throw new Error('unknown file operation');
+}
+// Recently deleted, for one project: what this person may see of it.
+async function filesDeletedResponse(identity, project) {
+  await browsableRoot(identity, project, '');
+  const items = await deletedFiles.list(r => r.project === project && (() => { try { assertPathAccess(identity, r.from, 'see'); return true; } catch { return false; } })());
+  return { items: items.map(r => ({ id: r.id, name: r.name, rel: r.rel || r.name, root: r.root || '', at: r.at, directory: !!r.directory, until: r.at + fileOps.RETAIN_MS })) };
+}
+
 // Where a folder can be browsed in the app: the project and repository root
 // that contain it, and its path inside that root, or null when the folder
 // lies outside every browsable root (the Files browser refuses those). Same
@@ -14172,6 +16215,7 @@ function editedTextContent(content, newText) {
 async function transcriptTarget(key, i) {
   const entry = index[key];
   if (!entry) throw new Error('conversation not found');
+  if (entry.source === 'agy' || entry.source === 'muse') throw Object.assign(new Error(`${agentNameOf(entry)}'s own program owns this conversation's file: it is read here, not edited.`), { status: 409 });
   const abs = absPathForKey(key);
   if (!abs) throw new Error('no session file for this conversation');
   const rawText = await fsp.readFile(abs, 'utf8');
@@ -14380,21 +16424,9 @@ function projectOfEntry(entry, key = '') {
   return projectNameOf(entry && entry.cwd, key);
 }
 
-function projectMetaFor(project) {
-  const entries = Object.entries(index)
-    .filter(([key, entry]) => key && entry && projectOfEntry(entry, key) === project)
-    .map(([key, entry]) => ({ key, entry }));
-  if (!entries.length) {
-    // A registered newborn: no conversations yet, but the folder is real.
-    const rec = createdRecordFor(project);
-    if (!rec) return null;
-    return { project, cwd: rec.cwd || null, entries: [], epics: [], latestMs: rec.createdAt || 0, created: true };
-  }
-  // The project root is DERIVED, not chosen among conversation cwds: any
-  // member cwd under /Projects/<name>/… yields the root by truncation. A
-  // project whose conversations ALL live in subfolders still roots at the
-  // project folder itself. Prefer roots whose own raw name IS the canonical
-  // project (the main worktree beats folded worktree checkouts).
+// A project's root folder: the registered one, else derived from where its
+// conversations ran (shared by projectMetaFor and the folder search).
+function projectRootFromEntries(project, entries) {
   const registered = createdRecordFor(project);
   let cwd = (registered && registered.cwd) || null;
   if (!cwd) {
@@ -14413,6 +16445,25 @@ function projectMetaFor(project) {
       if (score > bestScore || (score === bestScore && cwd && root.length < cwd.length)) { cwd = root; bestScore = score; }
     }
   }
+  return cwd;
+}
+
+function projectMetaFor(project) {
+  const entries = Object.entries(index)
+    .filter(([key, entry]) => key && entry && projectOfEntry(entry, key) === project)
+    .map(([key, entry]) => ({ key, entry }));
+  if (!entries.length) {
+    // A registered newborn: no conversations yet, but the folder is real.
+    const rec = createdRecordFor(project);
+    if (!rec) return null;
+    return { project, cwd: rec.cwd || null, entries: [], epics: [], latestMs: rec.createdAt || 0, created: true };
+  }
+  // The project root is DERIVED, not chosen among conversation cwds: any
+  // member cwd under /Projects/<name>/… yields the root by truncation. A
+  // project whose conversations ALL live in subfolders still roots at the
+  // project folder itself. Prefer roots whose own raw name IS the canonical
+  // project (the main worktree beats folded worktree checkouts).
+  const cwd = projectRootFromEntries(project, entries);
   const epicsForProject = Object.values(epics)
     .map(epic => ({
       id: epic.id, title: epic.title, abstract: epic.abstract || '',
@@ -14545,7 +16596,11 @@ async function createProject(body) {
   if (Object.prototype.hasOwnProperty.call(body, 'operation')) {
     if (body.operation !== 'create' && body.operation !== 'add') throw new Error('unknown project operation');
     const adopted = body.operation === 'add';
-    let cwd;
+    // An optional human-written purpose. Saved, never sent anywhere: setup
+    // starts no agent. Checked before anything touches the disk.
+    const purpose = typeof body.purpose === 'string' ? body.purpose.replace(/\r\n?/g, '\n').trim() : '';
+    if (purpose.length > 20000) throw new Error('The purpose is too long. Keep it under 20,000 characters.');
+    let cwd, rawName = '';
     if (adopted) {
       if (typeof body.path !== 'string' || !body.path.length || body.path.includes('\0')) throw new Error('project path is required');
       // Do not trim or normalize directory names: spaces and Unicode are valid.
@@ -14554,8 +16609,10 @@ async function createProject(body) {
       cwd = path.resolve(expanded);
       if (!fs.statSync(cwd).isDirectory()) throw new Error('project path must be an existing directory');
     } else {
-      const rawName = String(body.name || '').trim();
-      if (!/^[A-Za-z0-9][A-Za-z0-9._ -]{0,80}$/.test(rawName)) throw new Error('project name: letters, digits, ". _ -" and spaces only');
+      // Letters of any language, digits, and ". _ -" and spaces. NFC, so an
+      // "é" typed on a Mac and on Linux names the same folder.
+      rawName = String(body.name || '').normalize('NFC').trim();
+      if (!/^[\p{L}\p{N}][\p{L}\p{M}\p{N}._ -]{0,80}$/u.test(rawName)) throw new Error('Start the name with a letter or number. Use letters, numbers, spaces, dots, hyphens, or underscores.');
       if (typeof body.parent !== 'string' || !body.parent.length || body.parent.includes('\0')) throw new Error('existing parent directory is required');
       const expanded = expandHomePath(body.parent);
       if (!path.isAbsolute(expanded)) throw new Error('Use a full parent folder path, starting with / or ~/');
@@ -14576,12 +16633,37 @@ async function createProject(body) {
       delete createdProjects[raw];
       throw new Error((adopted ? 'Folder was not added. ' : 'Folder created at ' + cwd + ', but not added. Use Add existing folder to retry. ') + e.message);
     }
-    let warning = null;
+    const warnings = [];
     if (!adopted && body.git !== false) {
       try { await gitText(cwd, ['init']); }
-      catch { warning = 'Project created, but Git version history could not be initialized.'; }
+      catch { warnings.push('Project created, but Git version history could not be initialized.'); }
     }
-    return { ok: true, project, cwd, adopted, intentPath: null, started: null, warning };
+    // The name as typed is the display title when the folder had to differ
+    // ("My Thesis" lives in My-Thesis). Typed by the person: a manual title.
+    let title = null;
+    if (!adopted && rawName !== project) {
+      try { title = setProjectTitle(project, rawName, true).title; }
+      catch { warnings.push('The project name could not be saved as its title. Double-click the title on the project page to set it.'); }
+    }
+    let purposeSaved = false;
+    if (purpose) {
+      try {
+        const paths = projectMemoryPaths(project);
+        await fsp.mkdir(paths.dir, { recursive: true });
+        let existing = '';
+        try { existing = fs.readFileSync(paths.intent, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+        if (existing.trim()) warnings.push('This project already had a purpose, so it was kept. Use Edit project purpose to change it.');
+        else {
+          const text = purpose + '\n';
+          fs.writeFileSync(paths.intent, text);
+          purposeSaved = true;
+          try { await vouchApply({ path: paths.intent, text, source: 'project-purpose', note: 'human-written project purpose at setup' }); }
+          catch { warnings.push('Purpose saved, but its review mark could not be recorded. Open Edit project purpose and save to retry.'); }
+        }
+      } catch { warnings.push('Project saved, but its purpose was not. Use Edit project purpose to add it.'); }
+    }
+    if (typeof folderSearchChanged === 'function') folderSearchChanged(cwd);
+    return { ok: true, project, cwd, adopted, title, purpose: purposeSaved, intentPath: null, started: null, warning: warnings.join(' ') || null };
   }
   const rawName = String(body.name || '').trim();
   if (!rawName) throw new Error('project name is required');
@@ -14636,6 +16718,40 @@ function unregisterProject(name) {
   }
   if (removed) saveCreatedProjects();
   return { ok: true, removed }; // the folder stays; disk is truth
+}
+
+// Undo a setup that has not been used yet. The registration and anything
+// setup wrote go; the folder goes only when it still holds exactly what
+// setup made (nothing, or a Git repository without a commit). Anything
+// else in it is the person's, so it stays and the answer says where.
+function undoProjectSetup(name) {
+  const target = String(name || '');
+  const key = Object.keys(createdProjects).find(k => k === target || canonicalProjectName(k) === target);
+  if (!key) throw new Error('This project is no longer in the project list.');
+  const project = canonicalProjectName(key);
+  const meta = projectMetaFor(project);
+  if (meta && meta.entries && meta.entries.length) throw new Error('This project has conversations now, so setup cannot be undone. Use Remove from project list on its page.');
+  const rec = createdProjects[key];
+  let folderRemoved = false, folderKept = '';
+  if (!rec.adopted && rec.cwd) {
+    try {
+      const names = fs.readdirSync(rec.cwd);
+      const git = path.join(rec.cwd, '.git');
+      const gitIsSetups = names.length === 1 && names[0] === '.git' && fs.lstatSync(git).isDirectory()
+        && !fs.existsSync(path.join(git, 'packed-refs'))
+        && fs.readdirSync(path.join(git, 'refs', 'heads')).length === 0;
+      if (!names.length || gitIsSetups) { fs.rmSync(rec.cwd, { recursive: true }); folderRemoved = true; }
+      else folderKept = 'it has files in it now';
+    } catch (e) { if (e.code !== 'ENOENT') folderKept = 'it could not be checked (' + e.message + ')'; }
+  }
+  delete createdProjects[key];
+  saveCreatedProjects();
+  // A newborn's memory holds only what a person wrote. Left behind, it
+  // would return the day a project of the same name is created again.
+  try { fs.unlinkSync(projectMemoryPaths(project).intent); } catch {}
+  if (projectTitles[project] && projectTitles[project].manual) { delete projectTitles[project]; try { saveProjectTitles(); } catch {} }
+  if (typeof folderSearchChanged === 'function') folderSearchChanged(rec.cwd, folderRemoved);
+  return { ok: true, project, cwd: rec.cwd || null, adopted: !!rec.adopted, folderRemoved, folderKept };
 }
 
 // "Create area" mirrors the project birth ritual, one level down: a folder
@@ -15347,6 +17463,183 @@ async function waitForNewConversation(kind, cwd, sinceMs, existing, timeoutMs = 
 // shows this next to the folder so the choice is made with its consequences
 // visible. The folder does not decide the model: that is the person's last
 // pick, whatever the folder (draftDefaults).
+// ---- folder search (folder-index.js; the pickers in folder-picker.js) ----
+// One list of the home folder's folders, walked on first use and refreshed
+// in the background, ranked per keystroke with what Chattering knows:
+// which folders are projects (and which names are taken: a project is
+// identified by its folder's name), where conversations ran, what changed.
+let folderIndex = null;
+// Chattering's own data (notes, cache, state) is never a project folder.
+function folderIndexNow() { return folderIndex ||= folderIndexLib.createFolderIndex({ home: os.homedir(), exclude: [NOTES_DIR, CACHE_DIR, DIRS.data, DIRS.config] }); }
+let folderFacts = null; // { at, roots: Map(name → abs), byCwd: Map(abs → {n, last}) }
+function folderSearchFacts() {
+  if (folderFacts && Date.now() - folderFacts.at < 30000) return folderFacts;
+  // One pass over the conversations, grouped by project; roots by the same
+  // rule as projectMetaFor (one call per project would rescan the index each).
+  const byProject = new Map(), byCwd = new Map();
+  for (const [key, entry] of Object.entries(index)) {
+    if (!entry) continue;
+    const p = projectOfEntry(entry, key);
+    if (p && p !== '?' && p !== LOOSE_PROJECT) { if (!byProject.has(p)) byProject.set(p, []); byProject.get(p).push({ key, entry }); }
+    if (entry.cwd) {
+      const abs = path.resolve(entry.cwd);
+      const at = Date.parse(entry.lastTs || '') || entry.mtimeMs || 0;
+      const row = byCwd.get(abs) || { n: 0, last: 0 };
+      row.n++; row.last = Math.max(row.last, at);
+      byCwd.set(abs, row);
+    }
+  }
+  for (const n of Object.keys(createdProjects)) { const c = canonicalProjectName(n); if (!byProject.has(c)) byProject.set(c, []); }
+  const roots = new Map();
+  for (const [n, entries] of byProject) { const cwd = projectRootFromEntries(n, entries); if (cwd) roots.set(n, path.resolve(cwd)); }
+  return (folderFacts = { at: Date.now(), roots, byCwd });
+}
+const rootsByPathCache = new WeakMap();
+function rootsByPath(roots) {
+  let m = rootsByPathCache.get(roots);
+  if (!m) { m = new Map([...roots].map(([name, abs]) => [abs, name])); rootsByPathCache.set(roots, m); }
+  return m;
+}
+// Setup made or removed a folder: searchable (or gone) at once.
+function folderSearchChanged(abs, removed = false) {
+  folderFacts = null;
+  if (!folderIndex || !abs) return;
+  if (removed) folderIndex.remove(abs); else folderIndex.add(abs);
+}
+// What a folder is, for the person choosing it. A project is named by its
+// folder, so a folder whose name a project already uses cannot be added.
+function folderStatusOf(abs, roots) {
+  if (foldsLib.isLooseCwd(abs)) return { status: 'general' };
+  const name = projectNameOf(abs);
+  const root = roots.get(name);
+  if (root === abs) return { status: 'project', project: name };
+  if (root && abs.startsWith(root + path.sep)) return { status: 'inside', project: name };
+  if (root) return { status: 'taken', project: name, root: folderIndexLib.displayOf(root, os.homedir()) };
+  // Inside another project's folder? Walk up the parents: a few lookups,
+  // not one per project (this runs for every folder in a suggestion pass).
+  const byRoot = rootsByPath(roots);
+  for (let up = path.dirname(abs); up !== path.dirname(up); up = path.dirname(up)) {
+    const p = byRoot.get(up);
+    if (p) return { status: 'free', within: p };
+  }
+  return { status: 'free' };
+}
+function folderRecency(ts, now) {
+  const days = (now - (ts || 0)) / 86400000;
+  return days < 1 ? 12 : days < 7 ? 8 : days < 30 ? 4 : 0;
+}
+function folderRow(abs, display, hl, facts, extra = {}) {
+  const c = facts.byCwd.get(abs);
+  return {
+    path: abs, display, name: path.basename(abs) || display, parent: folderIndexLib.displayOf(path.dirname(abs), os.homedir()), hl,
+    conversations: c ? c.n : 0, lastTs: c ? c.last : 0, ...folderStatusOf(abs, facts.roots), ...extra,
+  };
+}
+// purpose: 'add' (an existing folder becomes a project), 'parent' (where a
+// new project folder goes), 'run' (where a conversation runs).
+async function searchFolders(rawQuery, purpose = 'add', limit = 40) {
+  const q = String(rawQuery || '').slice(0, 300);
+  const home = os.homedir();
+  const facts = folderSearchFacts();
+  const now = Date.now();
+  if (/^(?:~(?:[\\/]|$)|[\\/]|[A-Za-z]:[\\/])/.test(q.trim())) return searchFolderPath(q.trim(), purpose, facts, limit);
+  const fi = folderIndexNow();
+  fi.ensure();
+  const items = fi.items();
+  const byAbs = new Map(items.map(i => [i.abs, i]));
+  // Folders conversations ran in count even when the walk does not reach them.
+  for (const abs of facts.byCwd.keys()) {
+    if (!byAbs.has(abs) && abs !== home && abs.startsWith(home + path.sep) && !foldsLib.isLooseCwd(abs)) byAbs.set(abs, { abs, depth: path.relative(home, abs).split(path.sep).length, git: false, mtimeMs: 0, fromConversations: true });
+  }
+  const indexing = !fi.ready;
+  const done = rows => ({ mode: q.trim() ? 'search' : 'suggest', indexing, partial: fi.partial, results: rows.slice(0, limit) });
+  const childrenCount = new Map();
+  for (const r of facts.roots.values()) { const d = path.dirname(r); childrenCount.set(d, (childrenCount.get(d) || 0) + 1); }
+  if (!q.trim()) {
+    const rows = [];
+    const seen = new Set();
+    const push = (abs, section, extra) => {
+      if (seen.has(abs)) return;
+      seen.add(abs);
+      const it = byAbs.get(abs) || {};
+      rows.push(folderRow(abs, folderIndexLib.displayOf(abs, home), [], facts, { section, git: !!it.git, mtimeMs: it.mtimeMs || 0, ...extra }));
+    };
+    if (purpose === 'parent') {
+      // Where projects already live, most first; then the usual place.
+      // Two or more projects make a place; one is an accident.
+      [...childrenCount].filter(([d, n]) => n >= 2 && fs.existsSync(d)).sort((a, b) => b[1] - a[1]).slice(0, 6)
+        .forEach(([d, n]) => push(d, 'Where your projects are', { projectsInside: n }));
+      const usual = path.join(home, 'Projects');
+      if (fs.existsSync(usual)) push(usual, 'Where your projects are', { projectsInside: childrenCount.get(usual) || 0 });
+      push(home, 'Where your projects are', { projectsInside: childrenCount.get(home) || 0 });
+    } else if (purpose === 'run') {
+      [...facts.byCwd].filter(([abs]) => fs.existsSync(abs)).sort((a, b) => b[1].last - a[1].last).slice(0, 10)
+        .forEach(([abs]) => push(abs, 'Recent folders'));
+    } else {
+      const free = [...byAbs.values()].filter(it => it.depth <= 4 && folderStatusOf(it.abs, facts.roots).status === 'free');
+      free.filter(it => it.git).sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 6).forEach(it => push(it.abs, 'Git repositories not in Chattering yet'));
+      free.filter(it => !it.git && it.depth <= 3).sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 6).forEach(it => push(it.abs, 'Recently changed'));
+    }
+    return done(rows);
+  }
+  const scored = [];
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  for (const it of byAbs.values()) {
+    const display = it.display ||= folderIndexLib.displayOf(it.abs, home);
+    const m = folderIndexLib.scoreText(display, words, it.lower ||= display.toLowerCase());
+    if (m) scored.push({ it, display, hl: m.hl, score: m.score - folderIndexLib.depthPenalty(it.depth) });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const rows = scored.slice(0, 300).map(x => {
+    const row = folderRow(x.it.abs, x.display, x.hl, facts, { git: !!x.it.git, mtimeMs: x.it.mtimeMs || 0 });
+    let score = x.score + folderRecency(row.mtimeMs, now) / 2;
+    if (row.conversations) score += (purpose === 'run' ? 14 : 5) * Math.log2(1 + row.conversations) + folderRecency(row.lastTs, now);
+    if (purpose === 'add') score += row.status === 'free' ? (row.git ? 6 : 0) : row.status === 'project' ? -25 : -60;
+    if (purpose === 'parent') {
+      const n = childrenCount.get(row.path) || 0;
+      if (n) { score += 10 * Math.log2(1 + n); row.projectsInside = n; }
+      if (row.status === 'project' || row.status === 'inside') score -= 15;
+    }
+    if (purpose === 'run' && row.status === 'project') score += 8;
+    return { row, score };
+  });
+  rows.sort((a, b) => b.score - a.score || a.row.display.length - b.row.display.length || a.row.display.localeCompare(b.row.display));
+  return done(rows.map(r => r.row));
+}
+// A typed path: the folders inside it, matched against what follows the
+// last slash. Hidden folders appear once the typed part starts with a dot.
+async function searchFolderPath(q, purpose, facts, limit) {
+  const home = os.homedir();
+  const expanded = expandHomePath(q);
+  const endsSep = /[\\/]$/.test(q);
+  const abs = path.resolve(expanded);
+  const dir = endsSep ? abs : path.dirname(abs);
+  const partial = endsSep ? '' : path.basename(abs);
+  let ents;
+  try { ents = await fsp.readdir(dir, { withFileTypes: true }); }
+  catch { return { mode: 'path', base: folderIndexLib.displayOf(dir, home), error: 'No folder at ' + folderIndexLib.displayOf(dir, home), results: [] }; }
+  const rows = [];
+  if (!partial) rows.push(folderRow(dir, folderIndexLib.displayOf(dir, home), [], facts, { self: true, git: fs.existsSync(path.join(dir, '.git')) }));
+  const children = [];
+  for (const e of ents) {
+    if (!e.isDirectory() && !(e.isSymbolicLink() && (() => { try { return fs.statSync(path.join(dir, e.name)).isDirectory(); } catch { return false; } })())) continue;
+    if (e.name.startsWith('.') && !partial.startsWith('.')) continue;
+    if (folderIndexLib.SKIP_NAMES.has(e.name) && partial !== e.name) continue;
+    const m = partial ? folderIndexLib.scoreText(e.name, partial) : { score: 0, hl: [] };
+    if (!m) continue;
+    children.push({ name: e.name, m });
+  }
+  if (partial) children.sort((a, b) => b.m.score - a.m.score || a.name.length - b.name.length);
+  else children.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+  for (const c of children.slice(0, limit)) {
+    const child = path.join(dir, c.name);
+    const display = folderIndexLib.displayOf(child, home);
+    const offset = display.length - c.name.length;
+    rows.push(folderRow(child, display, c.m.hl.map(i => i + offset), facts, { git: fs.existsSync(path.join(child, '.git')) }));
+  }
+  return { mode: 'path', base: folderIndexLib.displayOf(dir, home), results: rows };
+}
+
 function describeStartFolder(raw) {
   const text = String(raw == null ? '' : raw).trim();
   const home = os.homedir();
@@ -15374,9 +17667,15 @@ function describeStartFolder(raw) {
   if (fs.existsSync(globalAgents) && !contextFiles.includes(globalAgents)) contextFiles.push(globalAgents);
   const meta = loose ? null : projectMetaFor(project);
   const area = !loose && meta && meta.cwd ? areaOfCwdIn(project, abs) : null;
+  // A purpose a person wrote for this project: the draft attaches it.
+  let purpose = false;
+  if (meta) { try { purpose = fs.readFileSync(projectMemoryPaths(project).intent, 'utf8').trim().length > 0; } catch {} }
+  // A missing folder whose parent exists can become a new project.
+  let parentExists = false;
+  if (!exists) { try { parentExists = fs.statSync(path.dirname(abs)).isDirectory(); } catch {} }
   return {
-    path: abs, display, exists, loose,
-    project: loose ? null : project, known: !!meta, area: area || null,
+    path: abs, display, exists, loose, parentExists,
+    project: loose ? null : project, known: !!meta, area: area || null, purpose,
     contextFiles,
   };
 }
@@ -15414,15 +17713,19 @@ const draftStarts = new Map(); // draftId → { at, promise }
 // developer instructions, as the system prompt does for Pi: once, at the
 // start of the thread, and remembered as given. brief: instructions for
 // this first request only (the file ask box's), after the context.
-async function startCodexConversation({ folder, prompt, images = [], principal, models, effort = null, access = 'config', items = [], brief = null, input = 'keyboard' }) {
+// mode: a key chosen on the draft; modeDef: the ModeDef itself (a conversation
+// moving here keeps its mode). injectItems, beforeIndex: as codexRuns().start.
+async function startCodexConversation({ folder, prompt, images = [], principal, models, effort = null, access = 'config', items = [], brief = null, input = 'keyboard', mode = null, modeDef = null, injectItems = null, beforeIndex = null }) {
   const bundle = items.length || brief ? await writeAttachedContextFile(items, brief ? { brief } : undefined) : null;
   const model = normalizePickedModels(models).find(m => m.provider === 'codex');
+  // A prompt mode chosen on the draft starts the thread's instructions.
+  modeDef = modeDef || (mode ? promptModeDef(mode) : null);
   const started = await codexRuns().start({
     folder, message: prompt, images, principal,
     model: model ? model.modelId : null, effort: effort || null, access,
-    developerInstructions: bundle ? bundle.text : null,
+    developerInstructions: [modeDef ? agentModesLib.switchText(modeDef) : '', bundle ? bundle.text : ''].filter(Boolean).join('\n\n') || null,
     author: { id: principal.user.id, name: principal.user.name, input: input || 'keyboard' },
-    input, describeStartFolder,
+    input, describeStartFolder, injectItems, beforeIndex,
   });
   if (items.length) {
     saveConversationContext(started.key, items);
@@ -15434,6 +17737,7 @@ async function startCodexConversation({ folder, prompt, images = [], principal, 
     saveModelPrefs();
   }
   if (model) saveConversationModels(started.key, [model]);
+  if (modeDef) { agentModes.set(started.key, modeDef); agentModes.given(started.key, 'codex'); }
   return started;
 }
 async function startConversationFromDraft(p, principal = null) {
@@ -15446,6 +17750,7 @@ async function startConversationFromDraft(p, principal = null) {
         folder: p.folder, prompt: typeof p.prompt === 'string' ? p.prompt.trim() : '', images: rpcImagesOf(p.images), principal,
         models: p.models, effort: typeof p.thinking === 'string' ? p.thinking : null,
         access: typeof p.access === 'string' ? p.access : 'config', items: normalizeContextItems(p.context), input: p.input,
+        mode: typeof p.mode === 'string' && p.mode ? p.mode : null,
       });
       return { key: started.key, cwd: started.cwd, project: projectNameOf(started.cwd, started.key), harness: 'codex', job: jobView(started.job), warnings: [] };
     })();
@@ -16240,10 +18545,44 @@ async function probeProjectPython(root, notebooksDir) {
 // unit that sets them keeps working; the settings page says when one does.
 // Empty means not set up: every caller refuses with a reason (or plays the
 // chime) instead of reaching for an address that is not this person's.
-const VOICE_ENV = { speechUrl: 'SPEECH_URL', ttsUrl: 'KOKORO_URL', ttsVoice: 'KOKORO_VOICE', voiceModelUrl: 'REWRITE_URL', voiceModel: 'REWRITE_MODEL' };
+const VOICE_ENV = { speechUrl: 'SPEECH_URL', myVoiceUrl: 'MYVOICE_URL', ttsUrl: 'KOKORO_URL', ttsVoice: 'KOKORO_VOICE', voiceModelUrl: 'REWRITE_URL', voiceModel: 'REWRITE_MODEL', speakerUrl: 'SPEAKER_URL' };
 function voiceSetting(key) { return String(process.env[VOICE_ENV[key]] || appSettings[key] || '').trim(); }
 const speechUrl = () => voiceSetting('speechUrl').replace(/\/+$/, '');
+// Which speech engine hears a person (speech-engines.js): Parakeet
+// (speechUrl) for everyone unless they chose the small model of their own
+// voice (myVoiceUrl). speechEngineFor(identity) is asked at every
+// transcription, so a switch in Settings applies to the next utterance.
+const speechEngines = require('./speech-engines.js').createSpeechEngines({
+  file: path.join(DATA_DIR, 'voice-engines.json'),
+  urlOf: key => voiceSetting(key).replace(/\/+$/, ''),
+});
+function speechEngineFor(identity) {
+  let user = null;
+  try { user = identity ? principalFor(identity).user.id : usersLib.ownerOf(roster).id; } catch {}
+  return speechEngines.resolve(user);
+}
+// One transcription through the person's engine; when that engine is not
+// Parakeet and it fails (down, refused), Parakeet answers instead and the
+// result says so (engine.fallback), so neither the voice nor a comparison
+// is lost. Returns { text, engine: { id, name, fallback? } }.
+async function transcribeFor(identity, pcm, { contentType = 'audio/L16;rate=16000;channels=1', timeoutMs = 30000 } = {}) {
+  const engine = speechEngineFor(identity);
+  if (!engine.url) throw voiceServiceError('Speech-to-text');
+  const ask = async url => {
+    const out = await httpRaw(url + '/transcribe', pcm, contentType, timeoutMs);
+    if (out.status !== 200) throw new Error(out.buf.toString('utf8').slice(0, 200) || 'status ' + out.status);
+    return out.buf.toString('utf8').trim();
+  };
+  try {
+    return { text: await ask(engine.url), engine: { id: engine.id, name: engine.name, ...(engine.fallback ? { fallback: engine.fallback } : {}) } };
+  } catch (e) {
+    if (engine.id === speechEngines.DEFAULT_ENGINE || !speechUrl()) throw e;
+    console.log('[speech] ' + engine.name + ' failed (' + e.message + '); Parakeet answers this one');
+    return { text: await ask(speechUrl()), engine: { id: speechEngines.DEFAULT_ENGINE, name: 'Parakeet', fallback: engine.name + ' failed: ' + e.message.slice(0, 80) } };
+  }
+}
 const ttsUrl = () => voiceSetting('ttsUrl').replace(/\/+$/, '');
+const speakerUrl = () => voiceSetting('speakerUrl').replace(/\/+$/, '');
 const voiceModelReady = () => !!(voiceSetting('voiceModelUrl') && voiceSetting('voiceModel'));
 function voiceServiceError(what) {
   const e = new Error(what + ' is not set up on this machine (settings → sound)');
@@ -16290,8 +18629,10 @@ function voiceCapabilities() {
   };
   return {
     speech: one(['speechUrl'], 'no speech-to-text server is set up'),
+    myVoice: one(['myVoiceUrl'], 'no “my voice” speech-to-text server is set up'),
     tts: one(['ttsUrl'], 'no read-aloud server is set up'),
     voiceModel: one(['voiceModelUrl', 'voiceModel'], 'no model for spoken digests is set up'),
+    speaker: one(['speakerUrl'], 'no voice-print server is set up'),
   };
 }
 const REWRITE_API_KEY = process.env.REWRITE_API_KEY || 'inktype-local';
@@ -16387,11 +18728,18 @@ async function rewriteForSpeech(text) {
   return String(outputs.spoken_script || '').trim();
 }
 
-async function synthesizeSpeech(text, rewrite, speed = 1) {
+// Read aloud (Kokoro): the text as it should be heard (speech-script.js:
+// lists announced and numbered, pauses where a reader's eye would rest,
+// no markdown symbols, code and links left to the screen), each segment
+// made on its own and joined with that much silence (the read-aloud server
+// joins its sentences with none). \`segments\`: already made from a reply.
+// v2 in the clip's id: clips made before (symbols read out) are not reused.
+async function synthesizeSpeech(text, rewrite, speed = 1, { segments = null } = {}) {
   const src = String(text || '').trim();
-  if (!src) throw new Error('No text to read.');
+  if (!src && !(segments && segments.length)) throw new Error('No text to read.');
   if (!ttsUrl()) throw voiceServiceError('Read-aloud');
-  const id = crypto.createHash('sha256').update((rewrite ? 'r1|' : 'r0|') + (speed !== 1 ? 's' + speed + '|' : '') + src).digest('hex').slice(0, 24);
+  // v4: louder (speech-level.js); clips made before are made again.
+  const id = crypto.createHash('sha256').update('v4|' + (rewrite ? 'r1|' : 'r0|') + (speed !== 1 ? 's' + speed + '|' : '') + (segments ? JSON.stringify(segments) : src)).digest('hex').slice(0, 24);
   const wavPath = path.join(TTS_DIR, id + '.wav');
   const metaPath = path.join(TTS_DIR, id + '.json');
   if (fs.existsSync(wavPath)) {
@@ -16412,18 +18760,45 @@ async function synthesizeSpeech(text, rewrite, speed = 1) {
       }
     }
     const voiceName = voiceSetting('ttsVoice');
-    const tts = await httpPcm(ttsUrl() + '/tts', {
-      text: spoken, ...(voiceName ? { voice: voiceName } : {}), speed,
-    }, 180000);
-    if (tts.status !== 200 || !tts.buf.length) {
-      throw new Error('The read-aloud server answered ' + tts.status + ' at ' + ttsUrl() + '. Is it running?');
+    const segs = segments || speechScript.toSpeech(spoken);
+    if (!segs.length) segs.push({ text: 'There is nothing to read aloud here: it is on your screen.', pauseMs: 0 });
+    // Sentences with no pause between them go together (Kokoro splits them
+    // itself); a pause ends a request. Pauses shrink as the voice speeds up.
+    const runs = [];
+    for (const seg of segs) {
+      const last = runs[runs.length - 1];
+      if (last && !last.pauseMs) { last.text += ' ' + seg.text; last.pauseMs = seg.pauseMs; }
+      else runs.push({ text: seg.text, pauseMs: seg.pauseMs });
     }
-    const rate = Number(tts.headers['x-sample-rate'] || 24000);
-    const wav = pcmToWav(tts.buf, rate);
+    const made = new Array(runs.length);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(3, runs.length) }, async () => {
+      while (next < runs.length) {
+        const i = next++;
+        const tts = await httpPcm(ttsUrl() + '/tts', { text: runs[i].text, ...(voiceName ? { voice: voiceName } : {}), speed }, 180000);
+        if (tts.status !== 200 || !tts.buf.length) throw new Error('The read-aloud server answered ' + tts.status + ' at ' + ttsUrl() + '. Is it running?');
+        made[i] = tts;
+      }
+    }));
+    const rate = Number(made[0].headers['x-sample-rate'] || 24000);
+    const silence = ms => Buffer.alloc(Math.round(rate * Math.max(0, ms) / 1000 / Math.max(0.5, speed)) * 2);
+    // Where each piece is in the clip (ms of the file): what the person heard
+    // when they stopped it (the frog, design/102).
+    const timing = [];
+    let at = 0;
+    const parts = made.flatMap((t, i) => {
+      const gap = silence(runs[i].pauseMs);
+      const len = t.buf.length / 2 / rate * 1000;
+      timing.push({ text: runs[i].text, startMs: Math.round(at), endMs: Math.round(at + len) });
+      at += len + gap.length / 2 / rate * 1000;
+      return [t.buf, gap];
+    });
+    const pcm = speechLevel.louder(Buffer.concat(parts), rate);
+    const wav = pcmToWav(pcm, rate);
     await fsp.writeFile(wavPath, wav);
     const meta = {
-      id, chars: src.length, spokenChars: spoken.length, rewrite: !!rewrite,
-      sampleRate: rate, bytes: wav.length, durationMs: Math.round(tts.buf.length / 2 / rate * 1000),
+      id, chars: src.length, spokenChars: speechScript.spokenText(segs).length, segments: runs.length, runs: timing, rewrite: !!rewrite,
+      sampleRate: rate, bytes: wav.length, durationMs: Math.round(pcm.length / 2 / rate * 1000),
     };
     await fsp.writeFile(metaPath, JSON.stringify(meta));
     return { ...meta, cached: false, url: '/api/tts/audio?id=' + id };
@@ -16483,13 +18858,38 @@ function fallbackSpokenLine(text, opening) {
 // that page plays it itself, and this computer stays quiet. With no screen
 // open, this computer plays only if the person was last here (or nobody
 // has been seen since it started). Each person hears their own runs.
+// Where each sound went, and why (the last 40; design/102: "my phone stayed
+// silent" could not be answered after the fact). In the log too.
+const soundDecisions = [];
+function noteSound(key, targets, rows) {
+  const e = key && index[key];
+  const ago = r => Math.max(0, Math.round((Date.now() - r.activeAt) / 1000)) + ' s';
+  const say = r => (r.local ? 'a browser on this computer' : (r.device || 'a screen elsewhere')) + (r.visible ? ', visible' : ', hidden') + ', touched ' + ago(r) + ' ago';
+  const went = [...(targets.host ? ['this computer\u2019s speakers'] : []), ...targets.screens.map(c => { if (String(c).startsWith('voice:')) { const v = voiceSessions.get(c.slice(6)); return 'the voice session (' + (v ? v.kind + (v.gone ? ', its screen briefly gone' : '') : 'ended') + ')'; } const r = rows.find(x => x.conn === c); return r ? say(r) : 'a screen'; })];
+  const rec = { at: new Date().toISOString(), for: e ? (e.timelineTitle || e.title || key) : key || null, went, screens: rows.map(r => say(r) + (targets.screens.includes(r.conn) || (targets.host && r.local) ? ' (chosen)' : '')) };
+  soundDecisions.push(rec);
+  if (soundDecisions.length > 40) soundDecisions.shift();
+  console.log('[sound] ' + (rec.for || 'a sound') + ' \u2192 ' + (went.join(' + ') || 'nowhere') + (rows.length ? ' · screens: ' + rec.screens.join('; ') : ' · no screen open'));
+}
 function soundTargets(key, askedBy) {
+  const targets = soundTargetsOf(key, askedBy);
+  try {
+    let ids = []; try { ids = pushRecipients(key, askedBy); } catch {}
+    const rows = ids.flatMap(id => pushing().here.forUser(id, conn => sseByConn.has(conn)));
+    noteSound(key, targets, rows);
+  } catch {}
+  return targets;
+}
+function soundTargetsOf(key, askedBy) {
   const targets = { host: false, screens: [] };
   let ids = [];
   try { ids = pushRecipients(key, askedBy); } catch {}
   if (!ids.length) { targets.host = true; return targets; }
   const here = pushing().here, now = Date.now();
   for (const userId of ids) {
+    // A voice session owns this person's speaker: everything goes there,
+    // decided when each sound is sent (sendScreenSound), never elsewhere.
+    if (voiceSessions.get(userId)) { if (!targets.screens.includes('voice:' + userId)) targets.screens.push('voice:' + userId); continue; }
     const row = pushPolicy.soundScreen(here.forUser(userId, conn => sseByConn.has(conn)), now);
     if (row) {
       if (row.local) targets.host = true;
@@ -16504,6 +18904,14 @@ function soundTargets(key, askedBy) {
 // One sound to one page: { tone } or { audio } (a speech clip's address).
 // Only to that stream: the other screens of the person stay quiet.
 function sendScreenSound(conn, sound) {
+  // To a person's voice session: its holder's screen now, or kept for it
+  // while it is briefly gone (voice-session.js deliver).
+  if (typeof conn === 'string' && conn.startsWith('voice:')) {
+    const d = voiceSessions.deliver(conn.slice(6), sound, c => sseByConn.has(c));
+    if (!d) return;
+    if (d.waiting) { console.log('[voice] a sound waits for the session\u2019s screen to come back'); return; }
+    conn = d.conn;
+  }
   const client = sseByConn.get(conn);
   if (!client) return;
   try { client.res.write('data: ' + JSON.stringify({ type: 'done-sound', ...sound }) + '\n\n'); } catch {}
@@ -16516,6 +18924,11 @@ function playTargetsTone(targets, tone, job = null) {
 async function speakRunDone(job) {
   try {
     if (job.fanoutId) return; // parallel runs would talk over each other
+    // Spoken as it was written; a run that streamed nothing is spoken whole.
+    if (typeof theFrog !== 'undefined' && job.key && job.key === theFrog.key && theFrog.talk) {
+      if (!frogStreams.has(job)) await speakFrogReply(job);
+      return frogSpeechEnd(job);
+    }
     const text = String(job.doneSpeechSource || '').trim();
     if (!text) return;
     await announceDone({ key: job.key, askedBy: job.askedBy, text, job });
@@ -16530,7 +18943,12 @@ async function announceDone({ key, askedBy = null, text, job = null }) {
   if (mode === 'off' || voiceMuted()) return;
   const targets = soundTargets(key, askedBy);
   if (!targets.host && !targets.screens.length) return;
-  if (mode === 'chime') return playTargetsTone(targets, 'done', job);
+  // Talking with the frog: another conversation's news is not read into the
+  // person's ear over it (design/102: "many things running at once in my
+  // headphones"); a chime, which the page holds until the frog is quiet.
+  // The frog sees the new reply in its workspace note.
+  const talking = typeof theFrog !== 'undefined' && theFrog.talk && key !== theFrog.key;
+  if (mode === 'chime' || talking) return playTargetsTone(targets, 'done', job);
   const entry = key && index[key];
   const title = (entry && (entry.title || entry.timelineTitle) || '').trim() || 'an untitled task';
   const opening = voiceOpeningFor(key, title);
@@ -16767,12 +19185,10 @@ function recordUtterance({ waitMs = 10000, tailMs = 2200, maxMs = 120000 } = {})
   });
 }
 
+// The computer's own microphone hears the owner: their engine.
 async function transcribePcm(pcm) {
-  if (!speechUrl()) throw voiceServiceError('Speech-to-text');
-  const out = await httpRaw(speechUrl() + '/transcribe', pcm,
-    'audio/L16;rate=16000;channels=1', 60000 + Math.floor(pcm.length / 128));
-  if (out.status !== 200) throw new Error('speech service ' + out.status);
-  return out.buf.toString('utf8').trim();
+  const { text } = await transcribeFor(null, pcm, { timeoutMs: 60000 + Math.floor(pcm.length / 128) });
+  return text;
 }
 
 // The send word may sit at the very end, or be followed by a couple of
@@ -16789,7 +19205,97 @@ const VOICE_SEND_TAIL = /[\s.,!]*(send|done|go|submit|enter|control enter|ship i
 // screen offered and Jev's full answer, the decision, what became of it,
 // a failed call, and the person's own note ("I wanted …").
 const voiceActions = require('./voice-actions.js');
-const { VoiceWindow, clampWindowSeconds } = require('./voice-window.js');
+const { VoiceWindow, clampWindowSeconds, BYTES_PER_SECOND: VOICE_BYTES_PER_SECOND } = require('./voice-window.js');
+// The microphone gate as a model (voice-vad.js; design/102 "two small
+// models"), one instance per listener (it carries state from frame to
+// frame), when the setting says so and the weights are there. The weights
+// are read once per process.
+const voiceVadLib = require('./voice-vad.js');
+let voiceVadWeights;
+function voiceGateFor() {
+  if (!appSettings.voiceGateModel) return null;
+  if (voiceVadWeights === undefined) {
+    try { voiceVadWeights = JSON.parse(fs.readFileSync(voiceVadLib.DEFAULT_WEIGHTS, 'utf8')); }
+    catch (e) { voiceVadWeights = null; console.log('[voice] gate model not loaded (' + e.message + '): the energy gate stays'); }
+  }
+  if (!voiceVadWeights) return null;
+  try { return new voiceVadLib.VoiceVad(voiceVadWeights); } catch (e) { console.log('[voice] gate model: ' + e.message); return null; }
+}
+// Only my voice (design/102, voice-speaker.js): the person's voice prints,
+// one entry per person, embeddings included (0600; never sent to a page).
+const voiceSpeaker = require('./voice-speaker.js');
+const VOICE_PRINTS_FILE = path.join(DATA_DIR, 'voice-prints.json');
+// Every verdict, to read back why a word got through or was dropped.
+const VOICE_SPEAKER_LOG = path.join(DATA_DIR, 'voice-speaker.jsonl');
+const voiceSpeakerRecord = voiceSpeaker.makeRecorder(VOICE_SPEAKER_LOG);
+const voicePrintsFor = identity => voiceSpeaker.entryFor(voiceSpeaker.loadStore(VOICE_PRINTS_FILE), principalFor(identity).user.id);
+function voicePrintsUpdate(identity, fn) {
+  const data = voiceSpeaker.loadStore(VOICE_PRINTS_FILE);
+  const id = principalFor(identity).user.id;
+  data[id] = fn(voiceSpeaker.entryFor(data, id));
+  voiceSpeaker.saveStore(VOICE_PRINTS_FILE, data);
+  return data[id];
+}
+function voicePrintStatus(identity) {
+  const e = voicePrintsFor(identity);
+  return { ...voiceSpeaker.publicEntry(e), service: !!speakerUrl(), enrolTargetSecs: voiceSpeaker.ENROL_TARGET_SECS, enrolMinSecs: voiceSpeaker.ENROL_MIN_SECS };
+}
+// "It was me" (design/102, 2026-10-19): an utterance the filter took for
+// another voice, claimed by the person on the page. Until now the press
+// only ran the words; nothing learned. Now the utterance's audio (kept a
+// few minutes, by id) goes into a pool of corrections for that person, the
+// verdict is logged as corrected, and once the pool holds 20 s of speech
+// it becomes a voice print of its own ("from your corrections"), replacing
+// the previous one: a print of the person in exactly the conditions where
+// the filter missed them (outside, a machine running, another headset).
+const VOICE_CLAIMS_DIR = path.join(DATA_DIR, 'voice-claims');
+const voiceRecentUtterances = new Map(); // id → { pcm, text, at, user, secs, score, bar }
+function voiceKeepUtterance(u) {
+  voiceRecentUtterances.set(u.id, u);
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  for (const [id, x] of voiceRecentUtterances) { if (x.at < cutoff || voiceRecentUtterances.size > 200) voiceRecentUtterances.delete(id); else break; }
+}
+const voiceListenersByUser = new Map(); // user id → Set of () => void (re-read the prints)
+function voiceListenersRefresh(userId) { for (const fn of voiceListenersByUser.get(userId) || []) { try { fn(); } catch {} } }
+const VOICE_CLAIM_LABEL = 'from your corrections';
+async function voiceClaim(identity, { id, device }) {
+  const u = voiceRecentUtterances.get(String(id || ''));
+  const userId = principalFor(identity).user.id;
+  if (!u || u.user !== userId) return { kept: false, why: 'that utterance is no longer kept (a few minutes)' };
+  voiceRecentUtterances.delete(u.id);
+  voiceSpeakerRecord({ text: u.text, mine: 'yes', claimed: true, score: u.score, bar: u.bar, secs: u.secs, device: device || null });
+  fs.mkdirSync(VOICE_CLAIMS_DIR, { recursive: true, mode: 0o700 });
+  const pcmFile = path.join(VOICE_CLAIMS_DIR, userId + '.pcm'), metaFile = path.join(VOICE_CLAIMS_DIR, userId + '.json');
+  fs.appendFileSync(pcmFile, u.pcm, { mode: 0o600 });
+  let meta = { claims: [] };
+  try { meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch {}
+  meta.claims.push({ at: u.at, secs: u.secs, text: u.text.slice(0, 120), score: u.score, device: device || null });
+  fs.writeFileSync(metaFile, JSON.stringify(meta), { mode: 0o600 });
+  const pool = fs.statSync(pcmFile).size / VOICE_BYTES_PER_SECOND;
+  const out = { kept: true, poolSecs: Math.round(pool), need: voiceSpeaker.ENROL_MIN_SECS };
+  if (pool < voiceSpeaker.ENROL_MIN_SECS || !speakerUrl()) return out;
+  // Enough: a print from the whole pool (the newest 90 s of it).
+  try {
+    const all = fs.readFileSync(pcmFile);
+    const pcm = all.length > 90 * VOICE_BYTES_PER_SECOND ? all.subarray(all.length - 90 * VOICE_BYTES_PER_SECOND) : all;
+    const r = await voiceSpeaker.embed(speakerUrl(), pcm);
+    const print = voiceSpeaker.buildPrint({ embedding: r.embedding, windows: r.windows || [], secs: pcm.length / VOICE_BYTES_PER_SECOND }, { label: VOICE_CLAIM_LABEL + (device ? ' (' + String(device).slice(0, 40) + ')' : '') });
+    voicePrintsUpdate(identity, e => voiceSpeaker.addPrint({ ...e, prints: e.prints.filter(p => !String(p.label || '').startsWith(VOICE_CLAIM_LABEL)) }, print));
+    voiceListenersRefresh(userId);
+    console.log('[voice] a print from ' + meta.claims.length + ' corrections (' + Math.round(pool) + ' s), consistency ' + print.consistency);
+    Object.assign(out, { print: { label: print.label, secs: print.secs, consistency: print.consistency }, claims: meta.claims.length });
+  } catch (e) { console.log('[voice] print from corrections failed: ' + e.message); out.error = e.message; }
+  return out;
+}
+// The check a listener runs on each utterance, or null when off (no
+// service, no print, or the person turned it off).
+function voiceSpeakerCheck(identity, transcribe) {
+  const url = speakerUrl();
+  if (!url) return null;
+  const e = voicePrintsFor(identity);
+  if (!e.on || !e.prints.length) return null;
+  return voiceSpeaker.makeCheck({ url, prints: e.prints, transcribe, log: m => console.log(m), record: voiceSpeakerRecord });
+}
 const TYPESAFE_URL = process.env.TYPESAFE_URL || 'https://api.typesafe.ai/v1/systemone';
 const VOICE_JEV_MODEL = process.env.CHATTERING_VOICE_JEV_MODEL || 'jev-latest';
 const TYPESAFE_KEY_FILE = path.join(CONFIG_DIR, 'typesafe-api-key');
@@ -16799,7 +19305,7 @@ const voiceDecisions = new Map(); // id → the logged decision, for its outcome
 
 // The TypeSafe key: the environment's, else the file Settings writes (0600).
 function typesafeKey() {
-  if (process.env.TYPESAFE_API_KEY) return process.env.TYPESAFE_API_KEY.trim();
+  if ((typeof TYPESAFE_KEY_FROM_BOOT === 'undefined' || TYPESAFE_KEY_FROM_BOOT) && process.env.TYPESAFE_API_KEY) return process.env.TYPESAFE_API_KEY.trim();
   try { return fs.readFileSync(TYPESAFE_KEY_FILE, 'utf8').trim(); } catch { return ''; }
 }
 function saveTypesafeKey(key) {
@@ -17115,6 +19621,16 @@ function voiceOutcome(body, identity) {
   voiceLog({ v: 1, ts: new Date().toISOString(), outcomeOf: d.id, outcome: body.outcome, detail: String(body.detail || '').slice(0, 300) || undefined });
 }
 
+// The voice corpus: on when CHATTERING_VOICE_CORPUS_DIR names a folder
+// (lambda: /mnt/bulk/voice-dataset/chattering, beside the laptop's
+// recordings). Only the install's owner is recorded: the household's other
+// people did not ask for it.
+const voiceCorpus = process.env.CHATTERING_VOICE_CORPUS_DIR
+  ? require('./voice-corpus.js').createVoiceCorpus({ dir: process.env.CHATTERING_VOICE_CORPUS_DIR, log: m => console.log(m) }) : null;
+function voiceCorpusUser(identity) {
+  try { const me = principalFor(identity).user.id; return me === usersLib.ownerOf(roster).id ? me : null; } catch { return null; }
+}
+
 // ws(s)://host/api/voice/listen?window=60 — binary frames of 16 kHz mono
 // 16-bit PCM in; JSON events out ({type: ready | heard | utterance | slide
 // | error}). Text frames: {type:'window', seconds} changes the window,
@@ -17123,26 +19639,137 @@ function voiceListenUpgrade(req, socket, head) {
   const identity = identifyRequest(req);
   if (!identity) return refuseUpgrade(socket, 401, 'Unauthorized');
   if (voiceRefusal(identity)) return refuseUpgrade(socket, 403, 'Forbidden');
-  if (!speechUrl()) return refuseUpgrade(socket, 503, 'Service Unavailable');
+  if (!speechEngineFor(identity).url) return refuseUpgrade(socket, 503, 'Service Unavailable');
   const u = requestUrl(req);
   const conn = acceptWebSocket(req, socket, head, { maxPayload: 1024 * 1024 });
   if (!conn) return;
-  const send = event => { try { conn.send(JSON.stringify(event)); } catch {} };
+  // The engine is chosen at every call (a switch in Settings applies to the
+  // next utterance); the one that answered last is named on each event and
+  // in the corpus, so a fall-back to Parakeet is never mistaken for "my voice".
+  let engineUsed = speechEngineFor(identity);
+  const engineLabel = () => engineUsed.fallback ? engineUsed.id + ' (' + engineUsed.fallback + ')' : engineUsed.id;
+  const send = event => { try { conn.send(JSON.stringify(event.type === 'heard' || event.type === 'utterance' || event.type === 'ready' ? { ...event, engine: engineLabel() } : event)); } catch {} };
   const transcribe = async pcm => {
-    const out = await httpRaw(speechUrl() + '/transcribe', pcm, 'audio/L16', 30000);
-    if (out.status !== 200) throw new Error(out.buf.toString('utf8').slice(0, 200) || 'status ' + out.status);
-    return out.buf.toString('utf8');
+    const r = await transcribeFor(identity, pcm, { contentType: 'audio/L16', timeoutMs: 30000 });
+    engineUsed = r.engine;
+    return r.text;
   };
-  const listener = new VoiceWindow({ transcribe, emit: send, windowSeconds: clampWindowSeconds(u.searchParams.get('window')) });
-  send({ type: 'ready', windowSeconds: listener.windowSeconds });
+  // The voice corpus (voice-corpus.js): the owner's utterances, audio and
+  // words, with what this page says of itself (mode, device, microphone)
+  // and the engine that wrote the words.
+  const corpusCtx = { mode: null, device: null, mic: null };
+  const corpusUser = voiceCorpusUser(identity);
+  const userId = identity.user ? identity.user.id : null;
+  const deviceOf = () => [corpusCtx.device, corpusCtx.mic].filter(Boolean).join(' \u00b7 ') || null;
+  // The person's side of the woven timeline (design/102, frog-timeline.js):
+  // each utterance with the moments its speech began and ended and the
+  // voice check's verdict; the page says later what it did with it
+  // (/api/frog/said).
+  let lastUtteranceId = null;
+  const onUtterance = u => {
+    if (corpusUser && voiceCorpus) voiceCorpus.record({ ...u, ...corpusCtx, engine: engineLabel(), user: corpusUser });
+    if (corpusCtx.mode === 'walkie' && u.text) frogTimeline.heard({ start: u.startedAt, end: u.endedAt, text: u.text, device: deviceOf(), speaker: u.speaker, user: userId });
+    // Kept a few minutes for "It was me" (voiceClaim).
+    lastUtteranceId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    if (userId) voiceKeepUtterance({ id: lastUtteranceId, pcm: u.pcm, text: u.heard || u.text, at: Date.now(), user: userId, secs: Math.round(u.pcm.length / VOICE_BYTES_PER_SECOND * 10) / 10, score: u.speaker ? u.speaker.score : null, bar: u.speaker ? u.speaker.bar : null });
+  };
+  // Barge-in (design/102): half a second into the person's speech, while
+  // the frog's voice plays on their device, that speech is checked against
+  // their voice print (when the check is on): theirs, and the page is told
+  // to pause where they began. With no print, the live words decide below.
+  const bargeSaid = { at: 0 };
+  const tellBarge = (at, sp, extra) => {
+    bargeSaid.at = at;
+    frogTimeline.onset({ at, device: deviceOf(), user: userId });
+    send({ type: 'barge', at, agoMs: Date.now() - at, job: sp.job, clip: sp.clip, ms: sp.ms, resumeMs: frogTimeline.resumeFor(sp.job, sp.clip, at), ...extra });
+  };
+  // Checked at 0.5 s, 1.5 s and 3 s of speech (stage 0, 1, 2), on the
+  // last second of it: outside with a machine running the first half
+  // second is the machine (every barge check scored below 0.1 on
+  // 2026-10-19), the voice comes after.
+  const onBurst = async ({ pcm, at, stage }) => {
+    if (corpusCtx.mode !== 'walkie' || !listener.check || bargeSaid.at === at) return;
+    const sp = frogTimeline.speakingAt(at);
+    if (!sp) return;
+    const e = voicePrintsFor(identity);
+    if (!e.on || !e.prints.length || !speakerUrl()) return;
+    const tail = pcm.length > VOICE_BYTES_PER_SECOND ? pcm.subarray(pcm.length - VOICE_BYTES_PER_SECOND) : pcm;
+    let r;
+    try { r = await voiceSpeaker.check(speakerUrl(), tail, e.prints); } catch (err) { console.log('[voice] barge check failed: ' + err.message); return; }
+    const mine = r.score >= voiceSpeaker.THRESHOLDS.lenient;
+    voiceSpeakerRecord({ text: '(barge check, stage ' + stage + ')', mine: mine ? 'yes' : 'no', score: r.score, secs: r.secs, bar: voiceSpeaker.THRESHOLDS.lenient, barge: true, stage });
+    if (mine && bargeSaid.at !== at) tellBarge(at, sp, { score: r.score, how: 'voice', stage });
+  };
+  // A hand-over ("over", "over to you") or a command at the end of the
+  // live words while the gate has not closed the utterance (a machine
+  // keeps it open: 43 s utterances on 2026-10-19): the utterance closes
+  // now, so the words are handed on and the hand-over is seen.
+  let closedFor = -1;
+  const closeOnHandOver = e => {
+    if (corpusCtx.mode !== 'walkie' || !Number.isFinite(e.decided) || closedFor === e.decided) return;
+    const fresh = [e.committed, e.stable, e.volatile].join(' ').split(/\s+/).filter(Boolean).slice(e.decided);
+    if (!fresh.length) return;
+    const tail = fresh.slice(-6).join(' ');
+    const isHand = !!frogLib.stripHandOver(tail).phrase;
+    const isCmd = fresh.length <= 4 && voiceSpeaker.isControl(tail);
+    if (!isHand && !isCmd) return;
+    if (listener.closeUtterance()) { closedFor = e.decided; console.log('[voice] utterance closed on "' + tail.slice(-40) + '"'); }
+  };
+  // Without a voice print: the live words at the first short pause, when
+  // they are not the frog's own words leaking from the speaker into the
+  // microphone (its text is known). Later than the voice (a pause plus the
+  // recognizer), and other voices pause it too: stated.
+  const bargeByWords = e => {
+    if (corpusCtx.mode !== 'walkie' || listener.check || !Number.isFinite(e.decided)) return;
+    const at = listener.speechStartAt;
+    if (!at || bargeSaid.at === at) return;
+    const sp = frogTimeline.speakingAt(at);
+    if (!sp) return;
+    const fresh = [e.committed, e.stable, e.volatile].join(' ').split(/\s+/).filter(Boolean).slice(e.decided);
+    if (fresh.length < 2) return;
+    const said = fresh.join(' ').toLowerCase().replace(/[^a-z']+/g, ' ').trim();
+    const led = frogSpoken.get(sp.job);
+    const own = led ? led.items.flatMap(i => i.texts).join(' ').toLowerCase().replace(/[^a-z']+/g, ' ') : '';
+    if (own && own.includes(said)) return;
+    tellBarge(at, sp, { how: 'words' });
+  };
+  const emit = ev => { if (ev.type === 'utterance' && lastUtteranceId) ev = { ...ev, id: lastUtteranceId }; send(ev); if (ev.type === 'heard') { try { bargeByWords(ev); closeOnHandOver(ev); } catch {} } };
+  const listener = new VoiceWindow({ transcribe, emit, windowSeconds: clampWindowSeconds(u.searchParams.get('window')), check: voiceSpeakerCheck(identity, transcribe), onUtterance, onBurst, gate: voiceGateFor() });
+  send({ type: 'ready', windowSeconds: listener.windowSeconds, speaker: !!listener.check, gate: listener.gate ? 'model' : 'energy' });
+  // A new print (an enrolment elsewhere, a print from corrections): this
+  // listener's check follows at once.
+  const refresh = () => { listener.check = voiceSpeakerCheck(identity, transcribe); send({ type: 'speaker', on: !!listener.check }); };
+  if (userId) { if (!voiceListenersByUser.has(userId)) voiceListenersByUser.set(userId, new Set()); voiceListenersByUser.get(userId).add(refresh); }
+  // Enrolment rides on the same stream (whatever microphone this device
+  // listens with: browser, app, headset): {type:'enrol', seconds, label}
+  // collects the next minute of speech frames into a print; progress and
+  // the result come back as events; the check starts at once after.
+  let enrolment = null;
+  const enrolEnd = () => { enrolment = null; listener.onSpeech = null; };
   conn.on('message', (data, binary) => {
     if (binary) return listener.feed(data);
     let m;
     try { m = JSON.parse(data); } catch { return; }
     if (m.type === 'window') { listener.setWindowSeconds(m.seconds); send({ type: 'window', windowSeconds: listener.windowSeconds }); }
+    else if (m.type === 'context') { for (const k of ['mode', 'device', 'mic']) if (typeof m[k] === 'string') corpusCtx[k] = m[k].slice(0, 120); }
     else if (m.type === 'stop') listener.close().then(() => conn.close(1000, 'stopped'));
+    else if (m.type === 'enrol') {
+      if (!speakerUrl()) return send({ type: 'enrol', error: 'no voice-print server is set up (Settings → sound)' });
+      if (enrolment) enrolment.cancel();
+      const en = enrolment = voiceSpeaker.makeEnrolment({ url: speakerUrl(), seconds: m.seconds, label: String(m.label || '').slice(0, 80), onProgress: (secs, want) => send({ type: 'enrol', secs, want }) });
+      listener.onSpeech = buf => en.feed(buf);
+      en.done.then(print => {
+        if (enrolment === en) enrolEnd();
+        voicePrintsUpdate(identity, e => voiceSpeaker.addPrint(e, print));
+        listener.check = voiceSpeakerCheck(identity, transcribe);
+        send({ type: 'enrolled', print: voiceSpeaker.publicEntry({ on: true, prints: [print] }).prints[0], speaker: !!listener.check });
+      }).catch(e => { if (enrolment === en) enrolEnd(); if (e.message !== 'cancelled') send({ type: 'enrol', error: e.message }); });
+    }
+    else if (m.type === 'enrol-finish' && enrolment) enrolment.finish();
+    else if (m.type === 'enrol-cancel' && enrolment) { enrolment.cancel(); enrolEnd(); }
+    else if (m.type === 'speaker') { listener.check = voiceSpeakerCheck(identity, transcribe); send({ type: 'speaker', on: !!listener.check }); }
   });
-  conn.on('close', () => { listener.close({ flush: false }); });
+  conn.on('close', () => { if (enrolment) enrolment.cancel(); listener.close({ flush: false }); if (userId && voiceListenersByUser.has(userId)) voiceListenersByUser.get(userId).delete(refresh); });
   conn.on('error', () => {});
 }
 
@@ -17375,6 +20002,7 @@ const APP_FILES = {
     '/harness-composer-ui.js': { file: 'harness-composer-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/codex-ui.js': { file: 'codex-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/live-terminal-ui.js': { file: 'live-terminal-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/claude-accounts-ui.js': { file: 'claude-accounts-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/hotkeys-keys.js': { file: 'hotkeys-keys.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/hotkeys-ui.js': { file: 'hotkeys-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/live-terminal.css': { file: 'live-terminal.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
@@ -17410,7 +20038,6 @@ const APP_FILES = {
     '/file-viewers.js': { file: 'file-viewers.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/file-viewers.css': { file: 'file-viewers.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
     '/table-view.js': { file: 'table-view.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
-    '/table-view.css': { file: 'table-view.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
     '/ink-format.js': { file: 'ink-format.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/ink-editor.js': { file: 'ink-editor.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/ink-editor.css': { file: 'ink-editor.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
@@ -17449,6 +20076,8 @@ const APP_FILES = {
     '/conversation-reader.css': { file: 'conversation-reader.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
     '/conversation-draft.js': { file: 'conversation-draft.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/conversation-draft.css': { file: 'conversation-draft.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/folder-picker.js': { file: 'folder-picker.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/folder-picker.css': { file: 'folder-picker.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
     '/ai-connect.js': { file: 'ai-connect.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/ai-connect.css': { file: 'ai-connect.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
     '/welcome.js': { file: 'welcome.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
@@ -17956,6 +20585,8 @@ async function handleRequest(req, res) {
       const all = accessLib.seesAll(identity);
       for (const pair of Object.entries(index)) {
         if (pair[1].hiddenFanout || pair[1].importCopyOf) continue;
+        if (blankAgentRun(pair[1]) && !liveStates.has(pair[0])) continue;
+        if (chains.nextOf(pair[0]) && index[chains.nextOf(pair[0])]) continue; // shown as part of the newer one
         if (!all && !see(targetOf(pair[0]))) continue;
         visibleEntries.push(pair);
         n++;
@@ -17994,6 +20625,15 @@ async function handleRequest(req, res) {
       data.codexCopies = index[key].codexCopies || null;
       // Its agent's own program (design/91): used here, offered, running.
       data.liveTerminal = liveTerminalFor(key, identity);
+      // The prompt mode serving its next reply, for agents other than Pi
+      // (Pi's own is read from its session).
+      data.agentMode = conversationKind(index[key] || {}) !== 'pi' ? agentModes.publicState(key) : undefined;
+      // A conversation that moved between agents: where it went on, and
+      // where it came from.
+      const later = chains.nextOf(key);
+      data.continuedIn = later && index[later] ? { key: chains.newest(key), agent: AGENT_NAMES[index[chains.newest(key)] ? index[chains.newest(key)].source : ''] || null } : null;
+      data.continues = chains.prevOf(key) ? { key: chains.prevOf(key).key } : null;
+      data.handoffTargets = handoffTargetsFor(key, identity);
       data.selectedModels = await inferredConversationModels(key, data);
       data.attachedContext = conversationContextOf(key);
       data.reading = readingFor(key, identity);
@@ -18392,6 +21032,12 @@ async function handleRequest(req, res) {
           json(res, 200, result);
         } else json(res, 405, { error: 'Unsupported review operation' });
       } catch (e) { json(res, 400, { error: e.message }); }
+    } else if (u.pathname === '/api/files/op' && req.method === 'POST') {
+      try { json(res, 200, await filesOpResponse(identity, await readJsonBody(req, 64 * 1024))); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/files/deleted' && req.method === 'GET') {
+      try { json(res, 200, await filesDeletedResponse(identity, u.searchParams.get('name') || '')); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/files/browse' || u.pathname === '/api/files/activity') {
       try {
         const params = Object.fromEntries(u.searchParams);
@@ -18410,7 +21056,8 @@ async function handleRequest(req, res) {
           const roots = [...new Set(await Promise.all(candidates.map(p => fsp.realpath(p))))];
           const root = params.root ? path.resolve(params.root) : roots[0];
           if (!root || !roots.includes(root)) throw new Error('Repository is not part of this project');
-          json(res, 200, { ...await browser.browse(root, { dir: params.dir, q: params.q, contents: params.contents === '1' }), roots });
+          const deleted = (await deletedFiles.list(r => r.project === params.name).catch(() => [])).length;
+          json(res, 200, { ...await browser.browse(root, { dir: params.dir, q: params.q, contents: params.contents === '1' }), roots, deleted });
         }
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/files/timeline') {
@@ -18658,6 +21305,13 @@ async function handleRequest(req, res) {
         if (!models.length) throw new Error('pick at least one model');
         json(res, 200, { ok: true, models });
       } catch (e) { json(res, 400, { error: e.message }); }
+    } else if (u.pathname === '/api/fs/folders' && req.method === 'GET') {
+      // The folder pickers: fuzzy search over the home folder, or the
+      // folders inside a typed path. Members only (policy.js), like dirs.
+      try {
+        const purpose = ['add', 'parent', 'run'].includes(u.searchParams.get('for')) ? u.searchParams.get('for') : 'add';
+        json(res, 200, await searchFolders(u.searchParams.get('q') || '', purpose, Math.min(80, Number(u.searchParams.get('limit')) || 40)));
+      } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/fs/dirs' && req.method === 'GET') {
       // Folder picker: list subdirectories, so an existing folder can be
       // adopted as a project without a typed path. Local personal tool;
@@ -18686,7 +21340,8 @@ async function handleRequest(req, res) {
         });
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/project/setup' && req.method === 'GET') {
-      json(res, 200, { version: 1 });
+      // 2: purpose and title at setup, names in any alphabet, undo-setup.
+      json(res, 200, { version: 2 });
     } else if (u.pathname === '/api/project/purpose' && (req.method === 'GET' || req.method === 'POST')) {
       try {
         let body = {};
@@ -18749,6 +21404,11 @@ async function handleRequest(req, res) {
         const p = JSON.parse(body || '{}');
         json(res, 200, removeArea(p.project, p.rel));
       } catch (e) { json(res, 400, { error: e.message }); }
+    } else if (u.pathname === '/api/project/undo-setup' && req.method === 'POST') {
+      let body = '';
+      for await (const chunk of req) body += chunk;
+      try { json(res, 200, undoProjectSetup((JSON.parse(body || '{}')).project)); }
+      catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/project/unregister' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
@@ -18765,6 +21425,99 @@ async function handleRequest(req, res) {
         if (parsed.area) include.area = areasLib.normalizeAreaRel(parsed.area);
         json(res, 200, await buildProjectContextBundle(parsed.project, include, parsed.name || ''));
       } catch (e) { json(res, 400, { error: e.message }); }
+    } else if (u.pathname === '/api/conversation/handoff' && req.method === 'POST') {
+      // Continue this conversation with another agent: {id, harness, prompt}
+      // and the draft's settings (startHandoff). Images ride along.
+      try {
+        let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 48 * 1024 * 1024) throw Object.assign(new Error('request too large'), { status: 413 }); }
+        const p = JSON.parse(raw || '{}');
+        if (!index[p.id]) return json(res, 404, { error: 'conversation not found' });
+        json(res, 200, await startHandoff(String(p.id), { harness: String(p.harness || ''), prompt: String(p.prompt || ''), identity, input: p.input === 'voice' ? 'voice' : 'keyboard',
+          images: p.images, models: p.models, thinking: p.thinking, context: p.context, access: p.access, folder: p.folder, mode: 'mode' in p ? p.mode : undefined, inProgram: p.inProgram === true,
+          account: typeof p.account === 'string' ? p.account : null }));
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/claude-accounts' && req.method === 'GET') {
+      // The owner's Claude subscriptions (claude-accounts.js). Owner only (policy.js).
+      json(res, 200, { accounts: await claudeAccountsView({ fresh: u.searchParams.get('fresh') === '1' }), root: claudeAccounts.root });
+    } else if (u.pathname.startsWith('/api/claude-accounts/') && req.method === 'POST') {
+      // add {name} · login {id} → {url} · code {id, code} · remove {id}
+      try {
+        let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 8192) throw Object.assign(new Error('request too large'), { status: 413 }); }
+        const p = JSON.parse(raw || '{}');
+        const op = u.pathname.slice('/api/claude-accounts/'.length);
+        const id = String(p.id || '');
+        const changed = () => { claudeAccountEmails.delete(id); listPiModels(true).catch(() => {}).finally(() => broadcast({ type: 'ai-accounts' })); broadcast({ type: 'claude-accounts' }); };
+        if (op === 'add') {
+          const a = claudeAccounts.add(String(p.name || '').trim().toLowerCase());
+          broadcast({ type: 'claude-accounts' });
+          return json(res, 200, { account: a, accounts: await claudeAccountsView() });
+        }
+        if (op === 'login') {
+          const { terminalDeps } = require('./harness/terminal/deps');
+          const deps = terminalDeps();
+          if (deps.error) throw new Error('signing in from here needs ' + deps.error + '; sign in in a terminal: CLAUDE_CONFIG_DIR=' + claudeAccounts.dirOf(id) + ' claude auth login');
+          return json(res, 200, await claudeAccounts.startLogin(id, { pty: deps.pty, bin: claudeBin(), env: agentEnv(principalFor(identity)) }));
+        }
+        if (op === 'code') {
+          const r = await claudeAccounts.finishLogin(id, p.code);
+          if (r.ok) changed();
+          return json(res, 200, { ...r, accounts: await claudeAccountsView({ fresh: true }) });
+        }
+        if (op === 'remove') {
+          if (id === 'default') throw new Error('the main account is Claude Code\'s own login: sign out there');
+          const using = [...(liveTerminalsLib ? liveTerminalsLib.sessions.keys() : [])].filter(k => claudeAccountOf(k) === id && liveTerminalsLib.status(k).running);
+          if (using.length) throw Object.assign(new Error('Claude Code runs as this account in ' + using.length + ' conversation' + (using.length === 1 ? '' : 's') + ': stop ' + (using.length === 1 ? 'it' : 'them') + ' first.'), { status: 409 });
+          claudeAccounts.stopLogin(id);
+          claudeAccounts.remove(id);
+          for (const [k, v] of claudeAccountChoices) if (v === id) claudeAccountChoices.delete(k);
+          saveClaudeAccountChoices();
+          changed();
+          return json(res, 200, { accounts: await claudeAccountsView() });
+        }
+        json(res, 404, { error: 'not found' });
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/conversation/claude-account' && req.method === 'POST') {
+      // The subscription a Claude Code conversation answers as. {id, account}
+      // Its program, running, restarts on the same conversation once idle.
+      try {
+        let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 4096) throw Object.assign(new Error('request too large'), { status: 413 }); }
+        const p = JSON.parse(raw || '{}');
+        const key = String(p.id || ''), account = String(p.account || 'default');
+        const pend = livePending.get(key);
+        const harness = index[key] ? index[key].source : pend ? pend.harness : null;
+        if (!harness) return json(res, 404, { error: 'conversation not found' });
+        if (harness !== 'claude') return json(res, 400, { error: 'Only a Claude Code conversation answers as a Claude account. In Pi, pick the model of that account.' });
+        if (index[key]) assertCan(identity, 'act', targetOf(key), 'this conversation');
+        const choices = claudeAccountChoicesFor(identity) || [{ id: 'default' }];
+        if (!choices.some(a => a.id === account)) return json(res, 403, { error: 'That Claude account is not available here.' });
+        if (claudeAccountOf(key) === account) return json(res, 200, { account: claudeAccountView(key), when: 'already' });
+        setClaudeAccount(key, account);
+        let when = 'when its program next starts';
+        if (liveTerminalsLib && liveTerminalsLib.status(key).running) {
+          modeRestarts.add(key);
+          when = applyPendingModes(key) ? 'now (its program restarts on this conversation)' : 'once it finishes (its program then restarts on this conversation)';
+        }
+        broadcast({ type: 'claude-account', key, account: claudeAccountView(key), when });
+        json(res, 200, { account: claudeAccountView(key), when });
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/conversation/agent-mode' && req.method === 'POST') {
+      // A prompt mode for Claude Code, Codex, Antigravity or Muse Code
+      // (agent-modes.js), or for Pi's own program. {id, mode: key | null}
+      try {
+        let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 4096) throw Object.assign(new Error('request too large'), { status: 413 }); }
+        const p = JSON.parse(raw || '{}');
+        const key = String(p.id || '');
+        const pend = livePending.get(key);
+        if (index[key]) assertCan(identity, 'act', targetOf(key), 'this conversation');
+        else if (!pend) return json(res, 404, { error: 'conversation not found' });
+        else if (pend.userId !== (identity.user && identity.user.id) && !policy.isOwnerTier(identity)) return json(res, 403, { error: 'This is not yours.' });
+        const harness = index[key] ? index[key].source : pend.harness;
+        if (harness !== 'pi') {
+          const refusal = liveTerminalRefusal(identity, harness);
+          if (refusal) return json(res, 403, { error: refusal });
+        }
+        json(res, 200, await switchAgentMode(key, p.mode == null || p.mode === '' ? null : String(p.mode), identity));
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/modes' && req.method === 'GET') {
       json(res, 200, { modes: listPromptModes() });
     } else if (u.pathname === '/api/modes' && (req.method === 'PUT' || req.method === 'POST')) {
@@ -18957,6 +21710,10 @@ async function handleRequest(req, res) {
         }
         const models = normalizePickedModels(p.models);
         if (models.length) saveConversationModels(p.id, models);
+        // The frog's model is chosen in its own box, like any conversation's.
+        if (p.id === theFrog.key && models.length === 1) theFrog.setModel(models[0]);
+        // Answering the frog is having received its answer (design/102).
+        if (p.id === theFrog.key) frogReceived('wrote to the frog');
         const images = rpcImagesOf(p.images);
         assertCan(identity, 'act', targetOf(p.id), 'this conversation');
         const principal = principalFor(identity);
@@ -19822,7 +22579,7 @@ async function handleRequest(req, res) {
           const client = sseByConn.get(String(p.conn || ''));
           if (!client) return json(res, 410, { error: 'that live connection is gone' });
           if (!client.identity.user || client.identity.user.id !== me) return json(res, 403, { error: 'not your connection' });
-          ps.here.set(client.conn, me, { visible: p.visible, focused: p.focused, idleMs: p.idleMs, route: p.route, local: client.local });
+          ps.here.set(client.conn, me, { visible: p.visible, focused: p.focused, idleMs: p.idleMs, route: p.route, local: client.local, device: p.device, talking: p.talking });
           return json(res, 200, { ok: true });
         }
         json(res, 404, { error: 'no such action' });
@@ -19978,8 +22735,9 @@ async function handleRequest(req, res) {
       // Reply-speed figures come from the usage index; bring it up to date
       // in the background so the next opening of the picker has them.
       if (usageIdx && usersLib.canManageUsers(identity)) usageIdx.startSync(usageIndexEntries(), absPathForKey, pricingCatalog()).then(() => { speedStatsCache.at = 0; }).catch(error => console.error('usage index', error.message));
+      const ownerHere = policy.isOwnerTier(identity);
       json(res, 200, {
-        models: listed.models,
+        models: ownerHere ? listed.models : (listed.models || []).filter(m => { const a = claudeAccountsLib.accountOfProvider(m.provider); return !a || a === 'default'; }),
         readyProviders: readyProviders(),
         fetchedAt: listed.at,
         error: listed.error,
@@ -20094,7 +22852,12 @@ async function handleRequest(req, res) {
           const key = u.searchParams.get('id');
           if (!key) return json(res, 200, { available: lt.available, why: lt.why, ...liveTerminalConf(), args: policy.isOwnerTier(identity) ? liveTerminalConf().args : undefined,
             refusals: Object.fromEntries(Object.values(liveTerminalProfiles.PROFILES).filter(x => x.program).map(x => [x.id, liveTerminalRefusal(identity, x.id)])),
-            names: Object.fromEntries(Object.values(liveTerminalProfiles.PROFILES).filter(x => x.program).map(x => [x.id, x.name])) });
+            names: Object.fromEntries(Object.values(liveTerminalProfiles.PROFILES).filter(x => x.program).map(x => [x.id, x.name])),
+            // Agents whose program is on this machine; agents only their own
+            // program continues (no "let me choose" for those).
+            installed: agentsInstalled(),
+            claudeAccounts: claudeAccountChoicesFor(identity),
+            boxes: Object.fromEntries(Object.values(liveTerminalProfiles.PROFILES).filter(x => x.program).map(x => [x.id, x.box !== false])) });
           const pend = livePending.get(key), real = pend ? pend.key : key;
           if (real && index[real] && !canDo(identity, 'see', targetOf(real))) return json(res, 403, { error: 'This is not shared with you.' });
           if (pend && pend.userId !== identity.user.id && !policy.isOwnerTier(identity)) return json(res, 403, { error: 'This is not yours.' });
@@ -20138,6 +22901,7 @@ async function handleRequest(req, res) {
           const harness = String(p.harness || 'claude');
           const profile = liveTerminalProfiles.PROFILES[harness];
           if (!profile || !profile.program || !profile.start) return json(res, 400, { error: 'no such agent' });
+          if (agentsInstalled()[harness] === false) return json(res, 409, { error: profile.name + ' is not installed on this computer.' });
           if ((liveTerminalConf().agents[harness] || 'off') === 'off') return json(res, 409, { error: profile.name + '\'s own program is turned off here (settings → agents).' });
           const refusal = liveTerminalRefusal(identity, harness);
           if (refusal) return json(res, 403, { error: refusal });
@@ -20146,8 +22910,29 @@ async function handleRequest(req, res) {
           assertPathAccess(identity, where.path, 'act');
           const temp = 'live:' + crypto.randomUUID();
           const pend = { harness, cwd: where.path, sessionId: lt.newSessionId(harness), startedAt: Date.now(), key: null, userId: identity.user.id };
+          // The mode chosen on the draft: Pi starts in it; the others are
+          // given it their own way (switchAgentMode's rules).
+          const modeDef = p.mode ? promptModeDef(p.mode) : null;
+          if (modeDef && harness !== 'pi') agentModes.set(temp, modeDef);
+          // Claude Code: the subscription chosen on the draft (the owner's).
+          if (harness === 'claude' && p.account && p.account !== 'default') {
+            if (!claudeAccountChoicesFor(identity) || !claudeAccountChoicesFor(identity).some(a => a.id === p.account)) return json(res, 403, { error: 'That Claude account is not available here.' });
+            claudeAccountChoices.set(temp, String(p.account));
+          }
+          // It continues another conversation (startHandoff): its history
+          // goes before the first message.
+          if (p.handoffFrom) {
+            const from = String(p.handoffFrom);
+            if (!index[from]) return json(res, 404, { error: 'the conversation to continue is gone' });
+            assertCan(identity, 'act', targetOf(from), 'this conversation');
+            if (chains.nextOf(from)) return json(res, 409, { error: 'That conversation already continued with another agent.' });
+            const { turns } = await handoffTurns(from);
+            pend.handoffFrom = from;
+            liveHandoffs.set(temp, { from, block: handoffLib.promptBlock(turns, { from, fromName: AGENT_NAMES[index[from].source], toName: AGENT_NAMES[harness] }) });
+          }
           livePending.set(temp, pend);
-          try { await lt.start(temp, { profileId: harness, cwd: where.path, sessionId: pend.sessionId, isNew: true, ...(await liveLauncher(identity, where.path)) }); }
+          liveIdentity.set(temp, identity);
+          try { await lt.start(temp, { profileId: harness, cwd: where.path, sessionId: pend.sessionId, isNew: true, mode: modeDef && harness === 'pi' ? modeDef.key : null, ...(await liveLauncher(identity, where.path)) }); }
           catch (e) { livePending.delete(temp); throw e; }
           watchNewLiveConversation(temp, pend);
           return json(res, 200, { ok: true, key: temp, harness });
@@ -20337,6 +23122,14 @@ async function handleRequest(req, res) {
         const { refused } = openFilesApply(identity, JSON.parse(body || '{}'));
         json(res, 200, { ...openFilesFor(identity), refused });
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname.startsWith('/api/frog/') || u.pathname.startsWith('/api/navigator/')) {
+      // The frog's tools and talk (design/102, extensions/frog.ts).
+      // /api/navigator/ is its first day's name, kept for scripts written then.
+      try {
+        const op = u.pathname.slice(u.pathname.indexOf('/', 5) + 1);
+        const p = req.method === 'POST' ? await readJsonBody(req, 1024 * 1024) : Object.fromEntries(u.searchParams);
+        json(res, 200, await frogApi(op, req.method, p, identity));
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/agent-read/group-name' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
@@ -20402,16 +23195,16 @@ async function handleRequest(req, res) {
         chunks.push(chunk);
       }
       if (size < 3200) return json(res, 400, { error: 'Recording was too short.' });
-      if (!speechUrl()) return json(res, 503, { error: voiceServiceError('Speech-to-text').message });
+      if (!speechEngineFor(identity).url) return json(res, 503, { error: voiceServiceError('Speech-to-text').message });
       try {
         const pcm = Buffer.concat(chunks);
-        const timeout = 60000 + Math.floor(pcm.length / 128);
-        const out = await httpRaw(
-          speechUrl() + '/transcribe', pcm,
-          'audio/L16;rate=16000;channels=1', timeout);
-        res.writeHead(out.status || 502, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end(out.buf);
+        // The person's engine (speech-engines.js); the one that answered is
+        // named in a header, so the page can say which wrote the words.
+        const { text, engine } = await transcribeFor(identity, pcm, { timeoutMs: 60000 + Math.floor(pcm.length / 128) });
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'X-Speech-Engine': engine.id + (engine.fallback ? '; fallback' : '') });
+        res.end(text);
       } catch (e) {
+        if (e.code === 'VOICE_NOT_SET_UP') return json(res, 503, { error: e.message });
         json(res, 502, { error: 'Speech service failed: ' + e.message });
       }
     } else if (u.pathname === '/api/exec' && req.method === 'POST') {
@@ -20645,7 +23438,7 @@ async function handleRequest(req, res) {
         const host = String(req.headers.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
         if (host && !/^(localhost|127\.)/.test(host)) secureUrl = 'https://' + host + ':' + TLS_PORT + '/' + (usersLib.canManageUsers(identity) ? '?token=' + encodeURIComponent(LAN_TOKEN) : '');
       }
-      json(res, 200, { secureUrl, refused: voiceRefusal(identity), key: !!typesafeKey(), keyFromEnv: !!process.env.TYPESAFE_API_KEY, speech: !!speechUrl(), model: VOICE_JEV_MODEL, canSetKey: usersLib.canManageUsers(identity), log: VOICE_LOG_FILE });
+      json(res, 200, { secureUrl, refused: voiceRefusal(identity), key: !!typesafeKey(), keyFromEnv: TYPESAFE_KEY_FROM_BOOT, speech: !!speechUrl(), speaker: !!speakerUrl(), model: VOICE_JEV_MODEL, canSetKey: usersLib.canManageUsers(identity), log: VOICE_LOG_FILE });
     } else if (u.pathname === '/api/voice/key' && req.method === 'POST') {
       if (!usersLib.canManageUsers(identity)) return json(res, 403, { error: 'Only this machine\u2019s owner or an admin sets the TypeSafe key.' });
       try { saveTypesafeKey(JSON.parse(await readRequestText(req, 4096)).key); json(res, 200, { ok: true, key: !!typesafeKey() }); }
@@ -20663,6 +23456,50 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/voice/delegate' && req.method === 'GET') {
       try { json(res, 200, voiceDelegateState(u.searchParams.get('id'), identity)); }
       catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/voice/engine' && req.method === 'GET') {
+      // This person's speech engine (speech-engines.js): the choice, the one
+      // that hears them now (Parakeet when the choice is not set up), and
+      // every engine with whether it is set up.
+      const refusal = voiceRefusal(identity);
+      if (refusal) return json(res, 403, { error: refusal });
+      const me = principalFor(identity).user.id;
+      const now = speechEngines.resolve(me);
+      json(res, 200, { chosen: speechEngines.chosen(me), active: now.id, ...(now.fallback ? { fallback: now.fallback } : {}), engines: speechEngines.list() });
+    } else if (u.pathname === '/api/voice/engine' && req.method === 'POST') {
+      // {engine: 'parakeet' | 'myvoice'}: this person's choice, nobody else's.
+      const refusal = voiceRefusal(identity);
+      if (refusal) return json(res, 403, { error: refusal });
+      try {
+        const body = JSON.parse(await readRequestText(req, 1024));
+        const me = principalFor(identity).user.id;
+        const chosen = speechEngines.choose(me, String(body.engine || ''));
+        const now = speechEngines.resolve(me);
+        console.log('[speech] ' + me + ' chose ' + chosen + (now.fallback ? ' (' + now.fallback + ')' : ''));
+        json(res, 200, { chosen, active: now.id, ...(now.fallback ? { fallback: now.fallback } : {}), engines: speechEngines.list() });
+      } catch (e) { json(res, 400, { error: e.message }); }
+    } else if (u.pathname === '/api/voice/print' && req.method === 'GET') {
+      const refusal = voiceRefusal(identity);
+      if (refusal) return json(res, 403, { error: refusal });
+      json(res, 200, voicePrintStatus(identity));
+    } else if (u.pathname === '/api/voice/print/claim' && req.method === 'POST') {
+      // "It was me": {id} of the utterance (from its event), {device}.
+      const refusal = voiceRefusal(identity);
+      if (refusal) return json(res, 403, { error: refusal });
+      try { json(res, 200, await voiceClaim(identity, JSON.parse(await readRequestText(req, 4096)))); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/voice/print' && req.method === 'POST') {
+      // {on: bool} turns the check on or off; {forget: id} drops one recording.
+      const refusal = voiceRefusal(identity);
+      if (refusal) return json(res, 403, { error: refusal });
+      try {
+        const body = JSON.parse(await readRequestText(req, 4096));
+        voicePrintsUpdate(identity, e => {
+          if (body.forget) e = voiceSpeaker.forgetPrint(e, String(body.forget));
+          if (typeof body.on === 'boolean') e = { ...e, on: body.on && e.prints.length > 0 };
+          return e;
+        });
+        json(res, 200, voicePrintStatus(identity));
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/voice/history' && req.method === 'GET') {
       const refusal = voiceRefusal(identity);
       if (refusal) return json(res, 403, { error: refusal });
@@ -20940,7 +23777,10 @@ async function handleRequest(req, res) {
       let body = '';
       for await (const chunk of req) body += chunk;
       const parsed = JSON.parse(body || '{}');
-      try { json(res, 200, await synthesizeSpeech(parsed.text, parsed.rewrite !== false)); }
+      // The frog writes for the ear in its own words (its model, design/102):
+      // its replies are not rewritten by the voice model.
+      const rewriteIt = parsed.rewrite !== false && !(parsed.key && parsed.key === theFrog.key);
+      try { json(res, 200, await synthesizeSpeech(parsed.text, rewriteIt)); }
       catch (e) { json(res, e.code === 'VOICE_NOT_SET_UP' ? 503 : 500, { error: e.message }); }
     } else if (u.pathname === '/api/tts/audio' && req.method === 'GET') {
       const id = String(u.searchParams.get('id') || '').replace(/[^a-f0-9]/g, '');
@@ -21046,7 +23886,9 @@ async function handleRequest(req, res) {
       // and the page uses this beat to notice a stream that died quietly
       // (a phone that slept, a network that changed) and reconnect.
       const beat = setInterval(() => { try { res.write('event: ping\ndata: {}\n\n'); } catch {} }, 25000);
-      req.on('close', () => { clearInterval(beat); sseByConn.delete(conn); docFollowDetach(conn); programLiveUnfollow(conn); if (pushState) pushState.here.remove(conn); if (presence.remove(conn)) broadcastPresence(); });
+      req.on('close', () => { clearInterval(beat); sseByConn.delete(conn);
+        voiceSessions.connClosed(conn); // a voice session's grace starts (voice-session.js)
+        docFollowDetach(conn); programLiveUnfollow(conn); if (pushState) pushState.here.remove(conn); if (presence.remove(conn)) broadcastPresence(); });
     } else if (u.pathname === '/api/papers' && req.method === 'GET') {
       // What the papers an answer cites are: ids=a,b,c (DOI, W-number, PMCID).
       const ids = (u.searchParams.get('ids') || '').split(/[\s,]+/).filter(Boolean);
@@ -21227,12 +24069,15 @@ function speechStreamUpgrade(req, socket, head) {
     socket.destroy();
     return;
   }
-  if (!speechUrl()) {
+  // The person's engine (speech-engines.js), decided when the dictation
+  // starts: a relay cannot change its far end midway.
+  const engine = speechEngineFor(identifyRequest(req));
+  if (!engine.url) {
     socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
     socket.destroy();
     return;
   }
-  const target = new URL(speechUrl());
+  const target = new URL(engine.url);
   // What the page may ask of the speech service: interim=<ms>, a preview
   // during speech as well as at pauses. Nothing else of the page's query
   // reaches it.

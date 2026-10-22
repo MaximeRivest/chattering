@@ -140,7 +140,7 @@ class PricingCatalog {
     if (hit) return { ...hit, confidence: 'exact' };
     // Claude Code and subscription routes often use the direct model id.
     const aliases = [];
-    if (provider === 'claude-code' || provider === 'github-copilot') aliases.push('anthropic');
+    if (provider === 'claude-code' || /^claude-code-[a-z0-9-]+$/.test(provider) || provider === 'github-copilot') aliases.push('anthropic');
     if (provider === 'openai-codex' || provider === 'github-copilot') aliases.push('openai');
     for (const alias of aliases) {
       hit = this.exact.get(alias + '\0' + model);
@@ -440,7 +440,8 @@ function classifyBilling(fact, config, authTypes = {}) {
   if (BILLING_MODES.has(explicit)) return { mode: explicit, basis: 'user rule' };
   if (fact.source === 'claude') return { mode: 'subscription', basis: 'Claude Code transcript' };
   if (LOCAL_PROVIDER_RE.test(provider)) return { mode: 'local', basis: 'local provider' };
-  if (SUBSCRIPTION_PROVIDERS.has(provider) || /(?:^|-)token-plan(?:-|$)/.test(provider)) {
+  // claude-code-NAME: another Claude subscription (claude-accounts.js).
+  if (SUBSCRIPTION_PROVIDERS.has(provider) || /(?:^|-)token-plan(?:-|$)/.test(provider) || /^claude-code-[a-z0-9-]+$/.test(provider)) {
     return { mode: 'subscription', basis: 'subscription provider' };
   }
   if (provider === 'anthropic' && authTypes.anthropic === 'oauth') {

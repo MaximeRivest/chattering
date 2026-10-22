@@ -3,6 +3,7 @@
 // remote normalization, and fold suggestions.
 const { test } = require('node:test');
 const assert = require('node:assert');
+const path = require('node:path');
 const {
   LOOSE_PROJECT, isLooseCwd, rawProjectOf, canonicalize, flattenMap, foldAlias, unfold,
   dismissKey, normalizeRemote, suggestPairs,
@@ -31,6 +32,28 @@ test('isLooseCwd: general launch and temporary folders stay out of projects', ()
   assert.strictEqual(isLooseCwd('C:\\Users\\u\\AppData\\Local\\Temp\\agent'), true);
   assert.strictEqual(isLooseCwd('/home/u/Projects/real'), false);
   assert.strictEqual(isLooseCwd('/home/u/work/real'), false);
+});
+
+test('isLooseCwd: this host\'s cache folders are temporary; a home inside one keeps its projects', () => {
+  const os = require('node:os');
+  const home = os.homedir().replace(/\\/g, '/').replace(/\/+$/, '');
+  const saved = process.env.XDG_CACHE_HOME;
+  try {
+    delete process.env.XDG_CACHE_HOME;
+    assert.strictEqual(isLooseCwd(home + '/.cache/chattering-real-agent-Uw'), true);
+    assert.strictEqual(isLooseCwd(home + '/.cache'), true);
+    assert.strictEqual(isLooseCwd(home + '/Library/Caches/tool/run'), true);
+    assert.strictEqual(isLooseCwd(home + '/.cachet/real'), false, 'a name that merely starts the same');
+    assert.strictEqual(isLooseCwd(home + '/Projects/.cache-tools'), false);
+    process.env.XDG_CACHE_HOME = '/var/cache/u';
+    assert.strictEqual(isLooseCwd('/var/cache/u/run'), true, 'XDG_CACHE_HOME is honoured');
+    // A cache folder above the home folder (a test home under the real
+    // ~/.cache) must not make that home's projects loose.
+    process.env.XDG_CACHE_HOME = path.dirname(home);
+    assert.strictEqual(isLooseCwd(home + '/Projects/real'), false);
+  } finally {
+    if (saved === undefined) delete process.env.XDG_CACHE_HOME; else process.env.XDG_CACHE_HOME = saved;
+  }
 });
 
 test('isLooseCwd: the macOS scratch folder is temporary on every host, in both of its spellings', () => {

@@ -79,6 +79,205 @@ timeline, a picker, handoff, and safe side-by-side answers.
   - *An older model Codex no longer lists* is shown as the conversation's
     model (it is what the next message is sent with), not Codex's default.
 
+## Antigravity CLI and Muse Code: built (2026-10-14)
+
+Google's `agy` (Antigravity CLI 1.3.4) and Meta's `muse` (Muse Code 1.4.6)
+join as agents **only their own program continues**, like Claude Code: they
+are read here and run in their real interactive program on the live
+terminal (design/91). Chattering's own box, regenerate, branch, merge,
+compact, reasoning control, fork, edit and the file "ask" box refuse them by
+name (`ownProgramOnly`, `refuseOwnProgramOnly`), so no Pi code ever touches
+their files.
+
+- **History.** `harness/agy-transcript.js`: one SQLite database per
+  conversation (`~/.gemini/antigravity-cli/conversations/<id>.db`), steps as
+  protocol-buffer `gemini_coder.Step` messages, read by field number (the
+  numbers come from the definitions compiled into `agy`, and protocol
+  buffers never renumber). Typed messages, answers, its visible thinking,
+  tool calls with results, pasted pictures, token use, folder and branch.
+  The database is in write-ahead mode: the index's stat and the watcher
+  follow `<id>.db-wal` too, else a running conversation looked unchanged.
+  Opening it read-only makes SQLite create the usual `-wal`/`-shm` beside it
+  (any reader does; `agy` uses them as normal).
+  `harness/muse-transcript.js`: `$XDG_DATA_HOME/muse/sessions/YYYY/MM/DD/<id>/
+  session.jsonl`, an event log (retained frames unwrapped); helpers'
+  `subagent/` logs are not conversations. A turn that failed (usage limit,
+  rejected key) shows as "stopped: <reason>".
+- **Live.** Profiles `agy` and `muse` (`harness/terminal/profiles.js`,
+  screens recorded 2026-10-14). Both pick a new conversation's id:
+  Antigravity writes its database with the first message (found by folder,
+  then by the file its process holds); Muse Code makes its folder as it
+  starts and records its own process id there (found exactly). Resume:
+  `agy --conversation <id>`, `muse resume <id>`; both append to the same
+  file. Reader fixes this needed (general rules): an option numbered with a
+  wide gap ("1  Trust and continue"), and a `/` menu inside the box's frame.
+- **One writer.** A program opened elsewhere is recognised (`agy
+  --conversation`, `muse resume`, or the file it holds open: Muse Code's
+  session `cron.db`), so Chattering refuses to start a second one.
+- **Lists.** Muse Code makes a conversation file even when nothing is typed:
+  such blank runs stay out of the list until they hold a message.
+- **Settings.** On ("always") by default, offered only when installed
+  (`agentsInstalled`); "let me choose" does not exist for agents with no
+  Chattering box. Overrides: `CHATTERING_AGY`, `CHATTERING_MUSE`.
+- **Not yet.** Chattering's artifact tools are not given to them (neither
+  takes an MCP server for one run only); Antigravity stores its model as an
+  internal id, so its model name is not shown; their file edits count in
+  "files changed" but have no line diffs (no `apply_patch` equivalent
+  read yet); cross-harness switching, as for the others, is not built.
+- **Tests.** `test/agy-muse-transcripts.test.js` (a real `agy` database as
+  fixture), reader cases in `test/terminal-reader.test.js`, the opt-in real
+  run in `test/live-terminal-real.test.js` (`CHATTERING_REAL_AGENTS=agy,muse`;
+  their trust lists are put back exactly).
+
+## Modes for every agent: built (2026-10-14)
+
+Pi's prompt modes (the ModeDef files in `~/.pi/agent/modes`) now apply to
+all five agents, switchable mid-conversation, one record per conversation.
+Pi keeps its own (`/mode`, recorded in its session). For the others
+`agent-modes.js` keeps the current mode, the switches, and what each agent
+was already given; the server hands a switch over the way each agent can
+take it. Each route was measured first (mode A "end with HERON", switch,
+mode B "end with FALCON", same conversation) and then verified end to end
+through the page on a test copy:
+
+| Agent | How a switch reaches it | When |
+|---|---|---|
+| Claude Code | `--append-system-prompt` with `--system-prompt-snapshot off` (2.1.29x freezes its prompt at the first request by default and ignores a new one on resume) | its program restarts on the same conversation once idle |
+| Codex | a marked developer message (`thread/inject_items`): Codex ignores new `developerInstructions` on resume, warm or cold. A new thread starts with it as its developer instructions | Chattering's box: before the next reply; its own program: injected just before it restarts, once idle |
+| Antigravity | a `PreInvocation` hook (`harness/agy-mode-hook.js`) in `~/.gemini/config/hooks.json`, inert unless Chattering started `agy` (`CHATTERING_MODE_FILE`); the shell answers `{}` itself outside Chattering | its next model call, no restart |
+| Muse Code | a marked block before the person's next message (no setting, no documented hook, no import); the screen is made tall while it is typed so the closed loop can check it; long pastes fold to `[Pasted Content N chars]` | with the next message |
+| Pi, own program | Chattering types `/mode <key>` | once idle and its box is empty |
+
+- **Words.** `# Current prompt mode: <label>` + opener/appendix (or a whole
+  `systemPrompt`, given as added instructions: the agents' own prompts and
+  tools stay theirs). `removeSections` and `tools` are Pi-only.
+- **Replace vs add.** Claude Code and Pi replace the mode (the prompt is
+  rebuilt; the provider cache breaks once, as a Pi mode switch does).
+  Codex, Antigravity and Muse Code add a "from now on" message: the cache
+  holds; earlier modes stay above in the history, the latest wins (it did
+  in every test).
+- **Record.** Switches show as "▣ mode: …" bars from the agents' own files
+  (Codex, Antigravity, Muse Code); Claude Code's file has none (the store
+  has them). The mode button is in Codex's box, the draft screen (every
+  agent), and the bar of every agent's own program; "none" is offered for
+  agents other than Pi.
+- **Found on the way.** Muse Code shows a grey hint in its empty box ("Type
+  @ to search…"), not dim: the reader took it for typed text and every
+  message sent from Chattering after a pause failed (`hintAtCaret`).
+
+## Switching agent: built (2026-10-14)
+
+A conversation continues with another agent from "Switch agent…" (the +
+menu of Chattering's box, "⇄ agent" under an agent's own program). It
+opens the draft screen (`conversation-draft.js`, `startHandoffDraft`) as
+"continue with another agent": the same page a new conversation starts
+from, with the agents that can take it in the agent row, the folder, mode,
+words and images of the conversation it leaves, and every setting still to
+change before the message goes: model, reasoning level, context and
+instructions (Pi, Codex), Codex's access, "in its own program" (Pi, Codex).
+It is a draft like any other: kept in this browser, listed with the unsent
+drafts ("⇄ title → Codex: …"), discarded like one. Built as the refactor below planned, in
+parts: the new agent gets a new conversation of its own, holding the
+history in its own form; `harness/chains.js` links the parts; the newest
+part stands for the conversation in lists and reads with the earlier parts
+above it, a line where it moved ("⇄ continued with Codex (from Pi)").
+An earlier part opened directly says where it continues. Verified end to
+end through the page on a test copy: one conversation Pi → Codex → Claude
+Code → Antigravity → Muse Code (offline) → Pi, each asked a code word only
+the history held, and what command an earlier agent ran.
+
+| Into | How the history goes in (`harness/handoff.js`) |
+|---|---|
+| Pi | a Pi session file written by Chattering, the mode as Pi records it (SHA-256 of its canonical JSON), then answered from Chattering's box (models, reasoning, context, images as the draft set them; two models fan out), or, "in its own program", the page sends the message into Pi's program |
+| Codex | a new thread, the history added with `thread/inject_items` between two marked developer messages, then the message (model, effort, access, context, images as set); "in its own program": the thread is made with the history and no turn (`startInjected`; Codex writes its file at once), and the page sends the message into Codex's program, which resumes it |
+| Claude Code | a Claude Code session file written by Chattering, then its program resumes it and takes the message |
+| Antigravity, Muse Code | no way to load one: a marked block before the person's first message in their program |
+
+- **What carries:** every message and answer word for word; the work as
+  past-tense notes under the answer it belongs to (a command and a bit of
+  its output, files read and changed); answers labelled "[Answer by …]";
+  then a note saying who the conversation was with (without it, Claude Code
+  took Codex's answers for its own and "corrected" them). Not carried:
+  reasoning, pictures (named), each agent's private state. Over budget
+  (240k characters): the oldest turns are left out, and the history says so.
+- **Why notes, not tool calls:** the common record keeps commands exactly
+  but not the full content of past edits, and each agent's tools differ;
+  invented calls would mislead. Real tool calls for commands and reads are a
+  possible next step.
+- **Readers:** carried copies are marked (`chatteringCarried` on Pi and
+  Claude Code entries; Codex's between its marks; the block taken off for
+  Antigravity and Muse Code) and left out where the original is shown.
+- **Prompt mode** carries into the new part.
+- **Not built:** going back to an agent already used reuses nothing of its
+  earlier part (it starts a new part with the whole history); switching from
+  an earlier part is refused (the conversation goes on in its newest).
+- **Own programs take words only:** images attached on the draft are
+  refused before sending for Claude Code, Antigravity, Muse Code and the
+  own-program choice (they were dropped in silence before); context chips
+  and instructions are said to stay behind. Codex and Pi in Chattering's
+  box take all of it.
+- **A race found by the tests of this (`terminal/pty-holder.js`):** the
+  holder's "started" reply and the program's first screen read in one
+  chunk lost the screen (the listener went on after the reply's promise
+  resumed), and the reader waited for a box already drawn. Output and exit
+  now wait for the listener; the holder's test sends both in one chunk.
+  Test homes also carry the XDG folders now (`test/helpers/home-env.js`):
+  Muse Code's sessions follow `XDG_DATA_HOME` before `HOME`, so a test
+  server was reading the machine's.
+- **Also fixed:** a message to an agent's own program that first asks
+  something (trust this folder?) now waits and goes once it is answered;
+  Claude Code's "No response requested." filler is not shown.
+
+## Claude accounts: more than one subscription (built 2026-10-14)
+
+A work and a personal Claude subscription side by side, in Pi and in
+Claude Code, signed in the way Claude Code signs in today.
+
+- **The main account is unchanged:** `~/.claude`, the `claude-code` Pi
+  provider, Claude Code's own login renewed as always.
+- **Each other account is a Claude Code folder,** `~/.claude-accounts/NAME`
+  (`claude-accounts.js`), used with `CLAUDE_CONFIG_DIR`: its own login
+  (`.credentials.json`) and account state (`.claude.json`, `backups/`);
+  the rest of `~/.claude` linked (conversations, `CLAUDE.md`, skills,
+  hooks, plugins, history), so a conversation is one file whichever account
+  answers; `settings.json` and `settings.local.json` copied one way before
+  each start. Not linked because Claude Code rewrites `settings.json` for
+  the account it runs as: a fresh folder's first run applied the one-time
+  "opus → opus[1m]" upgrade to the shared file (seen 2026-10-14, put back).
+  `.claude.json` is seeded once from `~/.claude.json` minus the account's
+  identity and caches: onboarding, one-time upgrades, trusted folders.
+- **Signing in** from settings → AI accounts → Claude accounts: Chattering
+  runs `claude auth login` in a hidden terminal, shows its link, and types
+  the pasted code back. By hand: `CLAUDE_CONFIG_DIR=~/.claude-accounts/NAME
+  claude auth login`.
+- **Pi:** the Claude Code extension (`~/.pi/agent/extensions/
+  claude-code-fable-5`, outside this repository; a copy before the change
+  is in Chattering's data folder, `backups/`) registers one provider per
+  signed-in folder, `claude-code-NAME`, models named "(Claude Code ·
+  NAME)", the folder's login renewed with the same code as the main one.
+  The modes extension (`extensions/modes.ts`, and the copy in
+  `~/.pi/agent/extensions`) gives every `claude-code*` provider the Claude
+  Code-shaped system prompt: without it, Anthropic answered the account's
+  direct requests with "You're out of extra usage" while the main one
+  worked, the same login and the same request otherwise.
+- **Claude Code:** a conversation answers as the account chosen for it
+  (`claude-account-choices.json`): "as …" on the draft and the switch-agent
+  draft, "◉ NAME" under its program (switching restarts it on the same
+  conversation once idle, as a mode switch does), its terminal window too.
+- **The owner's alone:** other household members and guests get no picker,
+  no model of another account (hidden from `/api/models`, refused on a run,
+  also when the conversation's model is one), and the routes and events are
+  owner-only. Pi typed in a terminal cannot tell people apart: anyone using
+  this computer account sees every account's models there.
+- **Verified** on this machine with a temporary account holding a copy of
+  the main login (removed after; the main login, settings and `CLAUDE.md`
+  unchanged by fingerprint): Pi answered through the account directly and
+  through the `claude` program; a Claude Code conversation started as the
+  account (its process ran with the folder), switched to the main account
+  mid-conversation (restarted without it, same file, both answers in it);
+  Pi in Chattering's box answered with the account's model. A real second
+  account (another Anthropic organisation) is not tested.
+
 ## Switching harness inside a conversation: the refactor
 
 Today one conversation is one native file of one harness (`pi:` / `codex:`

@@ -14,6 +14,7 @@
 //   the live text.
 // - A longer pause (UTTERANCE_PAUSE) ends an utterance: what was said since
 //   the last one is handed on to be understood (a command, dictation…).
+// - A long quiet after speech (QUIET_PAUSE, ~4 s) is said once ('quiet').
 // - Past 1.2 × its target length the window slides back to about 0.8 ×:
 //   the audio before a pause near that point is transcribed once more on
 //   its own, that text becomes final ("committed") and the audio leaves the
@@ -22,6 +23,13 @@
 //
 // The transcriber is injected (transcribe(pcm) → text), so the whole
 // behavior runs faster than real time in tests.
+//
+// The gate can be a model instead of the energy floor (`gate`, design/102:
+// a wood mill at 300–4,000 RMS kept the energy gate open for 43 s
+// utterances). The model (voice-vad.js) gives each 100 ms frame a
+// probability of being the person's speech; a frame is speech above GATE_ON
+// and stays speech until below GATE_OFF. The RMS floor is still computed
+// and is the fallback the moment the model throws.
 
 const RATE = 16000;
 const BYTES_PER_SECOND = RATE * 2;
@@ -33,6 +41,11 @@ const SILENCE_FACTOR = 2.5;
 const ROUND_PAUSE = 3;                                 // frames: ~300 ms → transcribe
 const UTTERANCE_PAUSE = 8;                             // frames: ~800 ms → end of utterance
 const SILENCE_KEEP = 4;                                // frames of each pause kept in the window
+const QUIET_PAUSE = 40;                                // frames: ~4 s of quiet after speech → 'quiet' (once)
+const BURST_FRAMES = [5, 15, 30];                      // frames of speech in a row → 'burst' (the person is clearly talking): at 0.5 s, and again at 1.5 s and 3 s (in noise the first half second is the noise; measured 2026-10-19)
+const SPEECH_RUN_MAX = 150;                            // frames: ~15 s of "speech" with no pause → the gate is stuck on noise: the utterance closes at the next short pause
+const GATE_ON = 0.4;                                   // model gate: a frame is speech from this probability… (set on the recorded clips, myvoice/vad/evaluate.py)
+const GATE_OFF = 0.2;                                  // …and stays speech until it falls below this
 const MIN_ROUND_BYTES = BYTES_PER_SECOND / 4;          // a quarter second: "send" is short
 const MIN_HEAD_BYTES = BYTES_PER_SECOND * 4;           // never commit less than this
 const MIN_TAIL_BYTES = BYTES_PER_SECOND * 2;           // always keep this much rolling
@@ -143,10 +156,40 @@ class VoiceWindow {
    * @param {(pcm: Buffer) => Promise<string>} o.transcribe
    * @param {(event: object) => void} o.emit  heard / utterance / slide / error events
    * @param {number} [o.windowSeconds]
+   * @param {(pcm: Buffer, text: string) => Promise<object>} [o.check]  looks at
+   *   each utterance's audio before it is handed on (who spoke: voice-speaker.js);
+   *   its answer rides on the utterance event as `speaker`, and a `text` in it
+   *   replaces the words (the person's part of a two-voice utterance)
+   * @param {(pcm: Buffer) => void} [o.onSpeech]  gets every speech frame kept
+   *   (an enrolment recording); settable later
+   * @param {(b: {pcm: Buffer, at: number}) => void} [o.onBurst]  called once per
+   *   utterance when speech has gone on for BURST_FRAMES in a row (the person
+   *   is clearly talking, ~0.5 s in), with the utterance's audio so far and
+   *   the wall time its speech began: the barge-in check (design/102)
+   * @param {() => number} [o.now]  the clock (tests)
+   * @param {{step: (frame: Buffer, offset: number) => number, reset?: () => void}} [o.gate]
+   *   the voice-activity model: the probability that a 100 ms frame is the
+   *   person's speech (voice-vad.js). Null: the energy floor decides.
    */
-  constructor({ transcribe, emit, windowSeconds = WINDOW_SECONDS.default }) {
+  constructor({ transcribe, emit, windowSeconds = WINDOW_SECONDS.default, check = null, onSpeech = null, onUtterance = null, onBurst = null, now = Date.now, gate = null }) {
     this.transcribe = transcribe;
     this.emit = emit;
+    this.check = check;
+    this.gate = gate;
+    this.gateOpen = false;           // the model gate's hysteresis state
+    this.gateProb = null;            // the last frame's speech probability (the debug view)
+    this.gateFailed = false;         // the model threw: the energy floor took over (said once)
+    // Each utterance's audio and words, after the check (the voice corpus).
+    this.onUtterance = onUtterance;
+    this.onSpeech = onSpeech;
+    this.onBurst = onBurst;
+    this.now = now;
+    // When the utterance's speech began and was last heard (wall clock):
+    // the person's side of the woven timeline (design/102).
+    this.speechStartAt = null;
+    this.speechLastAt = null;
+    this.speechRun = 0;              // speech frames in a row
+    this.utteranceBytes = 0;         // window offset where this utterance's audio begins
     this.setWindowSeconds(windowSeconds);
     this.window = Buffer.alloc(0);   // speech audio (silences shortened)
     this.pending = Buffer.alloc(0);  // bytes short of a whole frame
@@ -154,6 +197,7 @@ class VoiceWindow {
     this.silentRun = 0;              // silent frames in a row
     this.speechSinceRound = false;
     this.speechSinceUtterance = false;
+    this.speechSinceQuiet = false;   // a 'quiet' event is owed after the next long pause
     this.cuts = [];                  // window offsets at the ends of pauses (where a slide may cut)
     this.committed = [];             // final words (last COMMITTED_KEEP_WORDS)
     this.windowWords = [];           // the last round's words of the window
@@ -175,9 +219,46 @@ class VoiceWindow {
   // Until the floor has a little history, only the fixed minimum: learning
   // "silence" from the first sound would make speech that starts at once
   // count as quiet.
+  // The quietest frame of the last ten seconds times 2.5. A noise-level
+  // term (a percentile of the last ten seconds) was tried for a room with
+  // a machine running (a wood mill, 2026-10-19: noise 300-4000 with dips
+  // to 20, voice 10,000+) and dropped: steady speech with few gaps raised
+  // it to the voice's own level and cut the speaker off. An energy gate
+  // cannot tell a mill's bursts from a voice; the caps below bound the
+  // damage (SPEECH_RUN_MAX, closeUtterance), and a neural voice-activity
+  // model would be the real fix.
   threshold() {
     if (this.floor.length < FLOOR_WARMUP) return SILENCE_RMS_MIN;
     return Math.max(SILENCE_RMS_MIN, Math.min(...this.floor) * SILENCE_FACTOR);
+  }
+  // The gate's decision for one frame: the model with hysteresis when there
+  // is one, else the energy floor. A model that throws is dropped for this
+  // listener (the floor goes on) and reported once.
+  isSpeech(buf, at, rms) {
+    if (this.gate) {
+      try {
+        const p = this.gate.step(buf, at);
+        this.gateProb = p;
+        this.gateOpen = this.gateOpen ? p >= GATE_OFF : p >= GATE_ON;
+        return this.gateOpen;
+      } catch (e) {
+        this.gate = null; this.gateProb = null;
+        if (!this.gateFailed) { this.gateFailed = true; this.emit({ type: 'error', message: 'voice gate model: ' + e.message + ' (the energy gate took over)' }); }
+      }
+    }
+    return rms >= this.threshold();
+  }
+  /**
+   * Close the utterance now, at the next short pause (the server asks when
+   * the live words end with a hand-over or a command and the gate has not
+   * closed: a machine keeps it open; design/102). No-op without speech.
+   */
+  closeUtterance() {
+    if (!this.speechSinceUtterance) return false;
+    this.wantUtterance = true;
+    this.utteranceTimes = { startedAt: this.speechStartAt, endedAt: this.speechLastAt };
+    this.kick();
+    return true;
   }
 
   /** Feed PCM. Rounds run in order; feeding never waits for them. */
@@ -186,28 +267,60 @@ class VoiceWindow {
     let buf = this.pending.length ? Buffer.concat([this.pending, chunk]) : Buffer.from(chunk);
     let at = 0;
     const kept = [];
+    // The chunk arrived now; a frame inside it was spoken earlier by the
+    // audio that follows it (the device sends in chunks of a few hundred ms).
+    const arrived = this.now();
+    const bursts = [];
     for (; at + FRAME_BYTES <= buf.length; at += FRAME_BYTES) {
       const rms = frameRms(buf, at);
       this.floor.push(rms);
       if (this.floor.length > FLOOR_FRAMES) this.floor.shift();
-      const silent = rms < this.threshold();
+      const silent = !this.isSpeech(buf, at, rms);
       const frame = buf.subarray(at, at + FRAME_BYTES);
+      const frameAt = arrived - Math.round((buf.length - at - FRAME_BYTES) * 1000 / BYTES_PER_SECOND);
       if (!silent) {
         if (this.silentRun >= ROUND_PAUSE) this.cuts.push(this.window.length + kept.reduce((n, f) => n + f.length, 0));
+        if (!this.speechSinceUtterance) {
+          // The first speech of an utterance: said at once (where the
+          // frog's player may pause), and remembered for the utterance.
+          this.speechStartAt = frameAt;
+          this.utteranceBytes = this.window.length + kept.reduce((n, f) => n + f.length, 0);
+          this.emit({ type: 'speech', at: frameAt });
+        }
+        this.speechLastAt = frameAt;
+        this.speechRun = this.silentRun >= ROUND_PAUSE || !this.speechSinceUtterance ? 1 : this.speechRun + 1;
         this.silentRun = 0;
         this.speechSinceRound = true;
         this.speechSinceUtterance = true;
+        this.speechSinceQuiet = true;
         kept.push(frame);
+        if (BURST_FRAMES.includes(this.speechRun)) bursts.push(this.speechRun);
+        // The gate stuck on noise (no 800 ms dip in 15 s): the utterance
+        // closes at the next short pause, so words are handed on and the
+        // hand-over at their end is seen (43 s utterances, 2026-10-19).
+        if (this.speechRun >= SPEECH_RUN_MAX && !this.wantUtterance) { this.wantUtterance = true; this.utteranceTimes = { startedAt: this.speechStartAt, endedAt: this.speechLastAt }; this.speechRun = 0; }
         continue;
       }
       this.silentRun++;
       // Before any speech the window holds nothing; inside a pause, a little.
       if ((this.window.length || kept.length) && this.silentRun <= SILENCE_KEEP) kept.push(frame);
       if (this.silentRun === ROUND_PAUSE && this.speechSinceRound) this.wantRound = true;
-      if (this.silentRun === UTTERANCE_PAUSE && this.speechSinceUtterance) this.wantUtterance = true;
+      if (this.silentRun === UTTERANCE_PAUSE && this.speechSinceUtterance) { this.wantUtterance = true; this.utteranceTimes = { startedAt: this.speechStartAt, endedAt: this.speechLastAt }; }
+      // A long quiet after speech, said once: what the page does with it is
+      // its own (the walkie-talkie: "your words wait for over"). From the
+      // audio itself, so it comes on time even when the page's timers sleep.
+      if (this.silentRun === QUIET_PAUSE && this.speechSinceQuiet) { this.speechSinceQuiet = false; this.emit({ type: 'quiet', seconds: QUIET_PAUSE / 10, at: Date.now() }); }
     }
     this.pending = Buffer.from(buf.subarray(at));
-    if (kept.length) this.window = Buffer.concat([this.window, ...kept]);
+    if (kept.length) {
+      this.window = Buffer.concat([this.window, ...kept]);
+      if (this.onSpeech) try { this.onSpeech(kept.length === 1 ? kept[0] : Buffer.concat(kept)); } catch {}
+      // Clearly talking (half a second of speech in a row): the utterance's
+      // audio so far, for the barge-in check, once per utterance.
+      if (bursts.length && this.onBurst) {
+        for (const run of bursts) { try { this.onBurst({ pcm: this.window.subarray(Math.min(this.utteranceBytes, this.window.length)), at: this.speechStartAt, stage: BURST_FRAMES.indexOf(run) }); } catch {} }
+      }
+    }
     if (this.wantRound || this.wantUtterance) this.kick();
   }
 
@@ -226,6 +339,7 @@ class VoiceWindow {
 
   async runRound() {
     const utterance = this.wantUtterance;
+    const times = utterance ? this.utteranceTimes || null : null;
     // The end of an utterance comes a moment after the short pause's round:
     // with no speech since, that round's words are current; no new pass.
     const transcribe = this.wantRound || this.speechSinceRound;
@@ -234,7 +348,7 @@ class VoiceWindow {
     if (utterance) this.speechSinceUtterance = false;
     this.speechSinceRound = false;
     if (!transcribe || this.window.length < MIN_ROUND_BYTES) {
-      if (utterance) this.flushUtterance(0);
+      if (utterance) await this.flushUtterance(0, times);
       return;
     }
     const before = this.words();
@@ -276,7 +390,7 @@ class VoiceWindow {
       windowSeconds: Math.round(this.window.length / BYTES_PER_SECOND * 10) / 10,
       decided: this.decided,
     });
-    if (utterance) this.flushUtterance(asrMs);
+    if (utterance) await this.flushUtterance(asrMs, times);
   }
 
   // Words the last two rounds agree on, from the start of the window.
@@ -287,12 +401,27 @@ class VoiceWindow {
     return n;
   }
 
-  flushUtterance(asrMs) {
+  // The utterance's audio is the window since the last one handed on; the
+  // check (if any) hears it before the words go out, and may replace them.
+  async flushUtterance(asrMs, times = null) {
     const all = this.words();
-    const text = all.slice(this.decided).join(' ').trim();
+    let text = all.slice(this.decided).join(' ').trim();
+    const pcm = this.window.subarray(this.decidedBytes, this.window.length);
     this.decided = all.length;
     this.decidedBytes = this.window.length;
-    if (text) this.emit({ type: 'utterance', text, asrMs, at: Date.now() });
+    if (!text) return;
+    const heard = text; // the listener's words for the whole audio, before any cut
+    let speaker;
+    if (this.check && pcm.length >= FRAME_BYTES * 2) {
+      try {
+        speaker = await this.check(pcm, text);
+        if (this.closed) return;
+        if (speaker && typeof speaker.text === 'string') { if (speaker.text) text = speaker.text; delete speaker.text; }
+      } catch (e) { speaker = { mine: 'yes', error: e.message }; }
+    }
+    const startedAt = times ? times.startedAt : this.speechStartAt, endedAt = times ? times.endedAt : this.speechLastAt;
+    if (this.onUtterance) { try { this.onUtterance({ pcm: Buffer.from(pcm), text, heard, asrMs, speaker: speaker || null, startedAt, endedAt }); } catch {} }
+    if (text) this.emit({ type: 'utterance', text, asrMs, at: this.now(), startedAt, endedAt, ...(speaker ? { speaker } : {}) });
   }
 
   // Commit the audio before the pause nearest to (length − SLIDE_TO ×
@@ -338,4 +467,4 @@ class VoiceWindow {
   }
 }
 
-module.exports = { VoiceWindow, mapWordIndex, alignWordIndex, clampWindowSeconds, WINDOW_SECONDS, RATE, FRAME_BYTES, BYTES_PER_SECOND };
+module.exports = { VoiceWindow, mapWordIndex, alignWordIndex, clampWindowSeconds, WINDOW_SECONDS, RATE, FRAME_BYTES, BYTES_PER_SECOND, GATE_ON, GATE_OFF };

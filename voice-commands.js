@@ -49,13 +49,15 @@ const voice = {
   error: '',
   ws: null, audio: null, retry: 0, retryTimer: 0,
   heard: { committed: '', stable: '', volatile: '', windowSeconds: 0, asrMs: 0 },
-  mode: 'command',    // command | dictation
+  mode: 'command',    // command | dictation | walkie (talking with the frog)
   target: null,       // dictation: {ta, label, grow}
   pending: null,      // a suggestion: {decision, id, label, expires, timer}
   decisions: [],      // shown in the overlay, newest last
   queue: Promise.resolve(),
   numbers: new Map(), // pick key → the number shown beside it
   helpOpen: false,
+  speaker: false,     // the server checks each utterance against my voice print (only my voice)
+  enrol: null,        // recording my voice: {secs, want, label}
 };
 
 function voicePrefs() {
@@ -72,14 +74,16 @@ function saveVoicePrefs(patch) {
 
 // ---- on / off ----
 
-async function voiceSetOn(on) {
-  saveVoicePrefs({ on: !!on });
+// keep: false when listening is turned on for something else (Talk with
+// the frog) rather than by the person: not remembered as their choice.
+async function voiceSetOn(on, { keep = true } = {}) {
+  if (keep) saveVoicePrefs({ on: !!on });
   voice.on = !!on;
   if (on) await voiceStart();
   else voiceStop();
   voicePaint();
 }
-function voiceToggle() { return voiceSetOn(!voice.on); }
+function voiceToggle() { if (typeof frogTalk !== 'undefined') frogTalk.ownsListening = false; return voiceSetOn(!voice.on); }
 
 // Inside the Android app, the app listens (android/.../ListenBridge.kt):
 // the page there is on http and gets no microphone. Same server channel,
@@ -114,12 +118,14 @@ async function voiceStart() {
     voicePaint();
     try {
       const stop = await appMicrophone.open({
+        listening: true,
         pcm: pcm => { if (voice.ws && voice.ws.readyState === WebSocket.OPEN) voice.ws.send(pcm); },
         paused: () => { voice.status = 'paused'; voice.error = 'paused while the app is in the background'; voicePaint(); },
         resumed: () => { if (voice.status === 'paused') { voice.status = 'listening'; voice.error = ''; voicePaint(); } },
         // Closed while still on: it failed, or dictation took the app's one
         // microphone. Turning voice commands off and on opens it again.
-        ended: error => { if (!voice.on) return; voice.audio = null; voiceFail(error ? 'microphone: ' + error : 'dictation took the microphone; turn voice commands off and on to listen again'); },
+        // While talking with the frog it is opened again at the next tick (frogTalkKeep).
+        ended: error => { if (!voice.on) return; voice.audio = null; voiceFail(error ? 'microphone: ' + error : 'dictation took the microphone; turn voice commands off and on to listen again'); if (voice.mode === 'walkie') setTimeout(() => { if (voice.on && !voice.audio) voiceStart(); }, 1500); },
       });
       if (!voice.on) { stop(); return; }
       voice.audio = { stop };
@@ -174,12 +180,39 @@ async function voiceStart() {
   }
 }
 
+// What this page says of itself to the listener, for the voice corpus
+// (voice-corpus.js): what it is doing, the device, and what it knows of the
+// microphone: a call's route (the Bluetooth headset's name), the browser's
+// own name for its microphone, or the app's. Sent when it changes.
+let voiceContextWas = '';
+// What this listener is (for the corpus and the woven timeline): the
+// mode, the device, the microphone. Not voiceContext(said) below, the
+// understanding's context: the two shared a name, and the later one won,
+// so this message was never sent (a Promise, stringified to {}).
+function voiceListenContext() {
+  let mic = 'microphone';
+  try {
+    const app = typeof frogCall !== 'undefined' && frogCall.app();
+    if (app && app.state && app.state() === 'active') mic = 'call \u00b7 ' + (frogCall.endpoint || 'phone') + ' \u00b7 call microphone';
+    else if (app || window.__anywhereInside && window.ChatteringMic) mic = 'app microphone';
+    else if (voice.audio && voice.audio.stream) { const t = voice.audio.stream.getAudioTracks()[0]; mic = (t && t.label) || 'browser microphone'; }
+  } catch {}
+  return { type: 'context', mode: voice.enrol ? 'enrol' : voice.mode, device: voiceDeviceLabel(), mic };
+}
+function voiceContextSend(force = false) {
+  const c = voiceListenContext(), json = JSON.stringify(c);
+  if (!force && json === voiceContextWas) return;
+  let sent = false;
+  if (voice.native && voiceNative() && typeof voiceNative().sendText === 'function') { try { voiceNative().sendText(json); sent = true; } catch {} }
+  else if (voice.ws && voice.ws.readyState === WebSocket.OPEN) { try { voice.ws.send(json); sent = true; } catch {} }
+  if (sent) voiceContextWas = json;
+}
 function voiceConnect() {
   if (!voice.on || (voice.ws && voice.ws.readyState <= WebSocket.OPEN)) return;
   clearTimeout(voice.retryTimer);
   const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = voice.ws = new WebSocket(scheme + '//' + location.host + '/api/voice/listen?window=' + voicePrefs().window);
-  ws.onopen = () => { voice.retry = 0; if (voice.status !== 'paused') voice.status = 'listening'; voice.error = ''; voicePaint(); };
+  ws.onopen = () => { voice.retry = 0; if (voice.status !== 'paused') voice.status = 'listening'; voice.error = ''; voiceContextSend(true); voicePaint(); };
   ws.onmessage = m => { let e; try { e = JSON.parse(m.data); } catch { return; } voiceEvent(e); };
   ws.onclose = () => {
     if (voice.ws !== ws) return;
@@ -196,6 +229,9 @@ function voiceConnect() {
 
 function voiceStop() {
   clearTimeout(voice.retryTimer);
+  // Listening off ends the walkie-talkie too: the frog is told, and the
+  // app's call (if any) hangs up, whichever way voice was turned off.
+  if (voice.mode === 'walkie') frogTalkSet(false);
   if (voice.native && voiceNative()) { try { voiceNative().stop(); } catch {} voice.native = false; }
   if (voice.ws) { const ws = voice.ws; voice.ws = null; try { ws.send(JSON.stringify({ type: 'stop' })); } catch {} setTimeout(() => { try { ws.close(); } catch {} }, 1500); }
   const a = voice.audio;
@@ -225,8 +261,13 @@ function voiceFail(message) {
 let voiceErrorShown = '';
 const VOICE_STOP_WORD = /^(stop|halt|enough|freeze|wait|pause|there)\W*$/i;
 function voiceEvent(e) {
+  if (e.type === 'quiet') { frogQuietHeard(); frogBargeQuiet(); return; }
+  if (e.type === 'speech') { frogBarge.lastSpeechAt = Date.now(); return; }
+  if (e.type === 'barge') { frogBargeHeard(e); return; }
   if (e.type === 'heard') {
-    voice.heard = { committed: e.committed, stable: e.stable, volatile: e.volatile, windowSeconds: e.windowSeconds, asrMs: e.asrMs };
+    voice.heard = { committed: e.committed, stable: e.stable, volatile: e.volatile, windowSeconds: e.windowSeconds, asrMs: e.asrMs, engine: e.engine || '' };
+    if (String(e.volatile || '').trim() || String(e.stable || '').trim()) voice.lastHeardAt = Date.now();
+    frogLiveHeard(e); // "frog, wait" at once, not when the utterance closes
     if (voice.status === 'error') { voice.status = 'listening'; voice.error = ''; }
     // While scrolling, "stop" acts on the live words, at the first short
     // pause: waiting for the end of the sentence and for Jev would carry
@@ -237,8 +278,27 @@ function voiceEvent(e) {
     }
     voicePaintHeard();
   } else if (e.type === 'utterance') {
+    if (voice.enrol) return; // my voice is being recorded: what I read is not a command
+    // Only my voice (design/102): another voice's utterance is shown greyed,
+    // one tap to use it; a doubtful one goes through, noted; a two-voice one
+    // comes with the other voice cut out.
+    const sp = e.speaker;
+    if (sp && sp.mine === 'no') return voiceRecord({ said: e.text, asrMs: e.asrMs, at: Date.now(), status: 'skipped', speaker: sp, summary: 'another voice (' + voiceScore(sp) + ')', startedAt: e.startedAt, uid: e.id || null });
     // One at a time, in order: an action may change what the next one sees.
-    voice.queue = voice.queue.then(() => voiceUnderstand(e.text, e.asrMs)).catch(err => console.error('voice', err));
+    voice.queue = voice.queue.then(() => voiceUnderstand(e.text, e.asrMs, { speaker: sp, startedAt: e.startedAt, endedAt: e.endedAt })).catch(err => console.error('voice', err));
+  } else if (e.type === 'enrol') {
+    if (e.error) { voiceEnrolOver(); errToast('recording your voice: ' + e.error); }
+    else if (voice.enrol) Object.assign(voice.enrol, { secs: e.secs, want: e.want });
+    voicePaintEnrol();
+  } else if (e.type === 'enrolled') {
+    voiceEnrolOver();
+    voice.speaker = !!e.speaker;
+    toast('\u{1F3A4} your voice is enrolled' + (e.print && e.print.consistency < 0.7 ? ' \u2014 the recording was noisy (' + e.print.consistency + '); record again somewhere quieter if it misses you' : ''));
+    voicePaintEnrol();
+    voicePaintOverlayHead();
+  } else if (e.type === 'speaker') {
+    voice.speaker = !!e.on;
+    voicePaintOverlayHead();
   } else if (e.type === 'error') {
     voice.status = 'error';
     voice.error = e.message;
@@ -246,8 +306,18 @@ function voiceEvent(e) {
     if (voiceErrorShown !== e.message) { voiceErrorShown = e.message; console.warn('voice:', e.message); }
   } else if (e.type === 'ready' || e.type === 'window') {
     voice.heard.windowSeconds = voice.heard.windowSeconds || 0;
+    if (e.type === 'ready') { voice.speaker = !!e.speaker; if (e.engine) voice.heard.engine = e.engine; }
     voicePaint();
   }
+}
+const voiceScore = sp => (sp.score == null ? '?' : sp.score.toFixed(2)) + (sp.error ? ', check failed' : '');
+// What the voice check adds to an entry's line: doubtful, or cut.
+function voiceSpeakerNote(sp) {
+  if (!sp) return '';
+  if (sp.error) return 'voice check failed: everything kept';
+  if (sp.mixed) return 'another voice cut out (' + sp.dropped + ' s)';
+  if (sp.mine === 'unsure') return 'unsure it was you (' + voiceScore(sp) + ')';
+  return '';
 }
 
 // ---- the actions ----
@@ -1381,6 +1451,658 @@ function voiceReview(what, all) {
   return what === 'accept' ? 'accepted the change' : 'rejected the change';
 }
 
+// ---- the frog's walkie-talkie (design/102) ----
+// Talking with the frog: everything said goes into its message box, and
+// after each utterance one small check (Jev, the AI program frog_turn_end,
+// /api/frog/turn-end) says whether the person handed the turn over. A pause
+// never sends. Only into the frog's own conversation: elsewhere, nothing is
+// written (the box on screen belongs to another conversation).
+const frogTalk = { key: null, keepAlive: 0, offText: '', held: false, heldTimer: 0 };
+const FROG_TALK_KEEP_MS = 2 * 60 * 1000; // the server speaks replies while it hears from us
+// Speaking never stops the frog by itself: the room may be noisy, and the
+// person may talk while still listening (heard 2026-10-17). It waits when
+// asked by name, alone in what was said ("frog, wait", "hold on, frog"), or
+// with the pause button; "frog, go on" goes on.
+const FROG_NAME = '(?:hey\\s+|okay\\s+|ok\\s+)?frog';
+const FROG_WAIT_WORDS = '(?:stop|wait|pause|hold on|hang on|shh+|hush|quiet|be quiet|stop talking|one (?:sec|second|moment))';
+const FROG_GO_WORDS = '(?:go on|continue|keep going|carry on|resume|go ahead and finish|finish)';
+const addressed = words => new RegExp('^\\W*(?:' + FROG_NAME + '\\W+' + words + '|' + words + '\\W+' + FROG_NAME + ')(?:\\W+please)?\\W*$', 'i');
+const FROG_HUSH = addressed(FROG_WAIT_WORDS.replace('stop|', '').replace('|stop talking', ''));
+// "Frog, stop": it stops for good (what it did not say is noted for it).
+const FROG_STOP = addressed('(?:stop|stop talking|that\'?s enough|enough)');
+const FROG_GO = addressed(FROG_GO_WORDS);
+// "slower", "slow down", "go slower slower" (said again when the first was
+// not heard), "speed up", "faster".
+const FROG_SPEED = /^\W*(?:(?:hey\s+)?frog\W+)?(?:(?:(?:talk|speak|go|read|a bit|a little|much)\s+)*(faster|quicker|slower|slow down|speed up)\W*){1,4}(?:frog)?(?:\s*please)?\W*$/i;
+// The frog addressed, however it is said when it does not stop at once:
+// "Frog, wait, wait, frog, frog." (said on the first call, and missed: the
+// patterns above want one clean phrase). The words must hold "frog" and
+// otherwise only one command's words (and a few fillers). 'wait' | 'stop' |
+// 'go' | null.
+const FROG_FILLER = new Set(['hey', 'okay', 'ok', 'please', 'um', 'uh', 'oh', 'the', 'now', 'a', 'sec', 'second', 'moment', 'one', 'just']);
+// In order: a command's words must all be in its `may` and one in its
+// `needs`; the first that fits wins ("go back" is prev, not go).
+const FROG_CMD_WORDS = {
+  wait: { needs: ['wait', 'hold', 'hang', 'pause', 'shh', 'hush'], may: ['wait', 'hold', 'hang', 'on', 'pause', 'shh', 'shhh', 'hush', 'quiet', 'be', 'there', 'minute'] },
+  stop: { needs: ['stop', 'enough'], may: ['stop', 'talking', 'that', 'thats', 's', 'enough', 'it'] },
+  prev: { needs: ['previous', 'back', 'before'], may: ['previous', 'sentence', 'back', 'go', 'up', 'before', 'last', 'that', 'bit', 'part'] },
+  repeat: { needs: ['repeat', 'again', 'what', 'pardon', 'sorry'], may: ['repeat', 'again', 'say', 'that', 'what', 'sentence', 'this', 'last', 'sorry', 'pardon', 'was', 'did', 'you', 'say'] },
+  next: { needs: ['next', 'skip'], may: ['next', 'skip', 'sentence', 'that', 'this', 'forward', 'it', 'ahead', 'bit', 'part'] },
+  go: { needs: ['go', 'continue', 'resume', 'carry', 'keep'], may: ['go', 'on', 'continue', 'resume', 'carry', 'keep', 'going', 'ahead', 'finish'] },
+};
+// `bare`: the command needs no "frog" (while it speaks or waits, a plain
+// "stop", "pause", "go on", "next sentence" is to it; design/102: on the
+// first tests every command needed its name, and "pause", "stop", "wait"
+// landed in the message instead).
+function frogCommandOf(text, bare = false) {
+  const words = String(text || '').toLowerCase().replace(/[’']/g, '').split(/[^a-z]+/).filter(Boolean);
+  const named = words.includes('frog');
+  if ((!named && !bare) || words.length > 12) return null;
+  const rest = words.filter(w => w !== 'frog' && !FROG_FILLER.has(w));
+  if (!rest.length || (!named && rest.length > 4)) return null;
+  for (const [cmd, w] of Object.entries(FROG_CMD_WORDS)) {
+    if (rest.every(x => w.may.includes(x)) && rest.some(x => w.needs.includes(x))) return cmd;
+  }
+  return null;
+}
+// A plain command is to the frog only while its voice is playing or held.
+const frogBareOk = () => typeof ScreenSound !== 'undefined' && (ScreenSound.frogSpeaking() || ScreenSound.frogWaiting());
+// The same, in the live words (the listener's pass at each short pause,
+// before the utterance closes): two or three words in a row, "frog wait",
+// "wait frog", "hold on frog", "frog stop", "frog go on". An utterance
+// closes only after almost a second of quiet, and with the frog's voice in
+// the headset the microphone was not quiet for 16 s: "frog, wait" acted
+// on then was far too late (design/102). Not when the frog is itself saying
+// those words (its story).
+function frogLiveCommand(fresh, bare = false) {
+  const w = fresh.map(x => String(x).toLowerCase().replace(/[^a-z]/g, '')).filter(Boolean);
+  // The latest command said wins ("frog wait … frog go on": go on).
+  for (let i = w.length - 1; i >= 0; i--) {
+    for (const n of [2, 3]) {
+      if (i + n > w.length) continue;
+      const span = w.slice(i, i + n);
+      if (!span.includes('frog')) continue;
+      const cmd = frogCommandOf(span.join(' '));
+      if (cmd) return { cmd, phrase: span.join(' ') };
+    }
+  }
+  // Plain, at the end of what was heard so far: the last one or two words.
+  // Not "what" or "again" from the live words (too common mid-sentence):
+  // those act when the utterance closes.
+  if (bare) {
+    for (const n of [2, 1]) {
+      if (n > w.length) continue;
+      const span = w.slice(w.length - n);
+      const cmd = frogCommandOf(span.join(' '), true);
+      if (cmd && cmd !== 'repeat') return { cmd, phrase: span.join(' ') };
+    }
+  }
+  return null;
+}
+let frogSaying = { job: null, text: '' };
+async function frogSayingText() {
+  const at = typeof ScreenSound !== 'undefined' && ScreenSound.frogAt();
+  if (!at || !at.job) return '';
+  if (frogSaying.job !== at.job) {
+    frogSaying = { job: at.job, text: '' };
+    try { const d = await (await fetch('/api/frog/spoken')).json(); if (d.job === at.job) frogSaying.text = (d.items || []).flatMap(i => i.texts || []).join(' ').toLowerCase().replace(/[^a-z]+/g, ' '); } catch {}
+  }
+  return frogSaying.text;
+}
+async function frogLiveHeard(e) {
+  if (voice.mode !== 'walkie' || typeof ScreenSound === 'undefined' || !Number.isFinite(e.decided)) return;
+  const speaking = ScreenSound.frogSpeaking(), waiting = ScreenSound.frogWaiting();
+  if (!speaking && !waiting) return;
+  const fresh = [e.committed, e.stable, e.volatile].join(' ').split(/\s+/).filter(Boolean).slice(e.decided).slice(-8);
+  const found = frogLiveCommand(fresh, true);
+  if (!found) return;
+  if ((' ' + await frogSayingText() + ' ').includes(' ' + found.phrase + ' ')) return; // its own words (whole words: "stopped" is not "stop")
+  const key = found.cmd + '|' + found.phrase + '|' + e.decided;
+  if (frogTalk.liveDone === key) return;
+  frogTalk.liveDone = key;
+  frogAct(found.cmd, 'live');
+}
+// One of the frog's voice commands, however it arrived (live words, an
+// utterance, a button). Returns a short line for the debug view.
+function frogAct(cmd, how) {
+  const S = ScreenSound;
+  if (cmd === 'wait') { if (!S.frogWaiting()) S.pauseBack(frogBarge.on ? 0 : 1500, 'voice'); frogBarge.held = true; return S.frogSpeaking() || S.frogWaiting() ? 'the frog waits \u00b7 say \u201cgo on\u201d, or tell it something' : 'the frog was not speaking'; }
+  if (cmd === 'stop') { const was = S.frogStop(); frogBarge.held = true; return was ? 'the frog stopped; \u201ccontinue\u201d brings it back' : 'the frog was not speaking'; }
+  if (cmd === 'go') { frogBargeClear(); S.resume(); return 'the frog goes on'; }
+  if (cmd === 'next') { frogBargeClear(); return S.seekSentence(1) ? 'the next sentence' : 'nothing to skip to'; }
+  if (cmd === 'prev') { frogBargeClear(); return S.seekSentence(-1) ? 'the sentence before' : 'the frog was not speaking'; }
+  if (cmd === 'repeat') { frogBargeClear(); return S.seekSentence(0) ? 'that sentence again' : 'the frog was not speaking'; }
+  return '';
+}
+// A barge-in (design/102): the listener heard the person clearly talking
+// while the frog's voice played (half a second of their voice, checked
+// against their print when it is on; else live words that are not the
+// frog's own). The server says so with where the frog was when they began;
+// the player pauses there at once. What they say next decides (frogBarge
+// below): a reaction and it goes on, a question and it answers, a thought
+// still going and it waits until they fall quiet.
+const frogBarge = { on: false, held: false, at: 0, job: null, clip: null, waiting: false, lastSpeechAt: 0 };
+function frogBargeClear() { frogBarge.on = false; frogBarge.held = false; frogBarge.waiting = false; }
+function frogBargeHeard(e) {
+  if (voice.mode !== 'walkie' || typeof ScreenSound === 'undefined') return;
+  if (!ScreenSound.frogSpeaking() || ScreenSound.frogWaiting()) return;
+  const at = ScreenSound.frogAt();
+  if (!at || (e.job && at.job !== e.job)) return;
+  Object.assign(frogBarge, { on: true, held: false, at: e.at || 0, job: at.job, clip: at.clip, waiting: false });
+  ScreenSound.bargePause({ resumeMs: at.clip === e.clip ? e.resumeMs : null, agoMs: e.agoMs });
+}
+// Said while the frog's voice is held: the decision, and what follows.
+async function frogBargeDecide(entry, t, words) {
+  const at = ScreenSound.frogAt() || { job: frogBarge.job, clip: frogBarge.clip, ms: 0 };
+  let out;
+  frogTalk.checking = (frogTalk.checking || 0) + 1;
+  try {
+    const r = await fetch('/api/frog/barge', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: t.ta.value, last: words, job: at.job, clip: at.clip, ms: at.ms, start: entry.startedAt || null }) });
+    out = await r.json();
+    if (!r.ok || out.error) throw new Error(out.error || 'the check did not answer');
+  } catch (e) {
+    frogCues.play('failed');
+    Object.assign(entry, { status: 'failed', note: e.message + ' \u2014 the frog waits; say \u201cgo on\u201d or \u201cover\u201d' });
+    return voicePaintDecisions();
+  } finally { frogTalk.checking--; }
+  entry.jevMs = out.ms;
+  const sure = out.sure != null ? ' (' + Math.round(out.sure * 100) + '%)' : out.rule ? ' (rule)' : '';
+  if (out.do === 'resume') {
+    // A reaction: those words are not part of a message. Out of the box, and on it goes.
+    const v = t.ta.value;
+    if (v.trim().endsWith(words.trim())) { t.ta.value = v.trim().slice(0, v.trim().length - words.trim().length).trim(); t.ta.dispatchEvent(new Event('input', { bubbles: true })); if (t.grow) t.grow(); }
+    frogSaidWas(entry, 'a reaction; the frog went on');
+    frogBargeClear();
+    ScreenSound.resume();
+    Object.assign(entry, { status: 'done', summary: 'a reaction' + sure + ' \u00b7 the frog goes on' });
+    return voicePaintDecisions();
+  }
+  if (out.do === 'send') {
+    frogSaidWas(entry, 'sent to the frog as a new message');
+    frogBargeClear();
+    return frogWalkieSend(entry, t, out);
+  }
+  frogBarge.waiting = true;
+  frogSaidWas(entry, 'still talking; the frog waited');
+  Object.assign(entry, { status: 'done', summary: 'listening' + sure + ' \u00b7 the frog waits; it goes on when you fall quiet, or say \u201cover\u201d' });
+  voicePaintDecisions();
+}
+// What was done with an utterance, for the woven timeline (by its start time).
+function frogSaidWas(entry, what) {
+  if (!entry || !entry.startedAt) return;
+  fetch('/api/frog/said', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ start: entry.startedAt, what }) }).catch(() => {});
+}
+// They fell quiet (the listener's 'quiet', ~4 s) with a thought left
+// hanging while the frog waited for it: it goes on; the words stay in the
+// box for their next "over".
+function frogBargeQuiet() {
+  if (voice.mode !== 'walkie' || !frogBarge.on || !frogBarge.waiting || frogBarge.held) return;
+  if (!ScreenSound.frogWaiting()) { frogBargeClear(); return; }
+  frogBargeClear();
+  ScreenSound.resume();
+}
+async function frogKnowKey() {
+  if (frogTalk.key) return frogTalk.key;
+  try { const d = await (await fetch('/api/frog/home')).json(); frogTalk.key = d && d.key || null; } catch {}
+  return frogTalk.key;
+}
+function frogOnScreen() {
+  return !!frogTalk.key && typeof viewKind !== 'undefined' && viewKind === 'conversation' && typeof activeRel !== 'undefined' && activeRel === frogTalk.key;
+}
+// This page's event stream: the server knows a screen by it.
+const frogConn = () => { try { return typeof peopleState !== 'undefined' && peopleState.conn || null; } catch { return null; } };
+// This page as a holder of the voice session (voice-session.js): the same
+// across its stream's reconnects and its reloads (the tab's own storage),
+// so a phone whose link blinks keeps the session it holds.
+const frogHolder = (() => {
+  let id = null;
+  try { id = sessionStorage.getItem('chattering.voiceHolder'); } catch {}
+  if (!id) { id = 'h' + Math.random().toString(36).slice(2, 12); try { sessionStorage.setItem('chattering.voiceHolder', id); } catch {} }
+  return id;
+})();
+const frogVoiceKind = () => (typeof window.ChatteringCall === 'object' && window.ChatteringCall) ? 'call' : 'talk';
+function frogTalkPost(body) {
+  if (body && body.on !== undefined) body = { ...body, conn: frogConn(), holder: frogHolder, kind: frogVoiceKind() };
+  return fetch('/api/frog/talk', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(r => r.json()).catch(() => ({}));
+}
+async function frogTalkSet(on) {
+  if (on) {
+    if (!await frogKnowKey()) { toast('The frog has no conversation yet: open it from the \u25be menu.', null, 'err'); return; }
+    // The voice session first: one owns the microphone and the speaker.
+    const claim = await frogTalkPost({ on: true });
+    if (claim.refused) { frogTalkRefused(claim); return; }
+    frogTalk.held = false; frogTalk.heldKind = null; clearInterval(frogTalk.heldTimer);
+    // Listening on for Talk: noted, so Talk's end turns it off again. Voice
+    // commands that were on before stay on after.
+    if (!voice.on) { frogTalk.ownsListening = true; await voiceSetOn(true, { keep: false }); }
+    voice.mode = 'walkie';
+    voice.target = null;
+    clearInterval(frogTalk.keepAlive);
+    frogTalk.keepAlive = setInterval(frogTalkKeep, FROG_TALK_KEEP_MS / 2);
+    frogCallApp('start');
+  } else {
+    clearInterval(frogTalk.keepAlive);
+    if (voice.mode === 'walkie') { voice.mode = 'command'; voice.target = null; }
+    frogHush();
+    frogTalkPost({ on: false });
+    frogCallApp('end');
+    frogCues.setWorking(false);
+    // Talk turned listening on: it goes off with Talk, so what is said after
+    // does not drive the app as voice commands. (Already off: the person
+    // turned listening off, which ended Talk.)
+    if (frogTalk.ownsListening) {
+      frogTalk.ownsListening = false;
+      if (voice.on) await voiceSetOn(false, { keep: false });
+    }
+  }
+  if (window.PushUI && PushUI.here) PushUI.here(); // the sound follows the screen that talks
+  voicePaint();
+  frogTalkPaint();
+}
+// Talk stays on while the server hears from this page. A hidden page's own
+// timers run once a minute at best, so the app's call ticks this too.
+function frogTalkKeep() {
+  if (voice.mode !== 'walkie') { clearInterval(frogTalk.keepAlive); return; }
+  frogTalkPost({ on: true }).then(r => { if (r && r.refused) { frogTalkSet(false); frogTalkRefused(r); } });
+  if (window.PushUI && PushUI.here) PushUI.here();
+  // The session listens at all times: a microphone or a connection that
+  // dropped is opened again here (this runs on the app's 30 s tick too: a
+  // hidden page's own retry timers may wait a minute or more).
+  if (voice.on && voice.status !== 'starting') {
+    if (!voice.audio) voiceStart();
+    else if (!voice.ws || voice.ws.readyState > WebSocket.OPEN) voiceConnect();
+  }
+}
+// Talk asked for while a call holds the voice: it stays with the call.
+function frogTalkRefused(r) {
+  toast('\u{1F4DE} ' + (r.holder ? 'The frog is on ' + r.holder : 'The frog is talking elsewhere') + ': it has the microphone and the speaker. End it there to talk here.');
+}
+// A new stream for this page: a session it holds is claimed again with it
+// (the sounds that waited come now); otherwise, a session held elsewhere
+// is learned, so this screen does not listen meanwhile.
+async function frogVoiceConnected() {
+  if (voice.mode === 'walkie') return frogTalkKeep();
+  let st = {};
+  try { st = await (await fetch('/api/frog/talk')).json(); } catch { return; }
+  if (st.owner && st.owner !== frogConn()) frogTalkElsewhere({ on: true, conn: st.owner, kind: st.session });
+}
+// ---- one screen talks with the frog at a time ----
+// Another screen of this person turned Talk on: this one stops its own
+// Talk and stops listening (a laptop's microphone in the same room heard
+// the person's words to the frog and took them as commands), until that
+// Talk ends; then it listens again as it did. The server says when; a
+// look every 30 s covers a talking screen that vanished without a word.
+async function frogTalkElsewhere(d) {
+  if (!d || (d.conn && d.conn === frogConn())) return;
+  if (d.on) {
+    frogTalk.heldKind = d.kind || 'talk';
+    // Its Talk ends first; listening Talk had turned on goes with it (it is
+    // not held, so it does not come back when the other screen is done).
+    if (voice.mode === 'walkie') await frogTalkSet(false);
+    if (voice.on && !frogTalk.held) {
+      frogTalk.held = true;
+      voice.on = false;
+      voiceStop();
+      voicePaint();
+      toast(frogTalk.heldKind === 'call' ? '\u{1F4DE} On a call with the frog: this screen stops listening until the call ends.' : '\u{1F438} Talking with the frog on another screen: this one stops listening until that ends.');
+    }
+    clearInterval(frogTalk.heldTimer);
+    if (frogTalk.held) frogTalk.heldTimer = setInterval(async () => {
+      let st = {};
+      try { st = await (await fetch('/api/frog/talk')).json(); } catch { return; }
+      if (!st.talk || !st.owner) frogTalkElsewhere({ on: false });
+    }, 30000);
+  } else {
+    frogTalk.heldKind = null;
+    if (frogTalk.held) { frogTalk.held = false; clearInterval(frogTalk.heldTimer); voiceSetOn(true); }
+  }
+  frogTalkPaint();
+}
+
+// ---- in the Android app: Talk is a call (android/.../FrogCallService.kt) ----
+// The app holds a call in Android's call system while Talk is on: the
+// microphone and the voice go on with the screen off, the sound goes to
+// the headset as for any call, and the headset's button hangs up (and
+// answers when the frog calls). The app reports here (chatteringCallEvent)
+// and opens the frog when asked from outside (frogCallOpen).
+const frogCall = { app: () => (typeof window.ChatteringCall === 'object' && window.ChatteringCall) || null, endpoint: '', heldPause: false };
+function frogCallApp(what) {
+  const app = frogCall.app();
+  if (!app) return;
+  try { if (what === 'start') app.start(); else app.end(); } catch {}
+}
+window.chatteringCallEvent = e => {
+  if (!e || typeof e !== 'object') return;
+  const walkie = voice.mode === 'walkie';
+  if (e.type === 'active') {
+    if (frogCall.heldPause) { frogCall.heldPause = false; if (typeof ScreenSound !== 'undefined') ScreenSound.resume(); }
+    if (!walkie) frogCallOpen('answered');
+    else frogTalkKeep();
+  } else if (e.type === 'answered') { frogCallOpen('answered'); }
+  else if (e.type === 'ended') {
+    if (walkie) { frogTalkSet(false); toast(e.reason === 'hung up' ? '\u{1F438} hung up' : e.reason === 'no page' ? 'The frog\u2019s call found no page open' : '\u{1F438} call ' + (e.reason || 'ended')); }
+  } else if (e.type === 'held') { if (typeof ScreenSound !== 'undefined' && ScreenSound.frogSpeaking()) { frogCall.heldPause = true; ScreenSound.pause(); } }
+  else if (e.type === 'tick') { if (walkie) frogTalkKeep(); }
+  // Pause / Go on from the call's notification or the lock screen.
+  else if (e.type === 'pause') { if (typeof ScreenSound !== 'undefined' && ScreenSound.frogSpeaking() && !ScreenSound.frogWaiting()) ScreenSound.pause(); }
+  else if (e.type === 'resume') { if (typeof ScreenSound !== 'undefined' && ScreenSound.frogWaiting()) ScreenSound.resume(); }
+  else if (e.type === 'endpoint') { frogCall.endpoint = e.kind === 'bluetooth' ? (e.name || 'Bluetooth headset') : e.kind === 'wired' ? 'wired headset' : e.kind === 'speaker' ? 'the speaker' : (e.name || ''); voicePaint(); }
+  else if (e.type === 'nocall') { toast('The phone refused a call for the frog (' + (e.reason || 'no reason given') + '): Talk works while the screen is on.', null, 'err'); }
+};
+// Opened for a call from outside the page: the tile, the icon's shortcut,
+// the headset's button, the frog's own call (ringing: answer on the phone
+// or here). The frog's conversation opens and Talk turns on.
+window.frogCallOpen = async how => {
+  const app = frogCall.app();
+  try { if (app) app.takeOpen(); } catch {}
+  const key = await frogKnowKey();
+  if (!key) { toast('The frog has no conversation yet: open it from the \u25be menu.', null, 'err'); return; }
+  if (!frogOnScreen() && typeof openPanelConversation === 'function') { await openPanelConversation(key); await new Promise(r => setTimeout(r, 300)); }
+  if (how === 'ringing') { toast('\u{1F438} The frog is calling', () => frogTalkSet(true)); return; }
+  if (voice.mode !== 'walkie') await frogTalkSet(true);
+};
+// At load in the app: a call that opened the page, or one still on (the
+// page was reloaded under it), is taken up.
+(() => {
+  const app = frogCall.app();
+  if (!app) return;
+  try { app.ready(); } catch {}
+  let how = '';
+  try { how = app.takeOpen() || ''; } catch {}
+  let state = '';
+  try { state = app.state() || ''; } catch {}
+  if (how) setTimeout(() => frogCallOpen(how), 500);
+  else if (state === 'active') setTimeout(() => frogCallOpen('answered'), 500);
+})();
+// Talk turned off: the frog stops for good, and knows where.
+function frogHush() { if (typeof ScreenSound !== 'undefined' && ScreenSound.frogCut) ScreenSound.frogCut(); }
+async function frogWalkie(entry, said) {
+  const words = String(said || '').trim();
+  let cmd = frogCommandOf(words, frogBareOk());
+  if (!cmd && FROG_STOP.test(words)) cmd = 'stop';
+  else if (!cmd && FROG_HUSH.test(words)) cmd = 'wait';
+  else if (!cmd && FROG_GO.test(words)) cmd = 'go';
+  if (cmd) {
+    // Already done on the live words a moment ago: the utterance that
+    // closes is the same command, not a message.
+    const line = frogAct(cmd, 'utterance');
+    frogSaidWas(entry, 'the command ' + cmd);
+    Object.assign(entry, { status: 'done', summary: line });
+    return voicePaintDecisions();
+  }
+  const speed = FROG_SPEED.exec(words);
+  if (speed) {
+    const st = await frogTalkPost({});
+    const now = st.speed || st.defaultSpeed || 1;
+    const next = await frogTalkPost({ speed: now + (/slow/i.test(speed[1]) ? -0.15 : 0.15) });
+    ScreenSound.setRate(next.speed || now);
+    Object.assign(entry, { status: 'done', summary: 'the frog now speaks at ' + (next.speed || now) + '\u00d7' });
+    return voicePaintDecisions();
+  }
+  // The frog's box when its conversation is on screen; else a box of its
+  // own here (the person reads another conversation, or a page elsewhere
+  // in the app, while talking): what is said waits there, and goes to the
+  // frog all the same.
+  let t = frogOnScreen() ? voiceTextTarget() : null;
+  if (t && !t.file && t.ta) {
+    voice.target = t;
+    if (frogTalk.offText) { voiceWrite(frogTalk.offText); frogTalk.offText = ''; }
+    voiceWrite(words);
+  } else {
+    t = frogOffBox();
+    voice.target = null;
+    t.ta.value = (t.ta.value ? t.ta.value + ' ' : '') + words;
+  }
+  // The frog's voice is held for them (a barge-in, "pause", the button):
+  // what they said decides whether it goes on, answers, or keeps waiting.
+  if (frogBarge.on || ScreenSound.frogWaiting()) return frogBargeDecide(entry, t, words);
+  let out;
+  frogTalk.checking = (frogTalk.checking || 0) + 1;
+  try {
+    const r = await fetch('/api/frog/turn-end', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: t.ta.value, last: words }) });
+    out = await r.json();
+    if (!r.ok || out.error) throw new Error(out.error || 'the check did not answer');
+  } catch (e) {
+    frogCues.play('failed');
+    Object.assign(entry, { status: 'failed', note: e.message + ' \u2014 send it with the button' });
+    return voicePaintDecisions();
+  } finally { frogTalk.checking--; }
+  entry.jevMs = out.ms;
+  const sure = Math.round((out.handedOver || 0) * 100);
+  if (out.send) { frogSaidWas(entry, 'sent to the frog as a new message'); return frogWalkieSend(entry, t, out); }
+  frogSaidWas(entry, out.ask ? 'unsure it was a hand-over; asked' : 'kept in the box, waiting for over');
+  if (out.ask) {
+    frogCues.play('unsure');
+    Object.assign(entry, { status: 'asked', summary: 'over? (' + sure + '%) \u2014 tap to send, or say over again' });
+    toast('\u{1F438} Send it to the frog?', () => frogWalkieSend(entry, t, out));
+  } else Object.assign(entry, { status: 'done', summary: 'listening (' + sure + '% handed over)' });
+  voicePaintDecisions();
+}
+// ---- what the person hears of the walkie-talkie itself (design/102) ----
+// Hands-free, with the phone in a pocket, silence says nothing: was "over"
+// heard, did the message go, is the frog working? So each step has a short
+// sound, made here (no network, no synthesis: at once), played through an
+// <audio> element, the route the frog's own voice takes to the headset:
+//   sent      two rising notes: the message went to the frog
+//   unsure    a questioning pair: not sure that was "over"; say it again
+//   nothing   one low note: "over" with nothing to send, the frog idle
+//   failed    two falling notes: the check or the send failed
+//   thinking  a soft tick every 1.6 s while the frog works and is not
+//             speaking (before its first words, and while its tools run)
+// The ticking is a looping sound, not a timer: a hidden page's timers run
+// once a minute at best, and an audible page is not throttled.
+const frogCues = (() => {
+  const RATE = 24000;
+  function wav(notes, { gain = 0.28, tailMs = 0, decay = false } = {}) {
+    const samples = [];
+    for (const [hz, ms] of notes) {
+      const n = Math.round(RATE * ms / 1000), fade = Math.min(n / 2, RATE * 0.006);
+      for (let i = 0; i < n; i++) {
+        if (!hz) { samples.push(0); continue; }
+        const env = decay ? Math.exp(-i / (RATE * 0.012)) : Math.min(1, i / fade, (n - i) / fade);
+        samples.push(Math.sin(2 * Math.PI * hz * i / RATE) * env * gain);
+      }
+    }
+    for (let i = 0; i < RATE * tailMs / 1000; i++) samples.push(0);
+    const buf = new ArrayBuffer(44 + samples.length * 2), v = new DataView(buf);
+    const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    str(0, 'RIFF'); v.setUint32(4, 36 + samples.length * 2, true); str(8, 'WAVEfmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, RATE, true); v.setUint32(28, RATE * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    str(36, 'data'); v.setUint32(40, samples.length * 2, true);
+    samples.forEach((s, i) => v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, s)) * 32767, true));
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  }
+  let urls = null;
+  const made = () => urls || (urls = {
+    sent: wav([[660, 70], [0, 30], [990, 120]]),
+    unsure: wav([[523, 110], [0, 50], [659, 190]], { gain: 0.24 }),
+    nothing: wav([[330, 160]], { gain: 0.22 }),
+    failed: wav([[440, 130], [0, 40], [294, 220]], { gain: 0.26 }),
+    thinking: wav([[740, 45]], { gain: 0.16, tailMs: 1550, decay: true }),
+    waiting: wav([[587, 60], [0, 80], [587, 60]], { gain: 0.18 }),
+    // The frog's own "over": its reply said to the end, your turn. Soft,
+    // falling, higher than "failed".
+    over: wav([[988, 80], [0, 35], [740, 170]], { gain: 0.2 }),
+  });
+  const log = []; // the last cues played, newest last (to see what was heard)
+  // Resolves when the sound has played (or could not).
+  const play = name => new Promise(resolve => {
+    log.push(name); if (log.length > 20) log.shift();
+    try {
+      const a = new Audio(made()[name]);
+      a.onended = a.onerror = () => resolve();
+      a.play().catch(() => resolve());
+      setTimeout(resolve, 2000);
+    } catch { resolve(); }
+  });
+  // The frog is working: from the moment a message goes, until its run ends.
+  let working = false, safety = 0, tick = null;
+  function setWorking(on) {
+    working = !!on;
+    clearTimeout(safety);
+    // A run that never reports (lost events): the ticking stops on its own.
+    if (working) safety = setTimeout(() => { working = false; update(); }, 5 * 60 * 1000);
+    update();
+  }
+  // Ticking while the frog works and says nothing; quiet otherwise.
+  function update() {
+    const on = working && voice.mode === 'walkie' && (typeof ScreenSound === 'undefined' || ScreenSound.frogQuiet());
+    if (on) {
+      if (!tick) { try { tick = new Audio(made().thinking); tick.loop = true; } catch { return; } }
+      if (tick.paused) tick.play().catch(() => {});
+    } else if (tick && !tick.paused) { tick.pause(); tick.currentTime = 0; }
+  }
+  // The page's run events (app.html): the frog's run started, or ended.
+  function run(d) {
+    if (!d || !frogTalk.key || (d.key !== frogTalk.key && d.fanoutRootKey !== frogTalk.key)) return;
+    if (d.final) { if (working) setWorking(false); }
+    else if (!working) setWorking(true);
+  }
+  return { play, setWorking, update, run, log, get working() { return working; }, get ticking() { return !!(tick && !tick.paused); } };
+})();
+// A long quiet (the listener says it, from the audio) with words still
+// waiting for "over": a soft double blip, once for those words. Silence
+// had looked like "not heard" (design/102): the person asked again.
+let frogWaitedFor = '';
+function frogQuietHeard() {
+  if (voice.mode !== 'walkie' || frogCues.working || frogTalk.checking) return;
+  const t = frogOnScreen() ? voiceTextTarget() : null;
+  const waiting = String((t && t.ta && !t.file ? t.ta.value : frogTalk.offText) || '').trim();
+  if (!waiting || waiting === frogWaitedFor) return;
+  frogWaitedFor = waiting;
+  frogCues.play('waiting');
+}
+// The frog's voice starts: the ticking stops; it ends with the run still
+// going (its tools): the ticking comes back.
+addEventListener('chattering:frog-quiet', () => frogCues.update());
+addEventListener('chattering:frog-speaking', () => frogCues.update());
+
+// Said while the frog waits: once an aside ("Noted.", the reading went
+// on, the thought kept as a thread). Since the barge-in work (design/102)
+// the page no longer makes asides by itself: what is said over a held
+// reading goes through frogBargeDecide (a reaction, a message, or still
+// talking); the frog's own asides tool remains. Kept for a page that wants
+// it back; not called.
+async function frogAsideSend(entry, t, out) {
+  t = frogLiveBox(t);
+  const at = ScreenSound.frogAt();
+  ScreenSound.pause();
+  const text = String(out.text != null ? out.text : t.ta.value).trim();
+  if (!text) { ScreenSound.resume(); Object.assign(entry, { status: 'done', summary: 'nothing to note' }); return voicePaintDecisions(); }
+  let r = {};
+  try {
+    const res = await fetch('/api/frog/aside', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, job: at.job, clip: at.clip, ms: at.ms }) });
+    r = await res.json();
+    if (!res.ok) throw new Error(r.error || 'not noted');
+  } catch (e) { Object.assign(entry, { status: 'failed', note: e.message + ' \u2014 it waits; say \u201cfrog, go on\u201d' }); return voicePaintDecisions(); }
+  t.ta.value = '';
+  t.ta.dispatchEvent(new Event('input', { bubbles: true }));
+  if (t.grow) t.grow();
+  Object.assign(entry, { status: 'done', summary: 'noted (' + r.open + ' open aside' + (r.open === 1 ? '' : 's') + '); the frog goes on' });
+  voicePaintDecisions();
+  await ScreenSound.asideNoted(r.ack, r.rate, r.resumeMs);
+}
+// The frog said everything and the person stayed quiet a few seconds: it
+// comes back to the asides (the computer starts that turn, if any is open).
+let frogQuietTimer = 0;
+addEventListener('chattering:frog-quiet', () => {
+  if (voice.mode !== 'walkie') return;
+  clearTimeout(frogQuietTimer);
+  const heardAt = voice.lastHeardAt || 0;
+  frogQuietTimer = setTimeout(() => {
+    if (voice.mode !== 'walkie' || (voice.lastHeardAt || 0) !== heardAt || !ScreenSound.frogQuiet() || ScreenSound.frogStopped()) return;
+    fetch('/api/frog/asides/return', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
+  }, 3500);
+});
+// The frog's message box while its conversation is not on screen: the
+// words wait in frogTalk.offText and are sent straight to its conversation.
+function frogOffBox() {
+  const ta = { get value() { return frogTalk.offText; }, set value(v) { frogTalk.offText = String(v || ''); }, isConnected: true, dispatchEvent() {} };
+  return { ta, label: 'the frog', send: () => frogSendDirect(ta) };
+}
+function frogSendDirect(ta) {
+  const message = String(ta.value || '').trim();
+  ta.value = '';
+  (async () => {
+    try { if (typeof ScreenSound !== 'undefined') await ScreenSound.frogCut(); } catch {}
+    if (window.PushUI && PushUI.here) PushUI.here();
+    const r = await fetch('/api/node/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: frogTalk.key, prompt: message, input: 'voice' }) });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || 'HTTP ' + r.status);
+  })().catch(e => {
+    ta.value = message + (ta.value ? ' ' + ta.value : '');
+    frogCues.play('failed'); frogCues.setWorking(false);
+    toast('Not sent to the frog: ' + e.message, null, 'err');
+  });
+}
+// The frog's box as it is now. The page redraws the conversation when the
+// frog's run ends, and the box is a new element (with the same words): one
+// found before the "over" check may be gone by its answer. Sending to it
+// failed ("the box went away"): the message was lost.
+function frogLiveBox(t) {
+  if (t && t.ta && t.ta.isConnected) return t;
+  const now = frogOnScreen() ? voiceTextTarget() : null;
+  if (now && !now.file && now.ta) { voice.target = now; return now; }
+  // Not on screen any more: what it held goes on in the box of its own.
+  const off = frogOffBox();
+  if (t && t.ta && t.ta.value && !off.ta.value) off.ta.value = t.ta.value;
+  return off;
+}
+function frogWalkieSend(entry, t, out) {
+  t = frogLiveBox(t);
+  if (!t.ta.isConnected) { frogCues.play('failed'); Object.assign(entry, { status: 'failed', note: 'the box went away' }); return voicePaintDecisions(); }
+  // The box as it is now, without the words that handed it over.
+  const now = t.ta.value, message = String(out.text != null ? out.text : now);
+  t.ta.value = message;
+  t.ta.dispatchEvent(new Event('input', { bubbles: true }));
+  if (t.grow) t.grow();
+  if (!message.trim()) {
+    t.ta.value = now === out.phrase ? '' : now;
+    // "over" again with nothing new: say whether the frog is still on it.
+    if (frogCues.working) { frogCues.play('thinking'); frogCues.update(); } else frogCues.play('nothing');
+    Object.assign(entry, { status: 'done', summary: frogCues.working ? 'nothing new to send \u00b7 the frog is working on your message' : 'nothing to send yet' });
+    return voicePaintDecisions();
+  }
+  try {
+    frogCues.play('sent');
+    t.send();
+    frogCues.setWorking(true);
+    Object.assign(entry, { status: 'done', summary: 'sent to the frog' + (out.phrase ? ' (\u201c' + out.phrase + '\u201d)' : '') });
+  } catch (e) { frogCues.play('failed'); Object.assign(entry, { status: 'failed', note: e.message }); }
+  voicePaintDecisions();
+}
+// The Talk button, beside Send, only in the frog's conversation.
+function frogTalkPaint() {
+  if (frogTalk.offText && voice.mode === 'walkie' && frogOnScreen()) {
+    const t = voiceTextTarget();
+    if (t && !t.file && t.ta) { const prev = voice.target; voice.target = t; try { voiceWrite(frogTalk.offText); frogTalk.offText = ''; } catch {} voice.target = prev || t; }
+  }
+  const run = typeof $ === 'function' ? $('agentRun') : null;
+  let b = typeof $ === 'function' ? $('frogTalkBtn') : null;
+  if (!frogOnScreen() || !run) { if (b) b.remove(); return; }
+  if (!b) {
+    b = document.createElement('button');
+    b.id = 'frogTalkBtn';
+    b.type = 'button';
+    b.className = 'frog-talk';
+    b.onclick = () => frogTalkSet(voice.mode !== 'walkie');
+    run.parentNode.insertBefore(b, run);
+  }
+  const on = voice.mode === 'walkie';
+  // The voice is held elsewhere (a call on the phone, Talk on another
+  // screen): said on the button, so this screen's silence is explained.
+  const elsewhere = !on && frogTalk.heldKind;
+  const label = on ? '\u{1F438} over\u2026' : elsewhere === 'call' ? '\u{1F4DE} on call' : elsewhere ? '\u{1F438} elsewhere' : '\u{1F438} Talk';
+  if (b.textContent !== label) b.textContent = label;
+  b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  b.title = on ? 'Talking with the frog: say \u201cover\u201d to send. Click to stop.'
+    : elsewhere === 'call' ? 'You are on a call with the frog on your phone: it has the microphone and the speaker, and its answers go there. End the call to talk here.'
+    : elsewhere ? 'Talk with the frog is on another screen: it has the microphone and the speaker.'
+    : 'Talk with the frog like a walkie-talkie: say \u201cover\u201d to send';
+}
+frogKnowKey().then(() => frogTalkPaint());
+setInterval(frogTalkPaint, 1000);
+
 // ---- dictation ----
 
 function voiceBeginDictation(target) {
@@ -1462,9 +2184,11 @@ async function voiceDecideSaid(said, asrMs) {
 // that one was incomplete too and came moments ago.
 const VOICE_JOIN_MS = 6000;
 
-async function voiceUnderstand(said, asrMs, { entry: reuse = null } = {}) {
-  const entry = reuse || { said, asrMs, at: Date.now(), status: 'deciding' };
+async function voiceUnderstand(said, asrMs, { entry: reuse = null, speaker = null, startedAt = null, endedAt = null } = {}) {
+  const entry = reuse || { said, asrMs, at: Date.now(), status: 'deciding', startedAt, endedAt };
+  if (speaker) { entry.speaker = speaker; const n = voiceSpeakerNote(speaker); if (n) entry.speakerNote = n; }
   if (!reuse) voiceRecord(entry);
+  if (voice.mode === 'walkie') return frogWalkie(entry, said);
   // The "stop" that the live words already acted on arrives as a sentence:
   // done already, nothing to ask.
   const words = String(said).trim().split(/\s+/);
@@ -1741,6 +2465,7 @@ function voicePaintOffButton() {
 }
 
 function voicePaint() {
+  voiceContextSend();
   const shown = voice.on || voice.status === 'error';
   const pill = $('voiceListenPill');
   if (shown) { const b = $('voiceOnButton'); if (b) b.remove(); document.body.classList.remove('voice-corner'); }
@@ -1759,7 +2484,8 @@ function voicePaint() {
   const p = voicePill();
   p.dataset.state = voice.status;
   p.dataset.mode = voice.mode;
-  const words = voice.mode === 'dictation' ? 'dictating into ' + voice.target.label
+  const words = voice.mode === 'walkie' ? 'talking with the frog \u00b7 say \u201cover\u201d to send' + (frogCall.endpoint ? ' \u00b7 on ' + frogCall.endpoint : '')
+    : voice.mode === 'dictation' ? 'dictating into ' + voice.target.label
     : voice.autoscroll ? 'scrolling ' + (voice.autoscroll.dir > 0 ? '\u2193' : '\u2191') + ' \u00b7 say stop'
     : voice.status === 'listening' ? 'listening' : voice.status === 'starting' ? 'starting…' : voice.status === 'paused' ? 'paused' : 'not listening';
   p.querySelector('.vl-state').textContent = words;
@@ -1786,6 +2512,23 @@ function voiceShowOverlay(show) {
   o.querySelector('.vo-close').onclick = () => voiceShowOverlay(false);
   o.querySelector('.vo-help-btn').onclick = () => voiceShowHelp(!voice.helpOpen);
   o.addEventListener('click', e => {
+    const use = e.target.closest('[data-vo-use]');
+    if (use) {
+      // An utterance taken for another voice, claimed: it runs as if heard now.
+      const d = voice.decisions[Number(use.dataset.voUse)];
+      if (!d || d.status !== 'skipped') return;
+      Object.assign(d, { status: 'deciding', summary: '', speakerNote: 'you said it was you' });
+      // The filter learns from it: the audio goes into a pool of
+      // corrections that becomes a print of its own (design/102).
+      if (d.uid) fetch('/api/voice/print/claim', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: d.uid, device: voiceDeviceLabel() }) }).then(r => r.json()).then(r => {
+        if (r.print) { toast('\u{1F3A4} a new voice print from your ' + r.claims + ' corrections (' + r.print.secs + ' s)'); voicePaintEnrol(); }
+        else if (r.kept) d.speakerNote = 'you said it was you \u00b7 kept for a print (' + r.poolSecs + ' of ' + r.need + ' s)';
+        else d.speakerNote = 'you said it was you \u00b7 ' + (r.why || r.error || 'not kept');
+        voicePaintDecisions();
+      }).catch(() => {});
+      voice.queue = voice.queue.then(() => voiceUnderstand(d.said, d.asrMs, { entry: d })).catch(err => console.error('voice', err));
+      return;
+    }
     const b = e.target.closest('[data-vo]');
     if (!b || !voice.pending) return;
     const entry = { said: b.dataset.vo === 'yes' ? '(clicked yes)' : '(clicked no)', at: Date.now(), status: 'done' };
@@ -1804,9 +2547,10 @@ function voicePaintOverlayHead() {
   if (!o) return;
   const last = [...voice.decisions].reverse().find(d => d.jevMs);
   o.querySelector('.vo-meta').textContent = [
-    voice.mode === 'dictation' ? '✎ dictating into ' + voice.target.label : 'commands',
+    voice.mode === 'walkie' ? '\u{1F438} talking with the frog' : voice.mode === 'dictation' ? '✎ dictating into ' + voice.target.label : 'commands',
+    voice.enrol ? '\u{1F3A4} recording your voice ' + (voice.enrol.secs || 0) + ' / ' + voice.enrol.want + ' s' : voice.speaker ? 'only your voice' : '',
     'window ' + Math.round(voice.heard.windowSeconds || 0) + ' / ' + voicePrefs().window + ' s',
-    voice.heard.asrMs ? 'speech ' + voice.heard.asrMs + ' ms' : '',
+    voice.heard.asrMs ? 'speech ' + voice.heard.asrMs + ' ms' + (voice.heard.engine ? ' · ' + voice.heard.engine : '') : (voice.heard.engine ? 'speech · ' + voice.heard.engine : ''),
     last ? 'Jev ' + last.jevMs + ' ms' : '',
   ].filter(Boolean).join(' · ');
   const err = o.querySelector('.vo-error');
@@ -1826,7 +2570,7 @@ function voicePaintHeard() {
   voicePaintOverlayHead();
 }
 
-const VOICE_STATUS = { deciding: '…', done: '✓', asked: '?', ignored: '·', failed: '✗', cancelled: '✗', expired: '–' };
+const VOICE_STATUS = { deciding: '…', done: '✓', asked: '?', ignored: '·', failed: '✗', cancelled: '✗', expired: '–', skipped: '\u2298' };
 function voicePaintDecisions() {
   const o = $('voiceOverlay');
   if (!o) return;
@@ -1836,8 +2580,10 @@ function voicePaintDecisions() {
     const what = d.status === 'deciding' ? 'deciding…'
       : d.status === 'ignored' ? 'not a command' + (dec ? ' · ' + Math.round(dec.confidence * 100) + '%' : '')
       : (d.summary || (dec ? voiceDescribe(dec) : '')) + (d.note ? ' — ' + d.note : '') + (dec && d.status !== 'failed' ? ' · ' + Math.round(dec.confidence * 100) + '%' : '');
-    const ask = voice.pending && voice.pending.entry === d ? '<span class="vo-ask"><button type="button" data-vo="yes">Do it</button><button type="button" data-vo="no">No</button></span>' : '';
-    return `<li data-status="${d.status}"><span class="vo-mark" aria-hidden="true">${VOICE_STATUS[d.status] || ''}</span>${d.said ? `<span class="vo-said">\u201c${esc(d.said)}\u201d</span>` : ''}<span class="vo-what">${esc(what)}</span>${ask}</li>`;
+    const ask = voice.pending && voice.pending.entry === d ? '<span class="vo-ask"><button type="button" data-vo="yes">Do it</button><button type="button" data-vo="no">No</button></span>'
+      : d.status === 'skipped' ? `<span class="vo-ask"><button type="button" data-vo-use="${voice.decisions.indexOf(d)}">It was me</button></span>` : '';
+    const note = d.speakerNote ? ' \u00b7 ' + d.speakerNote : '';
+    return `<li data-status="${d.status}"><span class="vo-mark" aria-hidden="true">${VOICE_STATUS[d.status] || ''}</span>${d.said ? `<span class="vo-said">\u201c${esc(d.said)}\u201d</span>` : ''}<span class="vo-what">${esc(what + note)}</span>${ask}</li>`;
   }).join('');
   voicePaintOverlayHead();
 }
@@ -1857,6 +2603,18 @@ function voiceShowHelp(open) {
 
 function voiceHelpHtml() {
   const A = ChatteringVoiceActions;
+  if (voice.mode === 'walkie') {
+    return '<p class="vo-help-lead">Talking with the frog, like a walkie-talkie: what you say goes into its message box. Pause as long as you like; nothing is sent until you hand it over.</p><ul>' +
+      '<li><b>over, over to you, your turn, go ahead, done</b> — send it (a small check, Jev, hears whether you handed the turn over; "the run is over" inside a sentence is not)</li>' +
+      '<li><b>talk faster, talk slower</b> — how fast the frog speaks, at once</li>' +
+      '<li><b>frog, wait</b> (or <b>hold on, frog</b>, or the pause button) — it waits; talking alone never stops it, so you can talk while it speaks</li>' +
+      '<li><b>frog, go on</b> — it goes on from where it waited</li>' +
+      '<li>on a call from the phone: <b>Pause the frog</b> and <b>Go on</b> in the call\u2019s notification, or play and pause on the lock screen</li>' +
+      '<li><b>over</b> while it speaks — your turn: it stops (it knows where) and gets your message</li>' +
+      '<li><b>frog, wait</b>, a thought, then <b>over</b> — an <b>aside</b>: it says \u201cnoted\u201d, goes on from the sentence you cut, and comes back to your asides once it has finished</li>' +
+      '<li>sounds: two rising notes when your message goes, a soft tick while the frog works, two soft falling notes when the frog has finished (its own over: your turn), a questioning pair when it is not sure you said over (say it again), a soft double blip after a few quiet seconds when your words still wait for <b>over</b></li>' +
+      '<li><b>frog, stop</b> — it stops for good: it knows what you heard, and that you did not want the rest (it will not offer it)</li></ul>';
+  }
   if (voice.mode === 'dictation') {
     return `<p class="vo-help-lead">Dictating into ${esc(voice.target.label)}: what you say is written there, except</p><ul>` +
       Object.entries(voice.target && voice.target.file ? A.DICTATION_FILE : A.DICTATION).filter(([id]) => id !== 'text').map(([, a]) => `<li><b>${esc(a.say)}</b> — ${esc(voiceSpeakToYou(a.label))}</li>`).join('') + '</ul>';
@@ -1919,6 +2677,10 @@ function voiceSettingsHtml() {
     <div class="set-help">Say “open seven”. Without numbers, a place (“the third one”, “the last file”, “the previous one”) or words of the name still pick.</div>
     <label class="set-check"><input type="checkbox" data-voice="overlay"${p.overlay ? ' checked' : ''}> Show what is heard and decided (debug view)</label>
     <div class="set-help">Off: a small note says what was done.</div>
+    <div id="voiceEngineBox"></div>
+    <h3>only my voice</h3>
+    <div class="set-help">Record your voice once (about a minute of talking, on the device and headset you talk from); after that, what another voice says near the microphone is not acted on and does not reach the frog: it is shown greyed in the debug view, one tap if it was you. Short words right after your own sentence (“okay, over”) get the benefit of the doubt. Measured on real meeting speech: about 99% of the person’s words kept, about 1% of another voice’s words let in (mostly their short “yeah”s); another room, phone or headset than the recording’s is where it misses most, so record on each device you use (up to four recordings).</div>
+    <div id="voicePrintBox"><span class="hint">checking…</span></div>
     <h3>what you said</h3>
     <div class="set-help">Every sentence heard while listening is kept on this machine, with what the screen offered, what Jev chose and how sure, and what became of it — so you can see what you meant and which command was missing, and write it down. ~/.local/share/chattering/voice-commands.jsonl, readable by you alone.</div>
     <div class="set-row"><button type="button" data-voice-history="all">Show all</button><button type="button" data-voice-history="missed">Show what was not understood</button><button type="button" class="ghost" data-voice-history="clear">Forget my history</button></div>
@@ -1958,9 +2720,60 @@ async function voiceShowHistory(host, which) {
   });
 }
 
+// ---- which speech engine hears me (speech-engines.js) ----
+// Shown when a second engine is set up (Settings → sound → voice services):
+// Parakeet, everyone's default, or "my voice", the small model trained on
+// this person's voice. The choice is this person's, on every device, and
+// applies to the next utterance; the overlay names the engine that answered.
+async function voicePaintEngine() {
+  const box = $('voiceEngineBox');
+  if (!box) return;
+  let st = {};
+  try { st = await (await fetch('/api/voice/engine')).json(); } catch { st = { error: 'network failure' }; }
+  if (st.error) { box.innerHTML = `<div class="hint">${esc(st.error)}</div>`; return; }
+  const engines = st.engines || [];
+  if (!engines.some(e => e.id !== 'parakeet' && e.configured)) { box.innerHTML = ''; return; }
+  const rows = engines.map(e => `<label class="set-check"><input type="radio" name="voiceEngine" data-voice-engine="${esc(e.id)}"${st.chosen === e.id ? ' checked' : ''}${e.configured ? '' : ' disabled'}> <b>${esc(e.name)}</b> — ${esc(e.note)}${e.configured ? '' : ' (not set up)'}</label>`).join('');
+  const now = engines.find(e => e.id === st.active);
+  box.innerHTML = `<h3>speech engine</h3>
+    ${rows}
+    <div class="set-help">Which speech-to-text hears you, on every device you use; the other people here keep their own choice. Switch any time, even mid-conversation: the next thing you say goes to the new engine. The debug view above names the engine that answered. ${st.fallback ? `<b>Hearing you now: ${esc(now ? now.name : st.active)}</b> — ${esc(st.fallback)}.` : ''}</div>`;
+}
+
 async function voiceBindSettings(root) {
   const box = root.querySelector('#voiceSettings');
   if (!box) return;
+  voicePaintEnrol();
+  voicePaintEngine();
+  box.addEventListener('change', async e => {
+    const id = e.target.dataset.voiceEngine;
+    if (!id) return;
+    const out = await postJson('/api/voice/engine', { engine: id });
+    if (out.error) return errToast(out.error);
+    const name = (out.engines || []).find(x => x.id === out.chosen);
+    toast('speech engine: ' + (name ? name.name : out.chosen) + (out.fallback ? ' — ' + out.fallback : ''));
+    voicePaintEngine();
+  });
+  box.addEventListener('click', async e => {
+    const en = e.target.closest('[data-voice-enrol]');
+    if (en) {
+      if (en.dataset.voiceEnrol === 'start') return voiceEnrolStart();
+      if (en.dataset.voiceEnrol === 'cancel') { voiceEnrolSend('enrol-cancel'); voiceEnrolOver(); voicePaintEnrol(); voicePaintOverlayHead(); return; }
+      if (en.dataset.voiceEnrol === 'finish') return voiceEnrolSend('enrol-finish');
+    }
+    const f = e.target.closest('[data-voice-forget]');
+    if (f) {
+      const out = await postJson('/api/voice/print', { forget: f.dataset.voiceForget });
+      if (out.error) return errToast(out.error);
+      voiceSpeakerRefresh(); voicePaintEnrol();
+    }
+  });
+  box.addEventListener('change', async e => {
+    if (e.target.dataset.voicePrint !== 'on') return;
+    const out = await postJson('/api/voice/print', { on: e.target.checked });
+    if (out.error) return errToast(out.error);
+    voiceSpeakerRefresh(); voicePaintEnrol();
+  });
   box.querySelectorAll('[data-voice-history]').forEach(b => b.onclick = async () => {
     const which = b.dataset.voiceHistory, host = box.querySelector('#voiceHistory');
     if (which !== 'clear') return voiceShowHistory(host, which);
@@ -2005,6 +2818,69 @@ function voicePaintSettings() {
   const box = $('voiceSettings');
   if (box) { const c = box.querySelector('[data-voice="on"]'); if (c) c.checked = voice.on; }
 }
+
+// ---- only my voice: the recording and the prints (design/102) ----
+const VOICE_ENROL_TEXT = 'Talk the way you talk to the frog: tell it what you did today, what you want it to look at, in whichever language you use with it. Pause when you like; only speech counts. It stops by itself when it has a minute.';
+function voiceDeviceLabel() {
+  const ua = navigator.userAgent || '';
+  const app = window.ChatteringApp ? 'app' : /Android/.test(ua) ? 'Android browser' : /iPhone|iPad/.test(ua) ? 'iPhone' : /Mobile/.test(ua) ? 'phone' : 'computer';
+  return app + (typeof frogCall !== 'undefined' && frogCall.endpoint ? ' · ' + frogCall.endpoint : '');
+}
+async function voicePaintEnrol() {
+  const box = $('voicePrintBox');
+  if (!box) return;
+  if (voice.enrol) {
+    const pct = Math.min(100, Math.round(100 * (voice.enrol.secs || 0) / (voice.enrol.want || 60)));
+    box.innerHTML = `<div class="set-help"><b>Recording your voice: ${voice.enrol.secs || 0} of ${voice.enrol.want || 60} s of speech.</b> ${esc(VOICE_ENROL_TEXT)}</div>
+      <progress max="100" value="${pct}" style="width:100%"></progress>
+      <div class="set-row"><button type="button" data-voice-enrol="finish"${(voice.enrol.secs || 0) < (voice.enrol.min || 20) ? ' disabled' : ''}>That's enough</button><button type="button" class="ghost" data-voice-enrol="cancel">Cancel</button></div>`;
+    return;
+  }
+  let st = {};
+  try { st = await (await fetch('/api/voice/print')).json(); } catch { st = { error: 'network failure' }; }
+  if (st.error) { box.innerHTML = `<div class="hint">${esc(st.error)}</div>`; return; }
+  voice.enrolMin = st.enrolMinSecs || 20;
+  const when = t => new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const rows = (st.prints || []).map(p => `<li>${esc(p.label || 'a recording')} · ${esc(when(p.at))} · ${p.secs} s${p.consistency != null ? ' · clean ' + Math.round(p.consistency * 100) + '%' : ''} <button type="button" class="ghost" data-voice-forget="${esc(p.id)}">forget</button></li>`).join('');
+  const service = st.service ? '' : '<div class="hint">No voice-print server is set (voice services below: voice-print server).</div>';
+  box.innerHTML = `${service}
+    <label class="set-check"><input type="checkbox" data-voice-print="on"${st.on ? ' checked' : ''}${!st.prints || !st.prints.length || !st.service ? ' disabled' : ''}> Only my voice: skip what other voices say</label>
+    ${rows ? `<ul class="voice-prints">${rows}</ul>` : '<div class="hint">No recording of your voice yet.</div>'}
+    <div class="set-row"><button type="button" data-voice-enrol="start"${st.service ? '' : ' disabled'}>${rows ? 'Record on this device too' : 'Record my voice (about a minute)'}</button></div>
+    <div class="set-help">Listening turns on for the recording if it is off. The recording itself is not kept: only a voice print (192 numbers) in ~/.local/share/chattering/voice-prints.json, readable by you alone. Every verdict (what was said, its score, the bar it faced) is written to ~/.local/share/chattering/voice-speaker.jsonl, so a word that got through or was dropped can be looked up.</div>`;
+}
+// The recording turns listening on if it is off, and off again when it is
+// over (done, failed, cancelled): what is said after must not drive the app
+// as voice commands. Not saved as the person's choice. On before: stays on.
+async function voiceEnrolStart() {
+  if (!voice.on) { voice.enrolOwnsListening = true; await voiceSetOn(true, { keep: false }); }
+  const send = () => {
+    if (voice.native && voiceNative() && typeof voiceNative().sendText === 'function') { try { voiceNative().sendText(JSON.stringify({ type: 'enrol', seconds: 60, label: voiceDeviceLabel() })); return true; } catch {} }
+    if (voice.ws && voice.ws.readyState === WebSocket.OPEN) { voice.ws.send(JSON.stringify({ type: 'enrol', seconds: 60, label: voiceDeviceLabel() })); return true; }
+    return false;
+  };
+  // the connection may still be opening
+  for (let i = 0; i < 20 && !send(); i++) await new Promise(r => setTimeout(r, 250));
+  if (!(voice.ws && voice.ws.readyState === WebSocket.OPEN) && !voice.native) { voiceEnrolOver(); return errToast('listening did not start, so nothing can be recorded'); }
+  voice.enrol = { secs: 0, want: 60, min: voice.enrolMin || 20 };
+  voicePaintEnrol();
+  voicePaintOverlayHead();
+}
+function voiceEnrolOver() {
+  voice.enrol = null;
+  if (!voice.enrolOwnsListening) return;
+  voice.enrolOwnsListening = false;
+  // Talk began meanwhile: the listening is Talk's now, and ends with it.
+  if (voice.mode === 'walkie') { frogTalk.ownsListening = true; return; }
+  if (voice.on) voiceSetOn(false, { keep: false });
+}
+function voiceEnrolSend(type) {
+  const msg = JSON.stringify({ type });
+  if (voice.native && voiceNative() && typeof voiceNative().sendText === 'function') { try { voiceNative().sendText(msg); } catch {} }
+  else if (voice.ws && voice.ws.readyState === WebSocket.OPEN) voice.ws.send(msg);
+}
+// Switched on or off in Settings: the listener is told, so it applies now.
+function voiceSpeakerRefresh() { voiceEnrolSend('speaker'); }
 
 // ---- keys, and starting with the page ----
 

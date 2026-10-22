@@ -9,7 +9,9 @@
 // Nothing is left changed in the agents' own settings: Claude Code is
 // started in manual mode for that run; Codex records a folder it is told to
 // trust in its config, which is snapshot first and put back exactly (only
-// that folder may differ, else the test fails and says so).
+// that folder may differ, else the test fails and says so). Antigravity
+// and Muse Code record the folders they are told to trust in their own
+// settings: those files are snapshot first and put back exactly.
 // Run after every agent update, with the replay tests: their screens change.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -32,6 +34,8 @@ const AGENTS = {
   claude: { bin: 'claude', extra: ['--permission-mode', 'default'] },
   pi: { bin: 'pi', extra: [] },
   codex: { bin: 'codex', extra: ['-a', 'on-request', '-s', 'workspace-write'] },
+  agy: { bin: 'agy', extra: [], keep: [path.join(os.homedir(), '.gemini', 'antigravity-cli', 'settings.json')] },
+  muse: { bin: 'muse', extra: [], keep: [path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'), 'muse', 'trust.json')] },
 };
 
 for (const [id, a] of Object.entries(AGENTS)) {
@@ -42,12 +46,14 @@ for (const [id, a] of Object.entries(AGENTS)) {
     const codexConfig = path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'config.toml');
     const before = id === 'codex' && fs.existsSync(codexConfig) ? fs.readFileSync(codexConfig, 'utf8') : null;
     const profile = profileFor(id);
-    const sessionId = id === 'codex' ? null : (id === 'pi' ? require('../harness/live-terminal').newId('uuidv7') : require('node:crypto').randomUUID());
+    const kept = (a.keep || []).map(f => [f, fs.existsSync(f) ? fs.readFileSync(f) : null]);
+    const sessionId = profile.newSession !== 'known-id' ? null : (id === 'pi' ? require('../harness/live-terminal').newId('uuidv7') : require('node:crypto').randomUUID());
     const args = [...fill(profile.start, { sessionId }), ...a.extra];
     const host = new TerminalHost({ command: bin, args, cwd: dir, cols: 100, rows: 34, scrollback: 200 });
     const hub = createHub({ host, profile, liveOnly: true });
     t.after(() => {
       hub.close(); host.kill();
+      for (const [f, was] of kept) { if (was == null) fs.rmSync(f, { force: true }); else fs.writeFileSync(f, was); }
       if (before != null) {
         const now = fs.readFileSync(codexConfig, 'utf8');
         if (now !== before) {

@@ -9,9 +9,11 @@ const { chromiumBinary } = require('./chromium.js');
 
 // opts: setup(home) before the server starts (settings files…), env for
 // the server, flags for the browser; fixture: false for a home with no
-// conversation at all (a stranger's first start).
+// conversation at all (a stranger's first start); homeBase: where the
+// home is made (a temporary folder; under the real home, `work` is a
+// project rather than a loose conversation's folder).
 async function viewerBrowser(t, opts = {}) {
-  const root = path.join(__dirname, '../..'), home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'file-viewers-')));
+  const root = path.join(__dirname, '../..'), home = fs.realpathSync.native(fs.mkdtempSync(path.join(opts.homeBase || os.tmpdir(), opts.homeBase ? '.file-viewers-' : 'file-viewers-')));
   const work = path.join(home, 'work'); fs.mkdirSync(work);
   const agent = path.join(home, '.pi/agent'), sessions = path.join(agent, 'sessions/fixture'); fs.mkdirSync(sessions, { recursive: true });
   if (opts.fixture !== false) fs.writeFileSync(path.join(sessions, 'media.jsonl'), [

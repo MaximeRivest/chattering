@@ -568,10 +568,16 @@ function renderProjectPresence() {
 // three lists behind a disclosure — their conversations (opening at their
 // last message), the files they saved or their agents changed, and their
 // commits. Hidden when nobody else did anything: no noise for solo use.
-const peopleActivity = { project: null, days: 14, data: null, at: 0, timer: null, open: null }; // open: null until the person chose
+// The whole section, and every row in it, starts folded each time the
+// project page is opened: it is a glance at others' work, not the page's
+// subject. What the reader opens stays open through live refreshes and
+// re-renders of the same page.
+const peopleActivity = { project: null, days: 14, data: null, at: 0, timer: null, open: null, sectionOpen: false }; // open: rows the reader opened
+// Called when the project page is (re)entered, not when it re-renders in place.
+function peopleActivityFold() { peopleActivity.sectionOpen = false; peopleActivity.open = null; }
 async function loadProjectPeopleActivity(project) {
   if (!project) return;
-  if (peopleActivity.project !== project) peopleActivity.open = null;
+  if (peopleActivity.project !== project) peopleActivityFold();
   peopleActivity.project = project;
   try {
     const r = await fetch('/api/project/people?name=' + encodeURIComponent(project) + '&days=' + peopleActivity.days);
@@ -608,17 +614,19 @@ function renderProjectPeopleActivity() {
     p.counts.files ? n(p.counts.files, 'file', 'files') : '', p.counts.commits ? n(p.counts.commits, 'commit', 'commits') : ''].filter(Boolean).join(' · ');
   const here = typeof peopleInProject === 'function' ? peopleInProject(projectOverviewName) : [];
   const isHere = id => here.some(x => peopleCanonicalId(x.user.id) === id);
-  // Few people: everything open. Many: the newest one.
-  const openByDefault = (p, i) => peopleActivity.open ? peopleActivity.open.has(p.user.id) : people.length <= 2 || i === 0;
-  host.innerHTML = `<h3>people <span class="dim">what others did here in the last ${peopleActivity.days} days</span></h3>
-    <div class="pdid-rows">${people.map((p, i) => `<details class="pdid-person" data-person="${esc(p.user.id)}"${openByDefault(p, i) ? ' open' : ''}>
+  const rowOpen = p => !!peopleActivity.open && peopleActivity.open.has(p.user.id);
+  // Folded, the heading still says who: one bubble per person.
+  host.innerHTML = `<details class="pdid-fold"${peopleActivity.sectionOpen ? ' open' : ''}><summary><h3>people <span class="dim">what others did here in the last ${peopleActivity.days} days</span></h3><span class="pdid-who">${people.map(p => userBubble(p.user)).join('')}</span></summary>
+    <div class="pdid-rows">${people.map(p => `<details class="pdid-person" data-person="${esc(p.user.id)}"${rowOpen(p) ? ' open' : ''}>
       <summary>${userBubble(p.user, isHere(p.user.id) ? 'typing' : '')}<span class="pdid-name">${esc(p.user.name)}${p.user.scope === 'guest' ? '<span class="badge-guest">guest</span>' : ''}</span><span class="pdid-counts hint">${esc(countLine(p))}</span><span class="pdid-when hint" title="${esc(new Date(p.lastTs).toLocaleString())}">${esc(peopleActivityAgo(p.lastTs))}</span></summary>
       <div class="pdid-body">
         ${p.conversations.length ? `<div class="pdid-col"><div class="pdid-h">conversations</div>${p.conversations.map(c => `<a href="#" class="pdid-item" data-conv="${esc(c.key)}" data-entry="${esc(c.lastEntry || '')}" title="Open at ${esc(p.user.name)}'s last message"><span class="pdid-t">${esc(c.title)}</span><span class="hint">${c.messages ? n(c.messages, 'message', 'messages') + ' · ' : ''}${c.started ? 'started it · ' : ''}${esc(peopleActivityAgo(c.lastTs))}</span></a>`).join('')}${p.counts.conversations > p.conversations.length ? `<div class="hint">and ${p.counts.conversations - p.conversations.length} more</div>` : ''}</div>` : ''}
         ${p.files.length ? `<div class="pdid-col"><div class="pdid-h">files</div>${p.files.map(f => `<a href="#" class="pdid-item" data-file="${esc(f.path)}" title="${esc(f.path)}"><span class="pdid-t">${esc(peopleActivityRel(f.path, f.repoRoot))}</span><span class="hint">${f.added || f.removed ? `<span class="pdid-add">+${f.added}</span> <span class="pdid-del">−${f.removed}</span> · ` : ''}${f.via === 'agent' ? 'their agent' : 'saved by hand'}${f.n > 1 ? ' · ' + f.n + '×' : ''} · ${esc(peopleActivityAgo(f.ts))}</span></a>`).join('')}${p.counts.files > p.files.length ? `<div class="hint">and ${p.counts.files - p.files.length} more</div>` : ''}</div>` : ''}
         ${p.commits.length ? `<div class="pdid-col"><div class="pdid-h">commits</div>${p.commits.map(c => `<a href="#" class="pdid-item" data-commit="${esc(c.hash)}" data-repo="${esc(c.repoRoot)}" title="Copy the hash — git show ${esc(c.shortHash)} in ${esc(c.repoRoot)}"><span class="pdid-t"><code>${esc(c.shortHash)}</code> ${esc(c.subject)}</span><span class="hint">${c.files ? n(c.files, 'file', 'files') + ' · ' : ''}${esc(peopleActivityAgo(c.ts))}</span></a>`).join('')}</div>` : ''}
-      </div></details>`).join('')}</div>`;
+      </div></details>`).join('')}</div></details>`;
   host.hidden = false;
+  const fold = host.querySelector('details.pdid-fold');
+  fold.addEventListener('toggle', () => { peopleActivity.sectionOpen = fold.open; });
   host.querySelectorAll('details.pdid-person').forEach(el => el.addEventListener('toggle', () => { peopleActivity.open = new Set([...host.querySelectorAll('details.pdid-person[open]')].map(x => x.dataset.person)); }));
   host.querySelectorAll('[data-conv]').forEach(a => a.onclick = e => { e.preventDefault(); peopleGoTo({ route: 'conversation:' + a.dataset.conv, position: a.dataset.entry ? { entry: a.dataset.entry } : null }); });
   host.querySelectorAll('[data-file]').forEach(a => a.onclick = e => { e.preventDefault(); peopleGoTo({ route: 'file:' + a.dataset.file, position: null }); });

@@ -40,7 +40,8 @@ test('every program lays itself out with its inputs', async t => {
   const sample = shape => shape.type === 'array' ? [sample(shape.items || { type: 'string' })] : shape.type === 'integer' ? 1 : shape.type === 'object' ? { id: 1, request: 'r' } : 'v';
   for (const [name, fn] of Object.entries(fns)) {
     const inputs = Object.fromEntries(Object.entries(defs[name].inputs).map(([k, shape]) => [k, k === 'nonce' ? 'abcdef12' : sample(shape)]));
-    const r = lib.withSettings({ lm: 'openai-codex/gpt-x' }, () => fn.render(inputs));
+    // A Jev program (the frog's end-of-turn check) goes by FunctAI's own TypeSafe wire.
+    const r = lib.withSettings({ lm: defs[name].jev ? 'jev-latest' : 'openai-codex/gpt-x' }, () => fn.render(inputs));
     assert.ok(r.messages.length === 1, name);
     assert.match(fn.version, /^sha256:[0-9a-f]{64}$/, name);
   }

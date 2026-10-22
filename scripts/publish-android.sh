@@ -54,6 +54,8 @@ cat > "$NOTES" <<EOF
 - Signing certificate SHA-256: \`$CERT_COLONS\` (\`apksigner verify --print-certs Chattering-android.apk\`)
 - Built from commit $COMMIT (\`scripts/build-android.sh\`).
 
+**Talking with the frog, hands-free** (from 0.3.12): Talk in the frog's conversation is a call in Android's call system: it goes on with the screen off and the phone in a pocket, the sound and the microphone go to your Bluetooth headset, its button hangs up and answers, and the frog can call you (its ring wakes a locked phone). A quick-settings tile and the app icon's long-press start a talk. Allow "run in background" when asked (Samsung stops sleeping apps otherwise).
+
 **Notifications** (from 0.3.11): Settings → notifications → *Turn on notifications*, once per computer. They arrive through the encrypted link, at home or away, end-to-end encrypted. Android shows a small \"listening\" notice while they are on; long-press it to hide that notice.
 
 **Not yet in this alpha:** downloads over the encrypted link (they work with a direct server address); updates are not automatic.

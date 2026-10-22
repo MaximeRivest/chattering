@@ -9,7 +9,10 @@
 // checked, diffed and, later, overridden without a release.
 //
 //   program      which installed program runs it (the server resolves the
-//                binary: claudeBin(), Pi's cli.js, codexBin())
+//                binary: claudeBin(), Pi's cli.js, codexBin(), agentBin())
+//   box          whether Chattering's own box can also continue it (Pi,
+//                Codex); false: only its own program can (Claude Code,
+//                Antigravity, Muse Code)
 //   resume       arguments to continue a conversation. Placeholders:
 //                {sessionId} the conversation's id, {sessionPath} its file
 //   start        arguments to begin a new one with an id chosen beforehand
@@ -43,6 +46,9 @@ const FRAME_WORKING = '[\\u2800-\\u28ff]|^(?:[✻✶✳✢✽·*∗⋆◐◓◑�
 // when it is idle. Not generic: Codex turns a spinner in its title even
 // when idle (recorded 2026-10-01).
 const CLAUDE_TITLE_WORKING = '^[◐◓◑◒]';
+// Muse Code turns a braille spinner before the folder's name in its title
+// while it works ("⠦ muse2"), only then (recorded 2026-10-14, 1.4.6).
+const MUSE_TITLE_WORKING = '^[\\u2800-\\u28ff]';
 
 const GENERIC_SCREEN = {
   prompts: ['❯', '>', '›', '$'],
@@ -63,7 +69,7 @@ const PROFILES = {
     keys: { stop: { key: 'Escape' } },
   },
   claude: {
-    id: 'claude', name: 'Claude Code', program: 'claude',
+    id: 'claude', name: 'Claude Code', program: 'claude', box: false,
     resume: ['--resume', '{sessionId}'],
     start: ['--session-id', '{sessionId}'],
     newSession: 'known-id', idPattern: 'uuid',
@@ -72,7 +78,7 @@ const PROFILES = {
     keys: { stop: { key: 'Escape' } },
   },
   pi: {
-    id: 'pi', name: 'Pi', program: 'pi',
+    id: 'pi', name: 'Pi', program: 'pi', box: true,
     resume: ['--session', '{sessionPath}'],
     // "Use exact project session ID, creating it if missing" (pi --help).
     start: ['--session-id', '{sessionId}'],
@@ -84,7 +90,7 @@ const PROFILES = {
     keys: { stop: { key: 'Escape' } },
   },
   codex: {
-    id: 'codex', name: 'Codex', program: 'codex',
+    id: 'codex', name: 'Codex', program: 'codex', box: true,
     resume: ['resume', '{sessionId}'],
     // Codex cannot be given an id for a new conversation: it picks one,
     // and its file appears under ~/.codex/sessions when the first message
@@ -93,6 +99,38 @@ const PROFILES = {
     newSession: 'detect', idPattern: 'uuid',
     // A "›" line holding the cursor, no frame; "›" or ">" on a selected row.
     screen: GENERIC_SCREEN,
+    keys: { stop: { key: 'Escape' } },
+  },
+  // Antigravity CLI (Google), 1.3.4, recorded 2026-10-14. "> " opens its
+  // box between two frame lines; "> " marks the selected row of its
+  // questions and of its / menu (read as a choice); "⣽  Generating..." and
+  // "esc to cancel" while it works; ● a step, ○ its thinking.
+  agy: {
+    id: 'agy', name: 'Antigravity', program: 'agy', box: false,
+    resume: ['--conversation', '{sessionId}'],
+    // It picks a new conversation's id, and writes its file
+    // (conversations/<id>.db) with the first message.
+    start: [],
+    newSession: 'detect', idPattern: 'uuid',
+    screen: { ...GENERIC_SCREEN, prompts: ['>'], bullets: ['●', '○'], result: '⎿', glyphless: false },
+    keys: { stop: { key: 'Escape' } },
+  },
+  // Muse Code (Meta), 1.4.6, recorded 2026-10-14. "❯ " opens its box
+  // between two frame lines, its / menu inside that frame (the selected row
+  // in another colour); "◇ Thinking (2s · esc to interrupt)" while it
+  // works; ◆ an answer.
+  muse: {
+    id: 'muse', name: 'Muse Code', program: 'muse', box: false,
+    resume: ['resume', '{sessionId}'],
+    // It picks a new conversation's id and makes its folder as it starts
+    // (sessions/YYYY/MM/DD/<id>/), recording its own process id there.
+    start: [],
+    newSession: 'detect', idPattern: 'uuidv7',
+    // A paste under ~1000 characters is shown whole in its box (longer ones
+    // fold: "[Pasted Content 2269 chars]"): a box may be that tall.
+    screen: { ...GENERIC_SCREEN, prompts: ['❯'], bullets: ['◆', '◇'], glyphless: false, titleWorking: MUSE_TITLE_WORKING, maxBox: 40,
+      // Its empty box shows a hint in a theme's grey, the cursor before it.
+      hintAtCaret: true },
     keys: { stop: { key: 'Escape' } },
   },
 };

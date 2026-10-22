@@ -1,0 +1,9 @@
+html, body { margin: 0; height: 100%; overflow: hidden;
+  background: var(--color-background-primary, #0f2e2a); color: var(--color-text-primary, #eef6f2);
+  font-family: var(--font-sans, system-ui, sans-serif); }
+body { display: flex; flex-direction: column; }
+header { display: flex; justify-content: center; gap: 12px; padding: 12px; }
+header span { padding: 6px 14px; border-radius: 999px; background: var(--color-background-secondary, #1d4a43);
+  border: 1px solid var(--color-border-primary, #2c6159); }
+canvas { flex: 1; width: 100%; min-height: 0; display: block; cursor: crosshair; }
+.hint { margin: 0; padding: 8px; text-align: center; color: var(--color-text-secondary, #9fc4bb); font-size: 14px; }

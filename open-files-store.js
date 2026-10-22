@@ -96,4 +96,26 @@ function restore(state, raw, now = Date.now()) {
   return true;
 }
 
-module.exports = { MAX_FILES, createState, normalize, keep, close, restore, isAbsolute };
+// A file or folder was renamed: what was kept at or under `from` is kept at
+// the same place under `to`, where it was in the list. True when it changed.
+const under = (p, base, sep) => p === base || p.startsWith(base + sep);
+function move(state, from, to, sep = '/', now = Date.now()) {
+  let changed = false;
+  for (const f of state.files) if (under(f.path, from, sep)) { f.path = to + f.path.slice(from.length); changed = true; }
+  if (!changed) return false;
+  const seen = new Set();
+  state.files = state.files.filter(f => !seen.has(f.path) && seen.add(f.path));
+  bump(state, now);
+  return true;
+}
+// A file or folder was deleted: what was kept at or under it leaves the
+// list. Returns the entries removed, so a restore can put them back.
+function closeUnder(state, base, sep = '/', now = Date.now()) {
+  const gone = state.files.filter(f => under(f.path, base, sep));
+  if (!gone.length) return [];
+  state.files = state.files.filter(f => !under(f.path, base, sep));
+  bump(state, now);
+  return gone.map(f => ({ ...f }));
+}
+
+module.exports = { MAX_FILES, createState, normalize, keep, close, restore, move, closeUnder, isAbsolute };

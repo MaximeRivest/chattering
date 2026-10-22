@@ -186,6 +186,21 @@ test('one head: side-by-side answers, instant moves, versions, shared head, phon
   await evaluate(`open(${JSON.stringify(key)}, 'bottom')`);
   const continueA0 = `document.querySelector(${JSON.stringify(`[data-reader-continue-at*='"id":"a0"']`)})`;
   await until(`viewKind === 'conversation' && document.querySelector('.msg[data-eid="a0"] .msg-more-actions')`, 'the conversation again');
+  // The message menu closes like a menu: when an item is chosen, on a click
+  // elsewhere, and on Escape.
+  const q0Menu = `document.querySelector('.msg[data-eid="q0"] .msg-more-actions')`;
+  await evaluate(`${q0Menu}.querySelector('summary').click(); 1`);
+  await until(`${q0Menu}.open && ${q0Menu}.querySelector('.msg-snippet')`, 'the user message menu');
+  await evaluate(`${q0Menu}.querySelector('.msg-snippet').click(); 1`);
+  await until(`!${q0Menu}.open && document.querySelector('.snip-form')`, 'the menu closed after its item ran');
+  await evaluate(`document.querySelectorAll('.snip-form').forEach(el => el.remove()); ${q0Menu}.querySelector('summary').click(); 1`);
+  await until(`${q0Menu}.open`, 'the menu reopened');
+  await evaluate(`document.getElementById('conversationTranscript').click(); 1`);
+  await until(`!${q0Menu}.open`, 'the menu closed on a click elsewhere');
+  await evaluate(`${q0Menu}.querySelector('summary').click(); 1`);
+  await until(`${q0Menu}.open`, 'the menu reopened');
+  await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); 1`);
+  await until(`!${q0Menu}.open`, 'the menu closed on Escape');
   // The message menu's "continue here" on the opening answer (the menu's
   // items are drawn when it opens, design/95).
   await evaluate(`document.querySelector('.msg[data-eid="a0"] .msg-more-actions').open = true; 1`);

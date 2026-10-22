@@ -110,6 +110,9 @@ const sameText = (a, b) => String(a).replace(/\s+/g, ' ').trim() === String(b).r
 // longest common start, type or paste the rest — each step checked on the
 // screen. Never clears with a shortcut (Esc Esc opens Claude Code's rewind
 // on an empty box; Ctrl+U clears one line).
+// A long paste folded into a placeholder by the program: Claude Code's
+// "[Pasted text #1 +40 lines]", Muse Code's "[Pasted Content 2269 chars]".
+const FOLDED = /\[Pasted (?:text #\d+|Content \d+ chars)/;
 async function setComposerText(host, target, { profile, timeoutMs = 3000 } = {}) {
   const read = () => readDocument(host.snapshot({ screenOnly: true }), profile);
   let d = read();
@@ -138,7 +141,7 @@ async function setComposerText(host, target, { profile, timeoutMs = 3000 } = {})
   const add = target.slice(p);
   if (add) {
     if (/\n/.test(add)) host.paste(add); else host.input(add);
-    d = await waitFor(host, x => x.composer && (sameText(x.composer.text, target) || /\[Pasted text #\d+/.test(x.composer.text)), { profile, timeoutMs });
+    d = await waitFor(host, x => x.composer && (sameText(x.composer.text, target) || FOLDED.test(x.composer.text)), { profile, timeoutMs });
   }
   return d;
 }
@@ -147,7 +150,7 @@ async function setComposerText(host, target, { profile, timeoutMs = 3000 } = {})
 // (Enter would pick from it, not send), Enter, and the box seen empty.
 async function submitComposer(host, target, { profile } = {}) {
   let d = await setComposerText(host, target, { profile });
-  if (!sameText(d.composer.text, target) && !/\[Pasted text #\d+/.test(d.composer.text)) throw new Error('the input box does not hold the message');
+  if (!sameText(d.composer.text, target) && !FOLDED.test(d.composer.text)) throw new Error('the input box does not hold the message');
   if (d.menu) {
     const text = d.composer.text;
     host.input('\x1b');

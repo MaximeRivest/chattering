@@ -230,6 +230,9 @@ class NotifyService : Service() {
         if (m.optInt("v") != 1) return
         val kind = m.optString("kind")
         val home = m.optJSONObject("home")?.optString("id") ?: ""
+        // The frog calls (design/102, part 4): the phone rings as for a call,
+        // the headset too; answering opens its conversation with Talk on.
+        if (kind == "call") { FrogCallService.ring(this, m.optString("title"), m.optString("body"), home); return }
         val tag = m.optString("tag").ifEmpty { "chattering" }
         val key = m.optString("key").ifEmpty { null }
         val url = m.optString("url").takeIf { it.startsWith("/") } ?: "/"
@@ -247,7 +250,7 @@ class NotifyService : Service() {
             } catch (_: Exception) {}
         }
         val channel = when (kind) {
-            "question", "failed" -> CHANNEL_ATTENTION
+            "question", "failed", "ask" -> CHANNEL_ATTENTION
             "quiet" -> CHANNEL_QUIET
             else -> CHANNEL_REPLIES
         }

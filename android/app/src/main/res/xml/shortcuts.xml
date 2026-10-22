@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Long-press the app's icon: a call with the frog (design/102). -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="frog-call"
+        android:enabled="true"
+        android:icon="@drawable/ic_stat_rockfrog"
+        android:shortcutShortLabel="@string/shortcut_frog_call"
+        android:shortcutLongLabel="@string/shortcut_frog_call_long">
+        <intent
+            android:action="app.rockfrog.chattering.FROG_CALL"
+            android:targetPackage="app.rockfrog.chattering"
+            android:targetClass="app.rockfrog.chattering.MainActivity">
+            <extra android:name="how" android:value="start" />
+        </intent>
+    </shortcut>
+</shortcuts>

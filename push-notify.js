@@ -12,7 +12,7 @@ const policy = require('./push-policy.js');
 
 // Which event wins when several arrive for one conversation within the
 // wait: the more important, else the later.
-const RANK = { quiet: 0, reply: 1, failed: 2, question: 3 };
+const RANK = { quiet: 0, reply: 1, failed: 2, question: 3, ask: 4, call: 5 };
 
 function createPushNotifier({
   service,                       // push.js
@@ -40,7 +40,7 @@ function createPushNotifier({
   // An event about a conversation. `wait` (ms) overrides the default: a
   // live program's "done" is confirmed a few seconds later (it may resume).
   function notify(kind, ev, { wait = waitMs } = {}) {
-    if (!policy.KIND_PREF[kind] && kind !== 'test') return;
+    if (policy.KIND_PREF[kind] === undefined) return;
     const key = ev && ev.key;
     if (!key) return;
     const cur = pending.get(key);

@@ -45,8 +45,11 @@ function newId(pattern) {
 
 function createLiveTerminals({
   dataDir,                       // recordings and the holder's state live here
-  commandFor,                    // (profile, args, { sessionId, sessionPath, cwd, isNew }) → [file, ...args]
+  commandFor,                    // (profile, args, { key, sessionId, sessionPath, cwd, isNew, mode }) → [file, ...args]
   envFor = () => process.env,    // (principal) → the program's environment
+  extraEnvFor = () => null,      // (key, profile) → variables for this program only
+  messagePrefix = () => null,    // (key, profileId) → text put before the person's next message, or null
+  onPrefixed = () => {},         // (key) once that text went with a message
   settings = () => ({}),         // () → { record, idleMinutes }
   onState = () => {},            // (key, state) when a program's state changes
   log = () => {},
@@ -84,7 +87,8 @@ function createLiveTerminals({
   function track(key, { host, profile, record, cwd, sessionId, userId = null, startedAt = Date.now(), recovered = false }) {
     const s = { key, host, profile, cwd, sessionId, userId, startedAt, record, recovered, notice: null };
     s.hub = createHub({ host, profile, liveOnly: true, events: record && record.events && conf().record ? createEventLog(record.events) : null,
-      onState: st => onState(s.key, { ...st, harness: profile.id }) });
+      onState: st => onState(s.key, { ...st, harness: profile.id }),
+      prefix: () => messagePrefix(s.key, profile.id), onPrefixed: () => onPrefixed(s.key) });
     sessions.set(key, s);
     host.on('exit', e => {
       log('live terminal: ' + profile.id + ' ended for ' + s.key + ' (' + JSON.stringify(e) + ')');
@@ -109,7 +113,7 @@ function createLiveTerminals({
   //              program (a guest's bubblewrap, their slice); by default the
   //              program as is, in envFor(principal)
   //   userId     who started it (their "stop their work" ends it)
-  async function start(key, { profileId, cwd, sessionId = null, sessionPath = null, isNew = false, principal = null, launch = null, userId = null }) {
+  async function start(key, { profileId, cwd, sessionId = null, sessionPath = null, isNew = false, principal = null, launch = null, userId = null, mode = null }) {
     if (deps.error) throw new Error(deps.error);
     const old = sessions.get(key);
     if (old && !old.host.exited) return old;
@@ -117,9 +121,9 @@ function createLiveTerminals({
     const profile = profileFor(profileId);
     const template = isNew ? profile.start : profile.resume;
     if (!profile.program || !template) throw new Error(profile.name + ' cannot be ' + (isNew ? 'started' : 'continued') + ' here');
-    const plain = commandFor(profile, require('./terminal/profiles').fill(template, { sessionId, sessionPath }), { sessionId, sessionPath, cwd, isNew });
+    const plain = commandFor(profile, require('./terminal/profiles').fill(template, { sessionId, sessionPath }), { key, sessionId, sessionPath, cwd, isNew, mode });
     const launched = launch ? launch(plain) : { file: plain[0], args: plain.slice(1), env: envFor(principal) };
-    const argv = [launched.file, ...launched.args], env = launched.env;
+    const argv = [launched.file, ...launched.args], env = { ...launched.env, ...(extraEnvFor(key, profile) || {}) };
     const record = recordingFiles(profile, sessionId);
     let host;
     if (useHolder) {
@@ -189,7 +193,13 @@ function createLiveTerminals({
     const s = sessions.get(key);
     if (!s || s.host.exited) throw new Error('the program is not running');
     const d = await s.hub.until(x => (x.composer && !x.status) || x.choice, timeoutMs);
-    if (d.choice) return { question: true };
+    if (d.choice) {
+      // It asks something first (trust this folder?): the message waits,
+      // and goes once the question is answered and its box is back.
+      s.hub.until(x => x.composer && !x.choice && !x.status, 10 * 60000)
+        .then(() => s.hub.submit(text)).catch(e => log('live terminal: a waiting message was not sent: ' + e.message));
+      return { question: true, queued: true };
+    }
     await s.hub.submit(text);
     return { sent: true };
   }

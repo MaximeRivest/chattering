@@ -214,7 +214,13 @@ test('two people share a machine: sign-in, presence, one compose box, one file, 
   await owner.go(base + '/#project=shared');
   await owner.until(`document.querySelector('#pHereNow') && !document.querySelector('#pHereNow').hidden && document.querySelector('#pHereNow').textContent.includes('Lilly')`, 8000);
   // And what she did here: the file she saved by hand, opening on click.
-  await owner.until(`document.querySelector('#pPeopleDid') && !document.querySelector('#pPeopleDid').hidden && document.querySelector('#pPeopleDid .pdid-person[open] .pdid-name')?.textContent === 'Lilly'`, 12000);
+  // It arrives folded, section and rows alike.
+  await owner.until(`document.querySelector('#pPeopleDid') && !document.querySelector('#pPeopleDid').hidden && document.querySelector('#pPeopleDid .pdid-person:not([open]) .pdid-name')?.textContent === 'Lilly'`, 12000);
+  assert.equal(await owner.evaluate(`document.querySelector('#pPeopleDid .pdid-fold').open`), false, 'the people section starts folded');
+  await owner.evaluate(`document.querySelector('#pPeopleDid .pdid-fold > summary').click(); document.querySelector('#pPeopleDid .pdid-person > summary').click(); true`);
+  // What the reader opened survives a live refresh.
+  await owner.evaluate(`renderProjectPeopleActivity(); true`);
+  assert.equal(await owner.evaluate(`document.querySelector('#pPeopleDid .pdid-fold').open && document.querySelector('#pPeopleDid .pdid-person').open`), true, 'opened stays open on refresh');
   assert.match(await owner.evaluate(`document.querySelector('#pPeopleDid .pdid-counts').textContent`), /1 file/);
   assert.match(await owner.evaluate(`document.querySelector('#pPeopleDid [data-file]').textContent`), /code\.js[\s\S]*saved by hand/);
   await owner.evaluate(`document.querySelector('#pPeopleDid [data-file]').click(); true`);

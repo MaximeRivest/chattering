@@ -24,7 +24,8 @@ function probeOrigin(model, custom = {}) {
     'xai': 'https://api.x.ai', 'groq': 'https://api.groq.com', 'mistral': 'https://api.mistral.ai',
   };
   // Do not execute configuration commands or send keys in connectivity checks.
-  const base = custom.providers?.[provider]?.baseUrl || known[provider];
+  // claude-code-NAME: another Claude subscription, the same servers.
+  const base = custom.providers?.[provider]?.baseUrl || known[provider] || (/^claude-code-[a-z0-9-]+$/.test(provider) ? known['claude-code'] : undefined);
   try {
     const url = new URL(base);
     return ['https:', 'http:'].includes(url.protocol) && !url.username && !url.password ? url.origin : null;

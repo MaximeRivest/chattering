@@ -9,7 +9,7 @@ const source = fs.readFileSync(require.resolve('../server.js'), 'utf8');
 function extract(start, end) { const a = source.indexOf(start), b = source.indexOf(end, a); assert.ok(a >= 0 && b > a, start); return source.slice(a, b); }
 function graphFixture(files) {
   const index = Object.fromEntries(Object.keys(files).map(key => [key, { source: 'pi', title: key }]));
-  const ctx = vm.createContext({
+  const ctx = vm.createContext({ refuseOwnProgramOnly() {}, ownProgramOnly: () => false,
     index, conversationFlow: Flow, fanoutLib,
     fsp: { readFile: async key => files[key] }, absPathForKey: key => key,
     forkFamily: () => Object.keys(files), keyForSessionPath: value => value,
@@ -69,7 +69,7 @@ test('different prompts become labelled paths; separate conversation origin rema
 });
 test('stale continuation confirmation cannot append a branch anchor', async () => {
   let appended = false;
-  const ctx = vm.createContext({
+  const ctx = vm.createContext({ refuseOwnProgramOnly() {}, ownProgramOnly: () => false,
     index: { chat: { source: 'pi' } }, absPathForKey: key => key, conversationFlow: Flow,
     headlessRuns: new Map(), agentRunJobs: new Map(), findRunningConversation: () => null,
     withSessionOp: async (_, fn) => fn(), stopAnyWarmSession() {},

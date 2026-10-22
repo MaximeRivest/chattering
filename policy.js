@@ -53,6 +53,11 @@ const ROUTES = {
   // machine's, so only its administrators sign in, add servers or test.
   '/api/ai': 'owner',
   '/api/ai/*': 'owner',
+  // The frog (design/102): it steers every conversation, and its event route
+  // is how this computer's own scripts wake it. /api/navigator/ is its
+  // first day's name. Owner only: one frog, the owner's, for now.
+  '/api/frog/*': 'owner',
+  '/api/navigator/*': 'owner',
   'GET /api/modes': 'guest',
   'PUT /api/modes': 'member',
   'POST /api/modes': 'member',
@@ -92,6 +97,11 @@ const ROUTES = {
   '/api/conversation/title': 'guest', // act checked in the handler
   '/api/conversation/retitle': 'guest',
   '/api/conversation/thinking': 'guest',
+  '/api/conversation/agent-mode': 'guest', // act checked in the handler (agent-modes.js)
+  '/api/conversation/claude-account': 'owner', // the owner's Claude subscriptions (claude-accounts.js)
+  '/api/claude-accounts': 'owner',
+  '/api/claude-accounts/*': 'owner',
+  '/api/conversation/handoff': 'guest', // act checked in the handler (harness/handoff.js)
   '/api/conversation/compact': 'guest',
   '/api/conversation/models': 'guest',
   '/api/conversation/reading': 'guest',
@@ -181,6 +191,7 @@ const ROUTES = {
   '/api/project/purpose': 'member',
   '/api/project/create': 'member',
   '/api/project/unregister': 'member',
+  '/api/project/undo-setup': 'member',
   '/api/project/context': 'member',
   '/api/project/fold': 'member',
   '/api/project/unfold': 'member',
@@ -201,6 +212,7 @@ const ROUTES = {
   '/api/epic/memory/regenerate': 'member',
   '/api/here': 'member',
   '/api/fs/dirs': 'member',
+  '/api/fs/folders': 'member',
 
   // ---- files: paths checked in the handler (assertPathAccess) ----
   '/api/path/info': 'guest',
@@ -215,6 +227,8 @@ const ROUTES = {
   '/api/file/save': 'guest',
   '/api/files/browse': 'guest',
   '/api/files/activity': 'guest',
+  '/api/files/op': 'guest', // rename, duplicate, delete, restore: act on the path
+  '/api/files/deleted': 'guest',
   '/api/doc/save': 'guest',
   '/api/doc/commit': 'guest',
   'POST /api/vouch': 'guest',
@@ -470,6 +484,10 @@ const EVENTS = {
   // An agent's own program, live (design/91): its state, for those who see
   // the conversation.
   'live-terminal': keyed,
+  'agent-mode': keyed,
+  // The owner's Claude subscriptions (claude-accounts.js): the owner's alone.
+  'claude-account': () => () => false,
+  'claude-accounts': () => () => false,
   'voice-nav': ev => can => can.member && can.key(ev.key),
   'project-title': ev => can => can.project(ev.project),
   'file-activity': ev => can => (ev.convKey ? can.key(ev.convKey) : true) && (ev.path ? can.path(ev.path) : can.project(ev.project)),
@@ -534,6 +552,8 @@ const EVENTS = {
   'agent-recovery': () => can => can.member,
   'delegation-update': () => can => can.member,
   'voice-playing': () => can => can.member,
+  // The frog's speech stops on every screen of a new turn (design/102): no content.
+  'frog-cut': () => can => can.member,
   'voice-state': () => can => can.member,
 };
 function narrowKeyMaps(ev, can) {

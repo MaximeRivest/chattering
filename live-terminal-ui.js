@@ -2,7 +2,7 @@
    harness/live-terminal.js). The conversation above is Chattering's own view
    of the agent's session file. This is the part below it: the real
    program's input box, suggestions, questions, panels and "working…", from
-   its terminal, for Claude Code, Pi or Codex alike (the names come from the
+   its terminal, for Claude Code, Pi, Codex, Antigravity or Muse Code alike (the names come from the
    server; nothing here knows an agent).
 
    Typing. On a keyboard every key goes to the program's own editor: the box
@@ -153,7 +153,7 @@
         <textarea id="ltKeys" class="lt-keys" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="ltMenu" aria-label="Message to ${name}, typed into its own box" autocomplete="off" autocapitalize="off" spellcheck="false" rows="1"></textarea>
         <div class="lt-touchrow"><textarea id="ltDraft" class="lt-draft" rows="1" aria-label="Message to ${name}" placeholder="Message ${name}"></textarea><button type="button" class="primary lt-send" id="ltSend">Send</button></div>
         <div class="lt-footer" id="ltFooter"></div>
-        <div class="lt-meta"><span class="lt-who" id="ltWho">${name}'s own program</span>${lt.canLeave ? `<button type="button" class="ghost lt-leave" id="ltLeave" title="End ${name}'s program and use Chattering's own box again">Use Chattering's box</button>` : ''}</div>
+        <div class="lt-meta"><span class="lt-who" id="ltWho">${name}'s own program</span><button type="button" class="ghost lt-mode" id="ltMode" title="Prompt mode: instructions added to ${name}'s own (Alt+O)">▣ mode</button>${d.liveTerminal && d.liveTerminal.accounts ? `<button type="button" class="ghost lt-mode" id="ltAccount" title="The Claude subscription this conversation answers as. Switching restarts its program on the same conversation.">◉ ${esc(((d.liveTerminal.account || {}).name) || 'account')}</button>` : ''}${(d.handoffTargets || []).length ? `<button type="button" class="ghost lt-mode" id="ltHandoff" title="Continue this conversation with another agent: it gets the conversation so far">⇄ agent</button>` : ''}${lt.canLeave ? `<button type="button" class="ghost lt-leave" id="ltLeave" title="End ${name}'s program and use Chattering's own box again">Use Chattering's box</button>` : ''}</div>
       </div>
     </div>
   </div>`;
@@ -192,8 +192,41 @@
     S.ended = false; S.running = true; connect(S); paint(S);
   }
 
+  // The Claude subscription a Claude Code conversation answers as.
+  LT.paintAccount = () => {
+    const b = $('ltAccount');
+    const lt = typeof current !== 'undefined' && current ? current.liveTerminal : null;
+    if (b && lt && lt.account) b.textContent = '◉ ' + lt.account.name;
+  };
+  // The prompt mode serving its next reply (agent-modes.js; Pi's own).
+  LT.paintMode = () => {
+    const b = $('ltMode'), dock = document.querySelector('[data-live-terminal="1"]');
+    if (!b || !dock) return;
+    const key = dock.dataset.conversationKey;
+    const m = typeof convModes !== 'undefined' ? convModes.get(key) : null;
+    b.textContent = '▣ ' + ((m && m.key) || (dock.dataset.harness === 'pi' ? 'mode' : 'no mode'));
+    // Pi's own program: its mode is in its session; asked once.
+    if (!m && dock.dataset.harness === 'pi' && !key.startsWith('live:') && !modeAsked.has(key)) {
+      modeAsked.add(key);
+      fetch('/api/conversation/context?id=' + encodeURIComponent(key)).then(r => r.ok ? r.json() : null).then(c => {
+        if (c && c.mode && c.mode.key && typeof convModes !== 'undefined') { convModes.set(key, c.mode); LT.paintMode(); }
+      }).catch(() => {});
+    }
+  };
+  const modeAsked = new Set();
   function wire(S) {
     $('ltStop').onclick = () => send(S, { t: 'stop' });
+    if ($('ltAccount')) $('ltAccount').onclick = e => {
+      const lt = typeof current !== 'undefined' && current && current.key === S.key ? current.liveTerminal : null;
+      if (!lt || !lt.accounts || !window.ClaudeAccountsUI) return;
+      ClaudeAccountsUI.pick(e.currentTarget, { current: (lt.account || {}).id || 'default', choices: lt.accounts, note: 'answers as',
+        onPick: async id => { const a = await ClaudeAccountsUI.switchConversation(S.key, id); if (a) { lt.account = a; LT.paintAccount(); } } });
+    };
+    if ($('ltMode')) {
+      $('ltMode').onclick = e => { if (typeof openModePicker === 'function') openModePicker(e.currentTarget); };
+      LT.paintMode();
+    }
+    if ($('ltHandoff')) $('ltHandoff').onclick = () => { if (typeof openHandoffDialog === 'function') openHandoffDialog(); };
     if ($('ltLeave')) $('ltLeave').onclick = () => LT.leave(S.key);
     $('ltKeybar').querySelectorAll('button').forEach(b => b.onclick = e => { e.preventDefault(); send(S, { t: 'key', key: b.dataset.key, shift: !!b.dataset.shift }); });
     // A keyboard: every key to the program's editor.
@@ -292,7 +325,8 @@
       paint(S);
       const out = await postJson('/api/live-terminal/send', { id: S.key, text }).catch(e => ({ error: e.message }));
       r = out && !out.error ? { t: 'done' } : { t: 'error', error: (out && out.error) || 'not sent' };
-      if (out && out.question) r = { t: 'error', error: S.name + ' asks something first: answer it, then send again' };
+      if (out && out.question) r = out.queued ? { t: 'done' } : { t: 'error', error: S.name + ' asks something first: answer it, then send again' };
+      if (out && out.queued) note(S, S.name + ' asks something first: answer it above, and your message goes next');
       S.ended = false; S.running = true; connect(S);
     } else r = await ask(S, { t: 'submit', text });
     S.submitting = false;
@@ -483,8 +517,10 @@
   // message goes once its box is ready; the conversation opens once the
   // program has written it.
   const newWaiters = new Map();
-  LT.startNew = async function (harness, folder, prompt, onProgress = () => {}) {
-    const out = await postJson('/api/live-terminal/new', { harness, folder });
+  // handoffFrom: the conversation this one continues (its history goes
+  // before the first message, harness/handoff.js).
+  LT.startNew = async function (harness, folder, prompt, onProgress = () => {}, mode = null, handoffFrom = null, account = null) {
+    const out = await postJson('/api/live-terminal/new', { harness, folder, ...(mode ? { mode } : {}), ...(handoffFrom ? { handoffFrom } : {}), ...(account && account !== 'default' ? { account } : {}) });
     if (!out || out.error || !out.key) throw new Error((out && out.error) || 'it did not start');
     const temp = out.key;
     const named = new Promise(resolve => newWaiters.set(temp, resolve));
@@ -519,6 +555,18 @@
     return key;
   };
 
+  // A message for `key`'s program, sent as its own Send does (it starts the
+  // program from the conversation's file when it is not running).
+  // A message into a conversation's program from elsewhere on the page (a
+  // conversation that just moved here). Not sent: it waits in the box.
+  LT.sendTo = async (key, text) => {
+    const S = session(key);
+    for (let i = 0; i < 100 && !document.querySelector('[data-live-terminal="1"][data-conversation-key="' + CSS.escape(key) + '"]'); i++) await new Promise(r => setTimeout(r, 100));
+    const r = await submit(S, String(text));
+    if (r && r.t !== 'done') { S.draft = String(text) + (S.draft ? '\n' + S.draft : ''); S.draftDirty = true; const d = $('ltDraft'); if (d && mounted === S) d.value = S.draft; paint(S); }
+    return r;
+  };
+
   LT.init = async () => {
     try {
       const st = await (await fetch('/api/live-terminal/status')).json();
@@ -529,7 +577,7 @@
   };
   // Which agents may start in their own program from the draft screen.
   // (Who may: per agent, from the server; a guest's walls take Pi only.)
-  LT.newChoice = harness => LT.enabled && LT.conf && LT.conf.agents && !(LT.conf.refusals || {})[harness] ? (LT.conf.agents[harness] || 'off') : 'off';
+  LT.newChoice = harness => LT.enabled && LT.conf && LT.conf.agents && !(LT.conf.refusals || {})[harness] && (LT.conf.installed || {})[harness] !== false ? (LT.conf.agents[harness] || 'off') : 'off';
   // ---- settings → agents ----
   const CHOICES = [['off', 'never'], ['choose', 'when I choose'], ['always', 'always']];
   const IDLE = [5, 15, 30, 60, 120, 240, 480];
@@ -539,13 +587,13 @@
     const names = c.names || {}, agents = c.agents || {};
     const dis = canEdit ? '' : ' disabled';
     return `<h2>agents' own programs</h2>
-    <p class="hint">A Claude Code, Pi or Codex conversation can continue in that agent's own program, running on this computer and shown here. You type into its own box, use its own <code>/</code> commands and answer its own questions, from any of your devices. The conversation itself is always Chattering's view of its file.</p>
-    ${Object.keys(names).map(id => `<div class="set-field"><label for="ltSet_${esc(id)}">${esc(names[id])}</label>
-      <select id="ltSet_${esc(id)}" data-agent="${esc(id)}"${dis}>${CHOICES.filter(([v]) => !(id === 'claude' && v === 'choose')).map(([v, l]) => `<option value="${v}"${agents[id] === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div>`).join('')}
+    <p class="hint">A Claude Code, Pi, Codex, Antigravity or Muse Code conversation can continue in that agent's own program, running on this computer and shown here. You type into its own box, use its own <code>/</code> commands and answer its own questions, from any of your devices. The conversation itself is always Chattering's view of its file.</p>
+    ${Object.keys(names).map(id => `<div class="set-field"><label for="ltSet_${esc(id)}">${esc(names[id])}${(c.installed || {})[id] === false ? ' <span class="hint">(not installed on this computer)</span>' : ''}</label>
+      <select id="ltSet_${esc(id)}" data-agent="${esc(id)}"${dis}>${CHOICES.filter(([v]) => !((c.boxes ? c.boxes[id] === false : id === 'claude') && v === 'choose')).map(([v, l]) => `<option value="${v}"${agents[id] === v ? ' selected' : ''}>${l}</option>`).join('')}</select></div>`).join('')}
     <details class="set-field"><summary>start them with options</summary>
       ${Object.keys(names).map(id => `<label for="ltArgs_${esc(id)}">${esc(names[id])}</label><input id="ltArgs_${esc(id)}" data-args="${esc(id)}" type="text" spellcheck="false" autocomplete="off" value="${esc(((c.args || {})[id] || []).map(a => /[\s"']/.test(a) ? JSON.stringify(a) : a).join(' '))}" placeholder="${id === 'claude' ? '--permission-mode default' : id === 'codex' ? '-c approval_policy="on-request"' : ''}"${dis}>`).join('')}
       <div class="set-help">Words added to the program's command each time it starts here, for that run only: nothing is written into the agent's own settings. Quote a word that holds spaces.</div></details>
-    <div class="set-help">"When I choose": Chattering's own box, with "Continue in its own program" in the + menu. "Always": its program, with Chattering's box a click away. Claude Code has no box of Chattering's own: set to "never", its conversations open in a terminal window on this computer instead.</div>
+    <div class="set-help">"When I choose": Chattering's own box, with "Continue in its own program" in the + menu. "Always": its program, with Chattering's box a click away. Claude Code, Antigravity and Muse Code have no box of Chattering's own: set to "never", Claude Code's conversations open in a terminal window on this computer instead, and Antigravity's and Muse Code's are only read here.</div>
     <div class="set-field"><label for="ltSetArtifacts">pages Claude Code makes</label>
       <select id="ltSetArtifacts"${dis}>${[['chattering', 'open in Chattering'], ['both', 'open in Chattering; on claude.ai when I ask for a link'], ['agent', 'on claude.ai only']].map(([v, l]) => `<option value="${v}"${(c.artifacts || 'chattering') === v ? ' selected' : ''}>${l}</option>`).join('')}</select>
       <div class="set-help">"Open in Chattering": Claude Code gets Chattering's artifact tools (the panel beside the conversation, and small visuals inline), as Pi has, and its own claude.ai publishing is off while Chattering runs it. Pages it does publish to claude.ai show here as well, a copy kept with each version, with the claude.ai link beside it (claude.ai cannot be shown inside Chattering). Applies to programs started after the change.</div></div>

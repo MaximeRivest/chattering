@@ -55,6 +55,14 @@ completion; it does not acquire a second SDK session just for completion.
 Tests: `test/codex-*.test.js` (reader, server, runs through a stand-in
 Codex in `test/fixtures/fake-codex.js`, and the page in Chromium).
 
+## Antigravity CLI and Muse Code: read here, run in their own program
+
+- `agy-transcript.js`: Antigravity's SQLite conversations (protocol-buffer
+  steps, read by field number) into the common transcript shape.
+- `muse-transcript.js`: Muse Code's event-log sessions into the same shape.
+- Their live part: profiles `agy` and `muse` in `terminal/profiles.js`.
+  See design/87, "Antigravity CLI and Muse Code".
+
 ## Prototypes, not routed to normal conversations yet
 
 - `claude-code.js`: the installed CLI's stream-json/control protocol.

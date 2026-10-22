@@ -644,8 +644,23 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
     return { rating: rec, state: st ? { state: st.state, people: st.people, open: !!st.open } : null };
   }
 
+  // A call Chattering itself made and answered locally (a rule set in place
+  // of a model: frog-turn-end.js), appended as a writer of its own so the
+  // Programs page shows and rates it like the model's calls. `rec` is a
+  // whole call record (contract/calls.md); it gets an id and times here.
+  function appendCall(rec) {
+    const at = now();
+    const full = { functai_call: FORMAT, id: newId(at), parent: null, root: null, started: iso(at - Math.round((rec.seconds || 0) * 1000)), ...rec };
+    full.root = full.root || full.id;
+    const line = JSON.stringify(full) + '\n';
+    const dayDir = path.join(folder, iso(at).slice(0, 10));
+    fs.mkdirSync(dayDir, { recursive: true, mode: 0o700 });
+    fs.appendFileSync(path.join(dayDir, writerName), line, { mode: 0o600 });
+    return full;
+  }
+
   return {
-    folder, refresh, programs, program, versions, runs, run, compare, rated, sample, rate,
+    folder, refresh, programs, program, versions, runs, run, compare, rated, sample, rate, appendCall,
     /** The programs changed since the last call, as [name, module] pairs; null when any may have. */
     takeChanged() {
       const all = changedPrograms;

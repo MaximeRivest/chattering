@@ -123,6 +123,9 @@ test('files changed: the list under the steps, the change read in place', { skip
   assert.equal(await ev(`document.querySelector('.sc-card[data-sc-card$="/notes.md"] .sc-page h1').textContent`), 'Release notes');
   await ev(`document.querySelector('.sc-card[data-sc-card$="/notes.md"] [data-sc-mode="source"]').click(); 1`);
   assert.equal(await ev(`document.querySelectorAll('.sc-card[data-sc-card$="/notes.md"] .sc-read .sc-l').length`), 6);
+  assert.equal(await ev(`(() => { const l = document.querySelector('.sc-card[data-sc-card$="/notes.md"] .sc-l');
+    return l.querySelector('.sc-c').getBoundingClientRect().width > l.getBoundingClientRect().width * .7;
+  })()`), true, 'source text uses the reading column, not the line-number gutter');
 
   // A picture the script made, as a picture.
   await ev(`document.querySelector('.sc-row[data-file-diff$="/chart.png"]').click(); 1`);

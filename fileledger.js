@@ -10,7 +10,8 @@
 //
 // Truth rules carried here:
 // · attempted / applied / failed stay separate (outcome);
-// · the actor is `human` only when the Chattering editor made the change,
+// · the actor is `human` only when the Chattering editor made the change
+//   (or the Files browser renamed, copied, deleted or restored the file),
 //   `ai` when a transcript records it, `git` for commits, and `external`
 //   for anything the watcher saw that nothing explains — never "you";
 // · a watcher event within the dedupe window of an agent or editor event

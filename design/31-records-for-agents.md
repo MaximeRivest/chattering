@@ -21,7 +21,7 @@ Ops: `search`, `show`, `conversations`, `projects`, `memory`, `notes`, `note`, `
 - Bounded. Every answer stops at `max` characters on a line boundary and says how much is left and how to page.
 - Actionable. An answer never ends in a dead end. Each hit carries the follow-up command (`chattering show <id> --at N`); each list ends with the next command.
 - Honest. Records are AI transcripts and AI-written notes. Every note, memory document and epic prints its trust label next to its path. A stale note (the conversation continued after distillation) says `STALE`. A conversation with a live agent says `LIVE`.
-- Short ids. A conversation key is a long path. The renderer prints the first 8 hex characters of the session uuid; the resolver accepts a short id, a full key, a session file path, or any unique substring, and lists the candidates when several match.
+- Short ids. A conversation key is a long path. The renderer prints the first 8 hex characters of the session uuid, lengthened in steps of 4 only where another conversation on record shares them (Pi's uuids are v7: the first 8 characters are a coarse timestamp, the same for every conversation started within ~65 s, so two started in a burst would otherwise print as one). `conversation-ids.js` owns this, for the records tools, the CLI and the frog alike. The resolver accepts a short id or any longer prefix of the uuid (dashes or not), a full key, a session file path, or any unique substring; when several match, it lists them with the ids that work now and never picks one.
 - Local time for dates and times, both, so a day never disagrees with the clock next to it.
 
 ## Search

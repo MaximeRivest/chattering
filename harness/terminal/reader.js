@@ -95,7 +95,15 @@ function readDocument(snap, profileOrRules = CLAUDE) {
         // An option may be a name and, after a wide gap, a description
         // (Codex: "1. Ask for approval       Codex can read…"), whose wrapped
         // lines follow, deeper.
-        const option = (text, selected) => { const g = /^(.*?\S)\s{2,}(\S.*)$/.exec(text); return { label: g ? g[1] : text, detail: g ? g[2] : '', selected, rows: [r] }; };
+        // A number before the name may be followed by a wide gap instead of
+        // a dot (Muse Code: "1  Trust and continue"): it is the option's
+        // number, not a name with a description.
+        const option = (text, selected) => {
+          const n = /^(\d+)\s{2,}(\S.*)$/.exec(text);
+          if (n) text = n[1] + '. ' + n[2];
+          const g = /^(.*?\S)\s{2,}(\S.*)$/.exec(text);
+          return { label: g ? g[1] : text, detail: g ? g[2] : '', selected, rows: [r] };
+        };
         if (r === y) opts.push(option(m[4], true));
         else if (sibling(r)) opts.push(option(t.trim(), false));
         else if (opts.length && wrapped(r)) {
@@ -143,7 +151,8 @@ function readDocument(snap, profileOrRules = CLAUDE) {
   // (a program that parks its cursor where it writes, as Pi does while it
   // answers) the bottom-most one, if it is in the lower half of the screen.
   const frames = [];
-  for (let i = 0; i + 1 < rules.length; i++) if (rules[i + 1] - rules[i] >= 2 && rules[i + 1] - rules[i] <= 11) frames.push([rules[i], rules[i + 1]]);
+  const maxBox = profile.maxBox || 11; // a profile may allow a taller box (Muse Code's shows a whole paste)
+  for (let i = 0; i + 1 < rules.length; i++) if (rules[i + 1] - rules[i] >= 2 && rules[i + 1] - rules[i] <= maxBox) frames.push([rules[i], rules[i + 1]]);
   const holding = frames.find(([a, b]) => cursor.y > a && cursor.y < b);
   // The cursor on a line that starts with a prompt mark, in no frame: that
   // line is the box (Codex), whatever frame lines are elsewhere (Codex
@@ -175,6 +184,17 @@ function readDocument(snap, profileOrRules = CLAUDE) {
   if (above != null && below != null && below - above > 3) {
     const list = findChoice(above + 2, below, { inside: true });
     if (list) { boxEnd = list.first; while (boxEnd - 1 > above + 1 && !lines[boxEnd - 1].text.trim()) boxEnd--; }
+  }
+  // "  label   description", optionally after a selection marker (Pi: →).
+  const ITEM = /^(?: {0,6}([→❯›>▶]) +| {2,6})(\S.*?)\s{2,}(\S.*)$/;
+  // A menu inside the box (Muse Code: "❯ /" and its commands under it,
+  // between the same frame lines): the box is the prompt's line, the menu
+  // is read from the line under it.
+  let menuFrom = null;
+  if (above != null && below != null && boxEnd - above > 2) {
+    const first = lines[above + 1] ? lines[above + 1].text : '';
+    const g = profile.prompts.find(p => first.startsWith(p + ' '));
+    if (g && /^[/@]\S*$/.test(first.slice(g.length + 1).trim()) && ITEM.test(lines[above + 2].text)) { menuFrom = above + 2; boxEnd = menuFrom; }
   }
   if (above != null && below != null && below > above + 1) {
     const body = [];
@@ -223,6 +243,10 @@ function readDocument(snap, profileOrRules = CLAUDE) {
       // letter of its line shows them.
       if (caret != null && caret > text.length) text += ' '.repeat(caret - text.length);
       if (!text.trim()) text = '';
+      // A hint drawn in a plain colour, not dim (Muse Code's "Type @ to
+      // search…"): the cursor waits before it, where typing would start.
+      // Typed text puts the cursor after it.
+      if (profile.hintAtCaret && text && caret === 0 && !text.includes('\n') && !placeholder) { placeholder = text.trim(); text = ''; }
       if (caret != null) caret = Math.min(caret, text.length);
       doc.composer = { prompt: glyph, text, placeholder, caret, softWraps, rows: [above, ...body, ...(boxEnd === below ? [below] : [])] };
       for (const y of doc.composer.rows) used.add(y);
@@ -237,8 +261,8 @@ function readDocument(snap, profileOrRules = CLAUDE) {
       // A dialog right under the box (Pi's /model: a search line, then its
       // list and how to answer, up to a frame line) is read as a choice
       // below; the menu and footer are looked for past its frame.
-      let under = below + 1;
-      const list = findChoice(under, bottom);
+      let under = menuFrom != null ? menuFrom : below + 1;
+      const list = menuFrom != null ? null : findChoice(under, bottom);
       if (list && lines.slice(under, list.first).every(l => !l.text.trim())) {
         const end = (list.hint ? list.hint.rows[0] : list.last) + 1;
         let r = end; while (r < bottom && !isRule(lines[r], cols)) r++;
@@ -246,8 +270,6 @@ function readDocument(snap, profileOrRules = CLAUDE) {
         under = r < bottom ? r + 1 : bottom;
       }
       const items = [];
-      // "  label   description", optionally after a selection marker (Pi: →).
-      const ITEM = /^(?: {0,6}([→❯›>▶]) +| {2,6})(\S.*?)\s{2,}(\S.*)$/;
       // A list that marks its selected row: every row whose label starts in
       // that row's column is one of its items, above the mark or below it.
       let markedCol = null;

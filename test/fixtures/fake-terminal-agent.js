@@ -255,7 +255,7 @@ function keys(data) {
   return out;
 }
 
-if (keyLog) fs.appendFileSync(keyLog, JSON.stringify({ argv }) + '\n'); // how it was started
+if (keyLog) fs.appendFileSync(keyLog, JSON.stringify({ argv, configDir: process.env.CLAUDE_CONFIG_DIR || null }) + '\n'); // how it was started (and as which Claude account)
 let listening = false;
 if (process.stdin.isTTY) process.stdin.setRawMode(true);
 process.stdin.setEncoding('utf8');

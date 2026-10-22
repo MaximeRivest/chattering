@@ -22986,9 +22986,13 @@ function replyProbabilities(response) {
     }
     for (const field2 of Object.keys(dist)) {
       const keys = dist[field2];
+      // Patched in Chattering (lmcc fix, ts/src/core.ts probabilityOf): a
+      // sure answer's 1.0 / 0.0 arrive as lm15 RawNumber objects.
+      const probabilityOf = (p) => typeof p === "number" ? p : typeof p === "bigint" ? Number(p)
+        : p && typeof p === "object" && !Array.isArray(p) && Object.getPrototypeOf(p) !== Object.prototype && typeof p.raw === "string" && /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/.test(p.raw) ? Number(p.raw) : void 0;
       const valid = isObj(keys) && Object.values(keys).every((p) => {
-        const n = typeof p === "bigint" ? Number(p) : p;
-        return typeof n === "number" && n >= 0 && n <= 1;
+        const n = probabilityOf(p);
+        return n !== void 0 && n >= 0 && n <= 1;
       });
       if (!valid) {
         refuse("response-malformed", `probabilities for ${pyRepr(field2)} must map each answer key to a number in [0, 1]`);
@@ -22996,7 +23000,7 @@ function replyProbabilities(response) {
       if (Object.prototype.hasOwnProperty.call(probabilities, field2)) {
         refuse("parse-ambiguous", `two data parts carry probabilities for ${pyRepr(field2)} \u2014 refusing to guess which measured the answer`);
       }
-      probabilities[field2] = { ...keys };
+      probabilities[field2] = Object.fromEntries(Object.entries(keys).map(([k, p]) => [k, probabilityOf(p)]));
       measuredBy[field2] = method;
     }
   }

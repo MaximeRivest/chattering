@@ -141,6 +141,15 @@ function createCodexRuns(deps) {
     if (brief && String(brief).trim()) {
       target.injectItems = [...(target.injectItems || []), { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'Instructions from Chattering for the next request only:\n\n' + String(brief).trim() }] }];
     }
+    // A prompt mode switched since Codex last read one (agent-modes.js):
+    // Codex keeps the instructions it began with, so the switch is a
+    // developer message, before this reply, given once.
+    const mode = deps.modeFor ? deps.modeFor(key) : null;
+    if (mode) {
+      target.injectItems = [...(target.injectItems || []), { type: 'message', role: 'developer', content: [{ type: 'input_text', text: mode.text }] }];
+      const before = target.onInjected;
+      target.onInjected = () => { if (before) before(); deps.modeGiven(key, mode.id); };
+    }
     const job = newJob({ key, model: target.model, message, images });
     agentRunJobs.set(job.id, job); jobChanged(job);
     const record = { jobId: job.id, key, startedAt: job.startedAt, model: job.model, handle: null, yielded: null, harness: 'codex', sessionPath };
@@ -151,12 +160,16 @@ function createCodexRuns(deps) {
 
   // The first message of a new Codex conversation. Codex writes the file
   // when the reply begins; the conversation is listed once it exists.
-  async function start({ folder, message, images = [], principal, model, effort, access = 'config', developerInstructions = null, author = null, input = 'keyboard', coauthors = null, describeStartFolder }) {
+  // injectItems: a history the thread starts with (a conversation moving
+  // here from another agent, harness/handoff.js); beforeIndex(path): called
+  // once its file exists, before it is listed.
+  async function start({ folder, message, images = [], principal, model, effort, access = 'config', developerInstructions = null, author = null, input = 'keyboard', coauthors = null, describeStartFolder, injectItems = null, beforeIndex = null }) {
     assertOwner(principal);
     if (!String(message || '').trim()) throw new Error('write the first message');
     const where = describeStartFolder(folder || '');
     if (!where.exists) throw new Error('folder not found: ' + where.display);
     const target = targetFor({ cwd: where.path, principal, model, effort, access, developerInstructions });
+    if (injectItems && injectItems.length) target.injectItems = injectItems;
     const job = newJob({ key: null, model, message, images });
     agentRunJobs.set(job.id, job); jobChanged(job);
     const pendingPath = 'codex-new:' + job.id;
@@ -176,6 +189,7 @@ function createCodexRuns(deps) {
       await sleep(100);
     }
     if (!fs.existsSync(thread.path)) throw new Error(job.error || 'Codex did not create the conversation file.');
+    if (beforeIndex) beforeIndex(thread.path);
     const key = await indexNewSessionFile(thread.path);
     job.key = key;
     record.key = key;

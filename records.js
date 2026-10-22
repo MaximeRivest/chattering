@@ -20,6 +20,7 @@
 // in through `deps`, so tests run it against a fake index.
 
 const path = require('path');
+const convIds = require('./conversation-ids.js');
 
 const MEMORY_KINDS = ['overview', 'intent', 'environment', 'status'];
 const CHAT_ROLES = new Set(['user', 'assistant']);
@@ -75,10 +76,12 @@ const HELP = `chattering — query the conversation records of Chattering (all p
 
 // ---- small helpers -------------------------------------------------------
 
-function shortId(key) {
-  const base = String(key).slice(String(key).lastIndexOf('/') + 1).replace(/\.jsonl$/, '');
-  const m = base.match(/(?:^|_)([0-9a-f]{8})-[0-9a-f]{4}-/i);
-  return m ? m[1] : base.slice(-8);
+// The plain 8-character cut of a conversation's uuid, from its key alone.
+// Inside createRecords, `sid(key)` is what prints: the same cut, lengthened
+// where another conversation on record shares it (conversation-ids.js).
+function shortId(key, entry) {
+  const h = convIds.hexOf(key, entry);
+  return h ? h.slice(0, convIds.MIN) : convIds.stemOf(key);
 }
 
 // Dates and times print in local time, both of them, so a day never
@@ -168,6 +171,9 @@ function createRecords(deps) {
   const cli = 'chattering';
   const noteLabel = p => (p ? trustLabel(p) : '');
 
+  // Short ids as printed: unique within the index as it is at this answer.
+  const sid = key => convIds.shortIdOf(index(), key);
+
   // Live markers come from a /proc scan: one scan per answer, not per line.
   let liveSet = null;
   function liveMark(key) {
@@ -180,7 +186,9 @@ function createRecords(deps) {
   }
 
   // Resolve what an agent typed into one conversation key: the full key, a
-  // session file path, the short id, or any unique substring.
+  // session file path, the short id (or any longer prefix of the uuid), or
+  // any unique substring of the key. Several candidates: an error that lists
+  // them with their ids as they are now, never a pick.
   function resolveKey(id) {
     const idx = index();
     const raw = String(id || '').trim();
@@ -190,13 +198,13 @@ function createRecords(deps) {
       const k = keyForSessionPath(raw);
       if (k) return k;
     }
-    const keys = Object.keys(idx);
-    let hits = keys.filter(k => shortId(k) === raw);
-    if (!hits.length) hits = keys.filter(k => k.includes(raw));
+    const r = convIds.resolveShortId(idx, raw);
+    if (r.key) return r.key;
+    let hits = r.keys;
+    if (!hits.length) hits = Object.keys(idx).filter(k => k.includes(raw));
     if (hits.length === 1) return hits[0];
     if (!hits.length) throw new Error(`no conversation matches "${raw}". Run: ${cli} conversations, or ${cli} search "<words>".`);
-    hits.sort((a, b) => String(idx[b].lastTs || '').localeCompare(String(idx[a].lastTs || '')));
-    const list = hits.slice(0, 6).map(k => `  ${shortId(k)}  ${day(idx[k].lastTs)}  ${oneLine(idx[k].title, 60)}`).join('\n');
+    const list = convIds.describeMatches(idx, hits, { title: e => e.title || e.timelineTitle || '(untitled)' }).join('\n');
     throw new Error(`"${raw}" matches ${hits.length} conversations. Use one short id:\n${list}`);
   }
 
@@ -214,7 +222,7 @@ function createRecords(deps) {
   }
 
   function entryLine(key, e, { withProject = true } = {}) {
-    const bits = [shortId(key), day(e.lastTs) + ' ' + hm(e.lastTs), oneLine(e.timelineTitle || e.title || '(untitled)', 70)];
+    const bits = [sid(key), day(e.lastTs) + ' ' + hm(e.lastTs), oneLine(e.timelineTitle || e.title || '(untitled)', 70)];
     const meta = [];
     if (withProject) meta.push(projectNameOf(e.cwd, key));
     meta.push(`${e.realUserCount ?? e.userCount ?? '?'} user turns`);
@@ -289,7 +297,7 @@ function createRecords(deps) {
       const n = offset + i + 1;
       if (g.kind === 'conversation') {
         const e = idxAll[g.key] || {};
-        const id = shortId(g.key);
+        const id = sid(g.key);
         lines.push(`${n}. [conversation] ${g.project || '?'} · ${day(e.lastTs || g.matches[0]?.ts)} · ${oneLine(e.timelineTitle || e.title || g.title || '(untitled)', 80)} · id ${id}${g.semantic ? ' · ~semantic' : ''}${liveMark(g.key)}`);
         for (const m of g.matches) {
           const where = m.i == null ? (m.role === 'title' ? 'title' : m.role) : `#${m.i} ${m.role}`;
@@ -318,18 +326,18 @@ function createRecords(deps) {
     for (const m of data.messages) roles[m.role] = (roles[m.role] || 0) + 1;
     const out = [];
     out.push(`${data.timelineTitle || data.title || e.title || '(untitled)'}`);
-    out.push(`id ${shortId(key)} · ${projectNameOf(data.cwd, key)} · ${data.source || e.source} · ${day(data.firstTs)} ${hm(data.firstTs)} → ${day(data.lastTs)} ${hm(data.lastTs)} (${ago(data.lastTs, now())})${liveMark(key)}`);
+    out.push(`id ${sid(key)} · ${projectNameOf(data.cwd, key)} · ${data.source || e.source} · ${day(data.firstTs)} ${hm(data.firstTs)} → ${day(data.lastTs)} ${hm(data.lastTs)} (${ago(data.lastTs, now())})${liveMark(key)}`);
     out.push(`${data.messages.length} messages: ${Object.entries(roles).map(([r, n]) => `${n} ${r}`).join(', ')}`);
     out.push(`cwd ${data.cwd || '?'}${data.gitBranch ? ' · branch ' + data.gitBranch : ''}`);
     out.push(`key ${key}`);
     if (data.notePath || e.notePath) {
       const p = data.notePath || e.notePath;
       const stale = e.mtimeMs && e.notedAt && e.mtimeMs > e.notedAt;
-      out.push(`note ${p} ${noteLabel(p)}${stale ? ' · STALE (conversation continued after the note)' : ''} → ${cli} note ${shortId(key)}`);
+      out.push(`note ${p} ${noteLabel(p)}${stale ? ' · STALE (conversation continued after the note)' : ''} → ${cli} note ${sid(key)}`);
     }
     if (data.parentSession) {
       const pk = keyForSessionPath(data.parentSession);
-      if (pk && idx[pk]) out.push(`forked from ${shortId(pk)} · ${oneLine(idx[pk].title, 60)}`);
+      if (pk && idx[pk]) out.push(`forked from ${sid(pk)} · ${oneLine(idx[pk].title, 60)}`);
     }
     const inEpics = Object.values(epics()).filter(ep => (ep.sessionIds || []).includes(key));
     if (inEpics.length) out.push(`epics: ${inEpics.map(ep => `${oneLine(ep.title, 50)} (${ep.id})`).join('; ')}`);
@@ -355,7 +363,7 @@ function createRecords(deps) {
     const msgs = data.messages || [];
     const max = num(params.max, DEFAULT_MAX.show, 500);
     const allRoles = String(params.roles || '').toLowerCase() === 'all';
-    const id = shortId(key);
+    const id = sid(key);
     const lines = showHeader(key, data, e);
     lines.push('');
 
@@ -425,7 +433,7 @@ function createRecords(deps) {
     for (const [k, e] of page) lines.push(entryLine(k, e, { withProject: !project }));
     if (rows.length > limit) lines.push('', `${rows.length - limit} more → ${cli} conversations${project ? ' ' + sq(project) : ''} --limit ${Math.min(200, limit * 2)}`);
     lines.push('', `open one: ${cli} show <id>`);
-    return { text: bound(lines.join('\n'), max), project, total: rows.length, rows: page.map(([k, e]) => ({ key: k, id: shortId(k), title: e.title, lastTs: e.lastTs })) };
+    return { text: bound(lines.join('\n'), max), project, total: rows.length, rows: page.map(([k, e]) => ({ key: k, id: sid(k), title: e.title, lastTs: e.lastTs })) };
   }
 
   async function projects(params) {
@@ -494,7 +502,7 @@ function createRecords(deps) {
     const rows = noteRows(project);
     const lines = [`distilled notes · ${project || 'all projects'} · ${rows.length}`, ''];
     for (const { key, entry, stale } of rows.slice(0, limit)) {
-      lines.push(`${shortId(key)}  ${day(entry.lastTs)}  ${oneLine(entry.title, 70)}  ${noteLabel(entry.notePath)}${stale ? ' STALE' : ''}${project ? '' : '  ' + projectNameOf(entry.cwd, key)}`);
+      lines.push(`${sid(key)}  ${day(entry.lastTs)}  ${oneLine(entry.title, 70)}  ${noteLabel(entry.notePath)}${stale ? ' STALE' : ''}${project ? '' : '  ' + projectNameOf(entry.cwd, key)}`);
       lines.push(`    ${entry.notePath}`);
     }
     if (rows.length > limit) lines.push('', `${rows.length - limit} more → --limit ${Math.min(300, limit * 2)}`);
@@ -517,9 +525,9 @@ function createRecords(deps) {
     if (!file) {
       const key = resolveKey(raw);
       const e = index()[key];
-      if (!e.notePath) throw new Error(`conversation ${shortId(key)} has no distilled note. Read it: ${cli} show ${shortId(key)}; or its evidence: ${cli} evidence ${shortId(key)}`);
+      if (!e.notePath) throw new Error(`conversation ${sid(key)} has no distilled note. Read it: ${cli} show ${sid(key)}; or its evidence: ${cli} evidence ${sid(key)}`);
       file = e.notePath;
-      from = `distilled from ${shortId(key)} · ${oneLine(e.title, 60)}${e.mtimeMs && e.notedAt && e.mtimeMs > e.notedAt ? ' · STALE: the conversation continued after this note' : ''}`;
+      from = `distilled from ${sid(key)} · ${oneLine(e.title, 60)}${e.mtimeMs && e.notedAt && e.mtimeMs > e.notedAt ? ' · STALE: the conversation continued after this note' : ''}`;
     }
     let text;
     try { text = await fsp.readFile(file, 'utf8'); } catch { throw new Error('note file missing: ' + file); }
@@ -552,7 +560,7 @@ function createRecords(deps) {
     lines.push(text, '', `conversations (${(ep.sessionIds || []).length}):`);
     for (const k of ep.sessionIds || []) {
       const e = idx[k];
-      lines.push(e ? `  ${entryLine(k, e)}` : `  ${shortId(k)}  (missing)`);
+      lines.push(e ? `  ${entryLine(k, e)}` : `  ${sid(k)}  (missing)`);
     }
     lines.push('', `epic map: ${cli} memory --epic ${ep.id}`);
     return { text: bound(lines.join('\n'), num(params.max, DEFAULT_MAX.doc, 500)), id: ep.id };
@@ -562,7 +570,7 @@ function createRecords(deps) {
     const key = resolveKey(params.id);
     const data = await readCache(key);
     const ev = await existingEvidenceFor(data, true);
-    const id = shortId(key);
+    const id = sid(key);
     if (!ev) return { text: `no evidence card or note yet for ${id} · ${oneLine(data.title, 60)}. Read the transcript: ${cli} show ${id}`, key, id, evidence: null };
     const label = ev.kind === 'note' ? `${ev.notePath} ${noteLabel(ev.notePath)}` : 'evidence card (AI-written, unverified)';
     const lines = [`evidence · ${id} · ${oneLine(data.title, 70)} · ${day(data.lastTs)}`, `${ev.source}${ev.outdated ? ' · STALE: the conversation continued after this was written' : ''} · ${label}`, '', ev.text.trim(), '', `transcript: ${cli} show ${id}`];
@@ -588,7 +596,7 @@ function createRecords(deps) {
       if (lastAssistant < 0 && msgs[i].role === 'assistant' && msgs[i].text) lastAssistant = i;
       if (msgs[i].role === 'user') { lastUser = i; break; }
     }
-    const id = shortId(key);
+    const id = sid(key);
     const project = projectNameOf(e.cwd, key);
     const lines = [`${data.timelineTitle || data.title || '(untitled)'}`,
       `id ${id} · ${project} · ${hits.length} session${hits.length > 1 ? 's' : ''} under this folder · last ended ${ago(e.lastTs, now())}${liveMark(key)}`, ''];

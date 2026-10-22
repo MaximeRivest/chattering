@@ -11,7 +11,11 @@ const CUSTOM_TYPE = "mode-switch";
 // The delegation tools carry orchestration text that only orchestrator modes
 // should see; the browser tools carry approval rules that only browser modes
 // need. Every other mode stays free of that context.
-const OPT_IN_TOOLS = new Set(["web_search", "delegate", "delegation_status", "delegation_control", "delegation_resume", "delegation_review", "agent_browser", "agent_browser_session"]);
+// The frog's tools (extensions/frog.ts, design/102) steer every other
+// conversation: only the frog mode lists them.
+const FROG_TOOLS = ["workspace", "find_conversations", "read_conversation", "send_to_conversation", "start_conversation", "create_project",
+  "stop_conversation", "fork_conversation", "branch_conversation", "rename_conversation", "organize_list", "mark_read", "context_use", "fresh_start", "remember", "recall_memory", "zoom_memory", "asides", "ask_when", "list_asks", "cancel_ask", "notify_person"];
+const OPT_IN_TOOLS = new Set(["web_search", "delegate", "delegation_status", "delegation_control", "delegation_resume", "delegation_review", "agent_browser", "agent_browser_session", ...FROG_TOOLS]);
 const SYSTEM_PROMPT_SECTIONS = new Set(["available_tools", "custom_tools_note", "guidelines", "pi_docs", "append_prompt", "project_context", "skills", "date", "cwd"]);
 const SECTION_HEADINGS: Record<string, string[]> = {
   available_tools: ["Tools", "Available tools"],
@@ -832,7 +836,10 @@ export default function(pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, ctx) => {
     if (startupError || !effective) return;
     const mode = effective.definition;
-    if (ctx.model?.provider === "claude-code") return { systemPrompt: buildClaudeCodeModeSystemPrompt(mode, event) };
+    // Every Claude subscription: the main one ("claude-code") and the others
+    // ("claude-code-work", Chattering's claude-accounts.js).
+    const provider = String(ctx.model?.provider || "");
+    if (provider === "claude-code" || /^claude-code-[a-z0-9-]+$/.test(provider)) return { systemPrompt: buildClaudeCodeModeSystemPrompt(mode, event) };
     let systemPrompt = mode.systemPrompt?.trim() ? mode.systemPrompt : removePromptSections(event.systemPrompt, mode.removeSections);
     const extra = [mode.systemPrompt?.trim() ? "" : mode.opener, mode.appendix].filter(Boolean).join("\n\n").trim();
     if (extra) systemPrompt += "\n\n# Current prompt mode: " + mode.label + "\n" + extra;

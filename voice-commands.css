@@ -96,3 +96,10 @@
 #voiceOnButton.side svg { width: 18px; height: 18px; }
 /* The column folded: beside its ▸ at the top left, its size and look. */
 #voiceOnButton.corner { position: fixed; z-index: 48; width: 38px; height: 38px; min-height: 38px; border-radius: var(--r); box-shadow: 0 2px 12px var(--shadow-color); }
+
+/* only my voice (design/102): another voice's words, greyed, with "It was me" */
+#voiceOverlay li[data-status="skipped"] .vo-said { color: var(--text-faint); text-decoration: line-through; }
+#voiceOverlay li[data-status="skipped"] .vo-mark { color: var(--text-faint); }
+.voice-prints { margin: 0.3rem 0; padding-left: 1.2rem; }
+.voice-prints li { margin: 0.15rem 0; }
+.voice-prints button { margin-left: 0.4rem; font-size: 0.85em; }
