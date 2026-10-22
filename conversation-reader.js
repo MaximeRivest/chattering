@@ -396,6 +396,17 @@ function attachBlockPieces(host, list) {
   const blocks = host.querySelectorAll(':scope > .rd-block');
   list.forEach((pieces, i) => { if (blocks[i] && pieces) blocks[i]._pieces = pieces; });
 }
+// A part about to leave the screen: its loaded widgets step aside, so the
+// part drawn in its place takes them back still loaded (artifacts.js).
+const setWidgetsAside = node => { if (window.Artifacts) Artifacts.salvage(node); };
+// Remove a part, its loaded widgets set aside first. The part may be a
+// widget itself: then it has already left, and what now stands where it was
+// is not removed.
+function discardPart(node) {
+  const parent = node.parentNode;
+  setWidgetsAside(node);
+  if (node.parentNode === parent) node.remove();
+}
 // Draw a block again from its new pieces: an unchanged piece keeps its
 // elements (and what happened to them: a box a person opened, a long
 // message unfolded, the changed-files list, a delegation card); a changed
@@ -409,6 +420,7 @@ function patchPieces(el, pieces) {
   if (!old || marks.length !== old.length) { // not what was drawn: draw it whole
     const frag = make(joinPieces(pieces));
     added.push(...frag.children);
+    for (const child of [...el.children]) setWidgetsAside(child);
     el.replaceChildren(frag);
     el._pieces = pieces;
     return added;
@@ -417,14 +429,14 @@ function patchPieces(el, pieces) {
   for (let j = 0; j < n; j++) {
     if (old[j] === pieces[j]) continue;
     const end = marks[j + 1] || null;
-    while (marks[j].nextSibling && marks[j].nextSibling !== end) marks[j].nextSibling.remove();
+    while (marks[j].nextSibling && marks[j].nextSibling !== end) discardPart(marks[j].nextSibling);
     const frag = make(pieces[j]);
     added.push(...frag.children);
     el.insertBefore(frag, end);
   }
   if (pieces.length < old.length) {
     const from = marks[n];
-    while (from.nextSibling) from.nextSibling.remove();
+    while (from.nextSibling) discardPart(from.nextSibling);
     from.remove();
   } else if (pieces.length > old.length) {
     const frag = make(joinPieces(pieces.slice(n)));
@@ -453,7 +465,7 @@ function patchTranscriptBlocks(host, d, T, L) {
   };
   for (let j = 0; j < Math.max(wanted.length, existing.length); j++) {
     const want = wanted[j], have = existing[j];
-    if (!want) { have.remove(); continue; }
+    if (!want) { discardPart(have); continue; }
     if (!have) { host.insertBefore(fresh(want), tail); continue; }
     if (have.dataset.rd === want.sig) continue;
     if (want.b.type === 'nodes' && have.dataset.rd.startsWith('n:')) {
@@ -461,6 +473,7 @@ function patchTranscriptBlocks(host, d, T, L) {
       have.dataset.rd = want.sig;
       continue;
     }
+    setWidgetsAside(have);
     have.replaceWith(fresh(want));
   }
   return added;
@@ -558,7 +571,7 @@ async function patchConversation(d, scroll) {
   const unlinkedSig = unlinked.map(m => m.eid || m.ts).join(',');
   if ((oldUnlinked?.dataset.sig || '') !== unlinkedSig || (!oldUnlinked && unlinked.length)) {
     const wasOpen = !!oldUnlinked?.open;
-    oldUnlinked?.remove();
+    if (oldUnlinked) discardPart(oldUnlinked);
     if (unlinked.length) {
       host.insertAdjacentHTML('beforeend', `<details class="rd-unlinked" data-flow-anchor="unlinked" data-sig="${esc(unlinkedSig)}"${wasOpen ? ' open' : ''}><summary>${unlinked.length} messages without a recorded path</summary>${transcriptFragmentHtml(d, unlinked, {})}</details>`);
       added.push(host.lastElementChild);

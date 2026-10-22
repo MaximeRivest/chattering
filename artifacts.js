@@ -189,6 +189,52 @@
   // What the transcript renderer puts after a group of steps.
   window.artifactCardsHtml = (key, tools) => tools.filter(m => m.artifact).map(m => m.artifact.kind === 'widget' ? widgetHtml(key, m) : cardHtml(key, m)).join('');
 
+  // ---- widgets that outlive a redraw ---------------------------------------
+  // A live update replaces the part of the transcript a widget stands in
+  // when that part changes (a second widget joins the same steps, a redraw
+  // of the conversation). A new frame would load the widget again and lose
+  // what the person did in it. So before a part goes, its loaded widgets
+  // step aside, still loaded (moveBefore keeps a frame's page; a removal
+  // would end it), and the new part's widget for the same call takes that
+  // element instead of loading. One not taken back by the end of the update
+  // had its call leave the screen: it goes then. A browser without
+  // moveBefore loads the widget again, as it always did.
+  const canMove = typeof Element.prototype.moveBefore === 'function';
+  const kept = new Map(); // widget id → its loaded figure, set aside
+  let keepBox = null, releaseTimer = 0;
+  const widgetId = fig => `${fig.dataset.artKey}|${fig.dataset.artEntry}|${fig.dataset.artCall}`;
+  // Within root, root included: a live update's new elements can be the
+  // widgets and cards themselves (their strip has no wrapper).
+  const within = (root, sel) => [...(root.matches && root.matches(sel) ? [root] : []), ...root.querySelectorAll(sel)];
+  // key: only the widgets of that conversation (a redraw of another one has
+  // nothing to take them back).
+  function salvage(node, key) {
+    if (!canMove || !node || node.nodeType !== 1 || !node.isConnected) return;
+    for (const fig of within(node, '.art-widget[data-mounted]')) {
+      if (key && fig.dataset.artKey !== key) continue;
+      if (!keepBox) { keepBox = document.createElement('div'); keepBox.className = 'art-kept'; keepBox.hidden = true; }
+      if (!keepBox.isConnected) document.body.appendChild(keepBox);
+      try { keepBox.moveBefore(fig, null); } catch { continue; } // not movable: it reloads, as before
+      kept.set(widgetId(fig), fig);
+    }
+    // The end of this task: every redraw sets aside and takes back within one.
+    if (kept.size && !releaseTimer) releaseTimer = setTimeout(release, 0);
+  }
+  function release() {
+    releaseTimer = 0;
+    for (const fig of kept.values()) fig.remove(); // its bridge goes with the frame (the sweep above)
+    kept.clear();
+  }
+  // The new placeholder takes the loaded widget of its call, if one is set aside.
+  function adopt(fig) {
+    const id = widgetId(fig), old = kept.get(id);
+    if (!old) return false;
+    kept.delete(id);
+    try { fig.parentNode.moveBefore(old, fig); } catch { old.remove(); return false; }
+    fig.remove();
+    return true;
+  }
+
   async function mountWidget(fig) {
     fig.dataset.mounted = '1';
     const host = fig.querySelector('.art-widget-host');
@@ -240,7 +286,7 @@
     return html;
   }
   function wireCodePreviews(root) {
-    for (const pre of root.querySelectorAll('pre.md-code[data-lang]')) {
+    for (const pre of within(root, 'pre.md-code[data-lang]')) {
       const lang = String(pre.dataset.lang || '').toLowerCase();
       const code = (pre.querySelector('code') || pre).textContent;
       if (!(lang === 'html' || lang === 'svg' || (lang === 'xml' && /<svg[\s>]/i.test(code))) || pre.querySelector('.md-preview')) continue;
@@ -699,10 +745,15 @@
   function wire(root) {
     root = root || document.getElementById('conversationTranscript');
     if (!root) return;
-    loadConfig().catch(() => {});
-    for (const fig of root.querySelectorAll('.art-widget:not([data-mounted])')) mountWidget(fig);
-    for (const card of root.querySelectorAll('.art-card')) {
-      card.querySelector('.art-open').onclick = () => openPanel({ kind: 'files', key: card.dataset.artKey, path: card.dataset.artPath, title: card.dataset.artTitle, type: card.dataset.artType });
+    const widgets = within(root, '.art-widget:not([data-mounted])'), cards = within(root, '.art-card');
+    // Read ahead only where an artifact is: a live update wires many small
+    // parts, and a failing read would otherwise be asked again for each.
+    if (widgets.length || cards.length) loadConfig().catch(() => {});
+    for (const fig of widgets) if (!adopt(fig)) mountWidget(fig);
+    for (const card of cards) {
+      // A copy that could not be kept (claude.ai's page gone) has no Open.
+      const open = card.querySelector('.art-open');
+      if (open) open.onclick = () => openPanel({ kind: 'files', key: card.dataset.artKey, path: card.dataset.artPath, title: card.dataset.artTitle, type: card.dataset.artType });
       card.classList.toggle('art-card-open', !!(state && state.kind === 'files' && state.key === card.dataset.artKey && state.path === card.dataset.artPath));
     }
     wireCodePreviews(root);
@@ -775,7 +826,7 @@
 
   const shortPath = p => typeof shortFilePath === 'function' ? shortFilePath(p) : String(p || '').replace(/^\/home\/[^/]+/, '~');
 
-  window.Artifacts = { wire, openPanel, closePanel, hideFor, remember, rekey, onConversation, onHeadChange, onLeaveConversation, previewOrigin, hostContext, codePage, setFloating, state: () => state, floating: () => floating };
+  window.Artifacts = { wire, salvage, openPanel, closePanel, hideFor, remember, rekey, onConversation, onHeadChange, onLeaveConversation, previewOrigin, hostContext, codePage, setFloating, state: () => state, floating: () => floating };
 })();
 
 /* ---- the artifact library (design/67) --------------------------------------

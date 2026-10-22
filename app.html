@@ -13840,6 +13840,8 @@ function wireTranscriptIn(root) {
   wireReaderControls(root);
   wireTranscriptElements(root);
   wireToolGroups(root, { keep: true });
+  // Widgets, artifact cards and code previews a live update brought.
+  if (window.Artifacts) Artifacts.wire(root);
 }
 // Everything inside the transcript that needs handlers. Safe to run again
 // after a partial re-render (moving the head patches blocks in place).
@@ -13883,6 +13885,9 @@ async function renderConv(scroll) {
   const msgs = d.messages;
   const blocks = [reading.html];
   const liveHandoff = captureLiveReplyHandoff(d);
+  // Drawn again whole: its loaded widgets are taken back by the new drawing
+  // (wireTranscript below) instead of loading again (artifacts.js).
+  if (window.Artifacts) Artifacts.salvage($('conversationTranscript'), d.key);
   $('view').innerHTML = head + '<div id="conversationDelegations"></div>' +
     (msgs.length ? `<div class="transcript" id="conversationTranscript">` + blocks.join('') + `</div>`
                  : '<div class="conv-empty" id="conversationTranscript"><div class="rf-mark" role="img" aria-label="Empty conversation"></div></div>') +

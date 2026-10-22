@@ -128,7 +128,16 @@ conversation already holds, at the head.**
 1. **Widget** (small, in the conversation). A Pi tool `show` records the
    HTML **in the session** as its call arguments. It is therefore versioned
    by the tree for free: regenerate, branch, merge, and the widget follows.
-   Rendered where the call sits, sized to its content.
+   Rendered where the call sits, sized to its content. A live update draws
+   only the parts of the transcript that changed (`95`); what it adds is
+   wired like a whole drawing (`wireTranscriptIn` calls `Artifacts.wire`).
+   A part being replaced sets its loaded widgets aside first
+   (`Artifacts.salvage`, with `Element.moveBefore`, which keeps a frame's
+   page) and the new part's widget for the same call takes that element
+   back, so a widget does not reload, or lose what the person did in it,
+   when a later step joins its group or the conversation is drawn again.
+   Anything that removes transcript parts must go through the reader's
+   `discardPart`.
 2. **Code block.** An `html`/`svg` fence in an answer gets a **Preview**
    action (Open WebUI's rule: html + following css/js blocks form one page).
    Derived from the message text; no tool needed.
@@ -232,6 +241,12 @@ scope, which stopped history in large projects.
   each other's browser storage) until a public preview domain exists.
 - A widget's HTML lives in the session file: large widgets make the
   conversation file larger (a size cap per call, e.g. 256 KB).
+- A widget keeps its state across redraws only in browsers with
+  `Element.moveBefore` (Chromium 133+, so desktop Chrome and the Android
+  WebView of the phone and the e-ink tablet; other browsers as they add
+  it). In the others it loads again when its part is redrawn. Leaving the
+  conversation, moving the head before its call, or reloading the page
+  always loads it again.
 - Two branches writing the same folder: each branch's version is exact from
   its checkpoints; the disk holds whichever wrote last (the files-on-disk
   line of `66` phase 4 applies).
