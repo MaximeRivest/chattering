@@ -15,17 +15,19 @@ function createKeyProxy({ log = () => {}, onUsage = () => {}, forkWorker = (file
   function start() {
     if (ready) return ready;
     ready = new Promise((resolve, reject) => {
-      child = forkWorker(path.join(__dirname, 'keyproxy-worker.js'), { stdio: ['ignore', 'ignore', 'pipe', 'ipc'], execArgv: [] });
-      child.stderr?.on('data', d => { const t = String(d).trim(); if (t && !/differs from the tested/.test(t)) log('[key proxy] ' + t); });
-      child.on('message', m => {
+      const c = child = forkWorker(path.join(__dirname, 'keyproxy-worker.js'), { stdio: ['ignore', 'ignore', 'pipe', 'ipc'], execArgv: [] });
+      c.stderr?.on('data', d => { const t = String(d).trim(); if (t && !/differs from the tested/.test(t)) log('[key proxy] ' + t); });
+      c.on('message', m => {
         if (!m || typeof m !== 'object') return;
-        if (m.type === 'ready') { port = m.port; for (const [token, g] of grants) child.send({ type: 'grant', token, ...g }); resolve(port); }
+        if (m.type === 'ready') { port = m.port; for (const [token, g] of grants) c.send({ type: 'grant', token, ...g }); resolve(port); }
         else if (m.type === 'fatal') { reject(new Error(m.error)); }
         else if (m.type === 'usage') onUsage(m);
         else if (m.type === 'log') log(m.text);
         else if (m.type === 'providers') { const w = waiting.get(m.id); if (w) { waiting.delete(m.id); m.error ? w.reject(new Error(m.error)) : w.resolve(m.providers); } }
       });
-      child.on('exit', (code, signal) => {
+      c.on('exit', (code, signal) => {
+        // A proxy replaced by reload() leaves the new one alone.
+        if (child !== c) return;
         log(`[key proxy] exited (${signal || code}); restarts on next use`);
         child = null; ready = null; port = 0;
         for (const w of waiting.values()) w.reject(new Error('key proxy stopped'));
@@ -46,6 +48,15 @@ function createKeyProxy({ log = () => {}, onUsage = () => {}, forkWorker = (file
       await start();
       const id = ++seq;
       return new Promise((resolve, reject) => { waiting.set(id, { resolve, reject }); child.send({ type: 'providers', id }); });
+    },
+    // The owner's AI accounts changed: the next use starts a proxy that reads
+    // them afresh (its model list is read at start). Grants are replayed.
+    reload() {
+      const old = child;
+      child = null; ready = null; port = 0;
+      for (const w of waiting.values()) w.reject(new Error('key proxy reloading'));
+      waiting.clear();
+      if (old) { try { old.send({ type: 'shutdown' }); } catch {} setTimeout(() => { try { old.kill('SIGKILL'); } catch {} }, 3000).unref(); }
     },
     stop() { if (child) { try { child.send({ type: 'shutdown' }); } catch {} setTimeout(() => { try { child && child.kill('SIGKILL'); } catch {} }, 3000).unref(); } },
     get running() { return !!child; },

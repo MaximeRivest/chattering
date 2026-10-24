@@ -10,7 +10,7 @@ function bundleHarness() {
   const end = source.indexOf('// Wait for the session file', begin);
   const loaded = [], writes = [];
   const context = {
-    normalizeContextItems: x => x, MEMORY_DOC_KINDS: [],
+    normalizeContextItems: x => x, MEMORY_DOC_KINDS: [], attachedAsAccount: () => null,
     loadAttachedChat: async x => { loaded.push(x); return { text: 'exchange ' + (x.i ?? 'history') }; },
     fsp: { writeFile: async (...x) => writes.push(x) }, path, BRIEFINGS_DIR: '/tmp',
     estimateInputTokens: x => x.length, Date, Map, Set,

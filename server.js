@@ -3251,7 +3251,7 @@ async function forkSession(key, nodeId) {
   // wait behind its live turn or stop its warm runtime. This native utility
   // is file-only even when the chosen agent engine is RPC.
   if (entry.source !== 'claude') {
-    const forked = await pisdk.piForkAt({ sessionPath, cwd }, nodeId, forkPlacement(cwd));
+    const forked = await pisdk.piForkAt({ sessionPath, cwd }, nodeId, forkPlacement(cwd, key));
     const newKey = await indexNewSessionFile(forked.file);
     await markFork(newKey, key, entry);
     return { key: newKey, path: forked.file, sessionId: forked.sessionId };
@@ -3266,24 +3266,6 @@ async function forkSession(key, nodeId) {
   return { key: newKey, path: newAbs, sessionId: newId };
 }
 
-// Where a Pi fork goes and how it is read and written (design/105). The
-// copy belongs to whoever makes it: a person on their own account gets it
-// in their folder, written by their file helper as them; anyone else, in
-// this server's folder. The source is read only if its folder's owner owns
-// it. Outside a request (no one asked), the source's own folder.
-function forkPlacement(cwd) {
-  const read = file => readTranscriptText(file);
-  const identity = currentIdentity();
-  if (!identity) return { read };
-  const principal = principalFor(identity);
-  const acct = principalAccount(principal);
-  if (principal.walls && principal.walls.blocked) principal.walls.launch(); // their account is not ready: say why
-  if (!acct) return { read, dir: path.join(SOURCES.pi, runtimeLib.piSessionDirName(cwd)) };
-  const person = usersLib.findUser(roster, principal.user.id);
-  const host = accountManager.hostFor(person);
-  return { read, dir: principal.walls.sessionDirFor(cwd), publish: (file, text) => host.call('write', file, text, { exclusive: true, mkdirs: true }) };
-}
-
 // Fork-edit (pi only): fork BEFORE a user message and return its text so the
 // UI opens the new session with the prompt ready to edit and resend.
 async function forkSessionForEdit(key, nodeId) {
@@ -3296,7 +3278,7 @@ async function forkSessionForEdit(key, nodeId) {
   if (entry.source === 'claude') throw new Error('Editing a past message needs pi. Claude conversations can only fork.');
   refuseOwnProgramOnly(entry, 'Editing a past message');
   await assertDelegationOwnership(sessionPath);
-  const forked = await pisdk.piForkAt({ sessionPath, cwd }, nodeId, { before: true, ...forkPlacement(cwd) });
+  const forked = await pisdk.piForkBefore({ sessionPath, cwd }, nodeId, forkPlacement(cwd, key));
   const newKey = await indexNewSessionFile(forked.file);
   await markFork(newKey, key, entry);
   return { key: newKey, path: forked.file, sessionId: forked.sessionId, text: forked.text };
@@ -7356,6 +7338,11 @@ function principalFor(identity, { project = null } = {}) {
   // conversation or the folder; without one, nothing may run.
   return { ...base, guest: true, walls: project ? guestSandboxFor(identity.user, project) : null };
 }
+// Whose account an attached file is read for: the run's principal, else the
+// person behind the current request. Null: this server reads it (design/105).
+function attachedAsAccount(principal) {
+  return principalAccount(principal) || ownAccountOf(usersLib.findUser(roster, ((currentIdentity() || {}).user || {}).id));
+}
 // Where a principal's new Pi conversations go: a guest's sandbox names one
 // folder; a person's account has a folder per working directory.
 function wallsSessionDir(walls, cwd) {
@@ -7382,7 +7369,76 @@ function assertRunsHere(key, principal, what = 'continue it') {
 }
 // Models through the key proxy: guests, and people on the owner's models.
 const usesKeyProxy = principal => !!(principal && (principal.guest || (principal.walls && principal.walls.kind === 'account' && principal.walls.models === 'shared')));
+// For the page: the account this conversation belongs to when it is not
+// the reader's ({ account, name }), else null.
+function otherAccountFor(key, identity) {
+  const e = index[key];
+  if (!e || !isPiSource(e.source)) return null;
+  const stored = accountOfSource(e.source);
+  let runner = null;
+  try { runner = principalAccount(principalFor(identity)); } catch {}
+  if (stored === runner) return null;
+  if (!stored && !runner) return null;
+  const person = stored ? personWithAccount(stored) : null;
+  return { account: stored, name: stored ? (person ? person.name : stored) : null };
+}
 const personWithAccount = name => roster.users.find(u => ownAccountOf(u) === name) || null;
+// ---- folders that moved to a person's own account (design/105) ----
+// A project folder moved from this server's account to a person's (or
+// anywhere else): recorded here, so a fork of a conversation that worked in
+// the old place works in the new one, and a registered project follows its
+// folder. The old conversations stay where and as they were: they ran as
+// the account that keeps them. scripts/account-move.js records a move.
+const FOLDER_MOVES_FILE = path.join(NOTES_DIR, 'projects', 'folder-moves.json');
+let folderMoves = {};
+try { const raw = JSON.parse(fs.readFileSync(FOLDER_MOVES_FILE, 'utf8')); if (raw && typeof raw === 'object') folderMoves = raw.moves || {}; } catch {}
+function movedFolder(p) {
+  if (!p) return p;
+  let best = null;
+  for (const from of Object.keys(folderMoves)) if ((p === from || p.startsWith(from + '/')) && (!best || from.length > best.length)) best = from;
+  return best ? folderMoves[best].to + p.slice(best.length) : p;
+}
+function recordFolderMove(from, to, by = null) {
+  const a = path.resolve(String(from || '')), b = path.resolve(String(to || ''));
+  if (!path.isAbsolute(String(from || '')) || !path.isAbsolute(String(to || '')) || a === b || a === '/' || b === '/') throw new Error('two different absolute folders are needed');
+  folderMoves[a] = { to: b, at: new Date().toISOString(), by };
+  fs.mkdirSync(path.dirname(FOLDER_MOVES_FILE), { recursive: true });
+  const tmp = FOLDER_MOVES_FILE + '.tmp-' + crypto.randomUUID();
+  fs.writeFileSync(tmp, JSON.stringify({ v: 1, moves: folderMoves }, null, 2) + '\n', { flag: 'wx' });
+  fs.renameSync(tmp, FOLDER_MOVES_FILE);
+  let projects = 0;
+  for (const rec of Object.values(createdProjects)) if (rec && rec.cwd && (rec.cwd === a || rec.cwd.startsWith(a + '/'))) { rec.cwd = b + rec.cwd.slice(a.length); projects++; }
+  if (projects) saveCreatedProjects();
+  return { from: a, to: b, projects };
+}
+
+// Where a Pi fork goes and how it is read and written (design/105). The
+// copy belongs to whoever makes it: a person on their own account gets it
+// in their folder, written by their file helper as them; anyone else, in
+// this server's folder. The source is read only if its folder's owner owns
+// it. Outside a request (no one asked), the source's own folder.
+function forkPlacement(oldCwd, sourceKey = null) {
+  const read = file => readTranscriptText(file);
+  // A folder that moved: the copy works where the folder is now.
+  const cwd = movedFolder(oldCwd);
+  const moved = cwd !== oldCwd ? { cwd } : {};
+  const identity = currentIdentity();
+  const principal = identity ? principalFor(identity) : backgroundPrincipalFor(sourceKey);
+  const acct = principalAccount(principal);
+  if (principal.walls && principal.walls.blocked) principal.walls.launch(); // their account is not ready: say why
+  if (!acct) {
+    // This server's own copy: beside the source, as always, unless the
+    // source is another account's or its folder moved.
+    const sourceIsOurs = !sourceKey || !index[sourceKey] || !accountOfSource(index[sourceKey].source);
+    if (sourceIsOurs && !moved.cwd) return { read };
+    const dir = path.join(SOURCES.pi, runtimeLib.piSessionDirName(cwd));
+    return { read, ...moved, dir, publish: async (file, text) => { await fsp.mkdir(dir, { recursive: true }); await publishSession(file, text); } };
+  }
+  const person = usersLib.findUser(roster, principal.user.id);
+  const host = accountManager.hostFor(person);
+  return { read, ...moved, dir: principal.walls.sessionDirFor(cwd), publish: (file, text) => host.call('write', file, text, { exclusive: true, mkdirs: true }) };
+}
+
 // The files of a person on their own account, done as them (design/105):
 // their host process and their home, or null for everyone else (the owner
 // tier keeps this server's rights; household and guests as before).
@@ -7500,6 +7556,8 @@ async function guestProviderList() {
 // folder that names the new list.
 function aiProvidersChanged() {
   guestProvidersCache = { at: 0, list: [] };
+  keyProxy.reload();
+  guestProxyPort = 0; // guests' sandboxes ask the new proxy for its port
   for (const u of roster.users) if (u.models === 'shared' && ownAccountOf(u)) { accountManager.forget(u.id); accountManager.refresh(u); }
 }
 // The model a guest's run uses: theirs if the proxy can serve it, else the
@@ -17678,7 +17736,7 @@ async function fileContextBlock(item, { asAccount = null } = {}) {
 // see startAgentRun.
 async function writeAttachedContextFile(items, { preview = false, brief = null, principal = null } = {}) {
   const normalized = normalizeContextItems(items);
-  const asAccount = principalAccount(principal) || ownAccountOf(usersLib.findUser(roster, ((currentIdentity() || {}).user || {}).id));
+  const asAccount = attachedAsAccount(principal);
   const maps = normalized.filter(i => i.type !== 'chat' && i.type !== 'file' && i.type !== 'note');
   const chats = normalized.filter(i => i.type === 'chat');
   const files = normalized.filter(i => i.type === 'file');
@@ -20967,6 +21025,9 @@ async function handleRequest(req, res) {
       const data = JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8'));
       data.mirror = syncLib.isMirrorKey(key) ? mirrorInfoFor(key) : null;
       data.canAct = !data.mirror && canDo(identity, 'act', targetOf(key));
+      // A Pi conversation runs as the account that keeps it (design/105):
+      // whoever reads it as another account continues a copy.
+      data.otherAccount = otherAccountFor(key, identity);
       data.participants = (index[key].participants || []).map(p => userById(usersLib.resolveId(roster, p.id)) || p);
       data.project = projectNameOf(index[key].cwd, key);
       // Facts linked across the index after this file was parsed.
@@ -22730,6 +22791,12 @@ async function handleRequest(req, res) {
         anywhere.prune();
         json(res, 200, { ...out, users: publicUsers(), groups: roster.groups });
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/accounts/folder-move' && req.method === 'POST') {
+      // A folder moved (scripts/account-move.js moves it, then says so here).
+      try {
+        const p = await readJsonBody(req, 16 * 1024);
+        json(res, 200, { ok: true, ...recordFolderMove(p.from, p.to, identity.user && identity.user.id), moves: folderMoves });
+      } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/accounts' && req.method === 'GET') {
       // People's own accounts (design/105): what this computer offers and
       // where each linked person stands. Administrators only.

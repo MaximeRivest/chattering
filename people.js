@@ -1061,7 +1061,7 @@ function paneAccountsHtml() {
       <div class="set-group-head"><h3>computer accounts</h3></div>
       <p class="hint">${offer}</p>
       ${linked.length ? linked.map(personRow).join('') : '<p class="hint">Nobody is linked yet: everyone runs as this machine\u2019s own account. Link a person with “own computer account…” beside their name.</p>'}
-      <label class="row"><input type="checkbox" id="accRequired" ${accountsState.required ? 'checked' : ''} ${s.available ? '' : 'disabled'}> each person must run as their own account (someone without one runs nothing here; the owner excepted, guests keep their sandbox)</label>
+      <label class="row"><input type="checkbox" id="accRequired" ${accountsState.required ? 'checked' : ''} ${s.available ? '' : 'disabled'}> each person must run as their own account <span class="hint">(someone without one runs nothing here; the owner excepted, guests keep their sandbox)</span></label>
     </div>`;
 }
 

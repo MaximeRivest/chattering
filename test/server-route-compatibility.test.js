@@ -13,7 +13,9 @@ function pathReadHandler(context) {
   const start = source.indexOf(marker);
   const end = source.indexOf('\n    } else if (', start + marker.length);
   assert.ok(start >= 0 && end > start);
-  return vm.runInNewContext('(async () => {' + source.slice(start + marker.length, end) + '\n})', context);
+  // A household member: this server reads the file (design/105 hands it to
+  // a person's own account otherwise).
+  return vm.runInNewContext('(async () => {' + source.slice(start + marker.length, end) + '\n})', { ownFilesOf: () => null, identity: {}, ...context });
 }
 
 test('path/read keeps transcript scope, path, and local-request checks after alias removal', async () => {

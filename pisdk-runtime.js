@@ -703,9 +703,9 @@ async function piForkAt(target, nodeId, options) {
   return forkPiSnapshot(SDK.SessionManager, target, nodeId, options);
 }
 
-async function piForkBefore(target, nodeId) {
+async function piForkBefore(target, nodeId, options = {}) {
   const { SDK } = await getSdk();
-  return forkPiSnapshot(SDK.SessionManager, target, nodeId, { before: true });
+  return forkPiSnapshot(SDK.SessionManager, target, nodeId, { ...options, before: true });
 }
 
 // Set the session's reasoning (thinking) level through pi's own runtime

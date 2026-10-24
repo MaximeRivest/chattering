@@ -56,7 +56,7 @@ async function publishSession(file, text) {
 // written: a conversation in a person's own folder is read only if theirs,
 // and a fork for a person on their own account is written as them
 // (design/105). By default, as this process.
-async function forkPiSnapshot(SessionManager, target, nodeId, { before = false, dir = null, read = null, publish = null } = {}) {
+async function forkPiSnapshot(SessionManager, target, nodeId, { before = false, dir = null, read = null, publish = null, cwd = null } = {}) {
   const source = path.resolve(target.sessionPath);
   const snapshot = read ? await read(source) : await readSessionSnapshot(source);
   const stage = await fs.mkdtemp(path.join(os.tmpdir(), 'chattering-fork-'));
@@ -83,7 +83,9 @@ async function forkPiSnapshot(SessionManager, target, nodeId, { before = false, 
     if (!stagedFile) throw new Error('Pi did not create the fork.');
     // All entry shaping, label re-chaining, migrations, and ids are Pi's.
     // Correct only the origin link, which must not name our temporary snapshot.
-    const header = { ...sm.getHeader(), parentSession: source };
+    // `cwd`: the folder the copy works in, when it is not the source's (a
+    // folder that moved to a person's account, design/105).
+    const header = { ...sm.getHeader(), parentSession: source, ...(cwd ? { cwd } : {}) };
     const text = [header, ...sm.getEntries()].map(e => JSON.stringify(e)).join('\n') + '\n';
     const file = path.join(dir || path.dirname(source), path.basename(stagedFile));
     if (publish) await publish(file, text); else await publishSession(file, text);

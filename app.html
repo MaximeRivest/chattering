@@ -5978,6 +5978,7 @@ function mobileDate(value) {
 // A Pi conversation: this server's own (`pi`) or a person's on their own
 // computer account (`pi@<account>`, design/105).
 function isPiSource(s) { return s === 'pi' || (typeof s === 'string' && s.startsWith('pi@')); }
+function isPiLike(s) { return isPiSource(s) || s === 'pi-remote'; }
 function mobileConversationCard(s) {
   const project = projectOf(s);
   const live = isActive(s) || (s._famMembers || []).some(isActive);
@@ -10422,7 +10423,7 @@ function messageMenuItemsHtml(m, copyIndex, messageKey) {
   const source = (messageKey === current?.key ? current : readerSessions.get(messageKey))?.source;
   const ownProgram = source === 'agy' || source === 'muse' || !!m.part; // m.part: an earlier part, with another agent
   return (
-      (copyIndex >= 0 && !ownProgram && !ConversationFlow.transport(m) && !(((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) === 'codex' && m.role !== 'user') ? `<button type="button" class="msg-edit" data-msg-index="${copyIndex}" title="${['pi', 'pi-remote'].includes((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) ? 'Edit this message on a new path' : 'Edit the original message'}">edit</button>` : '') +
+      (copyIndex >= 0 && !ownProgram && !ConversationFlow.transport(m) && !(((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) === 'codex' && m.role !== 'user') ? `<button type="button" class="msg-edit" data-msg-index="${copyIndex}" title="${isPiLike((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) ? 'Edit this message on a new path' : 'Edit the original message'}">edit</button>` : '') +
       (copyIndex >= 0 && !ownProgram && !ConversationFlow.transport(m) && m.role === 'assistant' && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) !== 'codex' ? `<button type="button" class="msg-regenerate" data-msg-index="${copyIndex}" title="Create another answer from the node before this reply">regenerate</button>` : '') +
       (copyIndex >= 0 && !ownProgram && !ConversationFlow.transport(m) && m.eid && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) === 'codex' ? `<button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="A new Codex conversation through this turn">fork</button>` : '') +
       (copyIndex >= 0 && !ownProgram && !ConversationFlow.transport(m) && m.eid && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) !== 'codex' ? `<button type="button" data-reader-continue-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Use this conversation context. Files on disk are not rewound.">continue here</button><button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Copy the conversation through this message into a separate conversation">fork</button>` : '') +
@@ -10528,7 +10529,7 @@ function msgBlock(m, hl, keepOpen = false, q = '', copyIndex = -1, messageKey = 
       `<button type="button" class="msg-copy" data-msg-index="${copyIndex}" title="Copy the message Markdown">copy</button>` +
       `<button type="button" class="msg-read" data-msg-index="${copyIndex}" title="Read this message aloud">read</button>` +
       (versionSwitch ? `<button type="button" data-answer-version="${versionSwitch}" title="${versionSwitch === 'original' ? 'Show the original answer' : 'Show the simpler version'}">${versionSwitch === 'original' ? 'original' : 'simpler'}</button>` : '') +
-      (copyIndex >= 0 && m.role === 'assistant' && m.eid && !ConversationFlow.transport(m) && ['pi', 'pi-remote'].includes((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) ? `<button type="button" class="msg-notebook-make" title="Write this answer as a self-standing notebook in the project (documents/notebooks). One model call; nothing runs.">notebook</button>` : '') +
+      (copyIndex >= 0 && m.role === 'assistant' && m.eid && !ConversationFlow.transport(m) && isPiLike((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) ? `<button type="button" class="msg-notebook-make" title="Write this answer as a self-standing notebook in the project (documents/notebooks). One model call; nothing runs.">notebook</button>` : '') +
       // The menu's items are drawn when it opens (fillMessageMenu): a third
       // of a long transcript's elements were these hidden menus (design/95).
       (copyIndex >= 0 && !ConversationFlow.transport(m) ? `<details class="msg-more-actions" data-lazy-menu><summary aria-label="More message actions">more…</summary></details>` : '') + `</div>`;
@@ -11154,7 +11155,7 @@ async function openTranscriptEditor(btn) {
     toast('a new Codex conversation, just before that question: change it and send');
     return;
   }
-  const branchEdit = ['pi', 'pi-remote'].includes(current.source) && ['user', 'assistant'].includes(current.messages[i].role);
+  const branchEdit = isPiLike(current.source) && ['user', 'assistant'].includes(current.messages[i].role);
   const pickedModels = fanModels().slice(0, 1);
   const msg = btn.closest('.msg');
   if (!msg || msg.querySelector('.msg-editor')) return;
@@ -11774,7 +11775,7 @@ function paintModeBtn() {
 // Agents other than Pi, and Pi's own program: Chattering keeps the mode and
 // hands it over the agent's way (agent-modes.js); it says when it applies.
 function modeGoesThroughServer(conv) {
-  return !!(current && current.key === conv && (!['pi', 'pi-remote'].includes(current.source) || document.querySelector('[data-live-terminal="1"]')));
+  return !!(current && current.key === conv && (!isPiLike(current.source) || document.querySelector('[data-live-terminal="1"]')));
 }
 async function setConversationMode(key) {
   if (current && current.draft) return draftSetMode(key); // applied when the session starts
@@ -11825,7 +11826,7 @@ async function openModePicker(anchor) {
   const list = pop.querySelector('.mp-list');
   const filterInput = pop.querySelector('.mp-filter');
   let hi = -1;
-  const throughServer = !(current && current.draft) && modeGoesThroughServer(activeRel) && !['pi', 'pi-remote'].includes(current.source);
+  const throughServer = !(current && current.draft) && modeGoesThroughServer(activeRel) && !isPiLike(current.source);
   const draftOther = !!(current && current.draft && typeof draftState !== 'undefined' && draftState && !['pi', undefined].includes(draftState.d.harness));
   const activeKey = (convModes.get(activeRel) || {}).key || (throughServer || draftOther ? '' : 'coding');
   const visibleRows = () => [...list.querySelectorAll('.mp-row')];
@@ -12186,7 +12187,13 @@ function agentComposerHtml(d) {
     <div class="mirror-notice"><b>This conversation lives on ${esc(d.mirror.peerName)}.</b> It is mirrored here read-only and stays current as that machine syncs.
     <span class="hint">Continue it there, or fork it: the fork is a conversation of this machine, in your checkout.</span>
     <button type="button" class="ghost" id="mirrorFork">fork here</button></div></div>`;
-  if (!['claude', 'pi', 'pi-remote', 'codex', 'agy', 'muse'].includes(d.source)) return '';
+  // Kept by another computer account (design/105): it runs as that account,
+  // so this reader continues a copy of their own.
+  if (d.otherAccount) return `<div class="composer-dock mirror-dock" id="composerDock" data-conversation-key="${esc(d.key)}">
+    <div class="mirror-notice"><b>This conversation belongs to ${d.otherAccount.account ? esc(d.otherAccount.name) + '\u2019s own computer account' : 'this computer\u2019s main account'}.</b> It runs as that account, so you read it here.
+    <span class="hint">Fork it to continue: the copy is yours and runs as you.</span>
+    <button type="button" class="ghost" id="mirrorFork">fork to continue</button></div></div>`;
+  if (!['claude', 'pi', 'pi-remote', 'codex', 'agy', 'muse'].includes(d.source) && !isPiSource(d.source)) return '';
   // This part of the conversation was continued with another agent: the
   // conversation goes on there (one line of history, no twin).
   if (d.continuedIn) return `<div class="composer-dock mirror-dock" id="composerDock" data-conversation-key="${esc(d.key)}"><div class="mirror-notice"><b>This conversation continued with ${esc(d.continuedIn.agent || 'another agent')}.</b> This is its earlier part. <button type="button" class="ghost" data-open-key="${esc(d.continuedIn.key)}">open where it continues</button></div></div>`;
@@ -14419,7 +14426,7 @@ async function renderConv(scroll) {
     try {
       const out = await (await fetch('/api/fork', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: d.key, node: last.eid }) })).json();
       if (out.error) throw new Error(out.error);
-      toast('forked into a conversation of this machine');
+      toast(d.otherAccount ? 'forked: the copy is yours' : 'forked into a conversation of this machine');
       ListGroups.follow(d.key, out.key);
       open(out.key);
     } catch (e) { errToast(e.message); mirrorFork.disabled = false; }
@@ -15262,7 +15269,7 @@ async function revalidateConversation(key, seq) {
 // What a newer copy cannot change in place: the composer (who may act, a
 // mirror, a terminal program, Codex) and the controls drawn from those.
 function conversationShell(d) {
-  try { return JSON.stringify([d.canAct, !!d.mirror, d.source, d.draft || null, d.importCopyOf || null, d.liveTerminal || null, d.selectedModels || null, d.attachedContext || null, d.codexPrefs || null]) + agentComposerHtml(d); }
+  try { return JSON.stringify([d.canAct, !!d.mirror, !!d.otherAccount, d.source, d.draft || null, d.importCopyOf || null, d.liveTerminal || null, d.selectedModels || null, d.attachedContext || null, d.codexPrefs || null]) + agentComposerHtml(d); }
   catch { return Math.random().toString(); }
 }
 // A newer copy of the conversation on screen. Patched in when only its

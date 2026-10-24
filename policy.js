@@ -43,6 +43,7 @@ const ROUTES = {
   '/api/users/avatar': 'guest',
   // People's own computer accounts (design/105): machine administration.
   'GET /api/accounts': 'owner',
+  'POST /api/accounts/folder-move': 'owner',
   '/api/presence': 'guest',
   // Notifications (design/100): each person manages their own devices.
   '/api/push': 'guest',

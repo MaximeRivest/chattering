@@ -196,11 +196,16 @@ The iFlytek part is now its own chapter, with the pen at its centre: **design/99
 - [ ] Concurrent editing: overlapping external edits and live typing reconciled without silent loss (today: disk wins)
 - [ ] Regression suite clean: delegation, navigation, floating-surface, presence tests, and the aggregate hang around project-sync
 - [ ] Guest network restrictions beyond resource caps (LAN services reachable from the sandbox today)
-- [ ] Execution user per guest (running as separate OS users), and a supported way to change it
+- [ ] Execution user per guest: link a guest to an account (design/105 makes it possible; a guest linked to an account runs as it instead of the sandbox), and a supported way to change it
 - [ ] Admin view: people, groups, what each may see/act on, doors open, sign-in log, per-guest budgets — one screen, owner only
 - [ ] Deploy: one command that brings frontend + backend to a machine together and verifies the running install (Lilly's PC, XPSwhite, lambda); no more "deployment lags committed code"
 - [ ] A rehearsed public-demo invitation workflow, written down as a checklist
-- [ ] Company hub: separate identity from execution principal (spawn as the person's OS user), SSO/OIDC, roles and groups, per-person keys and costs, protected audit log, retention, backups, load test. Design first (`design/46` "Team scale"), build after item 2
+- [x] Identity separate from execution principal: a person linked to their own computer account runs as it (agents, commands, forks, files through Chattering), through one sudo rule and `chattering-as`; their conversations in a folder of theirs the server reads only when they own the file; routes that would use the server's rights refuse them until ported (`design/105`, 2026-10-24)
+- [ ] Port the rest to people on their own account (design/105 "Trade-offs"): file operations, notebooks, change reviews and file-history drawers, artifacts and previews, git views, shares, delegations' views, codex/Claude Code runs
+- [ ] Dedicated service account with nothing of its own; the owner runs through the mediator like everyone (design/105, first trade-off)
+- [ ] Shared projects between two accounts: shared folder, group, default ACLs, `core.sharedRepository`, per-path `safe.directory`
+- [ ] Lilly's and Jacob's move on lambda: which projects are whose (segbench, kneesandtoes and recorn are intertwined), `scripts/account-move.js`, her SSH key and GitHub login on her account, Jacob's desktop login
+- [ ] Company hub: SSO/OIDC, roles and groups, per-person keys and costs, protected audit log, retention, backups, load test (`design/46` "Team scale"), after item 2
 
 **Job to be done.** Several people — a household now, a small team or a class next, a company hub after that — work in one Chattering with clear identities, attribution, permissions and budgets; an owner can see and administer all of it; a new machine can be brought to the same version reliably.
 

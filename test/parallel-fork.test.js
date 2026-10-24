@@ -23,6 +23,8 @@ function harness() {
       piForkBefore: async (target, node) => { calls.push(['before', target.sessionPath, node]); return { file: '/sessions/before', sessionId: 'before', text: 'saved prompt' }; },
     },
     indexNewSessionFile: async file => 'pi:' + file,
+    // Where the copy goes (design/105): beside the source, as for the owner.
+    forkPlacement: () => ({}),
     markFork: async key => calls.push(['title', key]),
     // Forks of mirrored conversations (design/52) take another path; none here.
     syncLib: { isMirrorKey: () => false },
