@@ -242,6 +242,9 @@ function withKit(html) {
   return tag + html;
 }
 
+// An origin on the viewing computer's own loopback, any port.
+const LOOPBACK_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\]):\d{1,5}$/;
+
 // ---- the handler -------------------------------------------------------------
 // deps: { caps, store, authorize(claims, abs), network(), ancestors(), typeViewer(name) }
 function createPreviewHandler(deps) {
@@ -260,7 +263,12 @@ function createPreviewHandler(deps) {
       }
       if (u.pathname === '/_c/proxy.html') {
         const hostOrigin = u.searchParams.get('host') || '';
-        if (!/^https?:\/\/[^/\s]+$/.test(hostOrigin) || !deps.ancestors().some(a => a === hostOrigin || (a.includes('*') && new RegExp('^' + a.replace(/[.]/g, '\\.').replace('*', '[^.]+') + '$').test(hostOrigin)))) {
+        // The app's own addresses, and any port of the viewing computer's own
+        // loopback: that is where another computer's Chattering shows this
+        // one through a link (design/90), at a port only it knows. Who may
+        // frame the proxy stays the frame-ancestors rule (the link writes
+        // its own address there); this check only turns other sites away.
+        if (!/^https?:\/\/[^/\s]+$/.test(hostOrigin) || !(LOOPBACK_ORIGIN.test(hostOrigin) || deps.ancestors().some(a => a === hostOrigin || (a.includes('*') && new RegExp('^' + a.replace(/[.]/g, '\\.').replace('*', '[^.]+') + '$').test(hostOrigin))))) {
           return send(res, 403, 'This sandbox only serves Chattering.');
         }
         return send(res, 200, req.method === 'HEAD' ? '' : proxyPage(hostOrigin), { ...common(), 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });

@@ -77,6 +77,42 @@ way between the three, as the same person, without Tailscale.
 Tested with a relay and three real servers standing for the two sides and
 the server (anywhere-links-local.test.js).
 
+## What agents make, through a link (2026-10-24)
+
+Artifacts opened through a link stayed empty (Lilly, Windows app linked to
+lambda). The app frames a preview at `<artifact>.localhost:<preview port>`
+(design/67) and took that port from the other computer: on this one,
+`localhost:7435` is this computer's own Chattering (its WSL side here),
+which answered 404, or nothing at all.
+
+Now each link has a second local port, its **preview port** (kept in
+`anywhere-links.json`; the first free one after the link's own, 7462 for
+7461; links made before get one at start). It is the phone's preview
+address (design/85), carried by Chattering instead of the relay's page:
+
+- It answers only what a preview may ask (`P.previewPath`: an artifact's
+  files under its signed capability, the sandbox proxy, the kit), GET and
+  HEAD, for `localhost`, `*.localhost` and `127.0.0.1` names; requests go
+  through the same tunnel marked `preview`, to the other computer's preview
+  server, with only the headers a page needs to be read. No sign-in: the
+  capability is the authority, checked there, as on the phone.
+- Each artifact keeps a site of its own: `<artifact>.localhost:<preview port>`.
+- `frame-ancestors` is this link's: the other computer names its own
+  addresses, which mean nothing here, so the link writes
+  `'self' http://localhost:<link port> http://127.0.0.1:<link port>` in its
+  place. Only the app at this link may frame what it carries.
+- The app learns the port from `/api/artifacts/config`, which the link
+  answers with the other computer's settings and its own preview port (not
+  compressed, never from a cache). A public preview base, when set, is kept.
+- The sandbox proxy (widgets) accepts a host on any port of the viewing
+  computer's loopback as well as the app's own addresses: the other
+  computer cannot know the link's port. Who may frame it is still the
+  frame-ancestors rule above; the check only turns other sites away.
+
+Needs the link's side updated (the Windows app); widgets also need the
+other computer updated (the proxy's host check). Tested in a real browser
+with two servers and a relay (anywhere-links-previews-browser.test.js).
+
 ## Next
 
 2. **Both ways, and from the pairing page**: linking A to B also links B

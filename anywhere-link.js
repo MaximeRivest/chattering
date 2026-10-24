@@ -17,10 +17,22 @@
 
    File (0600): <dataDir>/anywhere-links.json — per link: the other
    computer's id, its relay, the name it gave, this install's key for it,
-   the device id it knows this install by, the local port, and who made it. */
+   the device id it knows this install by, the local port, the local
+   preview port, and who made it.
+
+   Previews (design/67): what agents make runs on an address of its own, so
+   its scripts cannot act as the person in the app. A phone gets one from
+   the relay (previews.<relay>); here it is a second local port, answered by
+   the other computer's preview server through the same tunnel (requests
+   marked 'preview', as the phone's are). Each artifact is a site of its own
+   there, <artifact>.localhost:<preview port>, as on the other computer
+   itself. The app learns that port from /api/artifacts/config, which this
+   link answers with its own port: the other computer's preview port means
+   nothing on this one (it is this computer's own Chattering, or nothing). */
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const zlib = require('zlib');
 const P = require('./anywhere/protocol.js');
 const Client = require('./anywhere/client.js');
 const { acceptWebSocket, refuseUpgrade } = require('./wsserver.js');
@@ -30,6 +42,11 @@ const MAX_BODY = 64 * 1024 * 1024;
 // Hop-by-hop, or this install's to decide: never sent through.
 const DROP_IN = new Set(['host', 'connection', 'keep-alive', 'proxy-authorization', 'proxy-connection', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'cookie', 'authorization', 'content-length']);
 const DROP_OUT = new Set(['connection', 'keep-alive', 'transfer-encoding', 'content-length']);
+// What a preview request carries of the browser's headers: what a page needs
+// to be read, nothing about who asks (the phone's shell sends the same).
+const PREVIEW_HEADERS = new Set(['accept', 'accept-language', 'range', 'if-range', 'if-none-match', 'if-modified-since']);
+// The app's page asks this for where previews show (artifacts.js).
+const PREVIEW_CONFIG = '/api/artifacts/config';
 
 function createAnywhereLinks(opts) {
   const {
@@ -68,7 +85,7 @@ function createAnywhereLinks(opts) {
     return { id: link.deviceId, privateKey, spki: P.unb64u(link.key.spki) };
   }
   function freePort() {
-    const used = new Set(state.links.map(l => l.port));
+    const used = new Set(state.links.flatMap(l => [l.port, l.previewPort]));
     let p = portBase;
     while (used.has(p)) p++;
     return p;
@@ -105,10 +122,12 @@ function createAnywhereLinks(opts) {
       port: existing ? existing.port : freePort(), pairedAt: new Date().toISOString(),
     };
     state.links = state.links.filter(l => l.homeId !== code.homeId).concat(link);
+    link.previewPort = existing && existing.previewPort ? existing.previewPort : freePort();
     save();
     const l = live.get(link.id);
     if (l && l.tunnel) { try { l.tunnel.close(); } catch {} }
     await serve(link);
+    await servePreview(link);
     adopt(link, tunnel);
     changed();
     return publicLink(link);
@@ -117,7 +136,7 @@ function createAnywhereLinks(opts) {
   /* ---- the tunnel, kept open while wanted, rebuilt when lost ---- */
   function entry(link) {
     let e = live.get(link.id);
-    if (!e) { e = { server: null, tunnel: null, connecting: null, lastError: '', retry: 0, waiters: [] }; live.set(link.id, e); }
+    if (!e) { e = { server: null, previewServer: null, tunnel: null, connecting: null, lastError: '', retry: 0, waiters: [] }; live.set(link.id, e); }
     return e;
   }
   function adopt(link, tunnel) {
@@ -206,6 +225,7 @@ function createAnywhereLinks(opts) {
         res.writeHead(503, { 'Content-Type': html ? 'text/html; charset=utf-8' : 'application/json', 'Cache-Control': 'no-store' });
         return res.end(html ? notHere(link, entry(link).lastError || err.message) : JSON.stringify({ error: `${link.name}: ${entry(link).lastError || err.message}` }));
       }
+      if (req.method === 'GET' && req.url.split('?')[0] === PREVIEW_CONFIG && e.previewServer) return previewConfig(link, tunnel, req, res);
       let ended = false;
       const h = tunnel.request({ method: req.method, path: req.url, headers: forwardHeaders(req), body }, {
         onHead: head => {
@@ -253,9 +273,105 @@ function createAnywhereLinks(opts) {
     e.server = server;
   }
 
+  // The other computer's preview settings, with this link's preview port in
+  // place of its own: whole, uncompressed, never answered from a cache (a
+  // copy from before the link had its port would send previews elsewhere).
+  function previewConfig(link, tunnel, req, res) {
+    const headers = forwardHeaders(req);
+    delete headers['accept-encoding']; delete headers['if-none-match']; delete headers['if-modified-since'];
+    const parts = [];
+    let status = 502, encoding = '', ended = false;
+    const h = tunnel.request({ method: 'GET', path: req.url, headers }, {
+      onHead: head => {
+        status = head.status;
+        for (const [k, v] of Object.entries(head.headers || {})) if (k.toLowerCase() === 'content-encoding') encoding = String(v).toLowerCase();
+      },
+      onChunk: bytes => { parts.push(Buffer.from(bytes)); h.consumed(bytes.length); },
+      onEnd: () => {
+        ended = true;
+        let config;
+        try {
+          let raw = Buffer.concat(parts);
+          if (encoding === 'gzip') raw = zlib.gunzipSync(raw);
+          else if (encoding === 'br') raw = zlib.brotliDecompressSync(raw);
+          config = JSON.parse(raw.toString('utf8'));
+        } catch { config = null; }
+        if (status !== 200 || !config || typeof config !== 'object') return refuse(res, status === 200 ? 502 : status, `${link.name}: no preview settings`);
+        // A preview address of its own (a public base) works from anywhere;
+        // only this computer's port is the other one's here.
+        config.port = link.previewPort;
+        const out = Buffer.from(JSON.stringify(config));
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': out.length, 'Cache-Control': 'no-store' });
+        res.end(out);
+      },
+      onError: err => { ended = true; refuse(res, 502, `${link.name}: ${err.message}`); },
+    });
+    res.on('close', () => { if (!ended) h.cancel(); });
+  }
+
+  /* ---- the local preview address ----
+     Previews answer anyone on this computer who has an artifact's address:
+     its signed capability is the authority, checked by the other computer,
+     and a preview's own site has no cookie of the person to send. So only
+     what a preview may ask (P.previewPath), read-only, with none of the
+     browser's headers about who asks. Their pages may be framed only by the
+     app at this link's address: the other computer names its own addresses,
+     which mean nothing here, so the frame-ancestors rule is this link's. */
+  function previewHost(req, link) {
+    const h = String(req.headers.host || '').toLowerCase();
+    return h === `127.0.0.1:${link.previewPort}` || new RegExp(`^(?:[a-z0-9-]{1,63}\\.)?localhost:${link.previewPort}$`).test(h);
+  }
+  function framedHere(csp, link) {
+    const own = `frame-ancestors 'self' http://localhost:${link.port} http://127.0.0.1:${link.port}`;
+    return /frame-ancestors[^;]*/i.test(csp) ? csp.replace(/frame-ancestors[^;]*/i, own) : `${csp}; ${own}`;
+  }
+  async function servePreview(link) {
+    const e = entry(link);
+    if (e.previewServer || !link.previewPort) return;
+    const server = http.createServer(async (req, res) => {
+      if (!previewHost(req, link)) return refuse(res, 421, 'This address answers to localhost only.');
+      if (req.method !== 'GET' && req.method !== 'HEAD') { res.setHeader('Allow', 'GET, HEAD'); return refuse(res, 405, 'Previews are read-only.'); }
+      if (!P.previewPath(req.url)) return refuse(res, 404, 'Not a preview.');
+      let tunnel;
+      try { tunnel = await tunnelFor(link); }
+      catch (err) { return refuse(res, 503, `${link.name} cannot be reached right now: ${entry(link).lastError || err.message}`); }
+      const headers = {};
+      for (const [k, v] of Object.entries(req.headers)) if (PREVIEW_HEADERS.has(k.toLowerCase())) headers[k.toLowerCase()] = Array.isArray(v) ? v.join(', ') : String(v);
+      let ended = false, h;
+      try {
+        h = tunnel.request({ method: req.method, path: req.url, headers, kind: 'preview' }, {
+          onHead: head => {
+            const out = {};
+            for (const [k, v] of Object.entries(head.headers || {})) {
+              const n = k.toLowerCase();
+              if (DROP_OUT.has(n) || n === 'set-cookie') continue;
+              out[k] = n === 'content-security-policy' ? framedHere(String(v), link) : v;
+            }
+            try { res.writeHead(head.status, out); } catch { h.cancel(); }
+          },
+          onChunk: bytes => {
+            const ok = res.write(Buffer.from(bytes));
+            if (ok) h.consumed(bytes.length);
+            else res.once('drain', () => h.consumed(bytes.length));
+          },
+          onEnd: () => { ended = true; res.end(); },
+          onError: err => { ended = true; if (!res.headersSent) refuse(res, 502, `${link.name}: ${err.message}`); else res.destroy(); },
+        });
+      } catch (err) { return refuse(res, 502, `${link.name}: ${err.message}`); }
+      res.on('close', () => { if (!ended) h.cancel(); });
+    });
+    server.on('upgrade', (req, socket) => refuseUpgrade(socket, 404, 'Not Found'));
+    server.on('clientError', (err, socket) => { try { socket.destroy(); } catch {} });
+    // A preview port in use elsewhere costs the previews, never the link.
+    await new Promise(resolve => {
+      server.once('error', err => { log(`anywhere link ${link.name}: preview port ${link.previewPort}: ${err.message}`); resolve(); });
+      server.listen(link.previewPort, host, () => { e.previewServer = server; resolve(); });
+    });
+  }
+
   function publicLink(link) {
     const e = live.get(link.id) || {};
-    return { id: link.id, name: link.name, url: `http://localhost:${link.port}/`, port: link.port, relay: link.relay,
+    return { id: link.id, name: link.name, url: `http://localhost:${link.port}/`, port: link.port, previewPort: e.previewServer ? link.previewPort : null, relay: link.relay,
       homeId: link.homeId, user: link.user, by: link.by, pairedAt: link.pairedAt,
       connected: !!e.tunnel, removed: !!e.removed, why: e.tunnel ? '' : (e.lastError || '') };
   }
@@ -269,6 +385,7 @@ function createAnywhereLinks(opts) {
     if (e) {
       if (e.tunnel) { try { e.tunnel.close(); } catch {} }
       if (e.server) await new Promise(r => e.server.close(() => r()));
+      if (e.previewServer) await new Promise(r => e.previewServer.close(() => r()));
       live.delete(id);
     }
     changed();
@@ -276,13 +393,16 @@ function createAnywhereLinks(opts) {
   }
   async function start() {
     if (rtc.error) return;
-    for (const link of state.links) { try { await serve(link); } catch {} }
+    // Links made before previews had a port of their own get one, kept.
+    if (state.links.some(l => !l.previewPort)) { for (const l of state.links) if (!l.previewPort) l.previewPort = freePort(); try { save(); } catch (err) { log('anywhere links: ' + err.message); } }
+    for (const link of state.links) { try { await serve(link); } catch {} try { await servePreview(link); } catch {} }
   }
   function stop() {
     stopped = true;
     for (const e of live.values()) {
       if (e.tunnel) { try { e.tunnel.close(); } catch {} }
       if (e.server) { try { e.server.close(); } catch {} }
+      if (e.previewServer) { try { e.previewServer.close(); } catch {} }
     }
     live.clear();
   }
