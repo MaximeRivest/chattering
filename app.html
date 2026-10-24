@@ -5975,11 +5975,14 @@ function mobileDate(value) {
   return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
+// A Pi conversation: this server's own (`pi`) or a person's on their own
+// computer account (`pi@<account>`, design/105).
+function isPiSource(s) { return s === 'pi' || (typeof s === 'string' && s.startsWith('pi@')); }
 function mobileConversationCard(s) {
   const project = projectOf(s);
   const live = isActive(s) || (s._famMembers || []).some(isActive);
   const work = isWorking(s) || (s._famMembers || []).some(isWorking);
-  const source = s.source === 'pi-remote' ? 'R' : s.source === 'pi' ? 'P' : s.source === 'codex' ? 'X' : s.source === 'agy' ? 'A' : s.source === 'muse' ? 'M' : 'C';
+  const source = s.source === 'pi-remote' ? 'R' : isPiSource(s.source) ? 'P' : s.source === 'codex' ? 'X' : s.source === 'agy' ? 'A' : s.source === 'muse' ? 'M' : 'C';
   return `<div class="item mobile-work${live || work ? ' live' : ''}" data-rel="${esc(s._openKey || s.key)}">
     <div class="mobile-work-mark">${work ? '●' : live ? '○' : source}</div>
     <div class="mobile-work-body"><div class="title">${esc(s.title || s.timelineTitle || '(untitled)')}</div>
@@ -11124,7 +11127,7 @@ async function regenerateMessage(btn) {
   const i = Number(btn.dataset.msgIndex);
   const message = current && current.messages[i];
   if (!message || message.role !== 'assistant' || !message.eid || !activeRel) return;
-  if (current.source !== 'pi' && current.source !== 'pi-remote') return errToast('Asking again is available for Pi conversations');
+  if (!isPiSource(current.source) && current.source !== 'pi-remote') return errToast('Asking again is available for Pi conversations');
   // Another answer to the question this reply answers, by the same model.
   const T = treeFor(current), at = ConversationTree.answerAt(T, message.eid);
   if (!at) return errToast('This reply has no question to ask again.');
@@ -15960,7 +15963,7 @@ function paintTreeBar() {
   if (!bar || !treeNav) return;
   const n = treeNav.byId.get(treeNav.sel);
   if (!n) { bar.innerHTML = ''; return; }
-  const isPi = treeNav.source === 'pi' || treeNav.source === 'pi-remote';
+  const isPi = isPiSource(treeNav.source) || treeNav.source === 'pi-remote';
   if (n.delegated) {
     // Another conversation: read it, or stop it. Branching belongs to it.
     const task = n.task, live = DelegationUI.isLive(task);
@@ -18474,7 +18477,7 @@ function modalSearchGroups(data) {
   return (data.groups || []).map(g => {
     const n = `${g.semantic ? '≈ ' : ''}${g.matchCount} match${g.matchCount === 1 ? '' : 'es'}`;
     const headAttrs = g.kind === 'conversation' ? `data-rel="${esc(g.key)}"` : `data-md="${esc(g.file)}" data-md-kind="${esc(g.kind)}"`;
-    const head = `<div class="item sr-head" ${headAttrs}><span class="sr-kind">${g.kind === 'conversation' ? (g.source === 'pi' ? 'P' : g.source === 'pi-remote' ? 'R' : g.source === 'codex' ? 'X' : g.source === 'agy' ? 'A' : g.source === 'muse' ? 'M' : 'C') : (SR_KIND[g.kind] || '✓')}</span><span class="sr-title">${esc(g.title || g.file || '(untitled)')}</span><span class="sr-meta">${esc(g.project || g.kind || '')} · ${n}</span></div>`;
+    const head = `<div class="item sr-head" ${headAttrs}><span class="sr-kind">${g.kind === 'conversation' ? (isPiSource(g.source) ? 'P' : g.source === 'pi-remote' ? 'R' : g.source === 'codex' ? 'X' : g.source === 'agy' ? 'A' : g.source === 'muse' ? 'M' : 'C') : (SR_KIND[g.kind] || '✓')}</span><span class="sr-title">${esc(g.title || g.file || '(untitled)')}</span><span class="sr-meta">${esc(g.project || g.kind || '')} · ${n}</span></div>`;
     const hits = (g.matches || []).map(m => {
       const attrs = g.kind === 'conversation'
         ? `data-rel="${esc(g.key)}"${m.i != null ? ` data-i="${m.i}" data-role="${esc(m.role || '')}"` : ''}`

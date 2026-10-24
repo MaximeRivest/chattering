@@ -409,6 +409,9 @@ try { fs.mkdirSync(SOURCES.mirror, { recursive: true }); } catch {} // so the wa
 // /api/search then falls back to the old scan.
 const searchIdx = openSearchIndex(path.join(CACHE_DIR, 'search.db'));
 const usageIdx = usageLib.openUsageIndex(USAGE_DB_FILE);
+// A person's own conversations are read only when theirs (design/105);
+// null for every other file: usage reads it as before.
+if (usageIdx) usageIdx.openStream = async file => { const owner = ownerOfTranscript(file); return owner ? (await accountsLib.openOwned(file, owner)).fh.createReadStream({ encoding: 'utf8' }) : null; };
 // The file edit ledger (fileledger.js, design/33): every recorded change
 // to every file, from transcripts, Git, the editor, and the watcher. A
 // derived cache too; the boot backfill rebuilds it when it is missing.
@@ -7380,6 +7383,24 @@ function assertRunsHere(key, principal, what = 'continue it') {
 // Models through the key proxy: guests, and people on the owner's models.
 const usesKeyProxy = principal => !!(principal && (principal.guest || (principal.walls && principal.walls.kind === 'account' && principal.walls.models === 'shared')));
 const personWithAccount = name => roster.users.find(u => ownAccountOf(u) === name) || null;
+// The files of a person on their own account, done as them (design/105):
+// their host process and their home, or null for everyone else (the owner
+// tier keeps this server's rights; household and guests as before).
+const accountFiles = require('./account-files.js');
+function ownFilesOf(identity) {
+  if (!identity || !identity.user || policy.isOwnerTier(identity)) return null;
+  const person = usersLib.findUser(roster, identity.user.id);
+  if (!ownAccountOf(person)) return null;
+  const walls = accountManager.wallsFor(person);
+  if (walls.blocked) walls.launch(); // their account is not ready: say why
+  return { host: accountManager.hostFor(person), home: walls.account.home, account: walls.account.name };
+}
+// Where a path named in a conversation may be, for them.
+function ownCandidates(mine, key, pathValue) {
+  const cwd = key && index[key] ? index[key].cwd || '' : '';
+  const roots = cwd ? (gitRepoIndexCache.repos || []).filter(repo => pathInside(cwd, repo.root) && path.resolve(repo.root) !== path.resolve(cwd)).sort((a, b) => b.root.length - a.root.length).slice(0, 1).map(r => r.root) : [];
+  return accountFiles.candidates({ home: mine.home, cwd, roots, pathValue, stripLocation: pathWithoutLocation });
+}
 // Work nobody typed (a run resumed after a restart, a queued turn): it runs
 // as whoever owns the conversation's folder.
 function backgroundPrincipalFor(key) {
@@ -7470,9 +7491,16 @@ const keyProxy = createKeyProxy({ log: msg => console.error(msg), onUsage: u => 
 const guestProxyTokens = new Map(); // guest id -> placeholder secret held by their sandboxes
 let guestProvidersCache = { at: 0, list: [] };
 async function guestProviderList() {
-  if (Date.now() - guestProvidersCache.at < 60000) return guestProvidersCache.list;
+  if (Date.now() - guestProvidersCache.at < 60000 && guestProvidersCache.list.length) return guestProvidersCache.list;
   try { guestProvidersCache = { at: Date.now(), list: await keyProxy.providers() }; } catch (e) { console.error('[key proxy] providers:', e.message); }
   return guestProvidersCache.list;
+}
+// An AI account or server was added, removed or changed: the proxy's list
+// is read again, and people on the owner's models (design/105) get a Pi
+// folder that names the new list.
+function aiProvidersChanged() {
+  guestProvidersCache = { at: 0, list: [] };
+  for (const u of roster.users) if (u.models === 'shared' && ownAccountOf(u)) { accountManager.forget(u.id); accountManager.refresh(u); }
 }
 // The model a guest's run uses: theirs if the proxy can serve it, else the
 // best the proxy can, so a conversation whose model is not guest-servable
@@ -16027,6 +16055,22 @@ function collabDiskWritten(abs, text, fromCollab) {
   if (fromCollab) collab.markSaved(name, text);
   else if (collab.has(name)) collab.fromDisk(name, text);
 }
+// The editor's save for a person on their own account (design/105): their
+// host writes it as them; this server keeps its records of the text.
+async function fileSaveAs(mine, abs, body, user) {
+  if (typeof body.text !== 'string') throw new Error('missing text');
+  const text = body.text;
+  const saved = await accountFiles.saveText(mine.host, abs, text, { baseSha: body.baseSha || null });
+  observeFileHistory(abs, { text: saved.oldText, state: saved.oldState, source: 'before editor save' });
+  collabDiskWritten(abs, text, body.fromCollab);
+  const historyWarning = observeFileHistory(abs, { text, actor: 'human', source: 'editor save' });
+  if (saved.oldText !== text) {
+    const delta = docLineDelta(saved.oldText, text);
+    ledgerRecordEditorSave(abs, { added: delta.added, removed: delta.removed, chars: docCharDelta(saved.oldText, text), sha: saved.sha, actor: 'human', input: body.input || 'keyboard', user });
+    recentFilesTouch(abs, { project: String(body.project || ''), kind: 'saved', actor: 'human' });
+  }
+  return { ok: true, path: abs, sha: saved.sha, historyWarning };
+}
 async function fileSaveResponse(body, user = null) {
   const { path: p, baseSha, text } = body;
   if (typeof text !== 'string') throw new Error('missing text');
@@ -20989,13 +21033,23 @@ async function handleRequest(req, res) {
       } catch (e) { json(res, 404, { error: e.message }); }
     } else if (u.pathname === '/api/path/info' && req.method === 'GET') {
       try {
-        const info = await pathInfoResponse(u.searchParams.get('id'), u.searchParams.get('path'), isConsoleRequest(req));
+        const mine = ownFilesOf(identity);
+        const info = mine ? await accountFiles.info(mine.host, ownCandidates(mine, u.searchParams.get('id'), u.searchParams.get('path')), { maxEdit: FILE_EDIT_MAX })
+          : await pathInfoResponse(u.searchParams.get('id'), u.searchParams.get('path'), isConsoleRequest(req));
         assertPathAccess(identity, info.path, 'see');
         json(res, 200, info);
       }
       catch (e) { json(res, 404, { error: e.message }); }
     } else if (u.pathname === '/api/path/read' && req.method === 'GET') {
-      try { json(res, 200, await transcriptFileReadResponse(u.searchParams.get('id'), u.searchParams.get('path'), isConsoleRequest(req))); }
+      try {
+        const mine = ownFilesOf(identity);
+        if (mine) {
+          const { abs } = await accountFiles.locate(mine.host, ownCandidates(mine, u.searchParams.get('id'), u.searchParams.get('path')));
+          assertPathAccess(identity, abs, 'see');
+          return json(res, 200, await accountFiles.readText(mine.host, abs, { max: FILE_EDIT_MAX }));
+        }
+        json(res, 200, await transcriptFileReadResponse(u.searchParams.get('id'), u.searchParams.get('path'), isConsoleRequest(req)));
+      }
       catch (e) { json(res, 404, { error: e.message }); }
     } else if (u.pathname === '/api/path/exists' && req.method === 'POST') {
       // Batch probe for file names quoted in chat prose. The client only
@@ -21007,6 +21061,12 @@ async function handleRequest(req, res) {
         const input = JSON.parse(body || '{}');
         const paths = [...new Set((Array.isArray(input.paths) ? input.paths : []).map(String))].slice(0, 300);
         const local = isConsoleRequest(req);
+        const mine = ownFilesOf(identity);
+        if (mine) {
+          const lists = {};
+          for (const p of paths) { try { lists[p] = ownCandidates(mine, input.id, p); } catch {} }
+          return json(res, 200, { found: await accountFiles.exists(mine.host, lists) });
+        }
         const found = {};
         await Promise.all(paths.map(async p => {
           try {
@@ -21041,6 +21101,14 @@ async function handleRequest(req, res) {
       previewAssets.revoke(u.searchParams.get('token')); json(res, 200, { ok: true });
     } else if (u.pathname === '/api/file/media' && (req.method === 'GET' || req.method === 'HEAD')) {
       try {
+        const mine = ownFilesOf(identity);
+        if (mine) {
+          const { abs } = await accountFiles.locate(mine.host, ownCandidates(mine, u.searchParams.get('id'), u.searchParams.get('path')));
+          assertPathAccess(identity, abs, 'see');
+          const mime = fileMedia.mediaType(abs);
+          if (!mime) throw Error('This file is not a supported image, video or PDF');
+          return await accountFiles.serve(req, res, mine.host, abs, mime, { download: u.searchParams.get('download') === '1', maxBytes: mime.startsWith('image/') ? 32 * 1024 * 1024 : Infinity });
+        }
         const found = await transcriptFilePath(u.searchParams.get('id'), u.searchParams.get('path'), Infinity, isConsoleRequest(req));
         assertPathAccess(identity, found.abs, 'see');
         const mime = fileMedia.mediaType(found.abs);
@@ -21050,6 +21118,14 @@ async function handleRequest(req, res) {
       } catch (e) { if (!res.headersSent) json(res, 404, { error: e.message }); }
     } else if ((u.pathname === '/api/path/content' || u.pathname === '/api/conversation/file-content') && (req.method === 'GET' || req.method === 'HEAD')) {
       try {
+        const mine = ownFilesOf(identity);
+        if (mine) {
+          const { abs } = await accountFiles.locate(mine.host, ownCandidates(mine, u.searchParams.get('id'), u.searchParams.get('path')));
+          assertPathAccess(identity, abs, 'see');
+          const mime = imageMimeForPath(abs);
+          if (!mime) throw new Error('this file is not a supported image');
+          return await accountFiles.serve(req, res, mine.host, abs, mime, { maxBytes: 32 * 1024 * 1024 });
+        }
         const found = await transcriptFilePath(u.searchParams.get('id'), u.searchParams.get('path'), 32 * 1024 * 1024, isConsoleRequest(req));
         assertPathAccess(identity, found.abs, 'see');
         const mime = imageMimeForPath(found.abs);
@@ -21357,6 +21433,14 @@ async function handleRequest(req, res) {
           if (fileArchive) activity.events = activity.events.map(e => ({ ...e, ...fileArchive.reference(e.id, e.path) }));
           activity.historyWarning = fileArchive?.error || fileArchiveError || (!fileArchive ? 'Saved file history capture is disabled' : '');
           json(res, 200, activity);
+        } else if (ownFilesOf(identity)) {
+          // Their project's folder, listed by their host as them (design/105).
+          const mine = ownFilesOf(identity);
+          const io = accountFiles.hostIo(mine.host);
+          const roots = [await io.realpath(meta.cwd)];
+          const root = params.root ? path.resolve(params.root) : roots[0];
+          if (!roots.includes(root)) throw new Error('Repository is not part of this project');
+          json(res, 200, { ...await browser.browse(root, { dir: params.dir, q: params.q, contents: params.contents === '1' }, io), roots, deleted: 0 });
         } else {
           const candidates = [meta.cwd, ...await projectGitRepositories(meta)].filter(Boolean);
           const roots = [...new Set(await Promise.all(candidates.map(p => fsp.realpath(p))))];
@@ -21450,6 +21534,17 @@ async function handleRequest(req, res) {
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/file/read' && req.method === 'GET') {
       try {
+        const mine = ownFilesOf(identity);
+        if (mine) {
+          if (u.searchParams.get('reviewId')) throw Object.assign(new Error('Change reviews are not available yet when you run as your own computer account.'), { status: 403 });
+          const { abs } = await accountFiles.locate(mine.host, ownCandidates(mine, u.searchParams.get('id') || '', u.searchParams.get('path') || ''));
+          assertPathAccess(identity, abs, 'see');
+          const out = await accountFiles.readText(mine.host, abs, { max: FILE_EDIT_MAX });
+          out.historyWarning = observeFileHistory(abs, { text: out.text, source: 'opened file' });
+          const writable = await mine.host.call('access', abs, fs.constants.W_OK).then(() => true, () => false);
+          out.canAct = writable && canDo(identity, 'act', { project: projectOfPath(abs), creator: projectCreatorOf(projectOfPath(abs)) });
+          return json(res, 200, out);
+        }
         const out = await fileReadResponse(u.searchParams.get('path') || '', u.searchParams.get('id') || '', u.searchParams.get('reviewId') || '');
         assertPathAccess(identity, out.path, 'see');
         out.canAct = canDo(identity, 'act', { project: projectOfPath(out.path), creator: projectCreatorOf(projectOfPath(out.path)) });
@@ -21458,7 +21553,18 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/file/save' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
-      try { const p = JSON.parse(body || '{}'); assertPathAccess(identity, path.resolve(expandHomePath(String(p.path || ''))), 'act'); json(res, 200, await fileSaveResponse(p, identity.user)); }
+      try {
+        const p = JSON.parse(body || '{}');
+        const mine = ownFilesOf(identity);
+        if (mine) {
+          if (p.reviewId) throw Object.assign(new Error('Change reviews are not available yet when you run as your own computer account.'), { status: 403 });
+          const abs = path.resolve(accountFiles.expandHome(mine.home, String(p.path || '')));
+          if (!path.isAbsolute(String(p.path || '')) && !String(p.path || '').startsWith('~')) throw new Error('an absolute path is needed');
+          assertPathAccess(identity, abs, 'act');
+          return json(res, 200, await fileSaveAs(mine, abs, p, identity.user));
+        }
+        assertPathAccess(identity, path.resolve(expandHomePath(String(p.path || ''))), 'act'); json(res, 200, await fileSaveResponse(p, identity.user));
+      }
       catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/doc/save' && req.method === 'POST') {
       let body = '';
@@ -21623,6 +21729,11 @@ async function handleRequest(req, res) {
       // adopted as a project without a typed path. Local personal tool;
       // the same process already reads the whole home directory.
       try {
+        const mine = ownFilesOf(identity);
+        if (mine) {
+          const base = path.resolve(accountFiles.expandHome(mine.home, String(u.searchParams.get('path') || '').trim() || '~/Projects'));
+          return json(res, 200, await accountFiles.dirs(mine.host, base, { home: mine.home, known: full => !!projectMetaFor(projectNameOf(full)) }));
+        }
         const base = path.resolve(expandHomePath(String(u.searchParams.get('path') || '').trim() || '~/Projects'));
         const entries = await fsp.readdir(base, { withFileTypes: true });
         const dirs = [];
@@ -23055,6 +23166,9 @@ async function handleRequest(req, res) {
       // Connecting this machine to an AI (design/73). Owner tier only (policy.js).
       try {
         const route = req.method + ' ' + u.pathname;
+        // What the key proxy can serve changes with this machine's AI
+        // accounts: guests and people on the owner's models see it next time.
+        if (req.method === 'POST' && route !== 'POST /api/ai/test') res.on('finish', () => { if (res.statusCode < 400) aiProvidersChanged(); });
         if (route === 'GET /api/ai') return json(res, 200, await aiAccounts.summary());
         if (route === 'POST /api/ai/login') { const p = await aiBody(req); return json(res, 200, aiAccounts.loginState(aiAccounts.startLogin(String(p.provider || ''), String(p.method || '')))); }
         if (route === 'GET /api/ai/login') return json(res, 200, aiAccounts.loginState(String(u.searchParams.get('id') || '')));

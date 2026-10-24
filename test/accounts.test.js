@@ -122,10 +122,11 @@ test('routes for a person on their own account: only what acts for them as them'
   const own = { tier: 'member', user: { id: 'u_l', scope: 'household', role: 'member', ownAccount: 'lilly' } };
   const admin = { tier: 'admin', user: { id: 'u_a', scope: 'household', role: 'admin', ownAccount: 'ann' } };
   const yes = (id, m, p) => policy.checkRoute(id, m, p, new URLSearchParams(), () => true).ok;
-  for (const [m, p] of [['GET', '/api/sessions'], ['POST', '/api/node/send'], ['POST', '/api/exec'], ['POST', '/api/fork'], ['GET', '/api/events'], ['POST', '/api/live-terminal/start']]) {
+  for (const [m, p] of [['GET', '/api/sessions'], ['POST', '/api/node/send'], ['POST', '/api/exec'], ['POST', '/api/fork'], ['GET', '/api/events'], ['POST', '/api/live-terminal/start'],
+    ['GET', '/api/file/read'], ['POST', '/api/file/save'], ['GET', '/api/files/browse'], ['GET', '/api/fs/dirs'], ['GET', '/api/path/read'], ['GET', '/api/file/media']]) {
     assert.ok(yes(own, m, p), m + ' ' + p);
   }
-  for (const [m, p] of [['GET', '/api/file/read'], ['POST', '/api/file/save'], ['GET', '/api/files/browse'], ['GET', '/api/fs/dirs'], ['GET', '/api/path/read'], ['GET', '/api/conversation/media'], ['POST', '/api/doc/run-cell'], ['GET', '/api/transcript/raw']]) {
+  for (const [m, p] of [['POST', '/api/files/op'], ['GET', '/api/git/repos'], ['GET', '/api/conversation/media'], ['POST', '/api/doc/run-cell'], ['GET', '/api/transcript/raw'], ['GET', '/api/artifacts/resolve'], ['POST', '/api/conversation/send']]) {
     assert.ok(yes(member, m, p), 'a household member still may: ' + p);
     const gate = policy.checkRoute(own, m, p, new URLSearchParams(), () => true);
     assert.equal(gate.ok, false, 'refused on their own account: ' + p);

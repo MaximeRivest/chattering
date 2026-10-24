@@ -77,7 +77,7 @@ test('a person runs as their own account: commands, conversations, forks, the st
     + line({ type: 'message', id: 'm1', parentId: null, timestamp: '2026-10-24T10:00:01.000Z', message: { role: 'user', content: 'the owner asks' } })
     + line({ type: 'message', id: 'm2', parentId: 'm1', timestamp: '2026-10-24T10:00:02.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'the owner hears' }], model: 'x' } }));
   // The person's project, in their home: this server cannot even see it.
-  const proj = path.join('/home', ACCOUNT, tag);
+  const proj = path.join('/home', ACCOUNT, 'Projects', tag);
   assert.equal(asTest(`mkdir -p ${proj} && echo hers > ${proj}/notes.md`).status, 0);
 
   const model = await fakeOpenAI({ reply: 'Hello from the fixture, as asked.' });
@@ -94,7 +94,7 @@ test('a person runs as their own account: commands, conversations, forks, the st
     await model.close();
     fs.rmSync(shared, { recursive: true, force: true });
     // What the person left: their project and their conversations from this test.
-    asTest(`rm -rf ${proj}; for d in ${sessionsRoot}/*; do grep -l '${tag}' "$d"/*.jsonl 2>/dev/null; done | xargs -r rm -f; find ${sessionsRoot} -mindepth 1 -type d -empty -delete`);
+    asTest(`rm -rf ${proj}; rmdir /home/${ACCOUNT}/Projects 2>/dev/null; for d in ${sessionsRoot}/*; do grep -l '${tag}' "$d"/*.jsonl 2>/dev/null; done | xargs -r rm -f; find ${sessionsRoot} -mindepth 1 -type d -empty -delete`);
   });
   const local = 'http://127.0.0.1:' + port, remote = 'http://' + lanIp() + ':' + port;
   const post = (url, body, cookie) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(body) });
@@ -133,10 +133,36 @@ test('a person runs as their own account: commands, conversations, forks, the st
   assert.match(api.out, /"name":"Tess"/);
   assert.doesNotMatch(api.out, /"tier":"console"/);
 
-  // Files are refused through this server's rights: her agent reads them, as her.
+  // Her files, through Chattering, as her: read, saved, listed, served.
+  const notes = path.join(proj, 'notes.md');
+  const read = await (await get(remote + '/api/file/read?path=' + encodeURIComponent(notes), tess)).json();
+  assert.equal(read.text, 'hers\n', fail(JSON.stringify(read)));
+  assert.equal(read.canAct, true);
+  const saved = await (await post(remote + '/api/file/save', { path: notes, text: 'hers, edited\n', baseSha: read.sha }, tess)).json();
+  assert.ok(saved.ok, fail(JSON.stringify(saved)));
+  assert.equal(asTest(`cat ${notes}; stat -c %U ${notes}`).stdout, 'hers, edited\n' + ACCOUNT + '\n', 'written as her, owned by her');
+  const stale = await post(remote + '/api/file/save', { path: notes, text: 'late', baseSha: read.sha }, tess);
+  assert.equal(stale.status, 400, 'a save over a newer file is refused');
+  const listing = await (await get(remote + '/api/fs/dirs?path=' + encodeURIComponent('/home/' + ACCOUNT + '/Projects'), tess)).json();
+  assert.ok(listing.dirs.some(d => d.name === tag), JSON.stringify(listing));
+  const info = await (await get(remote + '/api/path/info?path=' + encodeURIComponent(notes), tess)).json();
+  assert.equal(info.kind, 'file');
+  asTest(`printf '\\x89PNG\\r\\n\\x1a\\n0123456789' > ${proj}/pic.png`);
+  const ranged = await fetch(remote + '/api/file/media?path=' + encodeURIComponent(path.join(proj, 'pic.png')), { headers: { Cookie: tess, Range: 'bytes=8-11' } });
+  assert.equal(ranged.status, 206);
+  assert.equal(await ranged.text(), '0123');
+  // The owner's files stay closed: Linux says no, as it would to her shell.
   const refused = await get(remote + '/api/file/read?path=' + encodeURIComponent(path.join(secretDir, 'plan.md')), tess);
-  assert.equal(refused.status, 403);
-  assert.match((await refused.json()).error, /your own computer account/);
+  assert.equal(refused.status, 404);
+  assert.match((await refused.json()).error, /not yours|not found/);
+  // A link of hers to the owner's file is followed as her: still closed.
+  asTest(`ln -sf ${path.join(secretDir, 'plan.md')} ${proj}/link.md`);
+  const viaLink = await (await get(remote + '/api/file/read?path=' + encodeURIComponent(path.join(proj, 'link.md')), tess)).json();
+  assert.doesNotMatch(JSON.stringify(viaLink), /THE OWNER SECRET PLAN/);
+  // Routes that would use this server's rights are refused, with the reason.
+  const repos = await get(remote + '/api/git/repos', tess);
+  assert.equal(repos.status, 403);
+  assert.match((await repos.json()).error, /your own computer account/);
 
   // A conversation as her: in her folder, written by her account, answered
   // through the key proxy (her Pi holds a placeholder, never a key).
@@ -157,6 +183,11 @@ test('a person runs as their own account: commands, conversations, forks, the st
   assert.match(herAuth.stdout, /"guest-[A-Za-z0-9_-]+"/);
   assert.equal(asTest('readlink ~/.pi/agent/sessions').stdout.trim(), sessionsRoot, 'her terminal\u2019s Pi lists the same conversations');
 
+  // Her project's files, listed as her (the project is known from her conversation).
+  const browsed = await (await get(remote + '/api/files/browse?name=' + encodeURIComponent(tag), tess)).json();
+  assert.ok((browsed.entries || []).some(e => e.name === 'notes.md'), fail(JSON.stringify(browsed)));
+  const found = await (await get(remote + '/api/files/browse?name=' + encodeURIComponent(tag) + '&q=edited&contents=1', tess)).json();
+  assert.ok((found.entries || []).some(e => e.name === 'notes.md' && e.line === 1), 'search reads her files as her');
   // The owner cannot drive her conversation (it is hers); a fork is theirs.
   const ownerSend = await post(local + '/api/conversation/send', { id: started.key, text: 'as the owner' });
   assert.equal(ownerSend.status, 409, fail(await ownerSend.text()));

@@ -480,6 +480,10 @@ const ACCOUNT_ROUTES = {
   '/api/node/commands': 'theirs', 'POST /api/node/compose': 'theirs', '/api/conversation/thinking': 'theirs', '/api/conversation/compact': 'theirs',
   '/api/conversation/agent-mode': 'theirs', '/api/conversation/start-loose': 'theirs', '/api/project/start': 'theirs',
   '/api/exec': 'theirs', '/api/live-terminal/*': 'theirs', '/api/fork': 'theirs', '/api/fork-edit': 'theirs',
+  // Files, read and written by their host process as them (account-files.js).
+  '/api/path/info': 'theirs', '/api/path/read': 'theirs', '/api/path/exists': 'theirs', '/api/path/content': 'theirs',
+  '/api/conversation/file-content': 'theirs', '/api/file/media': 'theirs', '/api/file/read': 'theirs', '/api/file/save': 'theirs', '/api/fs/dirs': 'theirs',
+  '/api/files/browse': 'theirs', '/api/files/activity': 'index',
 };
 const ACCOUNT_TABLE = new Map(Object.entries(ACCOUNT_ROUTES));
 function accountRouteEntry(method, pathname) {

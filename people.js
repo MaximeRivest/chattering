@@ -997,9 +997,10 @@ function panePeople() {
   const roleWord = u => u.role === 'owner' ? 'owner of this machine' : u.role === 'admin' ? 'admin' : u.scope === 'guest' ? 'guest — sees only what is listed for them' : 'member';
   const row = u => `<div class="person-row${u.disabled ? ' disabled' : ''}" data-id="${esc(u.id)}">
       ${userBubble(u)}
-      <div class="person-main"><b>${esc(u.name)}</b>${u.scope === 'guest' ? '<span class="badge-guest">guest</span>' : ''}${me && u.id === me.id ? ' <span class="hint">(you)</span>' : ''}<div class="hint">${esc(roleWord(u))}${u.groups.length ? ' · ' + esc(u.groups.join(', ')) : ''}${u.disabled ? ' · disabled' : ''}</div></div>
+      <div class="person-main"><b>${esc(u.name)}</b>${u.scope === 'guest' ? '<span class="badge-guest">guest</span>' : ''}${me && u.id === me.id ? ' <span class="hint">(you)</span>' : ''}<div class="hint">${esc(roleWord(u))}${u.groups.length ? ' · ' + esc(u.groups.join(', ')) : ''}${u.disabled ? ' · disabled' : ''}${accountHint(u)}</div></div>
       <div class="person-actions">
-        ${manages && u.scope === 'guest' ? `<button type="button" class="ghost" data-act="stop" title="Stop every agent and command this person is running here, right now">stop their work</button>` : ''}
+        ${manages && (u.scope === 'guest' || u.account) ? `<button type="button" class="ghost" data-act="stop" title="Stop every agent and command this person is running here, right now">stop their work</button>` : ''}
+        ${accountsState.loaded && accountsState.support && accountsState.support.available && u.role !== 'owner' ? `<button type="button" class="ghost" data-act="account" title="Which computer account this person's agents, commands and files run as">${u.account ? 'computer account…' : 'own computer account…'}</button>` : ''}
         ${manages && u.role !== 'owner' ? `<button type="button" class="ghost" data-act="scope">${u.scope === 'guest' ? 'make household member' : 'make guest'}</button>` : ''}
         ${(manages || (me && u.id === me.id)) && !(u.role === 'owner' && !owner) ? `<button type="button" class="ghost" data-act="invite">new device link</button>` : ''}
         ${manages && !(u.role === 'owner' && !owner) ? `<button type="button" class="ghost" data-act="rename">rename</button>` : ''}
@@ -1011,20 +1012,59 @@ function panePeople() {
       </div>
     </div>`;
   return `<h2>people</h2>
-    <p class="lead">${me ? 'You are <b>' + esc(me.name) + '</b>, ' + esc(roleWord(me)) + '.' : ''} People are the same person on every machine: when you switch machines from the header, you arrive there as yourself. Each machine keeps its own list of who is admitted.</p>
+    <p class="lead">${me ? 'You are <b>' + esc(me.name) + '</b>, ' + esc(roleWord(me)) + '.' : ''}${me && me.account ? ' What you run here runs as your own computer account, <code>' + esc(me.account) + '</code>: your files, your rights.' : ''} People are the same person on every machine: when you switch machines from the header, you arrive there as yourself. Each machine keeps its own list of who is admitted.</p>
     <div class="set-group">
       <div class="set-group-head"><h3>on this machine</h3>${manages ? '<button type="button" id="setPersonAdd">add a person</button>' : ''}</div>
       <div id="setPeopleList">${peopleState.users.map(row).join('')}</div>
       <div class="set-status" id="setPeopleStatus"></div>
     </div>
+    ${accountsState.loaded ? paneAccountsHtml() : ''}
     ${manages ? panePeersHtml() : ''}
     ${manages ? paneGuestLimitsHtml() : ''}
     ${manages ? `<div class="set-group">
       <div class="set-group-head"><h3>groups</h3><button type="button" class="ghost" id="setGroupAdd">new group</button></div>
       <div id="setGroupList">${peopleState.groups.length ? peopleState.groups.map(g => `<div class="person-row" data-gid="${esc(g.id)}"><span class="user-bubble group">#</span><div class="person-main"><b>${esc(g.name)}</b><div class="hint">${esc(g.id)} · ${peopleState.users.filter(u => u.groups.includes(g.id)).map(u => u.name).join(', ') || 'nobody yet'}</div></div><div class="person-actions"><button type="button" class="ghost" data-gact="remove">✕</button></div></div>`).join('') : '<span class="hint">none — a group lets you share a project with several people at once (say, a department).</span>'}</div>
     </div>` : ''}
-    <details class="set-more"><summary>how sharing works</summary><p>Everything on a machine is shared with everyone admitted to it, unless its owner hides it (the ⊘ button on a conversation or a project). Hidden things leave the lists, search and memory of the people they are hidden from. The owner of the machine — the account the agents run as — always sees everything on it; these are polite walls between people who share a computer, not vaults. Who typed each message, saved each file and vouched each note is recorded by name.</p><p>A <b>guest</b> is the other way round: someone invited to one project (from the project's sharing dialog) sees nothing on this machine except what is listed for them, and everything they run here starts inside a sandbox that holds only that project's folder${peopleState.walls && peopleState.walls.available ? '' : ' (<b>not on this machine</b>: bubblewrap is not installed, so guest agents would run unwalled)'}. Guests may connect their own Chattering; the project's conversations and memory then copy both ways, and each machine only ever writes its own.</p></details>`;
+    <details class="set-more"><summary>how sharing works</summary><p>Everything on a machine is shared with everyone admitted to it, unless its owner hides it (the ⊘ button on a conversation or a project). Hidden things leave the lists, search and memory of the people they are hidden from. The owner of the machine always sees everything on it. Between people who run as this machine's own account, these are polite walls, not vaults. Who typed each message, saved each file and vouched each note is recorded by name.</p><p>A person linked to a <b>computer account of their own</b> runs as it: their agents, commands and files are theirs, and the computer itself decides what they can reach, as it does for any program they run. Their conversations are kept in a folder of theirs. A conversation belongs to the account that keeps it: anyone else continues a copy (fork).</p><p>A <b>guest</b> is the other way round: someone invited to one project (from the project's sharing dialog) sees nothing on this machine except what is listed for them, and everything they run here starts inside a sandbox that holds only that project's folder${peopleState.walls && peopleState.walls.available ? '' : ' (<b>not on this machine</b>: bubblewrap is not installed, so guest agents would run unwalled)'}. Guests may connect their own Chattering; the project's conversations and memory then copy both ways, and each machine only ever writes its own.</p></details>`;
 }
+// ---- computer accounts (design/105) ----
+// Administrators see what this machine offers and where each linked person
+// stands; /api/accounts answers them only, so for others nothing loads.
+const accountsState = { loaded: false, support: null, people: [], required: false };
+async function loadAccountsState() {
+  try {
+    const r = await fetch('/api/accounts');
+    if (!r.ok) return;
+    Object.assign(accountsState, await r.json(), { loaded: true });
+  } catch {}
+}
+function accountOf(u) { return accountsState.people.find(p => p.id === u.id) || null; }
+function accountHint(u) {
+  if (!u.account) return '';
+  const st = accountOf(u);
+  const models = u.models === 'shared' ? 'your models' : 'their own models';
+  const state = !st ? '' : st.status === 'ready' ? '' : st.status === 'preparing' ? ' · getting ready' : ' · <b>not ready</b>';
+  return ` · runs as <code>${esc(u.account)}</code> (${models})${state}`;
+}
+function paneAccountsHtml() {
+  const s = accountsState.support || {};
+  const linked = accountsState.people.filter(p => p.linked);
+  const offer = s.available
+    ? `This computer can run people as their own accounts: through <code>sudo</code>, only as members of <code>${esc(s.group)}</code>, never as administrator.`
+    : `<b>Not on this computer yet.</b> It needs the system configuration of design/105: the ${esc(s.group || 'chattering-people')} group, the sudo rule and <code>chattering-as</code>${s.platform && s.platform !== 'linux' ? ' (Linux only)' : ''}.`;
+  const personRow = p => {
+    const lines = [...(p.problems || []), ...(p.warnings || [])].map(x => `<div class="hint">${esc(x)}</div>`).join('');
+    const facts = p.status === 'ready' ? `<div class="hint">conversations in <code>${esc(p.sessionsRoot || '')}</code>${p.git && p.git.name ? ' · commits as ' + esc(p.git.name) + (p.git.email ? ' &lt;' + esc(p.git.email) + '&gt;' : '') : ''}${p.caps ? '' : ' · <b>no cgroup</b>: stopping relies on signals'}</div>` : '';
+    return `<div class="person-row" data-acc="${esc(p.id)}"><span class="user-bubble">${esc((p.name || '?').slice(0, 1))}</span><div class="person-main"><b>${esc(p.name)}</b> → <code>${esc(p.account)}</code> · ${esc(p.status)}${facts}${lines}</div><div class="person-actions"><button type="button" class="ghost" data-acc-check>check again</button></div></div>`;
+  };
+  return `<div class="set-group" id="setAccounts">
+      <div class="set-group-head"><h3>computer accounts</h3></div>
+      <p class="hint">${offer}</p>
+      ${linked.length ? linked.map(personRow).join('') : '<p class="hint">Nobody is linked yet: everyone runs as this machine\u2019s own account. Link a person with “own computer account…” beside their name.</p>'}
+      <label class="row"><input type="checkbox" id="accRequired" ${accountsState.required ? 'checked' : ''} ${s.available ? '' : 'disabled'}> each person must run as their own account (someone without one runs nothing here; the owner excepted, guests keep their sandbox)</label>
+    </div>`;
+}
+
 // What one guest may use of this machine (design/55). Empty = derived
 // from the machine; the server reports what is in force either way.
 function paneGuestLimitsHtml() {
@@ -1047,6 +1087,15 @@ function paneGuestLimitsHtml() {
 }
 function bindPanePeople(root) {
   const status = t => { const el = $('setPeopleStatus'); if (el) el.innerHTML = t; };
+  if (!accountsState.loaded && peopleManages()) loadAccountsState().then(() => { if (accountsState.loaded && settingsOpen && settingsPane === 'people') renderSettings(); });
+  const req = $('accRequired');
+  if (req) req.onchange = async () => { await saveSettings({ accountsRequired: req.checked }, req.checked ? 'each person runs as their own account' : 'people without an account run as this machine\u2019s'); await loadAccountsState(); renderSettings(); };
+  root.querySelectorAll('[data-acc] [data-acc-check]').forEach(b => b.onclick = async () => {
+    b.disabled = true; b.textContent = 'checking…';
+    const out = await postJson('/api/users/account-check', { id: b.closest('[data-acc]').dataset.acc });
+    if (out.error) errToast(out.error);
+    await loadAccountsState(); renderSettings();
+  });
   const glSave = $('glSave');
   if (glSave) glSave.onclick = async () => {
     const guestLimits = { memory: $('glMemory').value.trim(), cpu: $('glCpu').value.trim(), tasks: parseInt($('glTasks').value, 10) || 0 };
@@ -1077,6 +1126,16 @@ function bindPanePeople(root) {
     if (act === 'rename') { const name = prompt('New name:', u.name); if (!name || !name.trim()) return; out = await call('update', { id, name: name.trim() }); }
     if (act === 'groups') { const g = prompt('Groups, comma separated (short names, e.g. kids, eng):', u.groups.join(', ')); if (g === null) return; out = await call('update', { id, groups: g.split(',').map(x => x.trim()).filter(Boolean) }); }
     if (act === 'role') out = await call('update', { id, role: u.role === 'admin' ? 'member' : 'admin' });
+    if (act === 'account') {
+      const name = prompt(`Computer account ${u.name} runs as (empty: this machine's own account, as before).\nIt must already exist and be in the group ${accountsState.support.group}.`, u.account || '');
+      if (name === null) return;
+      let models;
+      if (name.trim()) models = confirm(`Should ${u.name}'s agents use YOUR model subscriptions (shared through the key proxy, the keys never reach their account)?\n\nOK: your models.  Cancel: their own logins (they sign in once with pi as ${name.trim()}).`) ? 'shared' : 'own';
+      toast('linking… (getting the account ready)');
+      out = await call('account', { id, account: name.trim() || null, models });
+      await loadAccountsState();
+      if (out && out.account && out.account.linked && out.account.status !== 'ready') errToast(u.name + ': ' + (out.account.problems || []).join(' '));
+    }
     if (act === 'stop') { out = await call('stop', { id }); if (out) toast((out.stopped || 0) + ' process' + (out.stopped === 1 ? '' : 'es') + ' stopped'); return; }
     if (act === 'scope') { const guest = u.scope !== 'guest'; if (!confirm(guest ? u.name + ' will see only the projects listed for them.' : u.name + ' will see everything on this machine that is not hidden, like the household.')) return; out = await call('update', { id, scope: guest ? 'guest' : 'household' }); }
     if (act === 'disable') out = await call('update', { id, disabled: !u.disabled });

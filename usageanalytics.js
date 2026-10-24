@@ -321,7 +321,9 @@ async function parseUsageFile(file, context = {}, catalog = new PricingCatalog()
   // theirs until the next message. A message with no author entry (typed in
   // a terminal, or before people existed) belongs to nobody known: null.
   const personOf = new Map(), authorEntry = new Set();
-  const stream = fs.createReadStream(file, { encoding: 'utf8' });
+  // openStream: how the server opens a file it may only read when its
+  // folder's owner owns it (a person's own account, design/105).
+  const stream = (context.openStream && await context.openStream(file)) || fs.createReadStream(file, { encoding: 'utf8' });
   const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
   for await (const line of lines) {
     if (!line) continue;
@@ -706,7 +708,7 @@ class UsageIndex {
 
   async _updateFile(key, entry, absPath, catalog) {
     let facts = [], speed = [], error = null;
-    try { ({ facts, speed } = await parseUsageFile(absPath, { source: entry.source, mtimeMs: entry.mtimeMs, sessionId: entry.sessionId }, catalog)); }
+    try { ({ facts, speed } = await parseUsageFile(absPath, { source: entry.source, mtimeMs: entry.mtimeMs, sessionId: entry.sessionId, openStream: this.openStream || null }, catalog)); }
     catch (e) { error = String(e.message || e).slice(0, 500); }
     this.db.exec('BEGIN IMMEDIATE');
     try {
