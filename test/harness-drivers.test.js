@@ -79,7 +79,7 @@ test('Claude: initialization timeout cleans up; unsupported sandbox launches nev
   const ps = processes(), d = createClaudeDriver({ spawn: ps.spawn, controlTimeoutMs: 10, shutdownMs: 5 });
   await assert.rejects(d.claudeHeadlessRun(ccTarget, { message: 'one' }).done, /did not answer initialize/);
   await tick(); assert.equal(ps.children[0].stdin.writableFinished, true);
-  await assert.rejects(d.claudeHeadlessRun({ ...ccTarget, sandbox: {} }, { message: 'x' }).done, /sandboxed/);
+  await assert.rejects(d.claudeHeadlessRun({ ...ccTarget, walls: {} }, { message: 'x' }).done, /sandboxed/);
   assert.equal(ps.children.length, 1);
 });
 

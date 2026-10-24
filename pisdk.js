@@ -200,7 +200,7 @@ function createPiSdkProxy(options = {}) {
     // A worker carries the walls of whoever started it. The same session
     // driven by a guest and by the owner needs two different workers: a
     // warm one behind other walls is retired first, never reused.
-    const wallsId = target.sandbox ? target.sandbox.id : null;
+    const wallsId = target.walls ? target.walls.id : null;
     const existing = key ? sessions.get(key) : null;
     if (existing && existing.wallsId === wallsId) return existing;
     if (existing) stop(existing);
@@ -216,15 +216,15 @@ function createPiSdkProxy(options = {}) {
       execArgv: [],
     };
     let child;
-    if (target.sandbox) {
+    if (target.walls) {
       // Inside the walls: bwrap, then node, then the worker. The IPC channel
       // is an inherited descriptor, which bubblewrap passes through.
-      const launched = target.sandbox.launch(process.execPath, [workerFile], { cwd: target.cwd });
+      const launched = target.walls.launch(process.execPath, [workerFile], { cwd: target.cwd });
       child = (options.spawnSandboxed || require('child_process').spawn)(launched.file, launched.args, { ...baseOpts, cwd: undefined, env: { ...launched.env, ...pickScoped(baseOpts.env) } });
     } else child = spawnWorker(workerFile, baseOpts);
     const W = { child, key, wallsId, barrier, exitDone: deferred(), pending: new Map(), runs: new Map(), dead: false,
       stopping: false, exited: false, error: null, stopTimer: null,
-      state: { sessionPath: key, cwd: target.cwd, pid: child.pid, busy: false, model: null, alive: true, engine: 'sdk', sandboxed: !!target.sandbox } };
+      state: { sessionPath: key, cwd: target.cwd, pid: child.pid, busy: false, model: null, alive: true, engine: 'sdk', sandboxed: !!target.walls, walls: target.walls ? target.walls.kind || 'sandbox' : null } };
     children.add(W);
     if (key) sessions.set(key, W);
     child.on('message', message => receive(W, message));
@@ -247,7 +247,7 @@ function createPiSdkProxy(options = {}) {
     // A sandboxed worker keeps its last lines: when the walls themselves
     // refuse to stand (a missing bind, a bwrap error), that is the only
     // place the reason appears.
-    if (target.sandbox) {
+    if (target.walls) {
       let tail = '';
       child.stderr?.on('data', d => { tail = (tail + String(d)).slice(-2000); });
       W.stderrTail = () => tail.trim();
@@ -255,7 +255,12 @@ function createPiSdkProxy(options = {}) {
     return W;
   }
   function wireTarget(target) {
-    return { sessionPath: target.sessionPath && path.resolve(target.sessionPath), cwd: target.cwd, extraArgs: target.extraArgs, sessionDir: target.sessionDir };
+    // A person's own account (design/105) reads this program's files from
+    // the published copy, and keeps new conversations in their own folder.
+    const walls = target.walls;
+    const map = walls && typeof walls.mapPath === 'function' ? walls.mapPath : (p => p);
+    const sessionDir = target.sessionDir || (walls && typeof walls.sessionDirFor === 'function' ? walls.sessionDirFor(target.cwd) : undefined);
+    return { sessionPath: target.sessionPath && path.resolve(target.sessionPath), cwd: target.cwd, extraArgs: Array.isArray(target.extraArgs) ? target.extraArgs.map(map) : target.extraArgs, sessionDir };
   }
   function piHeadlessRun(target, opts = {}) {
     let W;

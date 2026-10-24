@@ -132,6 +132,11 @@ const DEFAULT_SETTINGS = {
   // per-person: every non-administrator is walled like a guest: their own
   // agent folder, only the projects shared with them, nothing else.
   isolation: 'household',
+  // Each person runs as their own computer account (design/105). Off:
+  // people linked to an account run as it, the others as this server's
+  // account. On: someone below the owner with no account of their own
+  // runs nothing here (guests keep their sandbox).
+  accountsRequired: false,
   // Company sign-in through OpenID Connect; off while issuer is empty.
   sso: { issuer: '', clientId: '', clientSecret: '', name: '', allowedDomains: [], autoProvision: false, groupsClaim: 'groups', adminGroups: [], sessionHours: 12 },
   // Other Chattering installs reachable from the header machine switcher.
@@ -469,6 +474,7 @@ function normalizeSettings(input) {
   const usageBilling = normalizeUsageBilling(src.usageBilling);
   const budgets = normalizeBudgets(src.budgets);
   const isolation = src.isolation === 'per-person' ? 'per-person' : 'household';
+  const accountsRequired = src.accountsRequired === true;
   const sso = normalizeSso(src.sso);
   const snippetTrigger = normalizeSnippetTrigger(src.snippetTrigger);
   const doneSound = DONE_SOUND_MODES.includes(src.doneSound) ? src.doneSound : DEFAULT_SETTINGS.doneSound;
@@ -518,6 +524,7 @@ function normalizeSettings(input) {
     usageBilling,
     budgets,
     isolation,
+    accountsRequired,
     sso,
     snippetTrigger,
     doneSound,

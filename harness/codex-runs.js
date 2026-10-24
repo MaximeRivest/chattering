@@ -37,7 +37,7 @@ function createCodexRuns(deps) {
   const followUps = new Map(); // sessionPath → [{ message, images, principal, ... }] queued behind a running reply
 
   function assertOwner(principal) {
-    if (principal && (principal.guest || principal.sandbox)) {
+    if (principal && (principal.guest || principal.walls)) {
       throw Object.assign(new Error('Codex runs from Chattering for this machine\'s own account only. Guests use Pi conversations.'), { status: 403 });
     }
   }

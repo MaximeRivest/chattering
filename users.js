@@ -76,7 +76,9 @@ function cleanAvatar(raw) {
 function publicUser(u) {
   if (!u) return null;
   return { id: u.id, name: u.name, glyph: u.glyph, color: u.color, role: u.role, scope: SCOPES.includes(u.scope) ? u.scope : 'household', groups: [...(u.groups || [])], disabled: !!u.disabled,
-    ...(u.avatar ? { avatar: sha256(u.avatar) } : {}) };
+    ...(u.avatar ? { avatar: sha256(u.avatar) } : {}),
+    // The computer account their processes run as (design/105), if their own.
+    ...(u.account ? { account: u.account, models: u.models === 'shared' ? 'shared' : 'own' } : {}) };
 }
 
 function makeUser({ name, role = 'member', groups = [], id = null, scope = 'household' }) {
@@ -124,6 +126,8 @@ function normalizeRoster(raw, { ownerName } = {}) {
       ...(u.invitedBy && typeof u.invitedBy === 'string' ? { invitedBy: u.invitedBy } : {}),
       credentials: (Array.isArray(u.credentials) ? u.credentials : []).filter(c => c && typeof c === 'object' && (c.kind === 'install' || typeof c.hash === 'string'))
         .map(c => ({ id: c.id || newId('c'), kind: ['install', 'invite', 'session'].includes(c.kind) ? c.kind : 'invite', hash: c.kind === 'install' ? undefined : c.hash, label: cleanName(c.label).slice(0, 40) || undefined, createdAt: c.createdAt || new Date().toISOString(), lastUsedAt: c.lastUsedAt || undefined, expiresAt: c.expiresAt || undefined })),
+      // The computer account they run as, and whose models it uses (design/105).
+      ...(cleanAccount(u.account) ? { account: cleanAccount(u.account), models: u.models === 'shared' ? 'shared' : 'own' } : {}),
       // The company identity a person signs in with (OpenID Connect, design/72).
       ...(u.sso && typeof u.sso.iss === 'string' && typeof u.sso.sub === 'string' ? { sso: { iss: u.sso.iss, sub: u.sso.sub, ...(typeof u.sso.email === 'string' ? { email: u.sso.email } : {}) } } : {}),
     });
@@ -215,6 +219,28 @@ function updateUser(roster, id, patch) {
   }
   if (avatar === null) delete u.avatar;
   else if (avatar !== undefined) u.avatar = avatar;
+  return u;
+}
+
+// A computer account's name, as useradd accepts it; anything else is none.
+function cleanAccount(raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  return /^[a-z_][a-z0-9_-]{0,31}$/.test(s) ? s : null;
+}
+// Link a person to a computer account of their own (design/105), or unlink
+// them (account null): what their processes run as. One account is one
+// person's: two people on one account would be one person to the computer.
+function setAccount(roster, id, { account = null, models } = {}) {
+  const u = findUser(roster, id);
+  if (!u) throw new Error('no such user');
+  const name = account == null || account === '' ? null : cleanAccount(account);
+  if (account != null && account !== '' && !name) throw new Error('not an account name: ' + account);
+  if (name) {
+    const other = roster.users.find(x => x.id !== u.id && x.account === name);
+    if (other) throw Object.assign(new Error(name + ' is already ' + other.name + '\u2019s account'), { status: 409 });
+    u.account = name;
+    u.models = models === 'shared' ? 'shared' : models === 'own' ? 'own' : (u.models === 'shared' ? 'shared' : 'own');
+  } else { delete u.account; delete u.models; }
   return u;
 }
 
@@ -443,6 +469,7 @@ function upsertHandoffUser(roster, claimed) {
 }
 
 module.exports = {
+  cleanAccount, setAccount,
   ROLES, SCOPES, PALETTE, glyphFor, colorFor, publicUser, cleanAvatar, AVATAR_MAX_BYTES, isGuest,
   createRoster, normalizeRoster, loadRoster, saveRoster, ownerOf, findUser,
   addUser, updateUser, transferOwnership, removeUser, mergeUsers, resolveId,

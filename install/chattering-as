@@ -1,0 +1,71 @@
+#!/bin/sh
+# chattering-as — start a program as the account sudo switched to
+# (chattering design/105, accounts.js).
+#
+# Chattering's server runs it through one sudo rule, as a person's own
+# account and only as an account in the people group:
+#
+#   SERVICE ALL=(%chattering-people) NOPASSWD:SETENV: /path/to/chattering-as
+#   Defaults!/path/to/chattering-as closefrom_override
+#
+#   chattering-as --probe           who am I: one JSON line (protocol 1)
+#   chattering-as --version
+#   chattering-as DIR -- FILE ARGS  run FILE in DIR as this account
+#
+# It gives the program the account's own identity (HOME, USER, LOGNAME,
+# SHELL from the account database, never the caller's), the PATH the
+# server computed for that account (CHATTERING_AS_PATH; sudo may have
+# reset PATH), and removes what would make the program believe it runs
+# under sudo. Install it owned by root, mode 755, where only root can
+# change it: the sudo rule trusts this file.
+set -eu
+PROTOCOL=1
+PATH=/run/current-system/sw/bin:/usr/bin:/bin
+export PATH
+# Only accounts of this group are people. An administrator calling sudo may
+# be allowed more by other rules; this program still runs only as a person.
+PEOPLE_GROUP=chattering-people
+
+die() { printf 'chattering-as: %s\n' "$*" >&2; exit 125; }
+
+uid=$(id -u)
+[ "$uid" -ne 0 ] || die "refusing to run anything as root"
+name=$(id -un)
+case " $(id -Gn) " in
+  *" $PEOPLE_GROUP "*) ;;
+  *) [ "${1:-}" = --version ] || die "$name is not in the group $PEOPLE_GROUP, so it is not a person this program runs as" ;;
+esac
+entry=$(getent passwd "$name") || die "no account database entry for $name"
+home=$(printf '%s' "$entry" | cut -d: -f6)
+shell=$(printf '%s' "$entry" | cut -d: -f7)
+
+json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+
+case "${1:-}" in
+  --version) printf 'chattering-as %s\n' "$PROTOCOL"; exit 0 ;;
+  --probe)
+    groups=$(id -Gn | tr ' ' ',')
+    printf '{"protocol":%s,"user":"%s","uid":%s,"gid":%s,"home":"%s","groups":"%s"}\n' \
+      "$PROTOCOL" "$(json_escape "$name")" "$uid" "$(id -g)" "$(json_escape "$home")" "$(json_escape "$groups")"
+    exit 0 ;;
+esac
+
+[ $# -ge 3 ] || die "usage: chattering-as DIR -- FILE [ARGS...]"
+dir=$1; shift
+[ "$1" = "--" ] || die "usage: chattering-as DIR -- FILE [ARGS...]"
+shift
+
+HOME=$home; USER=$name; LOGNAME=$name; SHELL=$shell
+export HOME USER LOGNAME SHELL
+unset SUDO_USER SUDO_UID SUDO_GID SUDO_COMMAND SUDO_HOME SUDO_PS1 MAIL || true
+if [ -d "/run/user/$uid" ] && [ -O "/run/user/$uid" ]; then XDG_RUNTIME_DIR=/run/user/$uid; export XDG_RUNTIME_DIR
+else unset XDG_RUNTIME_DIR || true; fi
+cd "$dir" 2>/dev/null || die "$name cannot enter $dir"
+# The PATH the server computed for this account; else what a login on this
+# system would give them.
+if [ -n "${CHATTERING_AS_PATH:-}" ]; then PATH=$CHATTERING_AS_PATH
+else PATH=/run/wrappers/bin:$home/.local/bin:$home/.nix-profile/bin:/etc/profiles/per-user/$name/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin
+fi
+export PATH
+unset CHATTERING_AS_PATH || true
+exec "$@"

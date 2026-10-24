@@ -41,6 +41,8 @@ const ROUTES = {
   'GET /api/users': 'guest',
   'POST /api/users/*': 'guest', // a person edits their own profile; roster changes are checked in the handler
   '/api/users/avatar': 'guest',
+  // People's own computer accounts (design/105): machine administration.
+  'GET /api/accounts': 'owner',
   '/api/presence': 'guest',
   // Notifications (design/100): each person manages their own devices.
   '/api/push': 'guest',
@@ -441,6 +443,63 @@ function routeEntry(method, pathname) {
   return best;
 }
 
+// ---- people on their own computer accounts (design/105) ----
+// What this server does for such a person on the file system must happen
+// as them: reading a path they name with this server's rights would let a
+// symlink of theirs aim it at anything this server may read. So a route
+// below the owner tier answers them only when it is listed here, as one of:
+//   'index'  works from the conversation index, this server's own records
+//            or settings, never a path the person names;
+//   'theirs' what it touches, it touches through their account (their
+//            walls launch it, or their host process does the I/O).
+// Anything else answers 403 for them until it is made 'theirs'; the test
+// in test/policy.test.js keeps every route decided.
+const ACCOUNT_ROUTES = {
+  '/api/events': 'index', 'GET /api/settings': 'index', 'GET /api/users': 'index', 'POST /api/users/*': 'index', '/api/users/avatar': 'index',
+  '/api/presence': 'index', '/api/push': 'index', '/api/push/*': 'index', '/api/themes': 'index', '/api/themes.css': 'index',
+  '/api/models': 'index', '/api/models/last': 'index', 'GET /api/modes': 'index', '/api/jobs': 'index',
+  'GET /api/agent-read': 'index', 'POST /api/agent-read': 'index', 'POST /api/agent-read/group-name': 'index',
+  'GET /api/recent-files': 'index', 'GET /api/open-files': 'index', 'POST /api/open-files': 'index', 'POST /api/recent-files': 'index',
+  '/api/sessions': 'index', '/api/session': 'index', '/api/session/parts': 'index', '/api/tree': 'index', '/api/search': 'index',
+  '/api/search/semantic': 'index', '/api/search/semantic-status': 'index', '/api/related': 'index', '/api/note': 'index',
+  '/api/conversation/context': 'index', '/api/conversation/draft-defaults': 'index', '/api/conversation/title': 'index',
+  '/api/conversation/retitle': 'index', '/api/conversation/models': 'index', '/api/conversation/reading': 'index', 'POST /api/steps/plain': 'index',
+  '/api/run/abort': 'index', '/api/run/ui-input': 'index', '/api/run/ui-response': 'index', '/api/distill/start': 'index',
+  '/api/records/*': 'index', 'GET /api/papers': 'index', '/api/access': 'index', 'GET /api/usage': 'index',
+  '/api/project': 'index', '/api/project/people': 'index', '/api/project-folds': 'index', '/api/projects/stats': 'index',
+  '/api/projects/memory-index': 'index', '/api/project/memory': 'index', '/api/epics': 'index', '/api/epic': 'index',
+  'GET /api/hotkeys': 'index', 'PUT /api/hotkeys': 'index', 'POST /api/hotkeys/starter': 'index', 'GET /api/hotkeys/code': 'index',
+  'POST /api/hotkeys/approve': 'index', 'POST /api/hotkeys/computers/forget': 'index',
+  '/api/speech/transcribe': 'index', '/api/speech/stream': 'index', '/api/tts': 'index', '/api/tts/audio': 'index',
+  'GET /api/anywhere': 'index', 'GET /api/anywhere/pairing': 'index', 'POST /api/anywhere/pair': 'index', 'POST /api/anywhere/cancel': 'index',
+  'POST /api/anywhere/forget': 'index', 'GET /api/anywhere/links/check': 'index', 'POST /api/anywhere/links/add': 'index', 'POST /api/anywhere/links/remove': 'index',
+  '/api/app/android': 'index', '/api/sync/feed': 'index', '/api/sync/push': 'index',
+  // Runs: their walls launch the agent, its file is in their folder, and a
+  // conversation stored in another account's folder is forked, never driven.
+  '/api/node/send': 'theirs', '/api/node/regenerate': 'theirs', '/api/node/merge': 'theirs',
+  '/api/node/commands': 'theirs', 'POST /api/node/compose': 'theirs', '/api/conversation/thinking': 'theirs', '/api/conversation/compact': 'theirs',
+  '/api/conversation/agent-mode': 'theirs', '/api/conversation/start-loose': 'theirs', '/api/project/start': 'theirs',
+  '/api/exec': 'theirs', '/api/live-terminal/*': 'theirs', '/api/fork': 'theirs', '/api/fork-edit': 'theirs',
+};
+const ACCOUNT_TABLE = new Map(Object.entries(ACCOUNT_ROUTES));
+function accountRouteEntry(method, pathname) {
+  const m = String(method || 'GET').toUpperCase();
+  for (const k of [m + ' ' + pathname, pathname]) if (ACCOUNT_TABLE.has(k)) return ACCOUNT_TABLE.get(k);
+  let best = null, bestLen = -1;
+  for (const [k, v] of ACCOUNT_TABLE) {
+    const sp = k.indexOf(' ');
+    const km = sp > 0 ? k.slice(0, sp) : null;
+    const kp = sp > 0 ? k.slice(sp + 1) : k;
+    if (!kp.endsWith('/*') || (km && km !== m)) continue;
+    const base = kp.slice(0, -1);
+    if (pathname.startsWith(base) && base.length > bestLen) { best = v; bestLen = base.length; }
+  }
+  return best;
+}
+// The person runs as an account of their own (the server marks the
+// request's copy of the person, like `walled`).
+const onOwnAccount = identity => !!(identity && identity.user && identity.user.ownAccount);
+
 const isOwnerTier = identity => !!identity && OWNER_TIERS.includes(identity.tier);
 // A guest, or a walled member (per-person isolation, design/72): the same walls.
 const isGuest = identity => !!identity && !!identity.user && (identity.user.scope === 'guest' || identity.user.walled === true);
@@ -460,6 +519,11 @@ function checkRoute(identity, method, pathname, searchParams, canSeeConversation
   const entry = routeEntry(method, pathname) || { level: 'owner', unlisted: true };
   if (!levelAllows(identity, entry.level)) {
     return { ok: false, entry, status: 403, error: entry.level === 'owner' ? 'Only the owner of this machine can do this.' : 'This is not available to guests.' };
+  }
+  // Below the owner tier, a person on their own account reaches only the
+  // routes that act for them as them (ACCOUNT_ROUTES).
+  if (onOwnAccount(identity) && !isOwnerTier(identity) && !accountRouteEntry(method, pathname)) {
+    return { ok: false, entry, status: 403, error: 'This is not available yet when you run as your own computer account: it would touch files with this server\u2019s rights instead of yours.' };
   }
   if (entry.conversation && !isOwnerTier(identity)) {
     const key = searchParams && searchParams.get(entry.conversation);
@@ -574,4 +638,4 @@ function eventView(ev, can) {
   return r || null;
 }
 
-module.exports = { LEVELS, ROUTES, BEFORE_SIGN_IN, EVENTS, routeEntry, levelAllows, checkRoute, eventView, isOwnerTier };
+module.exports = { LEVELS, ROUTES, ACCOUNT_ROUTES, BEFORE_SIGN_IN, EVENTS, routeEntry, accountRouteEntry, levelAllows, checkRoute, eventView, isOwnerTier };

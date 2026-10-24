@@ -52,9 +52,13 @@ async function publishSession(file, text) {
 // `dir` publishes the fork somewhere other than the source's session
 // directory (a private staging area for a derivation), so no watcher
 // mistakes it for a conversation.
-async function forkPiSnapshot(SessionManager, target, nodeId, { before = false, dir = null } = {}) {
+// `read` and `publish` replace how the source is read and the fork is
+// written: a conversation in a person's own folder is read only if theirs,
+// and a fork for a person on their own account is written as them
+// (design/105). By default, as this process.
+async function forkPiSnapshot(SessionManager, target, nodeId, { before = false, dir = null, read = null, publish = null } = {}) {
   const source = path.resolve(target.sessionPath);
-  const snapshot = await readSessionSnapshot(source);
+  const snapshot = read ? await read(source) : await readSessionSnapshot(source);
   const stage = await fs.mkdtemp(path.join(os.tmpdir(), 'chattering-fork-'));
   try {
     const input = path.join(stage, 'source.jsonl');
@@ -82,7 +86,7 @@ async function forkPiSnapshot(SessionManager, target, nodeId, { before = false, 
     const header = { ...sm.getHeader(), parentSession: source };
     const text = [header, ...sm.getEntries()].map(e => JSON.stringify(e)).join('\n') + '\n';
     const file = path.join(dir || path.dirname(source), path.basename(stagedFile));
-    await publishSession(file, text);
+    if (publish) await publish(file, text); else await publishSession(file, text);
     const result = { file, sessionId: sm.getSessionId() };
     if (before) {
       const content = entry.message.content;

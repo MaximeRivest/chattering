@@ -93,8 +93,11 @@ function guestAgentDirFor(base, guestId) { return path.join(base, guestId, 'agen
 
 // `dir` is the real folder on disk; `insideDir` is where it appears in the
 // sandbox (~/.pi/agent). The read-only binds returned target `insideDir`.
-function prepareGuestAgentDir({ dir, insideDir, ownerAgentDir, proxy, allowedProviders, defaults = {} }) {
-  fs.mkdirSync(path.join(dir, 'sessions'), { recursive: true });
+// The files of a Pi folder whose keys are placeholders the key proxy swaps
+// for the owner's: auth, providers routed through the proxy, settings
+// (the owner's harmless defaults, never packages or credentials). Pure;
+// guests' sandboxes and people's own accounts (design/105) both use it.
+function proxyAgentFiles({ proxy, allowedProviders, ownerSettings = {}, defaults = {} }) {
   const placeholder = provider => OAUTH_SHAPED.has(provider) ? 'sk-ant-oat-guest-' + proxy.token : 'guest-' + proxy.token;
   const auth = {};
   const providers = {};
@@ -106,19 +109,27 @@ function prepareGuestAgentDir({ dir, insideDir, ownerAgentDir, proxy, allowedPro
     if (Array.isArray(p.models) && p.models.length) entry.models = p.models;
     providers[p.id] = entry;
   }
-  const write = (name, value) => fs.writeFileSync(path.join(dir, name), JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
-  write('auth.json', auth);
-  write('models.json', { providers });
-  let owner = {};
-  try { owner = JSON.parse(fs.readFileSync(path.join(ownerAgentDir, 'settings.json'), 'utf8')); } catch {}
   const settings = {};
-  for (const k of ['defaultThinkingLevel', 'hideThinkingBlock', 'compaction', 'retry', 'steeringMode', 'followUpMode']) if (owner[k] !== undefined) settings[k] = owner[k];
+  for (const k of ['defaultThinkingLevel', 'hideThinkingBlock', 'compaction', 'retry', 'steeringMode', 'followUpMode']) if (ownerSettings[k] !== undefined) settings[k] = ownerSettings[k];
   if (defaults.provider) settings.defaultProvider = defaults.provider;
   if (defaults.model) settings.defaultModel = defaults.model;
   settings.quietStartup = true;
   settings.collapseChangelog = true;
-  settings.lastChangelogVersion = owner.lastChangelogVersion;
-  write('settings.json', settings);
+  settings.lastChangelogVersion = ownerSettings.lastChangelogVersion;
+  return { auth, models: { providers }, settings };
+}
+
+// `dir` is the real folder on disk; `insideDir` is where it appears in the
+// sandbox (~/.pi/agent). The read-only binds returned target `insideDir`.
+function prepareGuestAgentDir({ dir, insideDir, ownerAgentDir, proxy, allowedProviders, defaults = {} }) {
+  fs.mkdirSync(path.join(dir, 'sessions'), { recursive: true });
+  let owner = {};
+  try { owner = JSON.parse(fs.readFileSync(path.join(ownerAgentDir, 'settings.json'), 'utf8')); } catch {}
+  const files = proxyAgentFiles({ proxy, allowedProviders, ownerSettings: owner, defaults });
+  const write = (name, value) => fs.writeFileSync(path.join(dir, name), JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
+  write('auth.json', files.auth);
+  write('models.json', files.models);
+  write('settings.json', files.settings);
   const binds = [];
   for (const name of ['extensions', 'skills', 'prompts', 'AGENTS.md', 'APPEND_SYSTEM.md', 'themes']) {
     const src = path.join(ownerAgentDir, name);
@@ -237,6 +248,7 @@ function createSandbox(spec) {
     id, guest: spec.guest, projectRoot: spec.projectRoot, slice: spec.cgroup && spec.cgroup.slice || null,
     // What to spawn instead of `file args`: (the slice, then) bwrap with the
     // walls, then the command.
+    kind: 'sandbox',
     launch(file, fileArgs = [], { cwd } = {}) {
       const dir = cwd && inside(cwd, spec.projectRoot) ? cwd : spec.projectRoot;
       const walled = [spec.bwrap, ...args, '--chdir', dir, '--', file, ...fileArgs];
@@ -268,5 +280,5 @@ function sandboxEnv({ hostEnv = process.env, principalEnv = {}, guest, agentDir,
   return { ...env, ...extra };
 }
 
-module.exports = { ENV_ALLOW, SYSTEM_RO, findBwrap, piSessionDirName, projectSessionDirs, guestAgentDirFor, prepareGuestAgentDir, createSandbox, sandboxEnv, inside, OAUTH_SHAPED,
+module.exports = { ENV_ALLOW, SYSTEM_RO, findBwrap, piSessionDirName, projectSessionDirs, guestAgentDirFor, prepareGuestAgentDir, proxyAgentFiles, createSandbox, sandboxEnv, inside, OAUTH_SHAPED,
   findSystemdRun, guestSliceName, defaultLimits, resolveLimits, limitProperties, scopePrefix, busEnv, BUS_VARS };

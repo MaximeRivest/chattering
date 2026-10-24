@@ -217,7 +217,7 @@ function claudeHeadlessRun(target, { message, images, onEvent }) {
     catch (error) { s.stop(); throw error; }
   };
   handle.done = (async () => {
-    if (!target.key || target.sandbox) throw new Error('Claude driver needs an owner-scoped conversation key; sandboxed launches are not wired yet');
+    if (!target.key || target.walls) throw new Error('Claude driver needs an owner-scoped conversation key; sandboxed launches are not wired yet');
     if (claims.has(target.key)) throw new Error('Claude Code is already answering in this conversation.');
     claims.add(target.key);
     try {
@@ -246,7 +246,7 @@ function claudeHeadlessRun(target, { message, images, onEvent }) {
 // The compose box's menus, straight from Claude Code (no model call):
 // commands, helper agents, models, answer styles, the plan.
 async function claudeMenus(target) {
-  if (target.sandbox) throw new Error('Sandboxed Claude menus are not wired yet');
+  if (target.walls) throw new Error('Sandboxed Claude menus are not wired yet');
   const live = target.key && sessions.get(target.key);
   if (live && live.alive && !live.closing && live.menus) return live.menus;
   const s = new ClaudeSession('menus:' + target.cwd, { bin: target.bin, cwd: target.cwd, env: target.env, extraArgs: ['--no-session-persistence'] });

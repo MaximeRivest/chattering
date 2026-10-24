@@ -96,6 +96,12 @@ const SOURCES = {
   agy: agyTranscript.agyConversationsDir(),
   muse: museTranscript.museSessionsDir(),
 };
+// A person who runs as their own account (design/105) has a Pi source of
+// their own, `pi@<account>`: /var/lib/chattering/people/<account>/sessions,
+// theirs to write, read here. Everything true of Pi conversations is true
+// of theirs; where they are stored says whose they are.
+const isPiSource = s => s === 'pi' || (typeof s === 'string' && s.startsWith('pi@'));
+const accountOfSource = s => (typeof s === 'string' && s.startsWith('pi@')) ? s.slice(3) : null;
 // Conversations that moved between agents: which part continues which.
 const chains = require('./harness/chains.js').createChains({ file: path.join(DATA_DIR, 'chains.json') });
 // Which source a conversation file belongs to, from where it is.
@@ -1103,7 +1109,8 @@ async function parseFile(absPath) {
   const ctxUsage = new Map(), ctxModels = new Map(), ctxCompactions = new Set();
   // Claude Code: the results of one reply's parallel tool calls are one step, not branches (claude-chain.js)
   const claudeChain = createClaudeChain();
-  const stream = fs.createReadStream(absPath, { encoding: 'utf8' });
+  const owner = ownerOfTranscript(absPath);
+  const stream = owner ? (await accountsLib.openOwned(absPath, owner)).fh.createReadStream({ encoding: 'utf8' }) : fs.createReadStream(absPath, { encoding: 'utf8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   for await (const line of rl) {
     if (!line) continue;
@@ -1917,7 +1924,7 @@ async function indexFile(source, relPath, stat) {
   try {
     const { meta, messages, entryParents } = await parseConversationFile(absPath);
     let delegated = null;
-    if (source === 'pi' && relPath.startsWith('--delegated--' + path.sep) && meta.sessionId) {
+    if (isPiSource(source) && relPath.startsWith('--delegated--' + path.sep) && meta.sessionId) {
       try {
         const task = await delegationLib.getDelegation(meta.sessionId, { root: DELEGATION_ROOT });
         if (path.resolve(task.sessionPath) === path.resolve(absPath)) delegated = task;
@@ -2011,7 +2018,7 @@ async function indexFile(source, relPath, stat) {
     scheduleProjectFoldRefresh(meta.cwd);
     // Local transcript tools have explicit paths and completion results.
     // Remote-only paths must never be offered as local files.
-    if (source === 'pi' || source === 'claude' || source === 'codex' || source === 'agy' || source === 'muse') {
+    if (isPiSource(source) || source === 'claude' || source === 'codex' || source === 'agy' || source === 'muse') {
       const activity = recentFilesLib.fromMessages(messages, {
         project: projectOfEntry(entry, key), key,
         resolvePath: p => {
@@ -2122,23 +2129,37 @@ async function* walkWorkspaceFiles(root, dir = root) {
   }
 }
 
+async function scanSource(source, baseDir, seen) {
+  let n = 0;
+  for await (const relPath of walk(baseDir, baseDir)) {
+    if (!isMainTranscript(relPath, source)) continue;
+    const key = sessionKey(source, relPath);
+    seen.add(key);
+    let stat;
+    try { stat = await statTranscript(source, path.join(baseDir, relPath)); } catch { continue; }
+    const cur = index[key];
+    if (!cur || cur.v !== CACHE_VERSION || cur.mtimeMs !== stat.mtimeMs || cur.size !== stat.size || indexStale(cur, stat)) {
+      await indexFile(source, relPath, stat);
+      n++;
+    }
+  }
+  return n;
+}
+// A source that appears while the server runs (a person linked to their
+// account): scanned and watched from now on, like the others at boot.
+let sourcesLive = false;
+function startSourceLive(source) {
+  if (!sourcesLive) return;
+  const baseDir = SOURCES[source];
+  if (!baseDir || treeWatchers.has(source) || !fs.existsSync(baseDir)) return;
+  treeWatchers.set(source, watchTree(baseDir, rel => scheduleIndex(sessionKey(source, rel)), source));
+  scanSource(source, baseDir, new Set()).then(n => { if (n) console.log(`scanned ${source}: ${n} indexed`); }, e => console.error('scan failed:', source, e.message));
+}
+
 async function fullScan() {
   const seen = new Set();
   let n = 0;
-  for (const [source, baseDir] of Object.entries(SOURCES)) {
-    for await (const relPath of walk(baseDir, baseDir)) {
-      if (!isMainTranscript(relPath, source)) continue;
-      const key = sessionKey(source, relPath);
-      seen.add(key);
-      let stat;
-      try { stat = await statTranscript(source, path.join(baseDir, relPath)); } catch { continue; }
-      const cur = index[key];
-      if (!cur || cur.v !== CACHE_VERSION || cur.mtimeMs !== stat.mtimeMs || cur.size !== stat.size || indexStale(cur, stat)) {
-        await indexFile(source, relPath, stat);
-        n++;
-      }
-    }
-  }
+  for (const [source, baseDir] of Object.entries(SOURCES)) n += await scanSource(source, baseDir, seen);
   for (const key of Object.keys(index)) {
     if (!seen.has(key)) dropIndexed(key);
   }
@@ -2246,7 +2267,9 @@ function watchTree(baseDir, onFile, source = null) {
         if (rel) { onFile(rel); return; }
         // Only a rename (create, delete, move) can change the directory set.
         if (event !== 'rename') return;
-        fs.stat(abs, (err, st) => {
+        // lstat: a symlinked folder is not entered (in a person's folder it
+        // could point anywhere this server may read).
+        fs.lstat(abs, (err, st) => {
           if (err) { if (watchers.has(abs)) remove(abs); return; }
           if (st.isDirectory()) add(abs);
         });
@@ -2270,6 +2293,7 @@ function watchTree(baseDir, onFile, source = null) {
 // Watcher: re-index a file shortly after it changes.
 const treeWatchers = new Map(); // source → watchTree handle
 function watch() {
+  sourcesLive = true;
   for (const [source, baseDir] of Object.entries(SOURCES)) {
     if (!fs.existsSync(baseDir)) continue;
     treeWatchers.set(source, watchTree(baseDir, rel => scheduleIndex(sessionKey(source, rel)), source));
@@ -3195,7 +3219,7 @@ const CANONICAL_TURN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 async function forkCodexSession(key, nodeId, { before = false } = {}) {
   const { entry, cwd } = sessionPathsFor(key);
   const principal = await currentPrincipal(projectNameOf(entry.cwd, key));
-  if (principal.guest || principal.sandbox) throw Object.assign(new Error('Codex runs from Chattering for this machine\'s own account only.'), { status: 403 });
+  if (principal.guest || principal.walls) throw Object.assign(new Error('Codex runs from Chattering for this machine\'s own account only.'), { status: 403 });
   if (entry.importCopyOf || (entry.codex && entry.codex.imported)) throw new Error('This is a text-only copy Codex imported from another agent. Fork the original instead.');
   const data = JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8'));
   const msg = data.messages.find(m => m.eid === nodeId);
@@ -3224,7 +3248,7 @@ async function forkSession(key, nodeId) {
   // wait behind its live turn or stop its warm runtime. This native utility
   // is file-only even when the chosen agent engine is RPC.
   if (entry.source !== 'claude') {
-    const forked = await pisdk.piForkAt({ sessionPath, cwd }, nodeId);
+    const forked = await pisdk.piForkAt({ sessionPath, cwd }, nodeId, forkPlacement(cwd));
     const newKey = await indexNewSessionFile(forked.file);
     await markFork(newKey, key, entry);
     return { key: newKey, path: forked.file, sessionId: forked.sessionId };
@@ -3239,6 +3263,24 @@ async function forkSession(key, nodeId) {
   return { key: newKey, path: newAbs, sessionId: newId };
 }
 
+// Where a Pi fork goes and how it is read and written (design/105). The
+// copy belongs to whoever makes it: a person on their own account gets it
+// in their folder, written by their file helper as them; anyone else, in
+// this server's folder. The source is read only if its folder's owner owns
+// it. Outside a request (no one asked), the source's own folder.
+function forkPlacement(cwd) {
+  const read = file => readTranscriptText(file);
+  const identity = currentIdentity();
+  if (!identity) return { read };
+  const principal = principalFor(identity);
+  const acct = principalAccount(principal);
+  if (principal.walls && principal.walls.blocked) principal.walls.launch(); // their account is not ready: say why
+  if (!acct) return { read, dir: path.join(SOURCES.pi, runtimeLib.piSessionDirName(cwd)) };
+  const person = usersLib.findUser(roster, principal.user.id);
+  const host = accountManager.hostFor(person);
+  return { read, dir: principal.walls.sessionDirFor(cwd), publish: (file, text) => host.call('write', file, text, { exclusive: true, mkdirs: true }) };
+}
+
 // Fork-edit (pi only): fork BEFORE a user message and return its text so the
 // UI opens the new session with the prompt ready to edit and resend.
 async function forkSessionForEdit(key, nodeId) {
@@ -3251,7 +3293,7 @@ async function forkSessionForEdit(key, nodeId) {
   if (entry.source === 'claude') throw new Error('Editing a past message needs pi. Claude conversations can only fork.');
   refuseOwnProgramOnly(entry, 'Editing a past message');
   await assertDelegationOwnership(sessionPath);
-  const forked = await pisdk.piForkBefore({ sessionPath, cwd }, nodeId);
+  const forked = await pisdk.piForkAt({ sessionPath, cwd }, nodeId, { before: true, ...forkPlacement(cwd) });
   const newKey = await indexNewSessionFile(forked.file);
   await markFork(newKey, key, entry);
   return { key: newKey, path: forked.file, sessionId: forked.sessionId, text: forked.text };
@@ -3382,7 +3424,7 @@ async function composeInPi(key, input, identity) {
   assertCan(identity, 'act', targetOf(key), 'this conversation');
   if (conversationKind(entry) === 'codex') {
     const principal = await principalInProject(principalFor(identity), projectNameOf(entry.cwd, key));
-    if (principal.guest || principal.sandbox) throw Object.assign(new Error('Codex runs from Chattering for this machine\'s own account only.'), { status: 403 });
+    if (principal.guest || principal.walls) throw Object.assign(new Error('Codex runs from Chattering for this machine\'s own account only.'), { status: 403 });
     const c = codexComposerFor(key, principal);
     const scoped = { ...input, clientId: String(principal.user.id) + ':' + String(input.clientId || 'commands'), model: codexRuns().prefsOf(key).model };
     if (input.action === 'commands') return { commands: c.commands(), cwd, live: true, harness: 'codex' };
@@ -3394,12 +3436,13 @@ async function composeInPi(key, input, identity) {
   if (conversationKind(entry) !== 'pi') throw Object.assign(new Error('Live completion currently supports Pi conversations.'), { status: 400 });
   const principal = await principalInProject(principalFor(identity), projectNameOf(entry.cwd, key));
   assertPrincipalCanRun(principal, 'the composer');
-  if (piEng() !== pisdk && !principal.sandbox) return { supported: false, reason: 'Live extension completion needs the SDK engine.' };
+  assertRunsHere(key, principal, 'use its commands');
+  if (piEng() !== pisdk && !principal.walls) return { supported: false, reason: 'Live extension completion needs the SDK engine.' };
   // Merely typing must never seize a terminal session or a delegated worker.
   if (findRunningConversation(key)) throw Object.assign(new Error('This conversation is open in a terminal; close it before using live completion here.'), { status: 409 });
   await assertDelegationOwnership(sessionPath);
   return pisdk.piComposer({ sessionPath, cwd, env: { ...agentEnv(principal), ...agentCallerEnv(principal), ...programCallerEnv(key, principal) },
-    extraArgs: piProviderExtraArgs(), sandbox: principal.sandbox || undefined }, {
+    extraArgs: piProviderExtraArgs(), walls: principal.walls || undefined }, {
     ...input, clientId: String(principal.user.id) + ':' + String(input.clientId || 'commands'),
   });
 }
@@ -3867,8 +3910,9 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
   }
   // One writer (design/91): checked again where the run is registered.
   if (liveHeld.has(sessionPath)) throw Object.assign(new Error('This conversation is open in its agent\'s own program here: use its box below, or go back to Chattering\'s box first.'), { status: 409 });
-  principal = await principalInProject(principal || principalFor(null), projectNameOf(entry.cwd, key));
+  principal = await principalInProject(principal || backgroundPrincipalFor(key), projectNameOf(entry.cwd, key));
   assertPrincipalCanRun(principal, 'an agent');
+  assertRunsHere(key, principal);
   if (!customMessage) assertWithinBudget(usersLib.findUser(roster, principal.user.id) || principal.user);
   // Who typed this. The SDK engine writes it into the session tree; the
   // rpc engine cannot, so the sidecar remembers it for the indexer.
@@ -3888,8 +3932,9 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
   if (!principalIsOwner(principal)) {
     assertClaudeAccountAllowed(provider || (normalizePickedModels(modelPrefs.conversations[key])[0] || {}).provider, principal);
   }
-  if (principal.guest) {
-    // The guest's Pi holds only the providers the key proxy can serve.
+  if (usesKeyProxy(principal)) {
+    // The guest's Pi (or a person's on the owner's models) holds only the
+    // providers the key proxy can serve.
     const choice = guestModelChoice(provider, modelId, await guestProviderList());
     if (!choice.provider) throw new Error('No model is available to guests on this machine right now.');
     if (choice.changed) modelNote = `answered by ${choice.provider}/${choice.modelId} (the conversation's model is not available to guests)`;
@@ -3944,7 +3989,7 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
     }
     throw new Error('A web run is already active on this conversation. Wait or abort it.');
   }
-  const ctxBundle = contextItems.length || brief ? await writeAttachedContextFile(contextItems, { brief }) : null;
+  const ctxBundle = contextItems.length || brief ? await writeAttachedContextFile(contextItems, { brief, principal }) : null;
   if (headlessRuns.has(sessionPath)) throw new Error('A web run started while preparing this conversation.');
   const job = {
     id: 'run:' + crypto.randomUUID().slice(0, 8),
@@ -4052,10 +4097,10 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
       job.recoveryEligible = !fanout && !customMessage && !owner;
       // A guest's run always uses the SDK engine: it is the one that starts
       // inside the walls (the rpc engine spawns pi on the host).
-      const engine = customMessage || principal.sandbox ? pisdk : piEng();
+      const engine = customMessage || principal.walls ? pisdk : piEng();
       if (author && engine !== pisdk) recordAuthorship(key, author, { via: 'rpc', chars: String(message || '').length, input, coauthors });
       if (modelNote) { job.statusText = modelNote; jobChanged(job); }
-      const handle = engine.piHeadlessRun({ sessionPath, cwd, env: { ...agentEnv(principal), ...agentCallerEnv(principal), ...programCallerEnv(key, principal), ...sessionEnv }, sessionEnv, extraArgs, sandbox: principal.sandbox || undefined }, { provider, modelId, thinking: customMessage ? undefined : thinking || undefined, message, images, customMessage, author, simplifyAnswers: appSettings.simplifyAnswers && !owner && !customMessage, simplifyPrompt: appSettings.simplifyPrompt, onEvent: runEventForwarder(job) });
+      const handle = engine.piHeadlessRun({ sessionPath, cwd, env: { ...agentEnv(principal), ...agentCallerEnv(principal), ...programCallerEnv(key, principal), ...sessionEnv }, sessionEnv, extraArgs, walls: principal.walls || undefined }, { provider, modelId, thinking: customMessage ? undefined : thinking || undefined, message, images, customMessage, author, simplifyAnswers: appSettings.simplifyAnswers && !owner && !customMessage, simplifyPrompt: appSettings.simplifyPrompt, onEvent: runEventForwarder(job) });
       appliedContextBySession.set(path.resolve(sessionPath), { sig: nextCtxSig, hash: bundleHash });
       record.handle = handle;
       await handle.done;
@@ -4705,9 +4750,10 @@ async function setConversationThinking(key, level, force) {
   const ctxBundle = contextItems.length ? await writeAttachedContextFile(contextItems) : null;
   const principal = await currentPrincipal(projectNameOf(entry.cwd, key));
   assertPrincipalCanRun(principal, 'the thinking level');
+  assertRunsHere(key, principal, 'change it');
   const extraArgs = [...piProviderExtraArgs(), ...(ctxBundle ? ['--append-system-prompt', promptArgFor(principal, ctxBundle.file, ctxBundle.text)] : [])];
-  const engine = principal.sandbox ? pisdk : piEng();
-  const out = await withSessionOp(sessionPath, () => engine.piSetThinking({ sessionPath, cwd, env: agentEnv(principal), extraArgs, sandbox: principal.sandbox || undefined }, level));
+  const engine = principal.walls ? pisdk : piEng();
+  const out = await withSessionOp(sessionPath, () => engine.piSetThinking({ sessionPath, cwd, env: agentEnv(principal), extraArgs, walls: principal.walls || undefined }, level));
   await reindexIfChanged(key);
   if (reopen) { try { await openConversationInTerminal(key, { focus: false }); } catch {} }
   return { ok: true, level: out.level, levels: out.levels, reopened: reopen };
@@ -4728,7 +4774,7 @@ async function compactConversation(key, instructions, force) {
     if (headlessRuns.has(sessionPath)) throw new Error('A reply is being written in this conversation. Wait for it to finish, or stop it, then compact.');
     if (compactingSessions.has(path.resolve(sessionPath))) throw new Error('This conversation is already being compacted.');
     const principal = await currentPrincipal(projectNameOf(entry.cwd, key));
-    if (principal.guest || principal.sandbox) throw Object.assign(new Error('Codex runs from Chattering for this machine\'s own account only.'), { status: 403 });
+    if (principal.guest || principal.walls) throw Object.assign(new Error('Codex runs from Chattering for this machine\'s own account only.'), { status: 403 });
     compactingSessions.add(path.resolve(sessionPath));
     broadcast({ type: 'compaction', key, state: 'running' });
     try {
@@ -4761,12 +4807,13 @@ async function compactConversation(key, instructions, force) {
   const ctxBundle = contextItems.length ? await writeAttachedContextFile(contextItems) : null;
   const principal = await currentPrincipal(projectNameOf(entry.cwd, key));
   assertPrincipalCanRun(principal, 'compaction');
+  assertRunsHere(key, principal, 'compact it');
   const extraArgs = [...piProviderExtraArgs(), ...(ctxBundle ? ['--append-system-prompt', promptArgFor(principal, ctxBundle.file, ctxBundle.text)] : [])];
-  const engine = principal.sandbox ? pisdk : piEng();
+  const engine = principal.walls ? pisdk : piEng();
   compactingSessions.add(path.resolve(sessionPath));
   broadcast({ type: 'compaction', key, state: 'running' });
   try {
-    const out = await withSessionOp(sessionPath, () => engine.piCompact({ sessionPath, cwd, env: agentEnv(principal), extraArgs, sandbox: principal.sandbox || undefined }, focus));
+    const out = await withSessionOp(sessionPath, () => engine.piCompact({ sessionPath, cwd, env: agentEnv(principal), extraArgs, walls: principal.walls || undefined }, focus));
     await reindexIfChanged(key);
     broadcast({ type: 'compaction', key, state: 'done', tokensBefore: out.tokensBefore, tokensAfter: out.tokensAfter });
     if (reopen) { try { await openConversationInTerminal(key, { focus: false }); } catch {} }
@@ -5172,7 +5219,7 @@ function ensureFrogMode() {
 const frogCarried = new Set(); // key + installed mode's hash
 const frogModeShape = d => d ? JSON.stringify(['label', 'opener', 'appendix', 'systemPrompt', 'removeSections', 'tools'].map(k => d[k] === undefined ? null : d[k])) : null;
 async function frogCarryOver(key) {
-  if (!key || !index[key] || index[key].source !== 'pi') return;
+  if (!key || !index[key] || !isPiSource(index[key].source)) return;
   ensureFrogMode();
   let installed = null;
   try { installed = JSON.parse(fs.readFileSync(path.join(PI_AGENT_DIR, 'modes', 'frog.json'), 'utf8')); } catch {}
@@ -5372,8 +5419,8 @@ async function frogRead({ id, last, at }, identity) {
   const key = frogKeyOf(id, identity);
   const entry = index[key];
   const n = Math.max(1, Math.min(60, Number(last) || 12));
-  if (entry.source === 'pi') {
-    const raw = await fsp.readFile(absPathForKey(key), 'utf8');
+  if (isPiSource(entry.source)) {
+    const raw = await readTranscriptText(absPathForKey(key));
     return { ...frogRow(key), ...frogLib.piBranchMessages(raw, { last: n, at: at ? String(at) : null }) };
   }
   if (at) throw new Error('reading around an entry works for Pi conversations only');
@@ -5397,7 +5444,7 @@ async function frogSend({ id, text }, identity) {
   let out;
   if (liveHeld.has(sessionPath)) {
     out = { via: 'its own program', ...(await liveTerminals().send(key, body)) };
-  } else if (entry.source === 'pi' || entry.source === 'codex') {
+  } else if (isPiSource(entry.source) || entry.source === 'codex') {
     const r = await startAgentRun(key, { message: body, allowQueue: true, principal, input: 'frog' });
     out = r && r.queued ? { via: 'chattering', queued: true } : { via: 'chattering', job: jobView(r) };
   } else {
@@ -5994,7 +6041,7 @@ async function frogMemoryWork(opts = {}) {
 }
 async function frogMemoryPass({ force = false } = {}) {
   const key = theFrog.key;
-  if (!key || !index[key] || index[key].source !== 'pi') return { skipped: 'no frog conversation' };
+  if (!key || !index[key] || !isPiSource(index[key].source)) return { skipped: 'no frog conversation' };
   if (!theFrog.memoryOn()) return { skipped: 'the frog\u2019s memory is off' };
   const abs = absPathForKey(key);
   const cfg = frogMemoryConfig();
@@ -6065,7 +6112,7 @@ function frogSegmentLater({ message = null, why = 'asked' } = {}) {
 let frogSegmenting = false;
 async function frogSegment({ message = null, why = 'asked' } = {}) {
   const key = theFrog.key;
-  if (!key || !index[key] || index[key].source !== 'pi') return { started: false, why: 'no frog conversation' };
+  if (!key || !index[key] || !isPiSource(index[key].source)) return { started: false, why: 'no frog conversation' };
   if (frogSegmenting) return { started: false, why: 'already making one' };
   const abs = absPathForKey(key);
   if (frogFileBusy(abs)) { frogSegmentWanted = { message, why, at: Date.now() }; return { started: false, why: 'the frog is busy; when its turn ends' }; }
@@ -7144,6 +7191,49 @@ function accountPersonName() {
 }
 let roster = usersLib.loadRoster(USERS_FILE, { ownerName: accountPersonName() }).roster;
 function saveRoster() { try { usersLib.saveRoster(USERS_FILE, roster); } catch (e) { console.error('[users] save:', e.message); } }
+// ---- people's own accounts (design/105) ----
+// A person linked to an account of their own runs as it. Their
+// conversations live in PEOPLE_DIR/<account>/sessions (declared by the
+// system configuration: theirs to write, readable here, by nobody else) and
+// are the source `pi@<account>`, registered before the first scan.
+const accountsLib = require('./accounts.js');
+const PEOPLE_DIR = process.env.CHATTERING_PEOPLE_DIR || accountsLib.DEFAULT_PEOPLE_DIR;
+const SHARED_RUNTIME_DIR = process.env.CHATTERING_SHARED_RUNTIME || accountsLib.DEFAULT_RUNTIME_DIR;
+const PEOPLE_GROUP = process.env.CHATTERING_PEOPLE_GROUP || accountsLib.DEFAULT_GROUP;
+const SERVICE_USER = (() => { try { return os.userInfo().username; } catch { return process.env.USER || ''; } })();
+// A person's account, when it is one of their own (not this server's).
+function ownAccountOf(user) {
+  const name = user && accountsLib.cleanAccountName(user.account);
+  return name && name !== SERVICE_USER ? name : null;
+}
+// The owner of each account folder: a file read from it must be theirs
+// (accounts.openOwned), whatever a symlink inside says.
+const accountSourceUid = new Map(); // source -> uid
+function registerAccountSource(name) {
+  const clean = accountsLib.cleanAccountName(name);
+  if (!clean || clean === SERVICE_USER) return null;
+  const source = 'pi@' + clean;
+  const root = path.join(PEOPLE_DIR, clean, 'sessions');
+  const isNew = SOURCES[source] !== root;
+  SOURCES[source] = root;
+  try { accountSourceUid.set(source, fs.statSync(root).uid); } catch { accountSourceUid.delete(source); }
+  if (isNew && typeof startSourceLive === 'function') startSourceLive(source);
+  return source;
+}
+for (const u of roster.users) if (ownAccountOf(u)) registerAccountSource(u.account);
+// Who a conversation file must belong to, when it is in a person's folder.
+function ownerOfTranscript(absPath) {
+  const source = sourceOfPath(absPath);
+  const name = accountOfSource(source);
+  return name ? { name, uid: accountSourceUid.get(source) } : null;
+}
+// A transcript's text. Inside a person's folder: opened without following
+// a final symlink, and only if their account owns it.
+async function readTranscriptText(absPath) {
+  const owner = ownerOfTranscript(absPath);
+  if (!owner) return fsp.readFile(absPath, 'utf8');
+  return accountsLib.readOwned(absPath, owner);
+}
 try { if (!fs.existsSync(USERS_FILE)) saveRoster(); } catch {}
 const installKey = usersLib.loadInstallKey(INSTALL_KEY_FILE);
 // The other Chattering installs on this computer: the Windows app and the
@@ -7229,7 +7319,12 @@ function identifyRequest(req) {
 // inside the projects shared with them, with the walls guests have. The
 // flag rides on this request's copy of the person, never on the roster.
 function wallsFor(identity) {
-  if (!identity || !identity.user || appSettings.isolation !== 'per-person' || accessLib.seesAll(identity) || identity.user.scope === 'guest') return identity;
+  if (!identity || !identity.user) return identity;
+  // On their own computer account (design/105): the route gate lets them
+  // reach only what acts for them as them (policy.js ACCOUNT_ROUTES).
+  const own = ownAccountOf(usersLib.findUser(roster, identity.user.id));
+  if (own) identity = { ...identity, user: { ...identity.user, ownAccount: own } };
+  if (appSettings.isolation !== 'per-person' || accessLib.seesAll(identity) || identity.user.scope === 'guest') return identity;
   return { ...identity, user: { ...identity.user, walled: true } };
 }
 const publicUsers = () => roster.users.map(usersLib.publicUser);
@@ -7241,29 +7336,73 @@ const userById = id => usersLib.publicUser(usersLib.findUser(roster, id));
 // here instead, and nothing else changes. See design/46, "Team scale".
 function principalFor(identity, { project = null } = {}) {
   const user = usersLib.publicUser((identity && identity.user) || usersLib.ownerOf(roster));
-  const base = { user, spawnAs: null, env: { CHATTERING_USER: user.id, CHATTERING_USER_NAME: user.name }, guest: false, sandbox: null, project };
+  const base = { user, spawnAs: null, env: { CHATTERING_USER: user.id, CHATTERING_USER_NAME: user.name }, guest: false, walls: null, project };
+  // A person with an account of their own runs as it, whoever they are
+  // (owner, member or guest): their walls are that account (design/105),
+  // or, while it is not ready, walls that refuse with the reason.
+  const full = usersLib.findUser(roster, user.id);
+  const own = ownAccountOf(full);
+  if (own) return { ...base, account: own, spawnAs: own, walls: accountManager.wallsFor(full) };
+  // Each person runs as their own account here: someone without one does
+  // not run anything (the owner excepted: they run as this server's account).
+  if (appSettings.accountsRequired && full && full.role !== 'owner' && !(identity && usersLib.isWalled(identity.user)))
+    return { ...base, walls: require('./account-manager.js').blockedWalls(user.name, `On this computer each person runs as their own account, and ${user.name} has none yet. The owner links one in settings \u2192 people.`, 403) };
   if (!identity || !usersLib.isWalled(identity.user)) return base;
   // A guest runs behind walls (sandbox.js): only the project exists for
   // their processes. Which project is decided by the caller from the
   // conversation or the folder; without one, nothing may run.
-  return { ...base, guest: true, sandbox: project ? guestSandboxFor(identity.user, project) : null };
+  return { ...base, guest: true, walls: project ? guestSandboxFor(identity.user, project) : null };
+}
+// Where a principal's new Pi conversations go: a guest's sandbox names one
+// folder; a person's account has a folder per working directory.
+function wallsSessionDir(walls, cwd) {
+  if (!walls) return undefined;
+  return typeof walls.sessionDirFor === 'function' ? walls.sessionDirFor(cwd) : walls.sessionDir;
+}
+// The account a principal's processes run as: theirs, or null for this
+// server's own (owner, household, guests in their sandbox).
+const principalAccount = principal => principal && principal.walls && principal.walls.kind === 'account' ? principal.walls.account.name : null;
+// A Pi conversation runs as the account whose folder holds it: no one
+// drives another account's file (it is theirs; their agent's rights are
+// not anyone else's), the owner included. Forking makes a copy that is
+// the sender's own. The same rule mirrors follow (assertCan).
+function assertRunsHere(key, principal, what = 'continue it') {
+  const e = index[key];
+  if (!e || !isPiSource(e.source)) return;
+  const stored = accountOfSource(e.source);
+  const runner = principalAccount(principal);
+  if (stored === runner) return;
+  const whose = stored ? (personWithAccount(stored) || { name: stored }).name + '\u2019s own account (' + stored + ')' : 'this computer\u2019s main account';
+  const err = new Error(`This conversation belongs to ${whose}. To ${what} as ${runner ? (principal.user && principal.user.name || runner) + ' (' + runner + ')' : 'yourself'}, fork it: the copy is yours.`);
+  err.status = 409; err.fork = true; err.account = stored;
+  throw err;
+}
+// Models through the key proxy: guests, and people on the owner's models.
+const usesKeyProxy = principal => !!(principal && (principal.guest || (principal.walls && principal.walls.kind === 'account' && principal.walls.models === 'shared')));
+const personWithAccount = name => roster.users.find(u => ownAccountOf(u) === name) || null;
+// Work nobody typed (a run resumed after a restart, a queued turn): it runs
+// as whoever owns the conversation's folder.
+function backgroundPrincipalFor(key) {
+  const stored = key && index[key] ? accountOfSource(index[key].source) : null;
+  const person = stored ? personWithAccount(stored) : null;
+  return person ? principalFor({ user: person }) : principalFor(null);
 }
 // The same principal, with the walls of one project (a guest's sandbox is
 // built once the project is known; an owner's principal is unchanged).
 async function principalInProject(principal, project) {
-  if (!principal || !principal.guest || principal.sandbox || !project || project === LOOSE_PROJECT) return principal;
+  if (!principal || !principal.guest || principal.walls || !project || project === LOOSE_PROJECT) return principal;
   const user = usersLib.findUser(roster, principal.user.id);
-  return { ...principal, project, sandbox: await guestSandboxFor(user || principal.user, project) };
+  return { ...principal, project, walls: await guestSandboxFor(user || principal.user, project) };
 }
 // Guest agents cannot read files outside the walls: a system-prompt file
 // is passed as its text instead (pi accepts either).
 function promptArgFor(principal, file, text) {
-  return principal && principal.sandbox ? text : file;
+  return principal && principal.walls ? text : file;
 }
 // What a guest with no project on hand is told when they try to run something.
 function assertPrincipalCanRun(principal, what = 'this') {
   if (!principal.guest) return;
-  if (!principal.sandbox) { const e = new Error(`As a guest you can only run ${what} inside a project shared with you.`); e.status = 403; throw e; }
+  if (!principal.walls) { const e = new Error(`As a guest you can only run ${what} inside a project shared with you.`); e.status = 403; throw e; }
 }
 function assertNotGuest(identity, what = 'this') {
   if (identity && usersLib.isWalled(identity.user)) { const e = new Error(`${what} touches this machine outside the shared project and is not available to guests.`); e.status = 403; throw e; }
@@ -7405,6 +7544,71 @@ const hostFacts = (() => {
   try { claudeVersion = (String(execFileSync('claude', ['--version'], { encoding: 'utf8', timeout: 4000 })).match(/\b\d+\.\d+\.\d+\b/) || [''])[0]; } catch {}
   return { claudeVersion };
 })();
+// ---- people's own accounts, the server's side (design/105) ----
+// Each linked person's slice under this server's user manager: their
+// processes, whatever account they run as, are counted, capped and
+// stopped together (cgroup.kill reaches processes of any account in it).
+const personSliceApplied = new Map();
+async function personCgroupFor(account) {
+  if (!(await cgroupsAvailable())) return null;
+  return { systemdRun: SYSTEMD_RUN, slice: accountsLib.personSliceName(account) };
+}
+// Stop every process in a cgroup, whatever account runs it. Signals sent
+// from here cannot reach another account's processes; cgroup.kill can.
+async function killCgroup(relPath) {
+  if (!relPath || !relPath.startsWith('/')) return false;
+  try { await fsp.writeFile(path.join('/sys/fs/cgroup', relPath, 'cgroup.kill'), '1'); return true; } catch { return false; }
+}
+async function killPersonSlice(account) {
+  if (!SYSTEMD_RUN) return false;
+  const slice = accountsLib.personSliceName({ name: account });
+  const cg = (await execText('systemctl', ['--user', 'show', '-p', 'ControlGroup', '--value', slice], { timeout: 8000 }).catch(() => '')).trim();
+  return killCgroup(cg);
+}
+// A process started behind a person's account walls (sudo, then theirs):
+// asked to stop through sudo (it passes SIGTERM on), then its scope is
+// killed, which takes what it left behind too.
+function stopLaunched(child) {
+  if (!child || child.exitCode !== null) return;
+  try { child.kill('SIGTERM'); } catch {}
+  if (child.wallsKind !== 'account') { setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 1500).unref(); return; }
+  let cg = null;
+  try { cg = (fs.readFileSync('/proc/' + child.pid + '/cgroup', 'utf8').match(/^0::(.*)$/m) || [])[1] || null; } catch {}
+  setTimeout(() => { if (cg && /\.scope$/.test(cg)) killCgroup(cg); else try { child.kill('SIGKILL'); } catch {} }, 1500).unref();
+}
+const accountManager = require('./account-manager.js').createAccountManager({
+  appDir: __dirname, serviceUser: SERVICE_USER, group: PEOPLE_GROUP, peopleDir: PEOPLE_DIR, runtimeRoot: SHARED_RUNTIME_DIR,
+  nodePath: () => runtimeLib.nodePath(),
+  piPackageDir: () => require('./pisdk-runtime.js').piPackageDir(),
+  // The Claude Code provider extension is code (it reads the logins of
+  // whoever runs it); published so a person's Pi can load it too.
+  ownerExtensions: () => fs.existsSync(CLAUDE_CODE_EXT) ? [{ name: path.basename(path.dirname(CLAUDE_CODE_EXT)), dir: path.dirname(CLAUDE_CODE_EXT) }] : [],
+  // Their processes call this server as them: a credential of their own,
+  // never the install token, never the owner's token file.
+  principalEnv: user => ({ CHATTERING_USER: user.id, CHATTERING_USER_NAME: user.name, CHATTERING_PORT: String(PORT), CHATTERING_TOKEN: guestApiTokenFor(user), RAT_CALLER: user.name + '\u2019s agent' }),
+  // The owner's models, shared through the key proxy: placeholders in their
+  // Pi folder, the real keys never leave this server (design/53).
+  sharedModels: async user => {
+    let token = guestProxyTokens.get(user.id);
+    if (!token) { token = crypto.randomBytes(18).toString('base64url'); guestProxyTokens.set(user.id, token); }
+    const url = await keyProxy.url();
+    guestProxyPort = Number(new URL(url).port);
+    const providers = await guestProviderList();
+    const choice = guestModelChoice(null, null, providers);
+    let ownerSettings = {};
+    try { ownerSettings = JSON.parse(fs.readFileSync(path.join(OWNER_AGENT_DIR, 'settings.json'), 'utf8')); } catch {}
+    await keyProxy.grant(token, { guest: { id: user.id, name: user.name } });
+    return {
+      files: sandboxLib.proxyAgentFiles({ proxy: { url, token }, allowedProviders: providers, ownerSettings, defaults: { provider: choice.provider, model: choice.modelId } }),
+      choice: { provider: choice.provider, model: choice.modelId },
+      env: { PI_CLAUDE_CODE_TRANSPORT: 'api', PI_CLAUDE_CODE_BASE_URL: url + '/claude-code', ...(hostFacts.claudeVersion ? { CLAUDE_CODE_VERSION: hostFacts.claudeVersion } : {}) },
+    };
+  },
+  cgroupFor: personCgroupFor,
+  proxyPort: () => guestProxyPort,
+  log: m => console.error(m),
+  onChange: (userId, st) => { if (st && st.status !== 'preparing') broadcast({ type: 'users', users: publicUsers(), groups: roster.groups }); if (st && st.status === 'broken') console.error('[accounts]', userId, (st.problems || []).join(' ')); },
+});
 const guestUsage = []; // recent proxy usage rows, for the people pane
 function recordGuestUsage(u) {
   guestUsage.push({ at: Date.now(), guest: u.guest, provider: u.provider, status: u.status, ms: u.ms, bytesIn: u.bytesIn, bytesOut: u.bytesOut });
@@ -7418,8 +7622,18 @@ function stopGuestProcesses(userId) {
   for (const p of allProjectNames()) { const meta = projectMetaFor(p); if (meta && meta.cwd) stopped += pisdk.stopWalls('guest:' + userId + ':' + meta.cwd); }
   const token = guestProxyTokens.get(userId);
   if (token) { keyProxy.revoke(token); guestProxyTokens.delete(userId); }
-  for (const child of [...guestChildren]) if (child.guestId === userId) { try { child.kill('SIGKILL'); } catch {} stopped++; }
+  for (const child of [...guestChildren]) if (child.guestId === userId) { if (child.wallsKind === 'account') stopLaunched(child); else try { child.kill('SIGKILL'); } catch {} stopped++; }
   killGuestSlice(userId);
+  // A person on their own account: their workers, then everything in their
+  // slice, whatever account it runs as. A revoked proxy token means their
+  // shared-model setup is rebuilt before their next run.
+  const person = usersLib.findUser(roster, userId);
+  const own = ownAccountOf(person);
+  if (own) {
+    stopped += pisdk.stopWalls('account:' + own);
+    killPersonSlice(own).catch(() => {});
+    if (token) accountManager.forget(userId);
+  }
   // Their agents' own programs (design/91), and the hold on their files.
   if (liveTerminalsLib) stopped += liveTerminalsLib.stopUser(userId);
   return stopped;
@@ -8165,7 +8379,7 @@ const programRater = identity => programPerson(identity && identity.tier === 'co
 // this person), and where to log when the owner turned recording on. A
 // walled person's sandbox keeps its own environment.
 function programCallerEnv(key, principal) {
-  if (principal && principal.sandbox) return {};
+  if (principal && principal.walls) return {};
   const caller = { kind: 'agent', conversation: key, user: programPerson(principal && principal.user) };
   return { FUNCTAI_CALLER: JSON.stringify(caller), ...(appSettings.programsRecordAgents ? { FUNCTAI_LOG_CALLS: platform.functaiCallsDir() } : {}) };
 }
@@ -11641,6 +11855,7 @@ function liveTerminalRefusal(identity, harness = null) {
 async function liveLauncher(identity, cwd, key = null) {
   const principal = await principalInProject(principalFor(identity), projectNameOf(cwd, key));
   assertPrincipalCanRun(principal, 'an agent');
+  if (key) assertRunsHere(key, principal);
   return { principal, launch: argv => agentLaunch(principal, argv[0], argv.slice(1), { cwd }), userId: identity.user.id };
 }
 // What a conversation's page needs to know: whether its program is used
@@ -11919,7 +12134,7 @@ function claudeBin() {
 // is also where the spawn changes user; today every principal runs as the
 // account, and only the CHATTERING_USER* variables differ.
 function agentEnv(principal = null) {
-  if (principal && principal.sandbox) return principal.sandbox.env();
+  if (principal && principal.walls) return principal.walls.env();
   const uid = typeof process.getuid === 'function' ? process.getuid() : 1000;
   const xauthority = process.env.XAUTHORITY
     || firstExisting([
@@ -11947,14 +12162,14 @@ function agentEnv(principal = null) {
 // The one place a command is wrapped for whoever is driving: the owner's
 // processes start as they always did; a guest's start inside their walls.
 function agentLaunch(principal, file, args = [], { cwd } = {}) {
-  if (principal && principal.sandbox) return principal.sandbox.launch(file, args, { cwd });
+  if (principal && principal.walls) return principal.walls.launch(file, args, { cwd });
   return { file, args, env: agentEnv(principal) };
 }
 function conversationKind(entry) {
   if (entry.source === 'claude') return 'claude';
   if (entry.source === 'codex') return 'codex';
   if (entry.source === 'agy' || entry.source === 'muse') return entry.source;
-  if (entry.source === 'pi' || entry.source === 'pi-remote') return 'pi';
+  if (isPiSource(entry.source) || entry.source === 'pi-remote') return 'pi';
   return null;
 }
 
@@ -12561,7 +12776,13 @@ async function confirmSubmit(title, body) {
 
 async function sendToConversation(key, payload, principal = null) {
   await assertDelegationOwnership(absPathForKey(key));
-  principal = principal || principalFor(null);
+  principal = principal || backgroundPrincipalFor(key);
+  // This path types into a terminal on this computer's screen, which runs
+  // as the account this server runs as. A conversation of another account
+  // is not driven here, and people behind walls (guests, people on their
+  // own account) never reach the owner's terminal: their box runs it as them.
+  assertRunsHere(key, principal);
+  if (principal.guest || principal.walls) throw Object.assign(new Error('This sends through a terminal on this computer\u2019s screen, which runs as its owner. Send from the conversation\u2019s box: Chattering runs it as you.'), { status: 403 });
   let text = payload && payload.text != null ? String(payload.text) : '';
   const rawImages = Array.isArray(payload && payload.images) ? payload.images : [];
   const images = rawImages.map(decodeImagePayload).filter(Boolean).slice(0, 8);
@@ -12569,7 +12790,7 @@ async function sendToConversation(key, payload, principal = null) {
     ? normalizeContextItems(payload.context) : conversationContextOf(key);
   if (payload && payload.context !== undefined) saveConversationContext(key, contextItems);
   if (contextItems.length) {
-    const bundle = await writeAttachedContextFile(contextItems);
+    const bundle = await writeAttachedContextFile(contextItems, { principal });
     text = bundle.text + (text.trim() ? '\n\n---\n\n' + text : '');
   }
   if (!text.trim() && !images.length) throw new Error('Type text or attach an image first.');
@@ -14426,7 +14647,7 @@ function askIncludeOf(raw) {
   return { edits: o.edits !== false, asks: o.asks !== false, memory: o.memory === true };
 }
 
-const codexRefused = identity => { const p = principalFor(identity); return !!(p.guest || p.sandbox); };
+const codexRefused = identity => { const p = principalFor(identity); return !!(p.guest || p.walls); };
 // A Codex conversation's own model, as the ask box shows it.
 function codexOwnModel(key) {
   const m = codexRuns().prefsOf(key).model;
@@ -14446,7 +14667,7 @@ async function filesAskTargetResponse(pathValue, projectValue, identity) {
       if (!sn.convKey || !index[sn.convKey]) continue;
       const entry = index[sn.convKey];
       const codex = entry.source === 'codex';
-      if ((entry.source !== 'pi' && !codex) || isDelegatedKey(sn.convKey)) continue;
+      if ((!isPiSource(entry.source) && !codex) || isDelegatedKey(sn.convKey)) continue;
       // Codex runs on the owner's account: not a target for guests, nor a
       // text-only copy the Codex app imported.
       if (codex && (codexRefused(identity) || entry.importCopyOf || (entry.codex && entry.codex.imported))) continue;
@@ -16357,7 +16578,7 @@ async function transcriptEditResponse(body) {
   if (sessionPathsFor(key).entry.source === 'codex') throw Object.assign(new Error('Codex keeps its own conversation file; Chattering does not edit it. Edit the question to ask it on a new path (a fork).'), { status: 409 });
   if (body.branch) {
     const { entry, sessionPath } = sessionPathsFor(key);
-    if (entry.source !== 'pi' && entry.source !== 'pi-remote') throw new Error('Branch edits need a Pi conversation.');
+    if (!isPiSource(entry.source) && entry.source !== 'pi-remote') throw new Error('Branch edits need a Pi conversation.');
     return withSessionOp(sessionPath, async () => {
       if (headlessRuns.has(sessionPath) || findRunningConversation(key) || [...agentRunJobs.values()].some(j => j.fanoutRootKey === key && j.status === 'running')) throw new Error('Stop the active run or close its terminal before editing a branch.');
       stopAnyWarmSession(sessionPath);
@@ -17359,8 +17580,11 @@ async function loadAttachedChat(item) {
 // other files those sessions touched. Trust labels ride along.
 const FILE_CONTEXT_WHOLE_MAX = 64 * 1024;
 const FILE_CONTEXT_WINDOW = 200;
-async function fileContextBlock(item) {
+async function fileContextBlock(item, { asAccount = null } = {}) {
   const abs = path.resolve(item.path);
+  // For a person on their own account this server does not open the file
+  // (its rights are not theirs, design/105): their agent reads it, as them.
+  if (asAccount) return `### ${abs}\n\n- attached by the user; read it with your tools (it is on ${asAccount}\u2019s account, not inlined here)` + (item.range ? `\n- the user selected lines ${item.range[0]}\u2013${item.range[1]}` : item.line ? `\n- the user's cursor is on line ${item.line}` : '');
   let text;
   try { text = await fsp.readFile(abs, 'utf8'); } catch (e) { return `### ${abs}\n\n(could not read: ${e.message})`; }
   if (text.includes('\0')) return `### ${abs}\n\n(binary file, ${text.length} bytes — not inlined)`;
@@ -17408,8 +17632,9 @@ async function fileContextBlock(item) {
 
 // brief: text for one run, appended last (closest to the user message);
 // see startAgentRun.
-async function writeAttachedContextFile(items, { preview = false, brief = null } = {}) {
+async function writeAttachedContextFile(items, { preview = false, brief = null, principal = null } = {}) {
   const normalized = normalizeContextItems(items);
+  const asAccount = principalAccount(principal) || ownAccountOf(usersLib.findUser(roster, ((currentIdentity() || {}).user || {}).id));
   const maps = normalized.filter(i => i.type !== 'chat' && i.type !== 'file' && i.type !== 'note');
   const chats = normalized.filter(i => i.type === 'chat');
   const files = normalized.filter(i => i.type === 'file');
@@ -17466,7 +17691,7 @@ async function writeAttachedContextFile(items, { preview = false, brief = null }
   let fileCount = 0;
   if (files.length) {
     const blocks = [];
-    for (const item of files) { blocks.push(await fileContextBlock(item)); fileCount++; }
+    for (const item of files) { blocks.push(await fileContextBlock(item, { asAccount })); fileCount++; }
     parts.push('', '## Attached files', '',
       'The user is reading or editing these files in Chattering and watches them live. When asked for a change, edit the file in place with your tools; do not rewrite unrelated parts; keep the author\'s formatting.', '',
       blocks.join('\n\n---\n\n'));
@@ -17864,23 +18089,37 @@ async function startProjectConversation(options) {
   // SDK sessions persist and open in the web composer in exactly one way.
   const projectless = options.projectless === true;
   const project = projectless ? LOOSE_PROJECT : options.project;
-  const meta = projectless ? { cwd: os.homedir() } : projectMetaFor(project);
+  // A person on their own account (design/105): their home, and their
+  // account answers whether a folder exists (this server may not see it).
+  const ownWalls = options.principal && options.principal.walls && options.principal.walls.kind === 'account' ? options.principal.walls : null;
+  if (ownWalls && ownWalls.blocked) ownWalls.launch(); // says why their account is not ready
+  const ownHost = ownWalls ? accountManager.hostFor(usersLib.findUser(roster, options.principal.user.id)) : null;
+  const home = ownWalls ? ownWalls.account.home : os.homedir();
+  const isDir = async p => ownHost ? ownHost.call('stat', p).then(s => s.type === 'dir', () => false) : fs.existsSync(p);
+  const meta = projectless ? { cwd: home } : projectMetaFor(project);
   if (!meta) throw new Error('project not found');
   // The "where" of a project start. Never fall back to home in silence: a
   // conversation rooted at home would index as Loose, not as the project.
-  let cwd = os.homedir();
+  let cwd = home;
   let areaRel = null;
   if (projectless && options.folder != null && String(options.folder).trim()) {
     // A draft chose its folder. This is the same choice as `cd X && pi`:
     // tools run there, and the folder decides which project the
     // conversation joins (a project root or area joins that project; home,
     // ~/Projects, and temp folders stay loose). Only an existing directory.
-    const folder = describeStartFolder(options.folder);
-    if (!folder.exists) throw new Error('folder not found: ' + folder.display);
-    cwd = folder.path;
+    if (ownHost) {
+      const raw = String(options.folder).trim();
+      const abs = path.resolve(raw === '~' ? home : raw.startsWith('~/') ? path.join(home, raw.slice(2)) : raw);
+      if (!(await isDir(abs))) throw new Error('folder not found (as ' + ownWalls.account.name + '): ' + abs);
+      cwd = abs;
+    } else {
+      const folder = describeStartFolder(options.folder);
+      if (!folder.exists) throw new Error('folder not found: ' + folder.display);
+      cwd = folder.path;
+    }
   }
   if (!projectless) {
-    if (!meta.cwd || !fs.existsSync(meta.cwd)) {
+    if (!meta.cwd || !(await isDir(meta.cwd))) {
       throw new Error(`the project folder is missing: ${meta.cwd || '(unknown)'} — re-create or adopt it first`);
     }
     cwd = meta.cwd;
@@ -17891,12 +18130,12 @@ async function startProjectConversation(options) {
       if (!areaRel) throw new Error('bad area path');
       if (!(areaRel in declaredAreasFor(project))) throw new Error('unknown area: ' + areaRel);
       cwd = path.join(meta.cwd, areaRel);
-      await fsp.mkdir(cwd, { recursive: true }); // the folder is the scope; restore it if it vanished
+      if (ownHost) await ownHost.call('mkdir', cwd, { recursive: true }); else await fsp.mkdir(cwd, { recursive: true }); // the folder is the scope; restore it if it vanished
     } else if (options.cwd) {
       const subRel = areasLib.normalizeAreaRel(options.cwd);
       if (!subRel) throw new Error('bad subfolder path — give a relative path inside the project');
       cwd = path.join(meta.cwd, subRel);
-      if (!fs.existsSync(cwd)) throw new Error('subfolder not found: ' + subRel);
+      if (!(await isDir(cwd))) throw new Error('subfolder not found: ' + subRel);
       areaRel = areaOfCwdIn(project, cwd); // an undeclared subfolder may still sit inside a declared area
     }
   }
@@ -17929,6 +18168,11 @@ async function startProjectConversation(options) {
   // Guests: the walls of the project this conversation starts in.
   const guestPrincipal = options.principal && options.principal.guest ? await principalInProject(options.principal, impliedProject) : null;
   if (guestPrincipal) { assertPrincipalCanRun(guestPrincipal, 'a new conversation'); if (kind !== 'pi' || options.surface === 'alacritty') throw Object.assign(new Error('Guests start Pi conversations from the browser only.'), { status: 403 }); }
+  // Whoever starts it, behind their walls: a guest's sandbox or a person's
+  // own account (design/105) start Pi in the browser only, and files of
+  // this server's own (context, briefing) reach them as text.
+  const startWalls = (guestPrincipal || options.principal || {}).walls || null;
+  if (startWalls && startWalls.kind === 'account') { if (startWalls.blocked) startWalls.launch(); if (kind !== 'pi' || options.surface === 'alacritty') throw Object.assign(new Error('Conversations that run as your own account start with Pi, in the browser.'), { status: 403 }); }
   const wantMap = include.map !== false;
   const wantNotes = includeFlag(include, 'notes');
   const wantEpics = Array.isArray(include.epics) && include.epics.length;
@@ -17950,6 +18194,15 @@ async function startProjectConversation(options) {
     const focus = options.name ? ` Today's focus: "${options.name}".` : '';
     text = `Your system prompt carries this project's work memory.` + focus +
       ' Reply with at most 3 lines on where the project stands, then wait for instructions.';
+  } else if (wantBriefing && startWalls && startWalls.kind === 'account') {
+    // The briefing and the memory it maps are this server's files, which a
+    // person's account cannot open: the map rides in the system prompt, and
+    // what it names is read through the records tools (their own token).
+    briefing = await buildProjectBriefing(project, include, options.name || '');
+    contextText = String(await fsp.readFile(briefing, 'utf8').catch(() => '')) + '\nThese files are on the Chattering server, not on your disk: read them with the chattering records tools (chattering_memory, chattering_read, chattering_show).\n';
+    contextFile = briefing;
+    const focus = options.name ? ` Today's focus: "${options.name}".` : '';
+    text = `Your system prompt maps this project's work memory.${focus} Read what you need through the records tools, then reply with at most 3 lines on where the project stands, and wait for instructions.`;
   } else if (wantBriefing) {
     briefing = await buildProjectBriefing(project, include, options.name || '');
     const focus = options.name ? ` Today's focus: "${options.name}".` : '';
@@ -17966,7 +18219,7 @@ async function startProjectConversation(options) {
   // --prompt-mode with --append-system-prompt.
   const piCtxArgs = [
     ...(mode ? ['--prompt-mode', mode] : []),
-    ...(contextFile ? ['--append-system-prompt', guestPrincipal ? contextText : contextFile] : []),
+    ...(contextFile ? ['--append-system-prompt', startWalls ? contextText : contextFile] : []),
   ];
   const argv = kind === 'claude'
     ? (text ? [claudeBin(), text] : [claudeBin()])
@@ -17978,8 +18231,8 @@ async function startProjectConversation(options) {
   if (useRpc) {
     const principal = guestPrincipal || options.principal || principalFor(null);
     if (text) assertWithinBudget(usersLib.findUser(roster, principal.user.id) || principal.user);
-    const engine = principal.sandbox ? pisdk : piEng();
-    const walls = principal.sandbox ? { sandbox: principal.sandbox, sessionDir: principal.sandbox.sessionDir } : {};
+    const engine = principal.walls ? pisdk : piEng();
+    const walls = principal.walls ? { walls: principal.walls, sessionDir: wallsSessionDir(principal.walls, cwd) } : {};
     const begun = await engine.piBeginWarm({ cwd, env: { ...agentEnv(principal), ...agentCallerEnv(principal) }, extraArgs: ['--name', label, ...piProviderExtraArgs(), ...piCtxArgs], ...walls });
     // Pi reports sessionFile before it writes. The first prompt creates the file.
     const job = {
@@ -17994,7 +18247,7 @@ async function startProjectConversation(options) {
     if (text) {
       const author = { id: principal.user.id, name: principal.user.name, input: options.input || 'keyboard', coauthors: options.coauthors || undefined };
       let lead = leadModel;
-      if (principal.guest) { const c = guestModelChoice(leadModel && leadModel.provider, leadModel && leadModel.modelId, await guestProviderList()); lead = c.provider ? { provider: c.provider, modelId: c.modelId } : null; }
+      if (usesKeyProxy(principal)) { const c = guestModelChoice(leadModel && leadModel.provider, leadModel && leadModel.modelId, await guestProviderList()); lead = c.provider ? { provider: c.provider, modelId: c.modelId } : null; }
       handle = engine.piHeadlessRun({ sessionPath: begun.file, cwd, env: agentEnv(principal), extraArgs: [...piProviderExtraArgs(), ...piCtxArgs], ...walls }, {
         provider: lead && lead.provider, modelId: lead && lead.modelId,
         message: text, author, simplifyAnswers: appSettings.simplifyAnswers, simplifyPrompt: appSettings.simplifyPrompt, onEvent: runEventForwarder(job),
@@ -18218,8 +18471,8 @@ async function ratSpawn(args, { cwd, env = null } = {}) {
   if (!rat.path) return null;
   const principal = await currentPrincipal(cwd ? projectOfPath(cwd) : null);
   assertPrincipalCanRun(principal, 'a notebook cell');
-  const launched = principal.sandbox ? principal.sandbox.launch(rat.path, args, { cwd }) : { file: rat.path, args, env: process.env };
-  const child = spawn(launched.file, launched.args, { cwd: principal.sandbox ? undefined : (cwd || os.homedir()), env: env ? { ...launched.env, ...env } : launched.env });
+  const launched = principal.walls ? principal.walls.launch(rat.path, args, { cwd }) : { file: rat.path, args, env: process.env };
+  const child = spawn(launched.file, launched.args, { cwd: principal.walls ? undefined : (cwd || os.homedir()), env: env ? { ...launched.env, ...env } : launched.env });
   if (principal.guest) { child.guestId = principal.user.id; guestChildren.add(child); child.on('close', () => guestChildren.delete(child)); }
   return child;
 }
@@ -22304,6 +22557,28 @@ async function handleRequest(req, res) {
         } else if (op === 'revoke') {
           if (!manages && !self) throw Object.assign(new Error('not yours to revoke'), { status: 403 });
           out = { revoked: usersLib.revokeCredential(roster, p.id, p.credentialId).id };
+        } else if (op === 'account') {
+          // Which computer account a person's processes run as (design/105).
+          // Machine administration: the owner tier only. A changed link
+          // stops what runs as the old one first.
+          if (!ownerTier) throw Object.assign(new Error('only this computer\u2019s administrators link people to accounts'), { status: 403 });
+          const target = usersLib.findUser(roster, p.id);
+          if (!target) throw Object.assign(new Error('no such person'), { status: 404 });
+          const name = p.account == null || p.account === '' ? null : accountsLib.cleanAccountName(p.account);
+          if (p.account && !name) throw new Error('not an account name: ' + p.account);
+          if (name && name === SERVICE_USER) throw new Error(`${name} is the account this server runs as. Leave ${target.name} unlinked to run as it.`);
+          const models = p.models === 'shared' ? 'shared' : p.models === 'own' ? 'own' : undefined;
+          if ((target.account || null) !== name || (models && models !== (target.models || 'own'))) stopGuestProcesses(target.id);
+          usersLib.setAccount(roster, target.id, { account: name, models });
+          accountManager.forget(target.id);
+          if (name) { registerAccountSource(name); await accountManager.refresh(target); }
+          out = { user: usersLib.publicUser(target), account: accountManager.publicState(target) };
+        } else if (op === 'account-check') {
+          if (!ownerTier) throw Object.assign(new Error('only this computer\u2019s administrators check accounts'), { status: 403 });
+          const target = usersLib.findUser(roster, p.id);
+          if (!target) throw Object.assign(new Error('no such person'), { status: 404 });
+          if (target.account) { accountManager.forget(target.id); registerAccountSource(target.account); await accountManager.refresh(target); }
+          out = { account: accountManager.publicState(target) };
         } else if (op === 'stop') {
           // The kill switch: everything this person has running here stops,
           // and their sandboxes lose their keys mid-flight.
@@ -22344,6 +22619,15 @@ async function handleRequest(req, res) {
         anywhere.prune();
         json(res, 200, { ...out, users: publicUsers(), groups: roster.groups });
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/accounts' && req.method === 'GET') {
+      // People's own accounts (design/105): what this computer offers and
+      // where each linked person stands. Administrators only.
+      const support = accountManager.support();
+      json(res, 200, {
+        support: { ...support, available: !!(support.sudo && support.mediator) && platform.IS_LINUX, caps: cgroupState !== false },
+        required: !!appSettings.accountsRequired,
+        people: roster.users.map(usr => ({ id: usr.id, name: usr.name, role: usr.role, scope: usr.scope, ...accountManager.publicState(usr) })),
+      });
     } else if (u.pathname === '/api/project-id' && req.method === 'GET') {
       // By name, or by the folder the asker stands in.
       const project = u.searchParams.get('project') || (u.searchParams.get('dir') ? projectOfPath(u.searchParams.get('dir')) : '') || '';
@@ -23014,7 +23298,7 @@ async function handleRequest(req, res) {
         if (key) assertCan(identity, 'see', targetOf(key), 'this conversation');
         const cwd = key ? sessionPathsFor(key).cwd : (u.searchParams.get('cwd') ? describeStartFolder(u.searchParams.get('cwd')).path : os.homedir());
         const principal = principalFor(identity);
-        if (principal.guest || principal.sandbox) return json(res, 403, { error: 'Codex runs from Chattering for this machine\'s own account only.' });
+        if (principal.guest || principal.walls) return json(res, 403, { error: 'Codex runs from Chattering for this machine\'s own account only.' });
         const menus = await codexMenusFor(cwd, principal);
         if (key) menus.prefs = codexRuns().prefsOf(key);
         json(res, 200, menus);
@@ -23273,18 +23557,25 @@ async function handleRequest(req, res) {
       let principal;
       try { principal = await principalInProject(principalFor(identity), cwd ? projectOfPath(cwd) : null); assertPrincipalCanRun(principal, 'a command'); }
       catch (e) { return json(res, e.status || 403, { error: e.message }); }
-      const bash = principal.sandbox ? 'bash' : platform.bashPath();
+      const bash = principal.walls ? 'bash' : platform.bashPath();
       if (!bash) return json(res, 409, { error: 'Commands from replies run in bash. On Windows that is Git Bash, which Pi uses too: install Git for Windows (https://git-scm.com), then run it again.' });
+      const accountRun = principal.walls && principal.walls.kind === 'account';
+      let launched;
+      // A person's own account decides whether the folder exists for them:
+      // this server may not see into it at all.
+      const dir = accountRun ? (cwd && typeof cwd === 'string' && path.isAbsolute(cwd) ? cwd : undefined)
+        : cwd && typeof cwd === 'string' && fs.existsSync(cwd) ? cwd : os.homedir();
+      try { launched = agentLaunch(principal, bash, ['-lc', cmd], { cwd: dir }); }
+      catch (e) { return json(res, e.status || 403, { error: e.message }); }
       const result = await new Promise(resolve => {
-        const dir = cwd && typeof cwd === 'string' && fs.existsSync(cwd) ? cwd : os.homedir();
-        const launched = agentLaunch(principal, bash, ['-lc', cmd], { cwd: dir });
-        const child = spawn(launched.file, launched.args, { cwd: principal.sandbox ? undefined : dir, env: launched.env });
-        if (principal.guest) { child.guestId = principal.user.id; guestChildren.add(child); child.on('close', () => guestChildren.delete(child)); }
+        const child = spawn(launched.file, launched.args, { cwd: principal.walls ? undefined : dir, env: launched.env });
+        if (principal.guest || accountRun) { child.guestId = principal.user.id; child.wallsKind = accountRun ? 'account' : 'sandbox'; guestChildren.add(child); child.on('close', () => guestChildren.delete(child)); }
+        const halt = () => accountRun ? stopLaunched(child) : child.kill('SIGKILL');
         let buf = '';
-        const cap = s => { buf += s; if (buf.length > 200000) { buf = buf.slice(0, 200000) + '\n… (truncated — output capped at 200 KB)'; child.kill('SIGKILL'); } };
+        const cap = s => { buf += s; if (buf.length > 200000) { buf = buf.slice(0, 200000) + '\n… (truncated — output capped at 200 KB)'; halt(); } };
         child.stdout.on('data', d => cap(String(d)));
         child.stderr.on('data', d => cap(String(d)));
-        const timer = setTimeout(() => { cap('\n… (stopped after 120 s)'); child.kill('SIGKILL'); }, 120000);
+        const timer = setTimeout(() => { cap('\n… (stopped after 120 s)'); halt(); }, 120000);
         child.on('close', code => { clearTimeout(timer); resolve({ out: buf, code }); });
         child.on('error', e => { clearTimeout(timer); resolve({ out: String(e.message), code: -1 }); });
       });
@@ -25050,8 +25341,12 @@ applyLanMode(lanWanted(), () => {
   }
   // The server upgrades the history store before any Pi worker opens it.
   try { checkpoints(); } catch (e) { console.error('Saved file history unavailable:', e.message); }
-  fullScan().then(() => {
+  // People's own accounts get ready while the scan runs; runs interrupted
+  // by the restart resume as their owners, so they wait for it (briefly).
+  const accountsReady = accountManager.refreshAll(roster.users).catch(e => console.error('[accounts] boot:', e.message));
+  fullScan().then(async () => {
     convertArtifactFolders();
+    await Promise.race([accountsReady, sleep(20000)]);
     restoreInterruptedRuns();
     recoverLiveTerminals();
     watch(); watchNotes();

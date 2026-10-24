@@ -179,7 +179,7 @@ function createCodexDriver(hooks = {}) {
   let utility = null;              // menus and file search: holds no thread
 
   function newServer(target, name) {
-    if (target.sandbox && typeof target.sandbox === 'object') throw new Error('Codex does not run inside a guest\'s walls yet.');
+    if (target.walls && typeof target.walls === 'object') throw new Error('Codex does not run inside a guest\'s walls yet.');
     const srv = new CodexServer({ bin: target.bin, env: target.env, spawnFn: hooks.spawn, requestTimeoutMs: hooks.requestTimeoutMs, name });
     srv.start();
     return srv;
