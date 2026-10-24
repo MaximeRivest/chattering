@@ -110,7 +110,8 @@ const ListGroups = (() => {
   // as the project, but the project is set by the folder a conversation runs
   // in. So, as the server does (server.js fileLooseUnderGroupProjects): a
   // loose conversation put in a group named after a project is filed under
-  // that project. Here it is only predicted, to say so and to offer Undo.
+  // that project. The page files them as well (fileUnder), so the rule holds
+  // even with a server that predates it, and says so with Undo.
   function projectNamed(name) {
     const n = String(name || '').trim().toLocaleLowerCase();
     if (!n || typeof realProjectNames !== 'function') return null;
@@ -133,6 +134,21 @@ const ListGroups = (() => {
     }
     const ranked = [...count].sort((a, b) => b[1] - a[1]);
     return ranked.length && (ranked.length === 1 || ranked[0][1] > ranked[1][1]) ? ranked[0][0] : null;
+  }
+  // File them (the project picker's durable assignment). The server files
+  // them too when it sees the move; asking twice changes nothing, and this
+  // way the message below is said only once it is true.
+  async function fileUnder(keys, project) {
+    const done = [];
+    for (const key of keys) {
+      const out = await postJsonMethod('/api/conversation/project', 'PUT', { id: key, project }).catch(() => null);
+      if (!out || out.error) continue;
+      done.push(key);
+      const r = sessions.find(x => x.key === key);
+      if (r) r.project = out.project;
+    }
+    if (done.length) renderAgentsPopSoon();
+    return done;
   }
   // Undo of a filing: back to the loose list (an empty assignment).
   function unfile(keys) {
@@ -163,7 +179,10 @@ const ListGroups = (() => {
       for (const k of keys) { if (target) s.member[k] = target; else delete s.member[k]; }
     }, { say: filing.length ? '' : say });
     // One message for both, and one Undo that takes back both.
-    if (change && filing.length) toast([say, filedSay(filing, project)].filter(Boolean).join(' · ') + ' · Undo', () => { restore(before); unfile(filing); }, '', { repeat: true });
+    if (change && filing.length) fileUnder(filing, project).then(filed => {
+      const text = [say, filed.length ? filedSay(filed, project) : ''].filter(Boolean).join(' · ');
+      if (text) toast(text + ' · Undo', () => { restore(before); unfile(filed); }, '', { repeat: true });
+    });
     if (target) { write(LAST, target); nudge(target); }
     selection.clear();
     return change ? target : null;
@@ -242,7 +261,9 @@ const ListGroups = (() => {
     if (!key || !id || !agentReadState.groups || !agentReadState.groups[id]) return;
     const project = projectNamed(agentReadState.groups[id].name);
     const filing = project && isLoose(key) && memberOf(agentReadState)[key] !== id;
-    if (commit(s => { s.member[key] = id; }) && filing) toast('“' + short(titleOf(key)) + '” ' + filedSay([key], project) + ', like its group · Undo', () => unfile([key]), '', { repeat: true });
+    if (commit(s => { s.member[key] = id; }) && filing) fileUnder([key], project).then(filed => {
+      if (filed.length) toast('“' + short(titleOf(key)) + '” ' + filedSay(filed, project) + ', like its group · Undo', () => unfile(filed), '', { repeat: true });
+    });
   }
 
   // ---- the layout the list is drawn from ----
