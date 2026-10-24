@@ -28,7 +28,12 @@
       const r = get(projectOf(s)); if (!r) continue;
       r.count++;
       r.latest = Math.max(r.latest, Number(s.mtimeMs) || 0, Date.parse(s.lastTs || '') || 0);
-      if (!r.cwd || (!authoritativePaths.has(r.name) && s.cwd && r.cwd.startsWith(s.cwd.replace(/\/$/, '') + '/'))) r.cwd = s.cwd || r.cwd;
+      // A folder speaks for the project only if it is the project's own
+      // (projectOf the folder alone, folds included): a conversation run in
+      // the home folder and assigned to the project would otherwise make
+      // the home folder the project's, the shortest parent winning.
+      if (!s.cwd || projectOf({ cwd: s.cwd }) !== r.name) continue;
+      if (!r.cwd || (!authoritativePaths.has(r.name) && r.cwd.startsWith(s.cwd.replace(/\/$/, '') + '/'))) r.cwd = s.cwd;
     }
     // Editing or opening a file is project activity too. Only enrich known
     // projects; an arbitrary old file label must not invent a broken link.

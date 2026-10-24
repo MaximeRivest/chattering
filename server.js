@@ -738,6 +738,10 @@ const CONVERSATION_PROJECTS_FILE = path.join(NOTES_DIR, 'projects', 'conversatio
 let conversationProjects = {};
 try { conversationProjects = JSON.parse(fs.readFileSync(CONVERSATION_PROJECTS_FILE, 'utf8')); } catch {}
 if (!conversationProjects || typeof conversationProjects !== 'object' || Array.isArray(conversationProjects)) conversationProjects = {};
+async function saveConversationProjects() {
+  await fsp.mkdir(path.dirname(CONVERSATION_PROJECTS_FILE), { recursive: true });
+  await writeFileAtomic(CONVERSATION_PROJECTS_FILE, JSON.stringify(conversationProjects, null, 2) + '\n');
+}
 
 // A stable project name from a cwd, after an explicit assignment and fold
 // resolution. Worktrees and manual merges collapse into one name.
@@ -3121,6 +3125,25 @@ async function markForkTitle(newKey, srcEntry) {
   } catch (e) { console.error('fork title failed:', newKey, e.message); }
 }
 
+// A copy is the same work as its original, so it stays in the project the
+// original was filed under. Without this, a conversation run from a loose
+// folder and assigned to a project fell back to Loose with every ⤔ copy,
+// and its memory leaf fed no project. Only when the copy runs in the
+// original's folder: an assignment never follows a copy somewhere else.
+async function markFork(newKey, fromKey, srcEntry) {
+  await markForkTitle(newKey, srcEntry);
+  const assigned = conversationProjects[fromKey];
+  const copy = index[newKey];
+  if (!assigned || conversationProjects[newKey] || !copy || !copy.cwd || !srcEntry.cwd
+      || path.resolve(copy.cwd) !== path.resolve(srcEntry.cwd)) return;
+  conversationProjects[newKey] = assigned;
+  try { await saveConversationProjects(); }
+  catch (e) { delete conversationProjects[newKey]; console.error('fork project failed:', newKey, e.message); return; }
+  const project = projectNameOf(copy.cwd, newKey);
+  try { if (searchIdx) searchIdx.setProject('conv:' + newKey, project); } catch {}
+  broadcast({ type: 'conversation-project', key: newKey, project });
+}
+
 // Pi names a session folder after the working directory.
 const piSessionDirFor = cwd => runtimeLib.piSessionDirName(cwd); // Pi's own naming
 
@@ -3158,11 +3181,10 @@ async function forkMirroredSession(key, nodeId) {
   const newKey = await indexNewSessionFile(newAbs);
   if (localName) {
     conversationProjects[newKey] = localName;
-    await fsp.mkdir(path.dirname(CONVERSATION_PROJECTS_FILE), { recursive: true });
-    await writeFileAtomic(CONVERSATION_PROJECTS_FILE, JSON.stringify(conversationProjects, null, 2) + '\n');
+    await saveConversationProjects();
     try { if (searchIdx) searchIdx.setProject('conv:' + newKey, localName); } catch {}
   }
-  await markForkTitle(newKey, entry);
+  await markFork(newKey, key, entry);
   return { key: newKey, path: newAbs, cwd, fromMirror: true };
 }
 
@@ -3186,7 +3208,7 @@ async function forkCodexSession(key, nodeId, { before = false } = {}) {
   const forked = await codexDriver.forkThread({ threadId: entry.sessionId, cwd, env: agentEnv(principal), bin: codexBin() }, through);
   if (!forked.path || !fs.existsSync(forked.path)) throw new Error('Codex did not create the forked conversation.');
   const newKey = await indexNewSessionFile(forked.path);
-  await markForkTitle(newKey, entry);
+  await markFork(newKey, key, entry);
   const inTurn = data.messages.filter(m => m.turnId === msg.turnId && (m.role === 'assistant' || m.role === 'user'));
   const note = !before && inTurn.length && inTurn[inTurn.length - 1].eid !== nodeId ? 'Codex forks at whole turns: the copy includes the rest of this reply.' : undefined;
   return { key: newKey, path: forked.path, sessionId: forked.threadId, text: before ? msg.text : undefined, note };
@@ -3204,7 +3226,7 @@ async function forkSession(key, nodeId) {
   if (entry.source !== 'claude') {
     const forked = await pisdk.piForkAt({ sessionPath, cwd }, nodeId);
     const newKey = await indexNewSessionFile(forked.file);
-    await markForkTitle(newKey, entry);
+    await markFork(newKey, key, entry);
     return { key: newKey, path: forked.file, sessionId: forked.sessionId };
   }
   const raw = await readSessionSnapshot(sessionPath);
@@ -3213,7 +3235,7 @@ async function forkSession(key, nodeId) {
   const newAbs = path.join(path.dirname(sessionPath), `${newId}.jsonl`);
   await publishSession(newAbs, content);
   const newKey = await indexNewSessionFile(newAbs);
-  await markForkTitle(newKey, entry);
+  await markFork(newKey, key, entry);
   return { key: newKey, path: newAbs, sessionId: newId };
 }
 
@@ -3231,7 +3253,7 @@ async function forkSessionForEdit(key, nodeId) {
   await assertDelegationOwnership(sessionPath);
   const forked = await pisdk.piForkBefore({ sessionPath, cwd }, nodeId);
   const newKey = await indexNewSessionFile(forked.file);
-  await markForkTitle(newKey, entry);
+  await markFork(newKey, key, entry);
   return { key: newKey, path: forked.file, sessionId: forked.sessionId, text: forked.text };
 }
 
@@ -4815,8 +4837,7 @@ async function assignConversationProject(key, rawProject) {
     if (!projectMetaFor(project)) throw new Error('unknown project: ' + project);
     conversationProjects[key] = project;
   }
-  await fsp.mkdir(path.dirname(CONVERSATION_PROJECTS_FILE), { recursive: true });
-  await writeFileAtomic(CONVERSATION_PROJECTS_FILE, JSON.stringify(conversationProjects, null, 2) + '\n');
+  await saveConversationProjects();
   const project = projectNameOf(index[key].cwd, key);
   try { if (searchIdx) searchIdx.setProject('conv:' + key, project); } catch {}
   // An existing leaf weighed this conversation's intent against the OLD
@@ -5017,6 +5038,32 @@ function agentReadGroups(change, identity) {
   const member = {};
   for (const [key, id] of Object.entries(change.member && typeof change.member === 'object' ? change.member : {})) if (can.key(key)) member[key] = id;
   agentReadApply(agentReadLib.applyGroups(agentRead, { groups: change.groups, member }));
+  fileLooseUnderGroupProjects(member);
+}
+// People name a group after the project it is for ("recorn") and then read
+// the group as the project. But the project is set by the folder a
+// conversation runs in: started in the home folder, it sat in group recorn
+// yet in Loose conversations, so its memory leaf fed no project (Lilly's
+// conversations, 2026-10). One rule, for the side list and the frog alike:
+// a LOOSE conversation that joins a group named after a project is filed
+// under that project (the durable assignment of the project picker; the
+// file and its folder stay as they are). A conversation of another project
+// keeps its project: a group is a list, never a move between projects.
+// list-groups.js predicts the same rule, to say so and offer Undo.
+function projectNamedLike(name, names) {
+  const n = String(name || '').trim().toLocaleLowerCase();
+  return n ? names().find(p => p.toLocaleLowerCase() === n) || null : null;
+}
+function fileLooseUnderGroupProjects(member) {
+  let all = null;
+  const names = () => all || (all = [...allProjectNames()]);
+  for (const [key, id] of Object.entries(member)) {
+    const group = id && agentRead.groups[id];
+    if (!group || !index[key] || syncLib.isMirrorKey(key) || agentRead.member[key] !== id) continue;
+    if (projectNameOf(index[key].cwd, key) !== LOOSE_PROJECT) continue;
+    const project = projectNamedLike(group.name, names);
+    if (project) assignConversationProject(key, project).catch(e => console.error('group project:', key, e.message));
+  }
 }
 // Memberships of conversations closed for more than 30 days are let go,
 // with the groups nobody is in any more: once a day, first ten minutes in.

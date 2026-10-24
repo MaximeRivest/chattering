@@ -105,6 +105,43 @@ const ListGroups = (() => {
   const newId = () => 'g' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
   const topOrder = s => Math.min(0, ...Object.values(s.groups).map(g => g.order)) - 1;
 
+  // ---- a group and its project ----
+  // People name a group after the project it is for and then read the group
+  // as the project, but the project is set by the folder a conversation runs
+  // in. So, as the server does (server.js fileLooseUnderGroupProjects): a
+  // loose conversation put in a group named after a project is filed under
+  // that project. Here it is only predicted, to say so and to offer Undo.
+  function projectNamed(name) {
+    const n = String(name || '').trim().toLocaleLowerCase();
+    if (!n || typeof realProjectNames !== 'function') return null;
+    return realProjectNames().find(p => p.toLocaleLowerCase() === n) || null;
+  }
+  const isLoose = key => { const r = sessions.find(x => x.key === key); return !!r && projectKeyOf(r) === LOOSE_PROJECT; };
+  // The project a group's ＋ starts in: the one it is named after, else the
+  // one most of its conversations are in (loose ones do not count; a tie is
+  // no answer, the draft then asks for a folder like any other).
+  function projectOfGroup(id) {
+    const g = groupsOf(agentReadState)[id];
+    if (!g) return null;
+    const named = projectNamed(g.name);
+    if (named) return named;
+    const count = new Map();
+    for (const r of sessions) {
+      if (memberOf(agentReadState)[r.key] !== id) continue;
+      const p = projectKeyOf(r);
+      if (p !== LOOSE_PROJECT) count.set(p, (count.get(p) || 0) + 1);
+    }
+    const ranked = [...count].sort((a, b) => b[1] - a[1]);
+    return ranked.length && (ranked.length === 1 || ranked[0][1] > ranked[1][1]) ? ranked[0][0] : null;
+  }
+  // Undo of a filing: back to the loose list (an empty assignment).
+  function unfile(keys) {
+    for (const key of keys) postJsonMethod('/api/conversation/project', 'PUT', { id: key, project: '' })
+      .then(out => { if (out && out.error) errToast(out.error); })
+      .catch(() => errToast('Could not reach the server; the conversation may still be in its project.'));
+  }
+  const filedSay = (keys, project) => (keys.length === 1 ? 'filed' : keys.length + ' filed') + ' under project ' + project;
+
   // Put `keys` in group `id`, or in a new group called `name`, or out of
   // any group (neither). Says where they went, with Undo.
   function move(keys, id, { name = '', quiet = false, fresh = false } = {}) {
@@ -113,6 +150,10 @@ const ListGroups = (() => {
     let target = id;
     const what = keys.length === 1 ? '“' + short(titleOf(keys[0])) + '”' : keys.length + ' conversations';
     const dest = id ? (agentReadState.groups[id] || {}).name : name;
+    const project = dest ? projectNamed(dest) : null;
+    const filing = project ? keys.filter(k => isLoose(k) && memberOf(agentReadState)[k] !== id) : [];
+    const before = snapshot();
+    const say = quiet ? '' : dest ? 'Moved ' + what + ' to ' + dest : 'Took ' + what + ' out of its group';
     const change = commit(s => {
       if (!target && name) {
         const same = !fresh && Object.entries(s.groups).find(([, g]) => g.name.toLocaleLowerCase() === name.toLocaleLowerCase());
@@ -120,7 +161,9 @@ const ListGroups = (() => {
         else { target = newId(); s.groups[target] = { name, order: topOrder(s), folded: false }; }
       }
       for (const k of keys) { if (target) s.member[k] = target; else delete s.member[k]; }
-    }, { say: quiet ? '' : dest ? 'Moved ' + what + ' to ' + dest : 'Took ' + what + ' out of its group' });
+    }, { say: filing.length ? '' : say });
+    // One message for both, and one Undo that takes back both.
+    if (change && filing.length) toast([say, filedSay(filing, project)].filter(Boolean).join(' · ') + ' · Undo', () => { restore(before); unfile(filing); }, '', { repeat: true });
     if (target) { write(LAST, target); nudge(target); }
     selection.clear();
     return change ? target : null;
@@ -197,7 +240,9 @@ const ListGroups = (() => {
   }
   function join(key, id) {
     if (!key || !id || !agentReadState.groups || !agentReadState.groups[id]) return;
-    commit(s => { s.member[key] = id; });
+    const project = projectNamed(agentReadState.groups[id].name);
+    const filing = project && isLoose(key) && memberOf(agentReadState)[key] !== id;
+    if (commit(s => { s.member[key] = id; }) && filing) toast('“' + short(titleOf(key)) + '” ' + filedSay([key], project) + ', like its group · Undo', () => unfile([key]), '', { repeat: true });
   }
 
   // ---- the layout the list is drawn from ----
@@ -498,11 +543,13 @@ const ListGroups = (() => {
   function newIn(id) {
     const g = agentReadState.groups && agentReadState.groups[id];
     if (!g) return;
-    const rows = listedSessions().filter(s => memberOf(agentReadState)[s.key] === id);
-    const ps = [...new Set(rows.map(projectKeyOf))];
+    // Its project's folder. Before, only a group whose every listed row was
+    // in one project got one: a single loose row and the ＋ started in the
+    // home folder, so the new conversation was loose too.
+    const project = projectOfGroup(id);
     let folder = '';
-    if (ps.length === 1 && ps[0] !== LOOSE_PROJECT) {
-      const p = (typeof sidebarProjectRows === 'function' ? sidebarProjectRows() : []).find(x => x.name === ps[0]);
+    if (project) {
+      const p = (typeof sidebarProjectRows === 'function' ? sidebarProjectRows() : []).find(x => x.name === project);
       folder = (p && p.cwd) || '';
     }
     if (g.folded) setFolded(id, false);
@@ -696,7 +743,7 @@ const ListGroups = (() => {
   return {
     HEAD, PROJECT_HEAD, isHead, headKey, arrange, layout, items, barHtml, selbarHtml, remember,
     selected: key => selection.has(key), dragOn, groupOf: key => groupOf(key, agentReadState),
-    move, picker, groupMenu, arrangeMenu, startRename, setFolded, foldAll, follow, join, newIn,
+    move, picker, groupMenu, arrangeMenu, startRename, setFolded, foldAll, follow, join, newIn, projectOfGroup,
     onClick, onDblClick, onContextMenu, onKey, wireDrag, clearSelection, tidying: () => !!tidy,
     groupName: id => (agentReadState.groups && agentReadState.groups[id] || {}).name || '',
   };

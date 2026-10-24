@@ -20,6 +20,19 @@ test('project directory includes empty registered projects, folds, titles and cu
   assert.deepEqual(P.select(rows, { query: 'work space' }).map(r => r.name), ['work']);
 });
 
+test('a conversation assigned to a project from the home folder does not make the home folder the project’s', () => {
+  // Lilly's recorn: run from ~, filed under recorn by assignment.
+  const ofCwd = cwd => /\/Projects\/([^/]+)/.exec(cwd)?.[1] || 'Loose conversations';
+  const projectOf = s => s.project || ofCwd(s.cwd || '');
+  const rows = P.build([
+    { cwd: '/home/lilly/Projects/recorn', mtimeMs: 10 },
+    { project: 'recorn', cwd: '/home/lilly', mtimeMs: 20 },
+  ], [], [], projectOf);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].cwd, '/home/lilly/Projects/recorn');
+  assert.equal(rows[0].count, 2, 'it still counts as the project’s conversation');
+});
+
 test('file work contributes recency without changing conversation counts or inventing projects', () => {
   const rows = P.build([{ project: 'work', cwd: '/work', mtimeMs: 10 }], [], [], s => s.project,
     'Loose conversations', [{ project: 'work', at: 90 }, { project: 'orphan', at: 100 }]);
