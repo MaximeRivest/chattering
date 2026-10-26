@@ -62,8 +62,8 @@ function createPushNotifier({
     const val = v => { try { return typeof v === 'function' ? v() : v; } catch { return ''; } };
     const ev = { ...raw, title: val(raw.title), excerpt: val(raw.excerpt), detail: val(raw.detail) };
     const { key } = ev;
-    if (!listed(key)) return;
-    const who = [...new Set(recipients(key, ev.askedBy || null).filter(Boolean))];
+    // listed(key, userId): in that person's own side list (one per person).
+    const who = [...new Set(recipients(key, ev.askedBy || null).filter(Boolean))].filter(userId => listed(key, userId));
     if (!who.length) return;
     const h = await home();
     const t = now();

@@ -1,5 +1,6 @@
 'use strict';
-// Agent inbox read state, shared by every device that talks to this server.
+// Agent inbox read state: one per person (2026-10-26; until then one for the
+// whole household), shared by every device of that person.
 //
 // One conversation is "unread" when its last activity (transcript mtime, or
 // the moment a web run ended) is newer than the last time a person read it on
@@ -285,4 +286,28 @@ function pinnedKeys(state) {
   return Object.entries(state.pinned).sort((a, b) => b[1] - a[1]).map(([k]) => k);
 }
 
-module.exports = { GROUP_ID, GROUP_NAME_MAX, applyGroups, pruneGroups, createState, normalize, markRead, markFinished, open, markUnread, dismiss, restore, setPinned, importState, applyDelta, unreadAt, isDismissed, isListed, pinnedKeys, activityAt };
+// One list per person (2026-10-26): the household's single list, split.
+// Each person gets the conversations they took part in (`personsOf(key)`:
+// who typed in it), with their marks, groups and pins; a conversation
+// nobody is known to have typed in goes to `fallback` (the owner). Reads
+// and finishes are facts about conversations, so everyone keeps them: no
+// old reply turns unread for anyone. `people`: who gets a list.
+function splitByPerson(state, { people, personsOf, fallback }) {
+  const out = {};
+  for (const id of new Set([...people, fallback])) {
+    out[id] = { ...createState(state.since), since: state.since, read: { ...state.read }, finished: { ...state.finished } };
+  }
+  const keys = new Set([...MARK_MAPS.flatMap(m => Object.keys(state[m] || {})), ...Object.keys(state.member || {})]);
+  for (const key of keys) {
+    let ids = [...new Set((personsOf(key) || []).filter(id => out[id]))];
+    if (!ids.length) ids = [fallback];
+    for (const id of ids) {
+      for (const m of MARK_MAPS) if (state[m] && state[m][key] != null) out[id][m][key] = state[m][key];
+      const g = state.member && state.member[key];
+      if (g && state.groups && state.groups[g]) { out[id].member[key] = g; out[id].groups[g] = { ...state.groups[g] }; }
+    }
+  }
+  return out;
+}
+
+module.exports = { splitByPerson, GROUP_ID, GROUP_NAME_MAX, applyGroups, pruneGroups, createState, normalize, markRead, markFinished, open, markUnread, dismiss, restore, setPinned, importState, applyDelta, unreadAt, isDismissed, isListed, pinnedKeys, activityAt };

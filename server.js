@@ -1381,6 +1381,18 @@ function broadcast(ev) {
     try { client.res.write(view === ev ? line : 'data: ' + JSON.stringify(view) + '\n\n'); } catch {}
   }
 }
+// An event for one person's screens only (their side list), each still
+// narrowed to what they may see.
+function broadcastToPerson(userId, ev) {
+  for (const client of sseByConn.values()) {
+    const cid = client.identity && client.identity.user ? usersLib.resolveId(roster, client.identity.user.id) : null;
+    if (cid !== userId) continue;
+    let view;
+    try { view = policy.eventView(ev, client.receiver || (client.receiver = receiverFor(client.identity))); } catch { view = null; }
+    if (!view) continue;
+    try { client.res.write('data: ' + JSON.stringify(view) + '\n\n'); } catch {}
+  }
+}
 // What one person may receive, asked once per event per browser. Access
 // rules can change while a stream is open, so nothing here is cached
 // beyond the identity itself.
@@ -1424,7 +1436,8 @@ function pushing() {
     home: pushHome,
     recipients: pushRecipients,
     canSee: (userId, key) => { const who = identityOfUserId(userId); return !!who && (!index[key] || keyVisible(who, key)); },
-    listed: key => agentReadLib.isListed(agentRead, key, (index[key] && index[key].mtimeMs) || 0),
+    // In that person's own list (a conversation they have open).
+    listed: (key, userId) => { const s = agentReadOf(userId || null); return agentReadLib.isListed(s, key, (index[key] && index[key].mtimeMs) || 0); },
     unread: pushUnreadFor,
     log: m => console.error('[push] ' + m),
   });
@@ -1459,11 +1472,12 @@ function pushUnreadFor(userId) {
   for (const r of headlessRuns.values()) if (r && r.key) busy.add(r.key);
   for (const [k, st] of liveStates) if (st && st.working) busy.add(k);
   const out = [];
-  for (const key of Object.keys(agentRead.opened)) {
+  const state = agentReadOf(userId);
+  for (const key of Object.keys(state.opened)) {
     const e = index[key];
     if (!e || busy.has(key)) continue;
-    const at = agentReadLib.unreadAt(agentRead, key, e.mtimeMs || 0);
-    if (!at || !agentReadLib.isListed(agentRead, key, e.mtimeMs || 0) || !keyVisible(who, key)) continue;
+    const at = agentReadLib.unreadAt(state, key, e.mtimeMs || 0);
+    if (!at || !agentReadLib.isListed(state, key, e.mtimeMs || 0) || !keyVisible(who, key)) continue;
     out.push([key, at]);
   }
   out.sort((a, b) => b[1] - a[1]);
@@ -4971,108 +4985,163 @@ function saveConversationModels(key, raw) {
 // Read receipts are user actions, so they live with the other per-person
 // preferences under the notes tree, not in the rebuildable cache. Logic and
 // clock rules: agentread.js.
+// ---- the side list: one per person (2026-10-26) ----
+// Which conversations a person has open, read, closed, pinned and grouped
+// is theirs: two people working in the same projects each keep their own
+// list. Each list lives in NOTES_DIR/agent-read/<person id>.json, is shared
+// by that person's devices, and its changes reach only their screens. Until
+// 2026-10-26 the household had one list (agent-read.json): on first start it
+// is split by who typed in each conversation (agentread.js splitByPerson)
+// and kept beside as agent-read.shared-until-2026-10-26.json.
 const AGENT_READ_FILE = path.join(NOTES_DIR, 'agent-read.json');
-let agentRead = agentReadLib.createState();
-try { agentRead = agentReadLib.normalize(JSON.parse(fs.readFileSync(AGENT_READ_FILE, 'utf8'))); } catch {}
-function saveAgentReadSoon() {
-  clearTimeout(saveAgentReadSoon.t);
-  saveAgentReadSoon.t = setTimeout(() => {
-    fs.mkdirSync(path.dirname(AGENT_READ_FILE), { recursive: true });
-    writeFileAtomic(AGENT_READ_FILE, JSON.stringify(agentRead) + '\n').catch(() => {});
-  }, 1000);
+const AGENT_READ_DIR = path.join(NOTES_DIR, 'agent-read');
+const agentReadBy = new Map(); // person id -> state
+let agentReadMigrated = false;
+// Whose list: a person id, an identity, or (neither) the person behind the
+// current request, else the owner (the frog, background work).
+function agentReadPerson(who) {
+  let id = typeof who === 'string' ? who : who && who.user && who.user.id ? who.user.id : null;
+  if (!id && typeof currentIdentity === 'function') { const cur = currentIdentity(); if (cur && cur.user) id = cur.user.id; }
+  const u = id ? usersLib.findUser(roster, usersLib.resolveId(roster, id)) : null;
+  return (u || usersLib.ownerOf(roster)).id;
 }
-function agentReadApply(delta) {
+const agentReadFileOf = id => path.join(AGENT_READ_DIR, String(id).replace(/[^A-Za-z0-9_-]/g, '_') + '.json');
+function migrateSharedAgentRead() {
+  agentReadMigrated = true;
+  if (fs.existsSync(AGENT_READ_DIR) || !fs.existsSync(AGENT_READ_FILE)) return;
+  let shared;
+  try { shared = agentReadLib.normalize(JSON.parse(fs.readFileSync(AGENT_READ_FILE, 'utf8'))); } catch (e) { console.error('[side list] the shared list could not be read, everyone starts empty:', e.message); return; }
+  const owner = usersLib.ownerOf(roster).id;
+  const split = agentReadLib.splitByPerson(shared, {
+    people: roster.users.filter(u => !u.disabled).map(u => u.id), fallback: owner,
+    personsOf: key => ((index[key] && index[key].participants) || []).map(x => usersLib.resolveId(roster, x.id)),
+  });
+  fs.mkdirSync(AGENT_READ_DIR, { recursive: true });
+  for (const [id, state] of Object.entries(split)) fs.writeFileSync(agentReadFileOf(id), JSON.stringify(state) + '\n');
+  fs.renameSync(AGENT_READ_FILE, path.join(NOTES_DIR, 'agent-read.shared-until-2026-10-26.json'));
+  console.log('[side list] the shared list is now one per person: ' + Object.entries(split).map(([id, s]) => (usersLib.findUser(roster, id) || { name: id }).name + ' ' + Object.keys(s.opened).length).join(', '));
+}
+function agentReadOf(who) {
+  if (!agentReadMigrated) migrateSharedAgentRead();
+  const id = agentReadPerson(who);
+  let s = agentReadBy.get(id);
+  if (!s) {
+    try { s = agentReadLib.normalize(JSON.parse(fs.readFileSync(agentReadFileOf(id), 'utf8'))); } catch { s = agentReadLib.createState(); }
+    agentReadBy.set(id, s);
+  }
+  return s;
+}
+// Every person's list, for what is true of a conversation whoever reads it.
+function agentReadEveryone() { return roster.users.filter(u => !u.disabled).map(u => u.id); }
+const agentReadSaveTimers = new Map();
+function saveAgentReadSoon(id) {
+  clearTimeout(agentReadSaveTimers.get(id));
+  agentReadSaveTimers.set(id, setTimeout(() => {
+    agentReadSaveTimers.delete(id);
+    fs.mkdirSync(AGENT_READ_DIR, { recursive: true });
+    writeFileAtomic(agentReadFileOf(id), JSON.stringify(agentReadOf(id)) + '\n').catch(() => {});
+  }, 1000));
+}
+function agentReadApply(id, delta) {
   if (!delta) return;
-  saveAgentReadSoon();
-  broadcast({ type: 'agent-read', ...delta });
+  saveAgentReadSoon(id);
+  broadcastToPerson(id, { type: 'agent-read', ...delta });
 }
+// A run ended: true of the conversation, so in every list.
 function agentReadFinished(key, at) {
-  agentReadApply(agentReadLib.markFinished(agentRead, key, at));
+  for (const id of agentReadEveryone()) agentReadApply(id, agentReadLib.markFinished(agentReadOf(id), key, at));
 }
 // Keys arrive as a { key: clientAt } map; the client time is ignored on
 // purpose (server clock rule), it only says which keys were read.
-function agentReadMark(keys) {
+function agentReadMark(keys, who = null) {
+  const id = agentReadPerson(who), state = agentReadOf(id);
   const merged = { read: {} };
   let any = false;
   // Reading the frog's answer is receiving what it told (design/102).
-  if (typeof theFrog !== 'undefined' && theFrog.key && keys.includes(theFrog.key)) setImmediate(() => frogReceived('read the frog'));
+  if (typeof theFrog !== 'undefined' && theFrog.key && keys.includes(theFrog.key) && id === usersLib.ownerOf(roster).id) setImmediate(() => frogReceived('read the frog'));
   if (pushState) for (const key of keys) pushState.notifier.cancel(key);
   for (const key of keys) {
     if (!key || !index[key]) continue;
-    const d = agentReadLib.markRead(agentRead, key, { mtimeMs: index[key].mtimeMs });
+    const d = agentReadLib.markRead(state, key, { mtimeMs: index[key].mtimeMs });
     if (d) { Object.assign(merged.read, d.read); any = true; }
   }
-  if (any) agentReadApply(merged);
+  if (any) agentReadApply(id, merged);
   // Reading a conversation also reads the delegated results its callback
   // turn already carried. This is deliberately asynchronous: the person's
   // own read must never wait on delegation records.
-  agentReadDelegated(keys).catch(e => console.error('[agent-read delegated]', e.message));
+  agentReadDelegated(keys, id).catch(e => console.error('[agent-read delegated]', e.message));
 }
 // Explicit inbox marks (design/42): each is one click, applied at once.
-function agentReadMarkUnread(keys) {
+function agentReadMarkUnread(keys, who = null) {
+  const id = agentReadPerson(who), state = agentReadOf(id);
   const merged = { flagged: {}, opened: {}, dismissed: {} };
   let any = false;
   for (const key of keys) {
     if (!key || !index[key]) continue;
-    const d = agentReadLib.markUnread(agentRead, key);
+    const d = agentReadLib.markUnread(state, key);
     if (d) { Object.assign(merged.flagged, d.flagged); Object.assign(merged.opened, d.opened || {}); Object.assign(merged.dismissed, d.dismissed || {}); any = true; }
   }
-  if (any) agentReadApply(merged);
+  if (any) agentReadApply(id, merged);
 }
-// A person opened a conversation: it joins the side list (design/59). A
+// A person opened a conversation: it joins their side list (design/59). A
 // conversation just started from the web may reach here a beat before the
 // index sees its file, so the index is not required.
-function agentReadOpen(keys) {
+function agentReadOpen(keys, who = null) {
+  const id = agentReadPerson(who), state = agentReadOf(id);
   const merged = { opened: {}, dismissed: {} };
   let any = false;
   for (const key of keys) {
     if (!key) continue;
-    const d = agentReadLib.open(agentRead, key);
+    const d = agentReadLib.open(state, key);
     if (d) { Object.assign(merged.opened, d.opened || {}); Object.assign(merged.dismissed, d.dismissed || {}); any = true; }
   }
-  if (any) agentReadApply(merged);
+  if (any) agentReadApply(id, merged);
 }
-function agentReadDismiss(keys) {
+function agentReadDismiss(keys, who = null) {
+  const id = agentReadPerson(who), state = agentReadOf(id);
   const merged = { dismissed: {} };
   let any = false;
   for (const key of keys) {
     if (!key || !index[key]) continue;
-    const d = agentReadLib.dismiss(agentRead, key, { mtimeMs: index[key].mtimeMs });
+    const d = agentReadLib.dismiss(state, key, { mtimeMs: index[key].mtimeMs });
     if (d) { Object.assign(merged.dismissed, d.dismissed); any = true; }
   }
-  if (any) agentReadApply(merged);
+  if (any) agentReadApply(id, merged);
 }
 // Undo a close (design/59). A deleted conversation can still be restored:
 // the mark is the person's, not the file's.
-function agentReadRestore(keys) {
+function agentReadRestore(keys, who = null) {
+  const id = agentReadPerson(who), state = agentReadOf(id);
   const merged = { dismissed: {} };
   let any = false;
   for (const key of keys) {
-    const d = agentReadLib.restore(agentRead, key);
+    const d = agentReadLib.restore(state, key);
     if (d) { Object.assign(merged.dismissed, d.dismissed); any = true; }
   }
-  if (any) agentReadApply(merged);
+  if (any) agentReadApply(id, merged);
 }
-function agentReadPin(pins) {
+function agentReadPin(pins, who = null) {
+  const id = agentReadPerson(who), state = agentReadOf(id);
   const merged = { pinned: {} };
   let any = false;
   for (const [key, on] of Object.entries(pins)) {
     // Unpinning a deleted conversation must still work; pinning needs a real one.
     if (!key || (on && !index[key])) continue;
-    const d = agentReadLib.setPinned(agentRead, key, !!on);
+    const d = agentReadLib.setPinned(state, key, !!on);
     if (d) { Object.assign(merged.pinned, d.pinned); any = true; }
   }
-  if (any) agentReadApply(merged);
+  if (any) agentReadApply(id, merged);
 }
-// The list's groups (design/96). Only conversations the person may see can
-// be put in or taken out; the groups themselves are the household's.
+// The list's groups (design/96), the person's own. Only conversations they
+// may see can be put in or taken out.
 function agentReadGroups(change, identity) {
   if (!change || typeof change !== 'object') return;
-  const can = receiverFor(identity);
+  const id = agentReadPerson(identity);
+  const can = receiverFor(identity && identity.user ? identity : identityOfUserId(id) || identity);
   const member = {};
-  for (const [key, id] of Object.entries(change.member && typeof change.member === 'object' ? change.member : {})) if (can.key(key)) member[key] = id;
-  agentReadApply(agentReadLib.applyGroups(agentRead, { groups: change.groups, member }));
-  fileLooseUnderGroupProjects(member);
+  for (const [key, gid] of Object.entries(change.member && typeof change.member === 'object' ? change.member : {})) if (can.key(key)) member[key] = gid;
+  agentReadApply(id, agentReadLib.applyGroups(agentReadOf(id), { groups: change.groups, member }));
+  fileLooseUnderGroupProjects(member, agentReadOf(id));
 }
 // People name a group after the project it is for ("recorn") and then read
 // the group as the project. But the project is set by the folder a
@@ -5088,12 +5157,12 @@ function projectNamedLike(name, names) {
   const n = String(name || '').trim().toLocaleLowerCase();
   return n ? names().find(p => p.toLocaleLowerCase() === n) || null : null;
 }
-function fileLooseUnderGroupProjects(member) {
+function fileLooseUnderGroupProjects(member, state) {
   let all = null;
   const names = () => all || (all = [...allProjectNames()]);
   for (const [key, id] of Object.entries(member)) {
-    const group = id && agentRead.groups[id];
-    if (!group || !index[key] || syncLib.isMirrorKey(key) || agentRead.member[key] !== id) continue;
+    const group = id && state.groups[id];
+    if (!group || !index[key] || syncLib.isMirrorKey(key) || state.member[key] !== id) continue;
     if (projectNameOf(index[key].cwd, key) !== LOOSE_PROJECT) continue;
     const project = projectNamedLike(group.name, names);
     if (project) assignConversationProject(key, project).catch(e => console.error('group project:', key, e.message));
@@ -5102,7 +5171,10 @@ function fileLooseUnderGroupProjects(member) {
 // Memberships of conversations closed for more than 30 days are let go,
 // with the groups nobody is in any more: once a day, first ten minutes in.
 function agentReadPruneGroups() {
-  agentReadApply(agentReadLib.pruneGroups(agentRead, { listed: key => agentReadLib.isListed(agentRead, key, index[key] ? index[key].mtimeMs : 0) }));
+  for (const id of agentReadEveryone()) {
+    const state = agentReadOf(id);
+    agentReadApply(id, agentReadLib.pruneGroups(state, { listed: key => agentReadLib.isListed(state, key, index[key] ? index[key].mtimeMs : 0) }));
+  }
 }
 setTimeout(agentReadPruneGroups, 10 * 60 * 1000).unref();
 setInterval(agentReadPruneGroups, 24 * 3600 * 1000).unref();
@@ -5290,7 +5362,7 @@ async function ensureFrogHome(identity) {
   }
   await frogCarryOver(key).catch(e => warnings.push('carrying the first conversation over: ' + e.message));
   agentReadOpen([key]);
-  if (!agentRead.pinned[key]) agentReadPin({ [key]: true });
+  if (!agentReadOf(identity).pinned[key]) agentReadPin({ [key]: true }, identity);
   return { key, id: frogLib.refOf(index, key), folder, project: projectNameOf(folder, key), model: theFrog.model, talk: theFrog.talk, speed: frogRate(), warnings };
 }
 
@@ -5354,6 +5426,7 @@ async function frogWorkspace(identity) {
   const runs = frogRunsByKey();
   let terminals = new Set();
   try { terminals = new Set(runningAgentKeys()); } catch {}
+  const agentRead = agentReadOf(identity);
   const keys = new Set([...Object.keys(agentRead.opened), ...runs.keys(), ...terminals]);
   const rows = [];
   for (const key of keys) {
@@ -5492,12 +5565,13 @@ async function frogStop({ id }, identity) {
 // The side list, as the person arranges it (design/59, 96). Group names, not
 // ids: a group is found by its name and made when there is none.
 function frogOrganize(p, identity) {
+  const agentRead = agentReadOf(identity);
   const keys = list => (Array.isArray(list) ? list : []).map(r => frogKeyOf(r, identity));
   const done = [];
-  if (p.open) { const k = keys(p.open); agentReadOpen(k); done.push('opened ' + k.length); }
-  if (p.close) { const k = keys(p.close).filter(x => x !== theFrog.key); agentReadDismiss(k); done.push('closed ' + k.length); }
-  if (p.pin) { const k = keys(p.pin); agentReadPin(Object.fromEntries(k.map(x => [x, true]))); done.push('pinned ' + k.length); }
-  if (p.unpin) { const k = keys(p.unpin); agentReadPin(Object.fromEntries(k.map(x => [x, false]))); done.push('unpinned ' + k.length); }
+  if (p.open) { const k = keys(p.open); agentReadOpen(k, identity); done.push('opened ' + k.length); }
+  if (p.close) { const k = keys(p.close).filter(x => x !== theFrog.key); agentReadDismiss(k, identity); done.push('closed ' + k.length); }
+  if (p.pin) { const k = keys(p.pin); agentReadPin(Object.fromEntries(k.map(x => [x, true])), identity); done.push('pinned ' + k.length); }
+  if (p.unpin) { const k = keys(p.unpin); agentReadPin(Object.fromEntries(k.map(x => [x, false])), identity); done.push('unpinned ' + k.length); }
   const groupId = (name, create) => {
     const want = String(name || '').trim().toLowerCase();
     const found = Object.entries(agentRead.groups).find(([, g]) => g.name.toLowerCase() === want);
@@ -5507,7 +5581,7 @@ function frogOrganize(p, identity) {
   };
   if (p.group && p.group.name) {
     const k = keys(p.group.ids);
-    agentReadOpen(k);
+    agentReadOpen(k, identity);
     const gid = groupId(p.group.name, true);
     const was = agentRead.groups[gid];
     // An existing group keeps its name as the person wrote it.
@@ -5529,11 +5603,11 @@ function frogOrganize(p, identity) {
 // (bookkeeping lines are written after a reply).
 function frogActivity(key) {
   const e = index[key] || {};
-  return Math.max(Date.parse(e.lastTs || '') || 0, Number(agentRead.finished[key]) || 0);
+  return Math.max(Date.parse(e.lastTs || '') || 0, Number(agentReadOf(usersLib.ownerOf(roster).id).finished[key]) || 0);
 }
 function frogReceived(how) {
   const keys = theFrog.received(frogActivity).filter(k => index[k]);
-  if (keys.length) { agentReadMark(keys); console.log('[frog] ' + how + ': ' + keys.length + ' told repl' + (keys.length === 1 ? 'y' : 'ies') + ' marked read'); }
+  if (keys.length) { agentReadMark(keys, usersLib.ownerOf(roster).id); console.log('[frog] ' + how + ': ' + keys.length + ' told repl' + (keys.length === 1 ? 'y' : 'ies') + ' marked read'); }
   return keys;
 }
 function frogMarkRead(p, identity) {
@@ -5972,8 +6046,8 @@ async function frogFresh({ id, message, title }, identity) {
   const model = models[0] || null;
   if (model) saveConversationModels(newKey, models);
   agentReadOpen([newKey]);
-  const gid = agentRead.member[key];
-  if (gid && agentRead.groups[gid]) agentReadGroups({ member: { [newKey]: gid } }, identity);
+  const gid = agentReadOf(identity).member[key];
+  if (gid && agentReadOf(identity).groups[gid]) agentReadGroups({ member: { [newKey]: gid } }, identity);
   const out = { started: true, ...frogRow(newKey), from: frogRow(key), carried: { turns: turns.length, droppedForLength: left || 0, toolStepsCarried: 0 } };
   try { await setConversationTitle(newKey, String(title || ((entry.timelineTitle || entry.title || 'Conversation') + ' · fresh')).slice(0, 120), { by: null }); out.title = title || undefined; } catch {}
   out.job = jobView(await startAgentRun(newKey, { message: text, principal: principalFor(identity), input: 'frog', provider: model && model.provider, modelId: model && model.modelId }));
@@ -6156,10 +6230,12 @@ async function frogSegment({ message = null, why = 'asked' } = {}) {
       chains.link(newKey, key, { from: 'pi', to: 'pi' });
       theFrog.setHome({ key: newKey });
       try { await setConversationTitle(newKey, 'The frog', { by: null }); } catch {}
-      agentReadOpen([newKey]);
-      agentReadPin({ [newKey]: true, [key]: false });
-      const gid = agentRead.member[key];
-      if (gid && agentRead.groups[gid]) agentReadGroups({ member: { [newKey]: gid } }, { tier: 'console' });
+      // The frog is the owner's: its new segment takes the old one's place in their list.
+      const ownerId = usersLib.ownerOf(roster).id, ownerIdentity = identityOfUserId(ownerId);
+      agentReadOpen([newKey], ownerId);
+      agentReadPin({ [newKey]: true, [key]: false }, ownerId);
+      const gid = agentReadOf(ownerId).member[key];
+      if (gid && agentReadOf(ownerId).groups[gid]) agentReadGroups({ member: { [newKey]: gid } }, { ...ownerIdentity, tier: 'console' });
       broadcast({ type: 'frog-home', key: newKey, from: key });
       console.log('[frog] a new segment (' + why + '): ' + newKey + ', ' + turns.length + ' turns copied (' + copied + ' entries), ' + theMemory.count() + ' memories in front; the old part ' + key);
       const out = { started: true, key: newKey, id: frogLib.refOf(index, newKey), from: key, turnsCopied: turns.length, memories: theMemory.count(), why };
@@ -6379,13 +6455,14 @@ async function suggestGroupName(keys, identity) {
   if (!entries.length) throw Object.assign(new Error('no conversation to name'), { status: 400 });
   const titles = entries.map(e => String(e.title || e.timelineTitle || '').slice(0, 120)).filter(Boolean);
   const projects = [...new Set(entries.map(e => projectOfEntry(e)).filter(p => p && p !== LOOSE_PROJECT && p !== '?'))];
-  const existing = [...new Set(Object.values(agentRead.groups).map(g => g.name))].slice(0, 40);
+  const existing = [...new Set(Object.values(agentReadOf(identity).groups).map(g => g.name))].slice(0, 40);
   const { outputs } = await aiProgram('group_name', { conversation_titles: titles, projects, existing_group_names: existing }, { timeoutMs: 30000, thinking: 'off' });
   const name = String(outputs.name || '').replace(/\s+/g, ' ').trim().replace(/[.。]+$/, '').slice(0, agentReadLib.GROUP_NAME_MAX);
   if (!name) throw new Error('the model returned no name');
   return { name };
 }
-async function agentReadDelegated(keys) {
+async function agentReadDelegated(keys, who = null) {
+  const id = agentReadPerson(who), agentRead = agentReadOf(id);
   const merged = { read: {} };
   let any = false;
   for (const key of keys) {
@@ -6402,7 +6479,7 @@ async function agentReadDelegated(keys) {
       if (d) { Object.assign(merged.read, d.read); any = true; }
     }
   }
-  if (any) agentReadApply(merged);
+  if (any) agentReadApply(id, merged);
 }
 // ---------- recent files: human visits and confirmed agent activity ----------
 // Keep actors separately so either filter retains its own true recency.
@@ -23769,32 +23846,35 @@ async function handleRequest(req, res) {
         json(res, 200, await suggestGroupName((Array.isArray(p.keys) ? p.keys : []).map(String), identity));
       } catch (e) { json(res, e.status || 502, { error: e.message }); }
     } else if (u.pathname === '/api/agent-read' && req.method === 'GET') {
-      const receiver = receiverFor(identity);
+      // This person's own list (one per person since 2026-10-26).
+      const receiver = receiverFor(identity), agentRead = agentReadOf(identity);
       json(res, 200, receiver.all ? agentRead : policy.eventView({ type: 'agent-read', ...agentRead }, { ...receiver, member: true }));
     } else if (u.pathname === '/api/agent-read' && req.method === 'POST') {
       // { read: { key: at } } marks reads (server clock wins);
       // { import: { since, read, finished } } merges a browser's old local state once.
       let body = '';
       for await (const chunk of req) body += chunk;
-      // The inbox is the household's, one for everyone: a guest's reads do
-      // not clear the owner's marks. They are answered, not written.
-      if (usersLib.isWalled(identity.user)) return json(res, 200, policy.eventView({ type: 'agent-read', ...agentRead }, { ...receiverFor(identity), member: true }));
+      // Each person's list is their own, guests' included; a guest marks
+      // only conversations they may see.
+      const agentRead = agentReadOf(identity), me = agentReadPerson(identity);
+      const can = receiverFor(identity);
+      const mine = keys => keys.map(String).filter(k => can.key(k));
       try {
         const p = JSON.parse(body || '{}');
-        if (p.import && typeof p.import === 'object') agentReadApply(agentReadLib.importState(agentRead, p.import));
-        if (p.read && typeof p.read === 'object') agentReadMark(Object.keys(p.read));
+        if (p.import && typeof p.import === 'object') agentReadApply(me, agentReadLib.importState(agentRead, p.import));
+        if (p.read && typeof p.read === 'object') agentReadMark(mine(Object.keys(p.read)), identity);
         // { unread: [keys] } marks by hand; { dismiss: [keys] } removes from the
         // inbox; { pin: { key: true|false } } pins and unpins.
-        if (Array.isArray(p.unread)) agentReadMarkUnread(p.unread.map(String));
+        if (Array.isArray(p.unread)) agentReadMarkUnread(mine(p.unread), identity);
         // { open: [keys] } lists conversations a person opened (design/59).
-        if (Array.isArray(p.open)) agentReadOpen(p.open.map(String));
-        if (Array.isArray(p.dismiss)) agentReadDismiss(p.dismiss.map(String));
+        if (Array.isArray(p.open)) agentReadOpen(mine(p.open), identity);
+        if (Array.isArray(p.dismiss)) agentReadDismiss(mine(p.dismiss), identity);
         // { restore: [keys] } undoes a close.
-        if (Array.isArray(p.restore)) agentReadRestore(p.restore.map(String));
-        if (p.pin && typeof p.pin === 'object') agentReadPin(p.pin);
+        if (Array.isArray(p.restore)) agentReadRestore(mine(p.restore), identity);
+        if (p.pin && typeof p.pin === 'object') agentReadPin(Object.fromEntries(Object.entries(p.pin).filter(([k]) => can.key(k))), identity);
         // { grouping: { groups: { id: {…} | 0 }, member: { key: id | '' } } } (design/96).
         if (p.grouping && typeof p.grouping === 'object') agentReadGroups(p.grouping, identity);
-        json(res, 200, agentRead);
+        json(res, 200, can.all ? agentRead : policy.eventView({ type: 'agent-read', ...agentRead }, { ...can, member: true }));
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/voice/state' && req.method === 'GET') {
       json(res, 200, { muted: voiceMuted(), mutedUntil: voice.mutedUntil || null, queued: voice.queue.length,
