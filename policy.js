@@ -488,6 +488,25 @@ const ACCOUNT_ROUTES = {
   '/api/conversation/file-content': 'theirs', '/api/file/media': 'theirs', '/api/file/read': 'theirs', '/api/file/save': 'theirs', '/api/fs/dirs': 'theirs',
   '/api/files/browse': 'theirs', '/api/files/activity': 'index',
   'POST /api/project/share': 'theirs',
+  '/api/conversation/folder-info': 'theirs',
+  // Chattering's own records (memory, notes, epics, the index, settings,
+  // its saved history of file text): nothing here opens a path of theirs.
+  '/api/project/context': 'index', '/api/project/diffs': 'index', '/api/project/memory/file': 'index', '/api/project/memory/regenerate': 'index',
+  '/api/memory/leaf': 'index', '/api/memory/backfill': 'index', '/api/project/setup': 'index', '/api/project/unregister': 'index',
+  '/api/project/fold': 'index', '/api/project/unfold': 'index', '/api/project/fold-dismiss': 'index', '/api/project/title': 'index', '/api/project/retitle': 'index',
+  '/api/area': 'index', '/api/area/remove': 'index',
+  '/api/epics': 'index', '/api/epic': 'index', '/api/epic/evidence': 'index', '/api/epic/build': 'index', '/api/epic/title': 'index', '/api/epic/retitle': 'index',
+  '/api/epic/memory/file': 'index', '/api/epic/memory/regenerate': 'index', '/api/evidence': 'index', '/api/evidence/start': 'index',
+  '/api/distill-stream': 'index', '/api/distill/save': 'index', '/api/export': 'index', '/api/compare': 'index', '/api/handoff': 'index',
+  '/api/conversation/file-history': 'index', '/api/conversation/attached-context': 'index', '/api/conversation/context-preview': 'index', '/api/conversation/project': 'index',
+  '/api/node/aggregate': 'index', 'GET /api/public-links': 'index', 'PUT /api/codex/prefs': 'index',
+  'PUT /api/modes': 'index', 'POST /api/modes': 'index', '/api/modes/delete': 'index',
+  '/api/files/deleted': 'index', '/api/files/stats': 'index', '/api/files/ridge': 'index',
+  '/api/file-history/points': 'index', '/api/file-history/snapshot': 'index', '/api/file-history/changes': 'index',
+  '/api/ink/new': 'index', '/api/notes/new': 'index', '/api/vouch/all': 'index', 'GET /api/made': 'index',
+  '/api/agents/active': 'index', '/api/agents/recovery': 'index', '/api/delegations': 'index',
+  '/api/voice/state': 'index', '/api/voice/pause': 'index', '/api/voice/preview': 'index', '/api/voice/mute': 'index', '/api/voice/status': 'index',
+  '/api/voice/decide': 'index', '/api/voice/delegate': 'index', '/api/voice/history': 'index', '/api/voice/note': 'index', '/api/voice/history/clear': 'index', '/api/voice/outcome': 'index', '/api/voice/listen': 'index',
 };
 const ACCOUNT_TABLE = new Map(Object.entries(ACCOUNT_ROUTES));
 function accountRouteEntry(method, pathname) {

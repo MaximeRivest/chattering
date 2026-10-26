@@ -17101,14 +17101,16 @@ function projectMetaFor(project) {
     // A registered newborn: no conversations yet, but the folder is real.
     const rec = createdRecordFor(project);
     if (!rec) return null;
-    return { project, cwd: rec.cwd || null, entries: [], epics: [], latestMs: rec.createdAt || 0, created: true };
+    return { project, cwd: rec.cwd ? movedFolder(rec.cwd) : null, entries: [], epics: [], latestMs: rec.createdAt || 0, created: true };
   }
   // The project root is DERIVED, not chosen among conversation cwds: any
   // member cwd under /Projects/<name>/… yields the root by truncation. A
   // project whose conversations ALL live in subfolders still roots at the
   // project folder itself. Prefer roots whose own raw name IS the canonical
   // project (the main worktree beats folded worktree checkouts).
-  const cwd = projectRootFromEntries(project, entries);
+  // A folder that moved (to a person's account, design/105) is where it is
+  // now, whatever its old conversations say.
+  const cwd = movedFolder(projectRootFromEntries(project, entries));
   const epicsForProject = Object.values(epics)
     .map(epic => ({
       id: epic.id, title: epic.title, abstract: epic.abstract || '',
@@ -18289,6 +18291,27 @@ async function searchFolderPath(q, purpose, facts, limit) {
   return { mode: 'path', base: folderIndexLib.displayOf(dir, home), results: rows };
 }
 
+// The same description for a person on their own account (design/105):
+// their home, and their host process says what exists for them.
+async function describeStartFolderAs(mine, raw) {
+  const text = String(raw == null ? '' : raw).trim();
+  const home = mine.home;
+  const abs = text ? path.resolve(accountFiles.expandHome(home, text)) : home;
+  const isDir = async p => mine.host.call('stat', p).then(s => s.type === 'dir', () => false);
+  const isFile = async p => mine.host.call('stat', p).then(s => s.type === 'file', () => false);
+  const exists = await isDir(abs);
+  const project = projectNameOf(abs);
+  const loose = project === LOOSE_PROJECT;
+  const display = abs === home ? '~' : abs.startsWith(home + path.sep) ? '~' + abs.slice(home.length) : abs;
+  const contextFiles = [];
+  if (exists) for (let dir = abs; ; dir = path.dirname(dir)) { const f = path.join(dir, 'AGENTS.md'); if (await isFile(f)) contextFiles.push(f); if (path.dirname(dir) === dir) break; }
+  const meta = loose ? null : projectMetaFor(project);
+  const area = !loose && meta && meta.cwd ? areaOfCwdIn(project, abs) : null;
+  let purpose = false;
+  if (meta) { try { purpose = fs.readFileSync(projectMemoryPaths(project).intent, 'utf8').trim().length > 0; } catch {} }
+  const parentExists = exists ? false : await isDir(path.dirname(abs));
+  return { path: abs, display, exists, loose, parentExists, project: loose ? null : project, known: !!meta, area: area || null, purpose, contextFiles };
+}
 function describeStartFolder(raw) {
   const text = String(raw == null ? '' : raw).trim();
   const home = os.homedir();
@@ -18333,7 +18356,8 @@ function describeStartFolder(raw) {
 // model pick (pi's default before their first), pi's own defaults for
 // reasoning and mode. The client shows these until the user changes them;
 // nothing here is stored anywhere.
-function draftDefaults(identity) {
+async function draftDefaults(identity) {
+  const mine = ownFilesOf(identity);
   let thinking = null;
   try {
     const raw = JSON.parse(fs.readFileSync(PI_SETTINGS_FILE, 'utf8'));
@@ -18343,7 +18367,7 @@ function draftDefaults(identity) {
   const coding = modes.find(m => m.key === 'coding') || null;
   const start = newConversationModels(identity);
   return {
-    folder: describeStartFolder(''),
+    folder: mine ? await describeStartFolderAs(mine, '') : describeStartFolder(''),
     models: start.models, modelsSource: start.source,
     thinking, thinkingLevels: settingsLib.THINKING_LEVELS,
     mode: coding ? { key: coding.key, label: coding.label } : { key: 'coding', label: 'Coding' },
@@ -22049,10 +22073,10 @@ async function handleRequest(req, res) {
         json(res, 200, await startConversationFromDraft(JSON.parse(body || '{}'), principalFor(identity)));
       } catch (e) { json(res, 500, { error: e.message }); }
     } else if (u.pathname === '/api/conversation/draft-defaults' && req.method === 'GET') {
-      try { json(res, 200, draftDefaults(identity)); }
+      try { json(res, 200, await draftDefaults(identity)); }
       catch (e) { json(res, 500, { error: e.message }); }
     } else if (u.pathname === '/api/conversation/folder-info' && req.method === 'GET') {
-      try { json(res, 200, describeStartFolder(u.searchParams.get('path') || '')); }
+      try { const mine = ownFilesOf(identity); json(res, 200, mine ? await describeStartFolderAs(mine, u.searchParams.get('path') || '') : describeStartFolder(u.searchParams.get('path') || '')); }
       catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/models/last' && req.method === 'PUT') {
       // A pick in a draft: no conversation exists yet, but the next new

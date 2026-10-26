@@ -80,6 +80,16 @@ test('a person runs as their own account: commands, conversations, forks, the st
   const proj = path.join('/home', ACCOUNT, 'Projects', tag);
   assert.equal(asTest(`mkdir -p ${proj} && echo hers > ${proj}/notes.md`).status, 0);
 
+  // The project used to be the owner's: his old conversation there, and the
+  // record that its folder moved into her home (scripts/account-move.js).
+  const oldPlace = path.join(home, 'Projects', tag);
+  const oldDir = path.join(agent, 'sessions', require('../runtime.js').piSessionDirName(oldPlace));
+  fs.mkdirSync(oldDir, { recursive: true });
+  fs.writeFileSync(path.join(oldDir, '2026-10-20T10-00-00-000Z_01a0moved00000000000000000000000.jsonl'), line({ type: 'session', version: 3, id: '01a0moved00000000000000000000000', timestamp: '2026-10-20T10:00:00.000Z', cwd: oldPlace })
+    + line({ type: 'message', id: 'm1', parentId: null, timestamp: '2026-10-20T10:00:01.000Z', message: { role: 'user', content: 'before the move' } }));
+  fs.mkdirSync(path.join(home, 'notes', 'chattering', 'projects'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'notes', 'chattering', 'projects', 'folder-moves.json'), JSON.stringify({ v: 1, moves: { [oldPlace]: { to: proj, at: new Date().toISOString() } } }));
+
   const model = await fakeOpenAI({ reply: 'Hello from the fixture, as asked.' });
   const port = await freePort(), tlsPort = await freePort();
   registerConsole(port, 'install-tok');
@@ -188,6 +198,23 @@ test('a person runs as their own account: commands, conversations, forks, the st
   assert.ok((browsed.entries || []).some(e => e.name === 'notes.md'), fail(JSON.stringify(browsed)));
   const found = await (await get(remote + '/api/files/browse?name=' + encodeURIComponent(tag) + '&q=edited&contents=1', tess)).json();
   assert.ok((found.entries || []).some(e => e.name === 'notes.md' && e.line === 1), 'search reads her files as her');
+  // The project page and its new-conversation button, as her: the project
+  // is where its folder is now, its context is prepared, and the
+  // conversation starts there as her (2026-10-26: recorn could not).
+  const projInfo = await (await get(remote + '/api/project?name=' + encodeURIComponent(tag), tess)).json();
+  assert.equal(projInfo.cwd, proj, 'the folder follows its move: ' + JSON.stringify(projInfo).slice(0, 300));
+  const ctx = await post(remote + '/api/project/context', { project: tag, name: '', include: { map: true } }, tess);
+  assert.equal(ctx.status, 200, fail('context: ' + await ctx.clone().text()));
+  const defaults = await (await get(remote + '/api/conversation/draft-defaults', tess)).json();
+  assert.equal(defaults.folder.path, '/home/' + ACCOUNT, 'a new draft starts in her home, not the server\u2019s');
+  const folderInfo = await (await get(remote + '/api/conversation/folder-info?path=' + encodeURIComponent(proj), tess)).json();
+  assert.equal(folderInfo.exists, true, JSON.stringify(folderInfo));
+  assert.equal(folderInfo.project, tag);
+  const pstart = await (await post(remote + '/api/project/start', { project: tag, agent: 'pi', name: '', surface: 'rpc', mode: null, models: [], context: 'project context', include: { map: true }, silent: true }, tess)).json();
+  assert.ok(pstart.key && pstart.key.startsWith('pi@' + ACCOUNT + ':'), fail('project start: ' + JSON.stringify(pstart)));
+  assert.equal(pstart.cwd, proj);
+  asTest(`sed -i '1s/"cwd"/"tag":"${tag}","cwd"/' ${path.join(sessionsRoot, pstart.key.slice(pstart.key.indexOf(':') + 1))}`); // for the cleanup
+
   // The owner cannot drive her conversation (it is hers); a fork is theirs.
   const ownerSend = await post(local + '/api/conversation/send', { id: started.key, text: 'as the owner' });
   assert.equal(ownerSend.status, 409, fail(await ownerSend.text()));
