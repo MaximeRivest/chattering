@@ -3118,8 +3118,22 @@ function sessionPathsFor(key) {
   if (!entry) throw new Error('not found');
   const relPath = key.slice(entry.source.length + 1);
   const sessionPath = path.resolve(SOURCES[entry.source], relPath);
-  const cwd = entry.cwd && fs.existsSync(entry.cwd) ? entry.cwd : os.homedir();
-  return { entry, relPath, sessionPath, cwd };
+  return { entry, relPath, sessionPath, cwd: workFolderOf(entry.cwd, accountOfSource(entry.source)) };
+}
+
+// The folder a stored conversation works in now: where its folder moved
+// (design/105: Lilly's projects went from /home/maxime/Projects to her own
+// account; their conversations still name the old place), else the folder
+// it names, else home when that folder is gone. Whether a folder exists is
+// only judged from here for this server's own conversations: a recorded
+// move, and the folder of a conversation another account keeps, may be in
+// a home this server's account cannot see, and it is that person who runs
+// there (their worker reports a folder that is really gone).
+function workFolderOf(storedCwd, keptByAccount = null) {
+  if (!storedCwd) return os.homedir();
+  const now = movedFolder(storedCwd);
+  if (now !== storedCwd || keptByAccount) return now;
+  return fs.existsSync(storedCwd) ? storedCwd : os.homedir();
 }
 
 // Per-session mutation queue: branch changes and live turns on one file never
@@ -3267,7 +3281,7 @@ async function forkSession(key, nodeId) {
   // wait behind its live turn or stop its warm runtime. This native utility
   // is file-only even when the chosen agent engine is RPC.
   if (entry.source !== 'claude') {
-    const forked = await pisdk.piForkAt({ sessionPath, cwd }, nodeId, forkPlacement(cwd, key));
+    const forked = await pisdk.piForkAt({ sessionPath, cwd }, nodeId, forkPlacement(entry.cwd || cwd, key));
     const newKey = await indexNewSessionFile(forked.file);
     await markFork(newKey, key, entry);
     return { key: newKey, path: forked.file, sessionId: forked.sessionId };
@@ -3294,7 +3308,7 @@ async function forkSessionForEdit(key, nodeId) {
   if (entry.source === 'claude') throw new Error('Editing a past message needs pi. Claude conversations can only fork.');
   refuseOwnProgramOnly(entry, 'Editing a past message');
   await assertDelegationOwnership(sessionPath);
-  const forked = await pisdk.piForkBefore({ sessionPath, cwd }, nodeId, forkPlacement(cwd, key));
+  const forked = await pisdk.piForkBefore({ sessionPath, cwd }, nodeId, forkPlacement(entry.cwd || cwd, key));
   const newKey = await indexNewSessionFile(forked.file);
   await markFork(newKey, key, entry);
   return { key: newKey, path: forked.file, sessionId: forked.sessionId, text: forked.text };

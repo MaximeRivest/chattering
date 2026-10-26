@@ -419,9 +419,17 @@ async function createS(target) {
   const agentDir = SDK.getAgentDir();
   // `sessionDir` pins where a new session's file lands (a sandboxed guest
   // writes into the project's own session folder, the only one bound in).
-  const sm = target.sessionPath
+  let sm = target.sessionPath
     ? SDK.SessionManager.open(path.resolve(target.sessionPath), target.sessionDir || undefined)
     : SDK.SessionManager.create(target.cwd, target.sessionDir || undefined);
+  // The folder the conversation names is gone (moved to a person's own
+  // account, design/105, or deleted): Pi refuses to resume it. Work where
+  // the server says the conversation works now, as Pi's own terminal does
+  // when you answer "continue in current cwd". The file is not rewritten.
+  const named = target.sessionPath && sm.getCwd();
+  if (named && !fs.existsSync(named) && target.cwd && fs.existsSync(target.cwd)) {
+    sm = SDK.SessionManager.open(path.resolve(target.sessionPath), target.sessionDir || undefined, target.cwd);
+  }
   const cwd = sm.getCwd() || target.cwd;
   const trustStore = new SDK.ProjectTrustStore(agentDir);
   const parsed = parseExtraArgs(target.extraArgs);

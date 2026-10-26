@@ -226,6 +226,21 @@ test('a person runs as their own account: commands, conversations, forks, the st
   assert.equal(fs.statSync(forked.path).uid, Number(execFileSync('id', ['-u', ACCOUNT], { encoding: 'utf8' })));
   asTest(`sed -i '1s/"cwd"/"tag":"${tag}","cwd"/' ${forked.path}`); // marks it for the cleanup
 
+  // A conversation from before the move: its folder no longer exists, and
+  // Pi refuses to resume a session whose folder is gone (2026-10-26: forks
+  // and replies in recorn failed). Her fork of it works where the folder
+  // is now, and she can go on in it.
+  const movedKey = Object.keys(await (await get(local + '/api/sessions')).json().then(list => Object.fromEntries((Array.isArray(list) ? list : list.sessions || []).map(s => [s.key || s.id, s])))).find(k => k.includes('01a0moved'));
+  assert.ok(movedKey, 'the conversation from before the move is listed');
+  const movedFork = await (await post(remote + '/api/fork', { id: movedKey, node: 'm1' }, tess)).json();
+  assert.ok(movedFork.key && movedFork.key.startsWith('pi@' + ACCOUNT + ':'), fail(JSON.stringify(movedFork)));
+  assert.equal(JSON.parse(asTest(`head -1 ${movedFork.path}`).stdout).cwd, proj, 'the copy works where the folder is now');
+  asTest(`sed -i '1s/"cwd"/"tag":"${tag}","cwd"/' ${movedFork.path}`); // for the cleanup
+  const goOn = await post(remote + '/api/node/send', { id: movedFork.key, prompt: 'after the move ' + tag, models: [{ provider: ai.name, modelId: 'fixture-chat' }] }, tess);
+  assert.ok(goOn.ok, fail('send: ' + await goOn.clone().text()));
+  const goOnJob = await until(async () => { const jobs = await (await get(local + '/api/jobs')).json(); const j = jobs.find(x => x.key === movedFork.key); return j && j.status !== 'running' && j; }, 90000, 'the reply after the move');
+  assert.equal(goOnJob.status, 'done', fail(JSON.stringify(goOnJob)));
+
   // A file in her folder that is not hers is never read: a symlink to the
   // owner's secret, planted as her, does not reach the index.
   const plant = path.join(sessionsRoot, '--planted--');
