@@ -77,7 +77,9 @@ class PreviewAssets {
   constructor({ now = Date.now, ttl = 30 * 60 * 1000, limit = 128 } = {}) {
     this.grants = new Map(); this.now = now; this.ttl = ttl; this.limit = limit;
   }
-  create(found, { authorize = null } = {}) {
+  // io: whose disk the assets are read from ({ realpath, stat } and a known
+  // realRoot), for a person whose files this process may not open itself.
+  create(found, { authorize = null, io = null, realRoot: knownRealRoot = null } = {}) {
     if (!/\.html?$/i.test(found.abs)) throw Error('Only HTML files have a web preview');
     this.prune();
     if (this.grants.size >= this.limit) throw Error('Too many open previews. Close another preview and try again.');
@@ -86,9 +88,9 @@ class PreviewAssets {
     // compared with the real one (macOS /var is /private/var; Windows may
     // hand out a short 8.3 name).
     const root = path.dirname(found.abs);
-    let realRoot = root;
-    try { realRoot = require('fs').realpathSync.native(root); } catch {}
-    this.grants.set(token, { root, realRoot, expires: this.now() + this.ttl, authorize });
+    let realRoot = knownRealRoot || root;
+    if (!io) try { realRoot = require('fs').realpathSync.native(root); } catch {}
+    this.grants.set(token, { root, realRoot, expires: this.now() + this.ttl, authorize, io });
     return { token, base: `/api/file/preview-assets/${token}/`, expiresIn: this.ttl };
   }
   prune() { for (const [token, grant] of this.grants) if (grant.expires <= this.now()) this.grants.delete(token); }
@@ -100,18 +102,19 @@ class PreviewAssets {
     const inside = (abs, root) => abs.startsWith(root + path.sep);
     const wanted = path.resolve(grant.root, relative);
     if (!inside(wanted, grant.root)) throw Error('Asset is outside the preview folder');
-    const abs = await fsp.realpath(wanted);
+    const disk = grant.io || { realpath: p => fsp.realpath(p), stat: p => fsp.stat(p) };
+    const abs = await disk.realpath(wanted);
     if (!inside(abs, grant.realRoot || grant.root)) throw Error('Asset is outside the preview folder');
     // Recheck the initiating person's current rights on each resolved asset,
     // including nested projects; a revoked login must invalidate its previews.
     if (grant.authorize) await grant.authorize(abs);
     const mime = ASSET_TYPES[path.extname(abs).toLowerCase()];
     if (!mime) throw Error('This file type is not allowed in previews');
-    const stat = await fsp.stat(abs);
+    const stat = await disk.stat(abs);
     if (!stat.isFile()) throw Error('Not a regular preview asset');
     if (stat.size > 32 * 1024 * 1024) throw Error('Preview asset exceeds 32 MB');
     grant.expires = this.now() + this.ttl;
-    return { abs, stat, mime };
+    return { abs, stat, mime, io: grant.io || null };
   }
 }
 module.exports = { mediaType, mediaKind, byteRange, disposition, serveFile, PreviewAssets };

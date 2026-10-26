@@ -72,14 +72,14 @@ async function saveText(host, abs, text, { baseSha = null } = {}) {
 
 // A file as an HTTP response, ranges and validators as file-media.js does,
 // the bytes read by their host in slices.
-async function serve(req, res, host, abs, mime, { download = false, maxBytes = Infinity } = {}) {
+async function serve(req, res, host, abs, mime, { download = false, maxBytes = Infinity, headers = {} } = {}) {
   const stat = await host.call('stat', abs);
   if (stat.type !== 'file') throw new Error('not a regular file');
   if (stat.size > maxBytes) throw new Error('file is too large to open here');
   const etag = '"' + crypto.createHash('sha256').update([stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':')).digest('hex').slice(0, 32) + '"';
   const common = { 'Content-Type': mime, 'Accept-Ranges': 'bytes', ETag: etag, 'Last-Modified': new Date(stat.mtimeMs).toUTCString(),
     'Content-Disposition': fileMedia.disposition(abs, download), 'Cache-Control': 'private, no-cache',
-    'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "sandbox; default-src 'none'" };
+    'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "sandbox; default-src 'none'", ...headers };
   const none = String(req.headers['if-none-match'] || '');
   if (none === '*' || none.split(',').some(tag => tag.trim().replace(/^W\//, '') === etag)) { res.writeHead(304, common); res.end(); return; }
   const ifRange = req.headers['if-range'];
@@ -130,7 +130,7 @@ async function exists(host, lists) {
 
 // The four disk calls files-browser-server.js makes, as their host makes them.
 function hostIo(host) {
-  const st = s => ({ isDirectory: () => s.type === 'dir', isFile: () => s.type === 'file', isSymbolicLink: () => s.type === 'link', size: s.size, mtimeMs: s.mtimeMs });
+  const st = s => ({ isDirectory: () => s.type === 'dir', isFile: () => s.type === 'file', isSymbolicLink: () => s.type === 'link', size: s.size, mtimeMs: s.mtimeMs, ino: s.ino, dev: s.dev });
   return {
     realpath: p => host.call('realpath', p),
     stat: async p => st(await host.call('stat', p)),

@@ -494,6 +494,27 @@ const ACCOUNT_ROUTES = {
   '/api/files/browse': 'theirs', '/api/files/activity': 'index',
   'POST /api/project/share': 'theirs',
   '/api/conversation/folder-info': 'theirs',
+  // Artifacts (design/67): the files are read as them, and their versions
+  // come from their own file history (server.js viewerIo); the preview
+  // address reads as the person its capability names. A widget is the
+  // conversation's own text.
+  '/api/artifacts/config': 'index', '/api/artifacts/widget': 'index',
+  '/api/artifacts/resolve': 'theirs', '/api/artifacts/blob': 'theirs', '/api/artifacts/declare': 'theirs',
+  // A conversation's pictures and recorded edits are read from the
+  // conversation as kept (server.js readTranscriptText: a file of theirs,
+  // never a link). What its steps changed, the file as it is now and the
+  // system prompt their agent saw come from their file history, their disk
+  // and their Pi folder, read as them.
+  '/api/conversation/media': 'index', '/api/conversation/diffs': 'index',
+  '/api/conversation/file-event': 'theirs', '/api/conversation/sysprompt': 'theirs',
+  '/api/files/complete': 'theirs', '/api/files/project': 'theirs',
+  // Documents and notes: written by their host, as them.
+  '/api/files/op': 'theirs', '/api/file/preview': 'theirs', '/api/doc/save': 'theirs', '/api/doc/create': 'theirs', '/api/ink/new': 'theirs', '/api/notes/new': 'theirs', '/api/notes/convert': 'theirs', '/api/snippets': 'theirs', '/api/snippets/used': 'index',
+  // This server's own records: the index, the notes tree, the file ledger,
+  // the memory documents, feedback logs; no path of theirs is opened.
+  '/api/here': 'index', '/api/notes': 'index', '/api/notefile': 'index', '/api/rescan': 'index', '/api/diff-event': 'index',
+  '/api/ai-feedback': 'index', '/api/files/timeline': 'index', '/api/project-id': 'index', '/api/project/purpose': 'index',
+  'POST /api/conversation/changes': 'theirs', 'GET /api/conversation/change': 'theirs', 'GET /api/conversation/change-blob': 'theirs',
   // Chattering's own records (memory, notes, epics, the index, settings,
   // its saved history of file text): nothing here opens a path of theirs.
   '/api/project/context': 'index', '/api/project/diffs': 'index', '/api/project/memory/file': 'index', '/api/project/memory/regenerate': 'index',
@@ -506,9 +527,9 @@ const ACCOUNT_ROUTES = {
   '/api/conversation/file-history': 'index', '/api/conversation/attached-context': 'index', '/api/conversation/context-preview': 'index', '/api/conversation/project': 'index',
   '/api/node/aggregate': 'index', 'GET /api/public-links': 'index', 'PUT /api/codex/prefs': 'index',
   'PUT /api/modes': 'index', 'POST /api/modes': 'index', '/api/modes/delete': 'index',
-  '/api/files/deleted': 'index', '/api/files/stats': 'index', '/api/files/ridge': 'index',
+  '/api/files/deleted': 'theirs', '/api/files/stats': 'index', '/api/files/ridge': 'index',
   '/api/file-history/points': 'index', '/api/file-history/snapshot': 'index', '/api/file-history/changes': 'index',
-  '/api/ink/new': 'index', '/api/notes/new': 'index', '/api/vouch/all': 'index', 'GET /api/made': 'index',
+ '/api/vouch/all': 'index', 'GET /api/made': 'index',
   '/api/agents/active': 'index', '/api/agents/recovery': 'index', '/api/delegations': 'index',
   '/api/voice/state': 'index', '/api/voice/pause': 'index', '/api/voice/preview': 'index', '/api/voice/mute': 'index', '/api/voice/status': 'index',
   '/api/voice/decide': 'index', '/api/voice/delegate': 'index', '/api/voice/history': 'index', '/api/voice/note': 'index', '/api/voice/history/clear': 'index', '/api/voice/outcome': 'index', '/api/voice/listen': 'index',

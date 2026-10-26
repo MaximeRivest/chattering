@@ -290,3 +290,177 @@ test('a person runs as their own account: commands, conversations, forks, the st
   assert.equal(none.status, 403, 'no account of her own, none of the server\u2019s');
   assert.match((await none.json()).error, /has none yet/);
 });
+
+// The parts of the app around files, for the same person: artifacts and
+// their previews, a conversation's pictures and changes, the composer's @
+// files and snippets, documents, notes, the Files browser's operations and
+// HTML previews. Each was refused to Lilly until 2026-10-26 ("it would touch
+// files with this server's rights"); each now runs as the person, and what
+// it makes is theirs. In this file, not its own: both use the one test
+// account, and the stop button above stops everything that account runs.
+test('a person on their own account: artifacts, pictures, changes, documents and files, as them', { skip: skip || (!node && 'no node in the Nix store'), timeout: 240000 }, async t => {
+  const tag = 'e2e-' + process.pid + '-' + Date.now().toString(36);
+  const TMP = path.join(os.homedir(), '.cache', 'chattering-test-homes');
+  fs.mkdirSync(TMP, { recursive: true });
+  const home = fs.mkdtempSync(path.join(TMP, 'accounts-'));
+  const agent = path.join(home, '.pi', 'agent');
+  fs.mkdirSync(path.join(agent, 'extensions'), { recursive: true });
+  fs.writeFileSync(path.join(agent, 'auth.json'), '{}');
+  fs.writeFileSync(path.join(agent, 'settings.json'), '{}');
+  const secretDir = path.join(home, 'Projects', 'secret');
+  fs.mkdirSync(secretDir, { recursive: true });
+  fs.writeFileSync(path.join(secretDir, 'plan.md'), 'THE OWNER SECRET PLAN\n');
+  // The owner's conversation, in a folder both can read (/tmp), to fork.
+  const shared = fs.mkdtempSync(path.join(os.tmpdir(), 'acct-shared-'));
+  fs.chmodSync(shared, 0o755);
+  const ownerSessDir = path.join(agent, 'sessions', accounts.sessionsRootFor ? require('../runtime.js').piSessionDirName(shared) : '');
+  fs.mkdirSync(ownerSessDir, { recursive: true });
+  const ownerId = '01a0owner' + '0'.repeat(27);
+  fs.writeFileSync(path.join(ownerSessDir, `2026-10-24T10-00-00-000Z_${ownerId}.jsonl`), line({ type: 'session', version: 3, id: ownerId, timestamp: '2026-10-24T10:00:00.000Z', cwd: shared })
+    + line({ type: 'message', id: 'm1', parentId: null, timestamp: '2026-10-24T10:00:01.000Z', message: { role: 'user', content: 'the owner asks' } })
+    + line({ type: 'message', id: 'm2', parentId: 'm1', timestamp: '2026-10-24T10:00:02.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'the owner hears' }], model: 'x' } }));
+  // The person's project, in their home: this server cannot even see it.
+  const proj = path.join('/home', ACCOUNT, 'Projects', tag);
+  assert.equal(asTest(`mkdir -p ${proj} && echo hers > ${proj}/notes.md`).status, 0);
+
+  // The project used to be the owner's: his old conversation there, and the
+  // record that its folder moved into her home (scripts/account-move.js).
+  const oldPlace = path.join(home, 'Projects', tag);
+  const oldDir = path.join(agent, 'sessions', require('../runtime.js').piSessionDirName(oldPlace));
+  fs.mkdirSync(oldDir, { recursive: true });
+  fs.writeFileSync(path.join(oldDir, '2026-10-20T10-00-00-000Z_01a0moved00000000000000000000000.jsonl'), line({ type: 'session', version: 3, id: '01a0moved00000000000000000000000', timestamp: '2026-10-20T10:00:00.000Z', cwd: oldPlace })
+    + line({ type: 'message', id: 'm1', parentId: null, timestamp: '2026-10-20T10:00:01.000Z', message: { role: 'user', content: 'before the move' } }));
+  fs.mkdirSync(path.join(home, 'notes', 'chattering', 'projects'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'notes', 'chattering', 'projects', 'folder-moves.json'), JSON.stringify({ v: 1, moves: { [oldPlace]: { to: proj, at: new Date().toISOString() } } }));
+
+  const model = await fakeOpenAI({ reply: p => { const all = JSON.stringify(p.messages); if (/make a page/.test(all) && !p.messages.some(m => m.role === 'tool')) return { tool: { name: 'write', arguments: { path: 'site/index.html', content: '<h1>made by the agent</h1>' } } }; return 'Done.'; } });
+  const previewPort = await freePort();
+  const port = await freePort(), tlsPort = await freePort();
+  registerConsole(port, 'install-tok');
+  let log = '';
+  const child = spawn(node, ['server.js'], { cwd: root, env: { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: String(tlsPort),
+    CHATTERING_NO_WATCH: '1', CHATTERING_NO_LEDGER: '1', CHATTERING_NO_SYNC: '1', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'),
+    CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent,
+    CHATTERING_HOST: '', CHATTERING_LAN: '1', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: 'install-tok', CHATTERING_NODE: node, CHATTERING_PREVIEW_PORT: String(previewPort) }, stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b);
+  t.after(async () => {
+    await require('./helpers/cleanup.js').stopAndRemove(child, home);
+    await model.close();
+    fs.rmSync(shared, { recursive: true, force: true });
+    // What the person left: their project and their conversations from this test.
+    asTest(`rm -rf ${proj}; rmdir /home/${ACCOUNT}/Projects 2>/dev/null; for d in ${sessionsRoot}/*; do grep -l '${tag}' "$d"/*.jsonl 2>/dev/null; done | xargs -r rm -f; find ${sessionsRoot} -mindepth 1 -type d -empty -delete`);
+  });
+  const local = 'http://127.0.0.1:' + port, remote = 'http://' + lanIp() + ':' + port;
+  const post = (url, body, cookie) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(body) });
+  const get = (url, cookie) => fetch(url, { headers: cookie ? { Cookie: cookie } : {} });
+  await until(async () => { try { return (await get(local + '/api/sessions')).ok; } catch { return false; } }, 30000, 'the server');
+  const fail = what => what + '\n--- server log ---\n' + log.slice(-4000);
+
+  // The owner adds a model server and a person, Tess, and links her to the account.
+  const ai = await (await post(local + '/api/ai/server', { baseUrl: model.baseUrl })).json();
+  assert.ok(ai.name, JSON.stringify(ai));
+  const added = await (await post(local + '/api/users/add', { name: 'Tess' })).json();
+  const tessIn = await fetch(remote + '/?token=' + encodeURIComponent(new URL(added.inviteLink).searchParams.get('token')), { redirect: 'manual' });
+  const tess = (tessIn.headers.get('set-cookie') || '').split(';')[0];
+  assert.ok(tess, 'Tess has a session');
+  const linked = await (await post(local + '/api/users/account', { id: added.user.id, account: ACCOUNT, models: 'shared' })).json();
+  assert.equal(linked.account && linked.account.status, 'ready', fail(JSON.stringify(linked)));
+  // A member cannot link anyone, themselves included.
+  assert.equal((await post(remote + '/api/users/account', { id: added.user.id, account: 'root' }, tess)).status, 403);
+  const overview = await (await get(local + '/api/accounts')).json();
+  assert.equal(overview.people.find(p => p.id === added.user.id).status, 'ready');
+  assert.equal((await get(remote + '/api/accounts', tess)).status, 403, 'administrators only');
+
+
+
+  const run = async (cmd, cwd) => (await (await post(remote + '/api/exec', { cmd, cwd }, tess)).json());
+  const ok = async (what, resP) => { const res = await resP; const text = await res.clone().text(); assert.equal(res.status, 200, fail(what + ': ' + text.slice(0, 400))); return res; };
+  const okJson = async (what, resP) => (await ok(what, resP)).json();
+  const theirs = rel => assert.equal(asTest(`stat -c %U '${path.join(proj, rel)}'`).stdout.trim(), ACCOUNT, rel + ' is hers');
+
+  // Her agent makes a page; the artifact tool (her token) declares it.
+  const started = await okJson('start', post(remote + '/api/conversation/start-loose', { folder: proj, prompt: 'make a page ' + tag, models: [{ provider: ai.name, modelId: 'fixture-chat' }] }, tess));
+  await until(async () => { const jobs = await (await get(local + '/api/jobs')).json(); return !jobs.some(x => x.key === started.key && x.status === 'running'); }, 90000, 'her run');
+  const sess = path.join(sessionsRoot, started.key.slice(started.key.indexOf(':') + 1));
+  const decl = JSON.parse((await run(`curl -s -X POST -H "Authorization: Bearer $CHATTERING_TOKEN" -H 'Content-Type: application/json' -d '{"session":"${sess}","path":"site"}' http://127.0.0.1:${port}/api/artifacts/declare`, proj)).out);
+  assert.equal(decl.kind, 'web', fail(JSON.stringify(decl)));
+  assert.equal(decl.versioned, true, 'kept in her own file history');
+  const k = encodeURIComponent(started.key);
+  const art = await okJson('resolve', get(remote + `/api/artifacts/resolve?id=${k}&path=site`, tess));
+  assert.equal(art.versions.length, 1, 'the version her agent wrote, from her file history');
+  assert.equal(await (await ok('blob', get(remote + `/api/artifacts/blob?id=${k}&path=site&file=index.html`, tess))).text(), '<h1>made by the agent</h1>');
+  assert.equal(await (await ok('blob version', get(remote + `/api/artifacts/blob?id=${k}&path=site&file=index.html&version=${art.versions[0].id}`, tess))).text(), '<h1>made by the agent</h1>');
+  for (const v of ['live', art.versions[0].id]) {
+    const page = await fetch(`http://127.0.0.1:${previewPort}/a/${art.cap}/${v}/`, { headers: { Host: art.site + '.localhost:' + previewPort } });
+    assert.equal(page.status, 200, v);
+    assert.match(await page.text(), /made by the agent/, 'the preview address reads as her: ' + v);
+  }
+  // What the step changed, the file now, and the conversation's own records.
+  const call = art.versions[0].call;
+  const changes = await okJson('changes', post(remote + '/api/conversation/changes', { id: started.key, groups: [[call]] }, tess));
+  assert.equal(changes.groups[0].files[0].rel, 'site/index.html');
+  assert.equal(changes.groups[0].files[0].kind, 'added');
+  const change = await okJson('change', get(remote + `/api/conversation/change?id=${k}&calls=${call}&path=${encodeURIComponent(proj + '/site/index.html')}`, tess));
+  assert.match(JSON.stringify(change), /made by the agent/);
+  await ok('diffs', get(remote + `/api/conversation/diffs?id=${k}`, tess));
+  const event = await okJson('file-event', get(remote + `/api/conversation/file-event?id=${k}&call=${call}`, tess));
+  assert.equal(event.disk && event.disk.text, '<h1>made by the agent</h1>', 'the file now, read as her');
+  await ok('sysprompt', get(remote + `/api/conversation/sysprompt?id=${k}`, tess));
+  // A picture she sends shows in her conversation.
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const sent = await post(remote + '/api/node/send', { id: started.key, prompt: 'look ' + tag, images: [{ mime: 'image/png', data: png }], models: [{ provider: ai.name, modelId: 'fixture-chat' }] }, tess);
+  assert.ok(sent.ok, fail('send picture: ' + await sent.text()));
+  await until(async () => { const jobs = await (await get(local + '/api/jobs')).json(); return !jobs.some(x => x.key === started.key && x.status === 'running'); }, 90000, 'the picture turn');
+  const withPic = asTest(`cat ${sess}`).stdout.split('\n').filter(Boolean).map(l => JSON.parse(l)).find(x => x.message && Array.isArray(x.message.content) && x.message.content.some(c => c.type === 'image'));
+  const at = withPic.message.content.findIndex(c => c.type === 'image');
+  const pic = await ok('media', get(remote + `/api/conversation/media?id=${k}&entry=${withPic.id}&path=${at}`, tess));
+  assert.equal(Buffer.from(await pic.arrayBuffer()).toString('base64'), png);
+
+  // The composer: @ files of her folder, her snippets.
+  const files = await okJson('complete', get(remote + `/api/files/complete?id=${k}&q=site/`, tess));
+  assert.deepEqual(files.items.map(i => i.label), ['index.html']);
+  await okJson('snippet', post(remote + '/api/snippets', { id: started.key, scope: 'project', name: 'hello', body: 'Say hello', kind: 'snippet' }, tess));
+  const snippets = await okJson('snippets', get(remote + `/api/snippets?id=${k}`, tess));
+  assert.ok(snippets.items.some(i => i.name === 'hello'), JSON.stringify(snippets));
+  theirs('.pi/prompts/hello.md');
+
+  // Documents and notes, made and saved as her.
+  await okJson('doc save', post(remote + '/api/doc/save', { path: proj + '/notes.md', text: '# saved by tess\n', actor: 'human', input: 'keyboard' }, tess));
+  assert.equal(asTest(`cat ${proj}/notes.md`).stdout, '# saved by tess\n');
+  theirs('notes.md');
+  const doc = await okJson('doc create', post(remote + '/api/doc/create', { project: tag, name: 'Plan' }, tess));
+  assert.equal(doc.path, proj + '/documents/Plan.md');
+  theirs('documents/Plan.md');
+  const note = await okJson('note', post(remote + '/api/notes/new', { project: tag, kind: 'text' }, tess));
+  const page = await okJson('note to a page', post(remote + '/api/notes/convert', { path: note.path, to: 'ink', project: tag }, tess));
+  theirs(path.relative(proj, page.path));
+  const loose = await okJson('loose note', post(remote + '/api/notes/new', { kind: 'text' }, tess));
+  assert.ok(loose.path.startsWith('/home/' + ACCOUNT + '/'), 'a note without a project is in her home: ' + loose.path);
+  const readme = await okJson('files project', get(remote + `/api/files/project?name=${tag}`, tess));
+  assert.equal(readme.readme && readme.readme.text, '# saved by tess\n');
+
+  // The Files browser: rename, copy, delete into her own "recently deleted", bring back.
+  await okJson('rename', post(remote + '/api/files/op', { name: tag, op: 'rename', rel: 'documents/Plan.md', to: 'Plan2.md' }, tess));
+  await okJson('duplicate', post(remote + '/api/files/op', { name: tag, op: 'duplicate', rel: 'documents/Plan2.md' }, tess));
+  theirs('documents/Plan2 copy.md');
+  const gone = await okJson('delete', post(remote + '/api/files/op', { name: tag, op: 'delete', rel: 'documents/Plan2.md' }, tess));
+  assert.equal(asTest(`test -e ${proj}/documents/Plan2.md`).status, 1);
+  assert.equal(asTest(`ls ~/.local/share/chattering/deleted-files/${gone.id}`).stdout.trim(), 'Plan2.md', 'kept in her home');
+  const deleted = await okJson('deleted', get(remote + `/api/files/deleted?name=${tag}`, tess));
+  assert.deepEqual(deleted.items.map(i => i.rel), ['documents/Plan2.md']);
+  await okJson('restore', post(remote + '/api/files/op', { name: tag, op: 'restore', id: gone.id }, tess));
+  theirs('documents/Plan2.md');
+  t.after(() => asTest(`rm -rf ~/.local/share/chattering/deleted-files ~/notes/chattering/notes/$(basename ${loose.path})`));
+
+  // An HTML file's preview and its assets, read as her.
+  asTest(`printf 'body{color:red}' > ${proj}/site/style.css`);
+  const grant = await okJson('file preview', post(remote + '/api/file/preview', { id: started.key, path: proj + '/site/index.html' }, tess));
+  assert.equal(await (await ok('asset', get(remote + grant.base + 'style.css'))).text(), 'body{color:red}');
+
+  // A file this server can read but her account cannot stays closed.
+  const secret = await get(remote + `/api/artifacts/blob?id=${k}&path=${encodeURIComponent(path.join(secretDir, 'plan.md'))}`, tess);
+  assert.notEqual(secret.status, 200);
+  assert.doesNotMatch(await secret.text(), /THE OWNER SECRET PLAN/);
+  const complete = await get(remote + `/api/files/complete?id=${k}&q=${encodeURIComponent(secretDir + '/')}`, tess);
+  assert.doesNotMatch(await complete.text(), /plan\.md/);
+});

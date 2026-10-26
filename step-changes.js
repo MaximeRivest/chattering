@@ -62,13 +62,13 @@ const isText = buf => !buf.includes(0) && Buffer.from(buf.toString('utf8')).equa
 
 // The tool calls of one conversation file, both formats (Pi, Claude Code).
 const sessions = new Lru(64);
-async function sessionTools(file) {
+async function sessionTools(file, readText = f => fsp.readFile(f, 'utf8')) {
   const st = await fsp.stat(file);
   const sig = st.mtimeMs + ':' + st.size;
   const hit = sessions.get(file);
   if (hit && hit.sig === sig) return hit;
   const tools = new Map();
-  const raw = await fsp.readFile(file, 'utf8');
+  const raw = await readText(file);
   for (const line of raw.split('\n')) {
     if (!line) continue;
     let row; try { row = JSON.parse(line); } catch { continue; }
@@ -135,12 +135,15 @@ function createStepChanges(deps) {
 
   const store = () => deps.store();
 
+  // deps.io: whose disk a file is read from now (a person on their own
+  // account: their host, design/105); this process's by default.
+  const io = deps.io || { stat: p => fsp.stat(p), readFile: p => fsp.readFile(p) };
   async function readDisk(abs) {
     try {
-      const st = await fsp.stat(abs);
+      const st = await io.stat(abs);
       if (!st.isFile()) return { missing: true };
       if (st.size > TEXT_MAX) return { tooLarge: true, size: st.size };
-      const buf = await fsp.readFile(abs);
+      const buf = Buffer.from(await io.readFile(abs));
       return isText(buf) ? { text: buf.toString('utf8'), size: st.size } : { binary: true, size: st.size };
     } catch (e) { return e.code === 'ENOENT' ? { missing: true } : { unreadable: e.message }; }
   }
@@ -148,8 +151,8 @@ function createStepChanges(deps) {
   // ---- one conversation's steps ----
   async function computeSteps(ctx, calls) {
     const cp = store(), out = new Map();
-    const { tools } = await sessionTools(ctx.file);
-    const rowsAll = cp.boundariesByCalls(calls);
+    const { tools } = await sessionTools(ctx.file, deps.readSession);
+    const rowsAll = await cp.boundariesByCalls(calls);
     const rowsBy = new Map();
     for (const r of rowsAll) {
       // A call ID belongs to this conversation or to a fork folded into it.
@@ -162,7 +165,7 @@ function createStepChanges(deps) {
       const own = rows.filter(r => r.session === ctx.file);
       pairs.set(call, pairOf(own.length ? own : rows));
     }
-    const heads = cp.snapshotHeads([...pairs.values()].flatMap(p => [p.before?.snapshot, p.after?.snapshot]));
+    const heads = await cp.snapshotHeads([...pairs.values()].flatMap(p => [p.before?.snapshot, p.after?.snapshot]));
     const observable = p => p.before?.snapshot && p.after?.snapshot && p.before.root === p.after.root && heads.has(p.before.snapshot) && heads.has(p.after.snapshot);
     const byRoot = new Map();
     for (const p of pairs.values()) if (observable(p)) {
@@ -210,10 +213,10 @@ function createStepChanges(deps) {
         }
         // Files saved by name before and after (outside the folder, ignored
         // by Git, or a command's named outputs).
-        const tb = new Map(cp.targets(pair.before.id).filter(t => t.version && t.storage === 'git').map(t => [t.location.path, t.version]));
-        for (const t of cp.targets(pair.after.id)) {
+        const tb = new Map((await cp.targets(pair.before.id)).filter(t => t.version && t.storage === 'git').map(t => [t.location.path, t.version]));
+        for (const t of await cp.targets(pair.after.id)) {
           if (!t.version || t.storage !== 'git' || !tb.has(t.location.path) || changes.has(t.location.path)) continue;
-          const a = cp.targetVersion(tb.get(t.location.path)), b = cp.targetVersion(t.version);
+          const a = await cp.targetVersion(tb.get(t.location.path)), b = await cp.targetVersion(t.version);
           if (!a || !b || (a.oid === b.oid && a.state === b.state)) continue;
           const ref = v => v.state === 'deleted' ? { absent: true } : { root: v.root, oid: v.oid };
           const c = { abs: t.location.path, add: null, del: null, binary: false, old: ref(a), next: ref(b), byName: true };
@@ -271,7 +274,7 @@ function createStepChanges(deps) {
       for (const [root, steps] of byRootSteps) {
         const from = Math.min(...[...steps].map(s => s.from)), to = Math.max(...[...steps].map(s => s.to));
         const others = new Map();
-        for (const r of cp.boundariesBetween(root, from - OTHER_OPEN_MS, to)) {
+        for (const r of await cp.boundariesBetween(root, from - OTHER_OPEN_MS, to)) {
           const k = r.session + '\0' + r.run + '\0' + r.call;
           if (!others.has(k)) others.set(k, []);
           others.get(k).push(r);
@@ -283,7 +286,7 @@ function createStepChanges(deps) {
           intervals.push({ k, session: p.before.session, call: p.before.call, start: p.before.started,
             end: p.after ? p.after.finished : p.before.started + OTHER_OPEN_MS, before: p.before, after: p.after });
         }
-        const oHeads = cp.snapshotHeads(intervals.flatMap(i => [i.before.snapshot, i.after?.snapshot]));
+        const oHeads = await cp.snapshotHeads(intervals.flatMap(i => [i.before.snapshot, i.after?.snapshot]));
         const overlapping = new Map();
         const treePairs = [];
         for (const step of steps) {

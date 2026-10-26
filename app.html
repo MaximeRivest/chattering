@@ -3154,7 +3154,12 @@ async function openRelatedNote(key) {
 // ---- background jobs (Settings), separate from agent attention ----
 let agentIdleOpen = false;
 let agentRecoveryOpen = false;
-function updateJob(job) { jobs.set(job.id, job); renderJobs(); }
+function updateJob(job) {
+  jobs.set(job.id, job);
+  // The open conversation's run, if this page has not heard from it yet.
+  if (job.type === 'agent-run' && job.status === 'running' && job.key && job.key === activeRel) adoptRunningJob(job.key);
+  renderJobs();
+}
 
 function barFor(j) {
   const pct = j.total ? j.done / j.total : (j.status === 'done' ? 1 : 0.12);
@@ -3188,6 +3193,7 @@ async function loadJobs() {
     if (!j || j.status !== 'running') { activeRuns.delete(id); dropped = true; }
   }
   if (dropped && viewKind === 'conversation') renderRunCards();
+  if (activeRel) adoptRunningJob(activeRel);
   renderJobs();
 }
 
@@ -12545,7 +12551,7 @@ async function headlessSendFromComposer(btn, promptOverride) {
   // The next message continues from the head. While a reply is being written
   // on the path you read, a single-model send joins that turn as a follow-up.
   const trace = current && computeSendTrace(current);
-  const running = [...activeRuns.values()].find(r => r.key === key && r.status === 'running' && !r.fanoutId);
+  const running = [...activeRuns.values()].find(r => r.key === key && r.status === 'running' && !r.fanoutId) || adoptRunningJob(key);
   const runningHere = running && trace && (!running.node || trace.onPath.has(nodeOfRaw(trace.tree, running.node)));
   const node = runningHere && models.length < 2 ? null : sendNodeFor(current);
   // The message node the new question will hang under: the head.
@@ -12638,6 +12644,21 @@ async function setFanModels(list) {
 }
 // The send button says what will happen: "send ×N" = the prompt fans out to
 // N models in parallel forks; the conversation's own model does not run.
+// A run this page did not start and has not heard from yet: opened,
+// reloaded or switched to while the run works on a long command, which
+// says nothing for minutes. The job list knows it runs: the page takes it
+// on as live (its strip and stop button show), and a message written now
+// joins it instead of being refused as a second run.
+function adoptRunningJob(key) {
+  const j = [...jobs.values()].find(x => x.type === 'agent-run' && x.status === 'running' && x.key === key && !x.fanoutId);
+  if (!j) return null;
+  if (!activeRuns.has(j.id) && !runLedgers.has(j.id)) {
+    const seed = { ...j, jobId: j.id, key, status: 'running', statusText: j.statusText || 'running', startedAt: j.startedAt, tail: [] };
+    activeRuns.set(j.id, seed); ledgerAbsorb(seed);
+    if (viewKind === 'conversation' && activeRel === key) renderRunCards();
+  }
+  return activeRuns.get(j.id) || null;
+}
 function agentRunLabel() {
   const n = fanModels().length;
   return n >= 2 ? 'send ×' + n : 'send';
@@ -15287,6 +15308,7 @@ async function open(rel, scroll, routeHash = null, { fromList = false } = {}) {
     activeRel = rel;
     markAgentRead(rel);
     openAgentConversation(rel);
+    adoptRunningJob(rel);
     const navSession = sessions.find(s => s.key === rel);
     if (navSession) {
       const navProject = projectOf(navSession);

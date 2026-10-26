@@ -541,9 +541,26 @@ function madeSummaries() {
 }
 // What each box of steps changed, shown in the conversation (design/88).
 let stepChangesService = null;
-function stepChanges() {
+// A person on their own account reads what their steps changed from their
+// own file history and their own disk (design/105): a service of their own.
+const personStepChanges = new Map();
+function stepChanges(identity = null) {
+  const mine = ownFilesOf(identity);
+  if (mine) {
+    let svc = personStepChanges.get(mine.account);
+    if (!svc || svc.host !== mine.host) {
+      const io = ioOfMine(mine), store = io.store();
+      svc = { host: mine.host, service: require('./step-changes.js').createStepChanges({
+        store: () => store, io, readSession: f => readTranscriptText(f),
+        session: key => { const { sessionPath, entry } = sessionPathsFor(key); return { file: sessionPath, cwd: entry.cwd || '', source: entry.source }; },
+        recorded: key => conversationDiffs(key),
+      }) };
+      personStepChanges.set(mine.account, svc);
+    }
+    return svc.service;
+  }
   stepChangesService ||= require('./step-changes.js').createStepChanges({
-    store: checkpoints,
+    store: checkpoints, readSession: f => readTranscriptText(f),
     session: key => { const { sessionPath, entry } = sessionPathsFor(key); return { file: sessionPath, cwd: entry.cwd || '', source: entry.source }; },
     recorded: key => conversationDiffs(key),
     // Other conversations of the project that edited files in that time: a
@@ -1343,9 +1360,13 @@ async function transcriptImage(key, entry, blockPath) {
     return media;
   }
   const wanted = blockPath.split('.').map(Number);
-  const stream = fs.createReadStream(absPathForKey(key), { encoding: 'utf8' });
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
-  for await (const line of rl) {
+  // A person's conversation (design/105) is read as their folder allows: a
+  // file of theirs, never a link they left there.
+  const file = absPathForKey(key);
+  const lines = ownerOfTranscript(file)
+    ? (await readTranscriptText(file)).split('\n')
+    : readline.createInterface({ input: fs.createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
+  for await (const line of lines) {
     let d;
     try { d = JSON.parse(line); } catch { continue; }
     if ((d.id || d.uuid) !== entry) continue;
@@ -1656,11 +1677,23 @@ const previewHandler = previewLib.createPreviewHandler({
   store: { snapshot: snapshotCached, blob: (root, oid) => checkpoints().blob(root, oid) },
   authorize: authorizePreview, network: artifactNetwork, ancestors: previewAncestors,
   typeViewer: artifactTypeViewer, serveFile: fileMedia.serveFile,
+  // A preview of someone on their own account is read as them, from their
+  // disk and their file history (design/105); everyone else's as before.
+  ioFor: claims => {
+    const io = viewerIo(identityOfUserId(claims.u));
+    if (!io.mine) return null;
+    const store = io.store();
+    return { store: { snapshot: id => store.snapshot(id), blob: async (root, oid) => Buffer.from(await store.blob(root, oid)) },
+      realpath: io.realpath, stat: io.stat, readFile: io.readFile,
+      serveFile: (req, res, found, mime, opts) => io.serve(req, res, found.abs, found.stat, mime, opts) };
+  },
 });
 
-// What kind of artifact a path is, for the panel's viewer.
-function artifactKindOf(abs, isDir) {
-  if (isDir) return fs.existsSync(path.join(abs, 'index.html')) ? 'web' : fs.existsSync(path.join(abs, 'deck.json')) ? 'slides' : 'folder';
+// What kind of artifact a path is, for the panel's viewer. A folder is looked
+// into as whoever reads it (io: viewerIo).
+async function artifactKindOf(abs, isDir, io = serverIo) {
+  const has = async name => { try { await io.stat(path.join(abs, name)); return true; } catch { return false; } };
+  if (isDir) return await has('index.html') ? 'web' : await has('deck.json') ? 'slides' : 'folder';
   const ext = path.extname(abs).toLowerCase();
   if (['.html', '.htm'].includes(ext)) return 'web';
   if (ext === '.svg') return 'svg';
@@ -1671,13 +1704,13 @@ function artifactKindOf(abs, isDir) {
   if (['.mp3', '.wav', '.ogg', '.m4a', '.flac'].includes(ext)) return 'audio';
   return 'text';
 }
-function artifactPathFor(key, value) {
+function artifactPathFor(key, value, home = os.homedir()) {
   const entry = index[key];
   if (!entry) throw Object.assign(new Error('not found'), { status: 404 });
   const raw = String(value || '').trim();
   if (!raw) throw new Error('which artifact?');
-  const cwd = entry.cwd || os.homedir();
-  const expanded = raw.startsWith('~/') ? path.join(os.homedir(), raw.slice(2)) : raw;
+  const cwd = entry.cwd || home;
+  const expanded = raw.startsWith('~/') ? path.join(home, raw.slice(2)) : raw;
   return path.resolve(cwd, expanded);
 }
 // Fingerprint of the artifact in one snapshot: the object ids of its files.
@@ -1696,14 +1729,16 @@ function snapshotSignature(snap, abs, isDir) {
 }
 // The same fingerprint of the files on disk now (git blob ids), bounded.
 const diskOidCache = new Map();
-async function diskSignature(abs, isDir) {
+async function diskSignature(abs, isDir, io = serverIo) {
+  // A person's host reads at most 16 MB at once: past that, no fingerprint.
+  const max = io.mine ? Math.min(16 * 1024 * 1024, require('./checkpoint-store.js').ARTIFACT_FILE_MAX) : require('./checkpoint-store.js').ARTIFACT_FILE_MAX;
   const oidOf = async file => {
-    const stat = await fsp.stat(file);
-    const fp = stat.size + ':' + stat.mtimeMs + ':' + stat.ino;
+    const stat = await io.stat(file);
+    const fp = (io.mine ? io.mine.account + ':' : '') + stat.size + ':' + stat.mtimeMs + ':' + stat.ino;
     const hit = diskOidCache.get(file);
     if (hit && hit.fp === fp) return hit.oid;
-    if (stat.size > require('./checkpoint-store.js').ARTIFACT_FILE_MAX) return 'x';
-    const bytes = await fsp.readFile(file);
+    if (stat.size > max) return 'x';
+    const bytes = await io.readFile(file);
     const oid = require('./checkpoint-store.js').blobId(bytes);
     diskOidCache.set(file, { fp, oid });
     if (diskOidCache.size > 20000) diskOidCache.delete(diskOidCache.keys().next().value);
@@ -1713,7 +1748,7 @@ async function diskSignature(abs, isDir) {
     if (!isDir) return { sig: await oidOf(abs), files: 1 };
     const files = [];
     const walk = async (dir, rel) => {
-      for (const e of await fsp.readdir(dir, { withFileTypes: true })) {
+      for (const e of await io.readdir(dir)) {
         if (ARTIFACT_SKIP.has(e.name) || files.length > 3000) continue;
         const full = path.join(dir, e.name), r = rel ? rel + '/' + e.name : e.name;
         if (e.isDirectory()) await walk(full, r);
@@ -1734,12 +1769,13 @@ async function artifactResolve(identity, params) {
   const key = String(params.id || '');
   if (!index[key]) throw Object.assign(new Error('not found'), { status: 404 });
   if (!keyVisible(identity, key)) throw Object.assign(new Error('This is not shared with you.'), { status: 403 });
-  const abs = artifactPathFor(key, params.path);
+  const io = viewerIo(identity);
+  const abs = artifactPathFor(key, params.path, io.home);
   assertPathAccess(identity, abs, 'see');
   let stat = null;
-  try { stat = await fsp.stat(abs); } catch {}
+  try { stat = await io.stat(abs); } catch {}
   const isDir = stat ? stat.isDirectory() : !path.extname(abs);
-  const kind = params.type && /^[a-z]{2,20}$/.test(params.type) && params.type !== 'auto' ? params.type : artifactKindOf(abs, isDir);
+  const kind = params.type && /^[a-z]{2,20}$/.test(params.type) && params.type !== 'auto' ? params.type : await artifactKindOf(abs, isDir, io);
   const data = JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8'));
   const T = conversationTree.build({ ...data, messages: data.messages.map(m => ({ ...m, eid: m.eid || m._eid })) });
   const reading = readingFor(key, identity) || {};
@@ -1749,19 +1785,22 @@ async function artifactResolve(identity, params) {
   const calls = [];
   for (const node of onPath) for (const m of conversationTree.rowsOf(T, node)) if (m.role === 'tool' && m.id) { calls.push(m.id); callNode.set(m.id, node); }
   const order = new Map(calls.map((c, i) => [c, i]));
-  const rows = checkpoints().boundariesByCalls(calls)
+  // The versions in the reader's own file history (a person on their own
+  // account keeps theirs; this server's holds the rest).
+  const store = io.store();
+  const rows = (await store.boundariesByCalls(calls))
     .filter(b => b.snapshot && (b.phase === 'after' || b.phase === 'after-error'))
     .sort((a, b) => (order.get(a.call) - order.get(b.call)) || (a.id - b.id));
   const versions = [];
   for (const b of rows) {
     let snap;
-    try { snap = await snapshotCached(b.snapshot); } catch { continue; }
+    try { snap = io.mine ? await store.snapshot(b.snapshot) : await snapshotCached(b.snapshot); } catch { continue; }
     const sig = snapshotSignature(snap, abs, isDir);
     if (!sig) continue;
     if (versions.length && versions[versions.length - 1].sig === sig.sig) continue;
     versions.push({ id: b.snapshot, call: b.call, node: callNode.get(b.call) || null, at: b.finished, sig: sig.sig, missing: sig.missing, files: sig.files });
   }
-  const disk = stat ? await diskSignature(abs, isDir) : null;
+  const disk = stat ? await diskSignature(abs, isDir, io) : null;
   const last = versions[versions.length - 1] || null;
   const liveSame = !!(disk && last && disk.sig === last.sig);
   // At the conversation's end the disk is the newest state; on an older
@@ -1771,7 +1810,7 @@ async function artifactResolve(identity, params) {
   const root = isDir ? abs : path.dirname(abs);
   const cap = previewCaps.sign({ u: identity.user.id, k: key, r: root, e: isDir ? '' : path.basename(abs), t: kind === 'slides' ? 'slides' : undefined });
   return {
-    path: abs, relPath: path.relative(index[key].cwd || os.homedir(), abs) || path.basename(abs), kind, isDir, exists: !!stat,
+    path: abs, relPath: path.relative(index[key].cwd || io.home, abs) || path.basename(abs), kind, isDir, exists: !!stat,
     title: String(params.title || '').slice(0, 120) || path.basename(abs),
     versions: versions.map(({ sig, ...v }) => v), live: { exists: !!stat, same: liveSame, files: disk ? disk.files : 0 },
     show, head, cap, site: previewLib.siteId(key, root), entry: isDir ? '' : path.basename(abs),
@@ -1788,7 +1827,7 @@ async function artifactWidget(identity, params) {
   // written: its page has no entry yet) the call is looked up by its id.
   const entryId = String(params.entry || ''), callId = String(params.call || '');
   if (!callId) throw Object.assign(new Error('Which widget?'), { status: 400 });
-  const raw = await fsp.readFile(absPathForKey(key), 'utf8');
+  const raw = await readTranscriptText(absPathForKey(key));
   for (const line of raw.split('\n')) {
     if (!line.includes(entryId) || !line.includes(callId)) continue;
     let d; try { d = JSON.parse(line); } catch { continue; }
@@ -1807,6 +1846,7 @@ async function artifactWidget(identity, params) {
 // Markdown, video). Never rendered as a page here: sandboxed and inert.
 async function artifactBlob(identity, params, req, res) {
   const r = await artifactResolve(identity, { id: params.id, path: params.path, head: params.head });
+  const io = viewerIo(identity);
   const file = r.isDir ? path.join(r.path, String(params.file || 'index.html')) : r.path;
   if (!(file === r.path || file.startsWith(r.path + path.sep))) throw new Error('Outside the artifact');
   const version = params.version === 'live' || !params.version ? 'live' : String(params.version);
@@ -1814,22 +1854,22 @@ async function artifactBlob(identity, params, req, res) {
   const mime = previewLib.mimeOf(file);
   const safeMime = /^(text\/html|image\/svg)/.test(mime) ? 'text/plain; charset=utf-8' : mime;
   if (version === 'live') {
-    const stat = await fsp.stat(file);
-    return fileMedia.serveFile(req, res, { abs: file, stat }, safeMime, { maxBytes: 64 * 1024 * 1024, headers });
+    const stat = await io.stat(file);
+    return io.serve(req, res, file, stat, safeMime, { maxBytes: 64 * 1024 * 1024, headers });
   }
   if (!/^[a-f0-9]{64}$/.test(version)) throw new Error('bad version');
   let snap;
-  try { snap = await snapshotCached(version); } catch (e) { throw Object.assign(new Error(e.message), { status: 404 }); }
+  try { snap = io.mine ? await io.store().snapshot(version) : await snapshotCached(version); } catch (e) { throw Object.assign(new Error(e.message), { status: 404 }); }
   const rel = path.relative(snap.root, file).split(path.sep).join('/');
   const item = snap.manifest.find(f => f.path === rel);
   // A file the version did not keep (the artifact's version holds only its
   // page and what the page names, design/101): the file as it is now.
   if (!item || !item.oid) {
-    const stat = await fsp.stat(file).catch(() => null);
+    const stat = await io.stat(file).catch(() => null);
     if (!stat || !stat.isFile()) throw Object.assign(new Error('This file is not in that version.'), { status: 404 });
-    return fileMedia.serveFile(req, res, { abs: file, stat }, safeMime, { maxBytes: 64 * 1024 * 1024, headers: { ...headers, 'X-Chattering-Source': 'live-fallback' } });
+    return io.serve(req, res, file, stat, safeMime, { maxBytes: 64 * 1024 * 1024, headers: { ...headers, 'X-Chattering-Source': 'live-fallback' } });
   }
-  const body = await checkpoints().blob(snap.root, item.oid);
+  const body = Buffer.from(await io.store().blob(snap.root, item.oid));
   res.writeHead(200, { ...headers, 'Content-Type': safeMime, 'Content-Length': body.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
   res.end(req.method === 'HEAD' ? undefined : body);
 }
@@ -1856,21 +1896,22 @@ async function artifactDeclare(identity, body) {
   const session = path.resolve(String(body.session || ''));
   const key = keyForSessionPath(session);
   if (!key || !index[key]) throw Object.assign(new Error('Chattering does not know this conversation yet. The artifact will show once it is indexed.'), { status: 404 });
-  const abs = artifactPathFor(key, body.path);
+  const io = viewerIo(identity);
+  const abs = artifactPathFor(key, body.path, io.home);
   assertPathAccess(identity, abs, 'see');
   let stat;
-  try { stat = await fsp.stat(abs); } catch { throw new Error('Nothing at ' + abs + '. Write the files first, then call artifact.'); }
+  try { stat = await io.stat(abs); } catch { throw new Error('Nothing at ' + abs + '. Write the files first, then call artifact.'); }
   const isDir = stat.isDirectory();
-  const cwd = index[key].cwd || os.homedir();
+  const cwd = index[key].cwd || io.home;
   const folder = isDir ? abs : path.dirname(abs);
   // Versions keep the artifact with the pictures and fonts it uses: a file
   // with what it names, a folder whole while it is small (design/101).
   let saved = null, scopeError = '';
-  try { saved = await checkpoints().declareArtifact(cwd, abs); } catch (e) { scopeError = e.message; }
+  try { saved = await io.store().declareArtifact(cwd, abs); } catch (e) { scopeError = e.message; }
   const versionNote = saved && saved.folder && !saved.whole
     ? `The folder is too large to version whole (${saved.over}); ` + (saved.entry ? `versions keep ${path.basename(saved.entry)} and the files it names.` : 'versions keep none of it. Show its page (a file) instead.')
     : '';
-  const kind = body.type && body.type !== 'auto' ? body.type : artifactKindOf(abs, isDir);
+  const kind = body.type && body.type !== 'auto' ? body.type : await artifactKindOf(abs, isDir, io);
   const cap = previewCaps.sign({ u: identity.user.id, k: key, r: folder, e: isDir ? '' : path.basename(abs), t: kind === 'slides' ? 'slides' : undefined });
   const site = previewLib.siteId(key, folder);
   const tail = `/a/${cap}/live/`;
@@ -7260,13 +7301,16 @@ const THEMES_DIR = themesLib.defaultThemeDir(os.homedir());
 // in the real provider payload. The server only reads those files; it never
 // rebuilds the prompt itself, so what the UI shows is what the model saw.
 const SYSPROMPT_CACHE_DIR = path.join(process.env.PI_AGENT_DIR || PI_AGENT_DIR, 'cache', 'sysprompt');
-async function capturedSystemPrompt(key, which) {
+async function capturedSystemPrompt(key, which, identity = null) {
   const entry = index[key];
   if (!entry || !entry.sessionId) throw new Error('This conversation has no pi session id.');
   if (!['wire', 'pending'].includes(which)) throw new Error('which must be wire or pending');
-  const file = path.join(SYSPROMPT_CACHE_DIR, entry.sessionId + '-' + which + '.md');
+  // A person on their own account: their agents capture into their own Pi
+  // folder, read as them (design/105).
+  const mine = ownFilesOf(identity);
+  const file = path.join(mine ? path.join(mine.agentDir || path.join(mine.home, '.pi', 'agent'), 'cache', 'sysprompt') : SYSPROMPT_CACHE_DIR, entry.sessionId + '-' + which + '.md');
   let raw;
-  try { raw = await fsp.readFile(file, 'utf8'); }
+  try { raw = mine ? Buffer.from((await mine.host.call('read', file, { start: 0 })).data).toString('utf8') : await fsp.readFile(file, 'utf8'); }
   catch { return { which, captured: false, file, hint: 'No capture yet. The prompt-capture extension writes it on the next turn of this conversation.' }; }
   const m = raw.match(/^<!-- (\w+) (\S+) ?(\S*) -->\n/);
   return { which, captured: true, file, at: m ? m[2] : null, model: m && m[3] ? m[3] : null, text: m ? raw.slice(m[0].length) : raw };
@@ -7780,7 +7824,35 @@ function ownFilesOf(identity) {
   if (!ownAccountOf(person)) return null;
   const walls = accountManager.wallsFor(person);
   if (walls.blocked) walls.launch(); // their account is not ready: say why
-  return { host: accountManager.hostFor(person), home: walls.account.home, account: walls.account.name };
+  return { host: accountManager.hostFor(person), home: walls.account.home, account: walls.account.name, agentDir: walls.agentDir || null, mapPath: walls.mapPath || (p => p) };
+}
+// The disk and the saved file history a request reads, as whom (design/105):
+// a person on their own account, through their host process and their own
+// store (their agents save their file history in their home); everyone
+// else, this server's. One shape, so a route is written once for both.
+const checkpointMethods = ['boundariesByCalls', 'boundariesBetween', 'snapshot', 'snapshotHeads', 'blob', 'diffTrees', 'targets', 'targetVersion', 'declareArtifact'];
+function remoteCheckpoints(host) {
+  const out = Object.fromEntries(checkpointMethods.map(m => [m, (...args) => host.call('checkpoint', m, ...args)]));
+  // Bytes cross the channel as plain arrays of bytes: a Buffer again here.
+  out.blob = async (...args) => Buffer.from(await host.call('checkpoint', 'blob', ...args));
+  return out;
+}
+const serverIo = {
+  mine: null, home: os.homedir(),
+  stat: p => fsp.stat(p), realpath: p => fsp.realpath(p), readFile: p => fsp.readFile(p),
+  readdir: p => fsp.readdir(p, { withFileTypes: true }),
+  store: () => checkpoints(),
+  serve: (req, res, abs, stat, mime, opts) => fileMedia.serveFile(req, res, { abs, stat }, mime, opts),
+};
+function ioOfMine(mine) {
+  const disk = accountFiles.hostIo(mine.host);
+  const store = remoteCheckpoints(mine.host);
+  return { mine, home: mine.home, ...disk, store: () => store,
+    serve: (req, res, abs, stat, mime, opts = {}) => accountFiles.serve(req, res, mine.host, abs, mime, opts) };
+}
+function viewerIo(identity) {
+  const mine = ownFilesOf(identity);
+  return mine ? ioOfMine(mine) : serverIo;
 }
 // Where a path named in a conversation may be, for them.
 function ownCandidates(mine, key, pathValue) {
@@ -13573,7 +13645,7 @@ async function conversationDiffs(key) {
   const cacheKey = diffVersionOf(entry) + String(mtimeMs) + ':' + String(size);
   const cached = await loadDiffCacheRow(key);
   if (cached && cached.cacheKey === cacheKey) return cached.events;
-  const raw = await fsp.readFile(absPathForKey(key), 'utf8');
+  const raw = await readTranscriptText(absPathForKey(key));
   const records = [];
   if (entry.source === 'codex' && /\.json$/.test(absPathForKey(key))) { try { records.push(JSON.parse(raw)); } catch {} }
   else for (const line of raw.split('\n')) {
@@ -13644,7 +13716,7 @@ async function conversationDiffs(key) {
 // no conversation-wide grouping) and ships the current disk file so the
 // editor opens with zero further requests. The conversation-wide keyframe
 // history stays an explicit opt-in from the client.
-async function conversationFileEventResponse(key, callId, tsValue, pathValue) {
+async function conversationFileEventResponse(key, callId, tsValue, pathValue, identity = null) {
   const entry = index[key];
   if (!entry) throw new Error('not found');
   const events = await conversationDiffs(key);
@@ -13670,7 +13742,11 @@ async function conversationFileEventResponse(key, callId, tsValue, pathValue) {
   if (!picked.length) throw new Error('no recorded file change for this tool call');
   const abs = picked[0].path;
   let disk = null;
-  try {
+  // The file as it is now, read as the reader (design/105).
+  const mine = ownFilesOf(identity);
+  if (mine) {
+    try { const t = await accountFiles.readText(mine.host, abs, { max: FILE_EDIT_MAX }); disk = { path: t.path, text: t.text, sha: t.sha, editable: true }; } catch {}
+  } else try {
     const checked = await editableFilePath(abs);
     const text = await fsp.readFile(checked, 'utf8');
     disk = { path: checked, text, sha: sha256Hex(text), editable: true };
@@ -14969,20 +15045,22 @@ function filesRidgeResponse(project) {
 // The files-mode project landing: the README (path, text, sha) and the
 // repository roots. The tree itself comes from /api/project/file-history
 // light=1, which also seeds and watches.
-async function filesProjectResponse(project) {
+async function filesProjectResponse(project, io = serverIo) {
   const meta = projectMetaFor(project);
   if (!meta) throw new Error('project not found');
   const cwd = meta.cwd ? path.resolve(meta.cwd) : null;
+  // Read as whoever asks (io: viewerIo; design/105).
+  const exists = async p => { try { await io.stat(p); return true; } catch { return false; } };
   let readme = null;
-  if (cwd && fs.existsSync(cwd)) {
+  if (cwd && await exists(cwd)) {
     const names = ['README.md', 'readme.md', 'Readme.md', 'README.markdown', 'README'];
     for (const name of names) {
       const abs = path.join(cwd, name);
-      if (fs.existsSync(abs)) { readme = abs; break; }
+      if (await exists(abs)) { readme = abs; break; }
     }
     if (!readme) {
       let ents = [];
-      try { ents = await fsp.readdir(cwd); } catch {}
+      try { ents = (await io.readdir(cwd)).map(e => e.name); } catch {}
       const md = ents.filter(name => /\.md$/i.test(name)).sort()[0];
       if (md) readme = path.join(cwd, md);
     }
@@ -14990,7 +15068,7 @@ async function filesProjectResponse(project) {
   let doc = null;
   if (readme) {
     try {
-      const text = await fsp.readFile(readme, 'utf8');
+      const text = Buffer.from(await io.readFile(readme)).toString('utf8');
       doc = { path: readme, text, sha: sha256Hex(text), rel: path.relative(cwd, readme) };
     } catch {}
   }
@@ -16237,7 +16315,55 @@ async function releaseSharedFilesUnder(identity, abs) {
   for (const name of names) collab.close(name);
   await Promise.allSettled([...collabSaving]);
 }
+// The same for a person on their own account (design/105): their host finds
+// the roots and does the operation, as them; this server keeps its lists.
+async function browsableRootAs(mine, identity, project, rootParam) {
+  const meta = projectMetaFor(project || '');
+  if (!meta) throw Object.assign(new Error('project not found'), { status: 404 });
+  if (!projectVisible(identity, project)) throw Object.assign(new Error('This project is not shared with you.'), { status: 403 });
+  const candidates = [meta.cwd, ...await projectGitRepositories(meta)].filter(Boolean);
+  const roots = [...new Set(await Promise.all(candidates.map(p => mine.host.call('realpath', p).catch(() => null))))].filter(Boolean);
+  const root = rootParam ? path.resolve(String(rootParam)) : roots[0];
+  if (!root || !roots.includes(root)) throw new Error('Repository is not part of this project');
+  return { root, roots };
+}
+async function filesOpAs(mine, identity, body) {
+  const op = String(body.op || '');
+  const { root, roots } = await browsableRootAs(mine, identity, body.name, body.root);
+  const ask = extra => mine.host.call('fileOp', { op, root, rel: body.rel, project: String(body.name || ''), user: identity?.user?.id || null, roots, ...extra });
+  if (op === 'restore') {
+    const out = await ask({ id: String(body.id || '') });
+    assertPathAccess(identity, out.to, 'act');
+    rememberFileOp(identity, out.to);
+    return { ok: true, op, to: out.to, rel: platform.toPortable(path.relative(root, out.to)), renamed: out.renamed, directory: out.directory };
+  }
+  const entry = await mine.host.call('fileOp', { op: 'entry', root, rel: body.rel });
+  assertPathAccess(identity, entry.abs, 'act');
+  if (op === 'rename') {
+    const name = fileOps.checkName(body.to);
+    if (name !== entry.name) await releaseSharedFilesUnder(identity, entry.abs);
+    rememberFileOp(identity, entry.abs, path.join(entry.parent, name));
+    const out = await ask({ to: name });
+    if (out.changed) for (const id of openFilesEveryone()) if (openFilesLib.move(openFilesOf(id), out.from, out.to, path.sep)) openFilesChanged(id);
+    return { ok: true, op, from: out.from, to: out.to, rel: out.rel, directory: out.directory, changed: out.changed };
+  }
+  if (op === 'duplicate') {
+    const out = await ask({});
+    rememberFileOp(identity, out.to);
+    return { ok: true, op, from: out.from, to: out.to, rel: out.rel, directory: out.directory };
+  }
+  if (op === 'delete') {
+    await releaseSharedFilesUnder(identity, entry.abs);
+    rememberFileOp(identity, entry.abs);
+    const out = await ask({});
+    for (const id of openFilesEveryone()) if (openFilesLib.closeUnder(openFilesOf(id), entry.abs, path.sep).length) openFilesChanged(id);
+    return { ok: true, op, from: out.from, id: out.id, directory: out.directory, keptDays: Math.round(fileOps.RETAIN_MS / 86400000) };
+  }
+  throw new Error('unknown file operation');
+}
 async function filesOpResponse(identity, body) {
+  const mine = ownFilesOf(identity);
+  if (mine) return filesOpAs(mine, identity, body);
   const op = String(body.op || '');
   const { root } = await browsableRoot(identity, body.name, body.root);
   if (op === 'restore') {
@@ -16298,6 +16424,12 @@ async function filesOpResponse(identity, body) {
 }
 // Recently deleted, for one project: what this person may see of it.
 async function filesDeletedResponse(identity, project) {
+  const mine = ownFilesOf(identity);
+  if (mine) {
+    await browsableRootAs(mine, identity, project, '');
+    const items = await mine.host.call('fileOp', { op: 'deleted', project });
+    return { items: items.map(({ from, ...r }) => r) };
+  }
   await browsableRoot(identity, project, '');
   const items = await deletedFiles.list(r => r.project === project && (() => { try { assertPathAccess(identity, r.from, 'see'); return true; } catch { return false; } })());
   return { items: items.map(r => ({ id: r.id, name: r.name, rel: r.rel || r.name, root: r.root || '', at: r.at, directory: !!r.directory, until: r.at + fileOps.RETAIN_MS })) };
@@ -16469,6 +16601,33 @@ async function fileSaveAs(mine, abs, body, user) {
     recentFilesTouch(abs, { project: String(body.project || ''), kind: 'saved', actor: 'human' });
   }
   return { ok: true, path: abs, sha: saved.sha, historyWarning };
+}
+// A Markdown document saved for a person on their own account: written by
+// their host, with the same records as docSaveResponse (design/105).
+async function docSaveAs(mine, abs, body, user) {
+  if (typeof body.text !== 'string') throw new Error('missing text');
+  if (!DOCUMENT_EXT.test(abs)) throw new Error('only Markdown-family documents (including .mdx) save here');
+  if (body.reviewId) throw Object.assign(new Error('Change reviews are not available yet when you run as your own computer account.'), { status: 403 });
+  const text = body.text;
+  const saved = await accountFiles.saveText(mine.host, abs, text, { baseSha: body.baseSha || null });
+  let historyWarning = '';
+  if (saved.oldText !== text) {
+    let aiEdit;
+    ({ body, ai: aiEdit } = claimAiEdit(abs, text, body));
+    historyWarning = observeFileHistory(abs, { text: saved.oldText, state: saved.oldState, source: 'before Markdown save' });
+    collabDiskWritten(abs, text, body.fromCollab);
+    historyWarning = observeFileHistory(abs, { text, actor: body.actor === 'ai' || body.actor === 'external-agent' ? 'agent' : body.actor === 'runtime' ? 'runtime' : 'human', source: 'Markdown save' }) || historyWarning;
+    const delta = docLineDelta(saved.oldText, text);
+    const actor = DOC_ACTORS.has(body.actor) ? body.actor : 'human', input = DOC_INPUTS.has(body.input) ? body.input : 'keyboard';
+    await recordDocEdit({ ts: Date.now(), path: abs, action: 'save', actor, input, added: delta.added, removed: delta.removed, sha: saved.sha,
+      user: user && body.actor !== 'ai' ? user.id : undefined, ...(aiEdit ? { ai: aiEdit } : {}) });
+    ledgerRecordEditorSave(abs, { added: delta.added, removed: delta.removed, chars: docCharDelta(saved.oldText, text), sha: saved.sha, actor, input, user: body.actor === 'ai' ? null : user });
+    if (actor !== 'runtime') {
+      const who = body.actor === 'ai' || body.actor === 'external-agent' ? 'agent' : 'human';
+      recentFilesTouch(abs, { project: String(body.project || ''), kind: who === 'human' ? 'saved' : 'edited', actor: who });
+    }
+  } else collabDiskWritten(abs, text, body.fromCollab);
+  return { ok: true, path: abs, sha: saved.sha, changed: saved.oldText !== text, historyWarning };
 }
 async function fileSaveResponse(body, user = null) {
   const { path: p, baseSha, text } = body;
@@ -16715,7 +16874,7 @@ async function docCommitResponse(body, user = null) {
 
 // Create a new markdown document. Documents live in <projectRoot>/documents/
 // by default — a plain folder agents and humans both find instantly.
-async function docCreateResponse(body) {
+async function docCreateResponse(body, identity = null) {
   const project = String(body.project || '');
   const meta = projectMetaFor(project);
   if (!meta || !meta.cwd) throw new Error('project not found');
@@ -16727,10 +16886,18 @@ async function docCreateResponse(body) {
   if (!base) throw new Error('document name has no usable characters');
   const dir = path.join(path.resolve(meta.cwd), 'documents');
   const abs = path.join(dir, base + extension);
-  if (fs.existsSync(abs)) throw new Error('a document with this name already exists');
-  await fsp.mkdir(dir, { recursive: true });
+  if (identity) assertPathAccess(identity, abs, 'act');
   const text = `# ${title}\n\n`;
-  await writeFileAtomic(abs, text);
+  const mine = identity ? ownFilesOf(identity) : null;
+  if (mine) {
+    // Made by their host, as them (design/105); never over an existing one.
+    try { await mine.host.call('write', abs, text, { exclusive: true, mkdirs: true }); }
+    catch (e) { throw new Error(e.code === 'EEXIST' ? 'a document with this name already exists' : e.message); }
+  } else {
+    if (fs.existsSync(abs)) throw new Error('a document with this name already exists');
+    await fsp.mkdir(dir, { recursive: true });
+    await writeFileAtomic(abs, text);
+  }
   await recordDocEdit({ ts: Date.now(), path: abs, action: 'create', actor: 'human', input: 'keyboard', added: text.split('\n').length, removed: 0, sha: sha256Hex(text) });
   return { ok: true, path: abs, project };
 }
@@ -16747,9 +16914,14 @@ async function inkNewResponse(body, identity) {
     if (!meta || !meta.cwd) throw Object.assign(new Error('project not found'), { status: 404 });
     folder = inkNotes.folderFor(meta.cwd);
   } else folder = inkNotes.looseFolder(NOTES_DIR);
+  // A person on their own account: their loose notes are in their home, and
+  // the note is made by their host, as them (design/105).
+  const mine = ownFilesOf(identity);
+  if (mine && !project) folder = inkNotes.looseFolder(path.join(mine.home, 'notes', 'chattering'));
   assertPathAccess(identity, folder, 'act');
   const kind = body.kind === 'text' ? 'text' : 'ink';
-  const out = await inkNotes.create({ folder, kind, when: body.when, tzOffset: body.tzOffset, title: body.title, paper: body.paper });
+  const opts = { folder, kind, when: body.when, tzOffset: body.tzOffset, title: body.title, paper: body.paper };
+  const out = mine ? await mine.host.call('noteCreate', opts) : await inkNotes.create(opts);
   await recordDocEdit({ ts: Date.now(), path: out.path, action: 'create', actor: 'human', input: kind === 'text' ? 'keyboard' : 'pen', added: 0, removed: 0, sha: sha256Hex(out.text), user: identity && identity.user ? identity.user.id : undefined });
   recentFilesTouch(out.path, { project, kind: 'saved', actor: 'human' });
   return { ok: true, path: out.path, project, kind, sha: sha256Hex(out.text), text: out.text };
@@ -16760,11 +16932,13 @@ async function inkNewResponse(body, identity) {
 // page. Only notes (a notes folder), only while empty (ink-notes.js
 // convert refuses otherwise, 409).
 async function noteConvertResponse(body, identity) {
-  const abs = path.resolve(expandHomePath(String(body.path || '')));
-  if (!inkNotes.isNotePath(abs, NOTES_DIR)) throw Object.assign(new Error('only a note changes kind'), { status: 400 });
+  const mine = ownFilesOf(identity);
+  const abs = path.resolve(mine ? accountFiles.expandHome(mine.home, String(body.path || '')) : expandHomePath(String(body.path || '')));
+  if (!inkNotes.isNotePath(abs, mine ? path.join(mine.home, 'notes', 'chattering') : NOTES_DIR)) throw Object.assign(new Error('only a note changes kind'), { status: 400 });
   assertPathAccess(identity, abs, 'act');
   const to = body.to === 'text' ? 'text' : 'ink';
-  const out = await inkNotes.convert({ path: abs, to, paper: body.paper, when: body.when, title: String(body.title || '').slice(0, 200) });
+  const opts = { path: abs, to, paper: body.paper, when: body.when, title: String(body.title || '').slice(0, 200) };
+  const out = mine ? await mine.host.call('noteConvert', opts) : await inkNotes.convert(opts);
   if (out.unchanged) return { ok: true, path: abs, kind: to };
   const user = identity && identity.user ? identity.user.id : undefined;
   await recordDocEdit({ ts: Date.now(), path: out.path, action: 'create', actor: 'human', input: to === 'text' ? 'keyboard' : 'pen', added: 0, removed: 0, sha: sha256Hex(out.text), user });
@@ -20983,8 +21157,10 @@ async function handleRequest(req, res) {
     if (previewAsset && (req.method === 'GET' || req.method === 'HEAD')) {
       try {
         const found = await previewAssets.resolve(previewAsset[1], decodeURIComponent(previewAsset[2]));
-        return await fileMedia.serveFile(req, res, found, found.mime, { maxBytes: 32 * 1024 * 1024,
-          headers: { 'Access-Control-Allow-Origin': '*', 'Cross-Origin-Resource-Policy': 'cross-origin', 'Cache-Control': 'no-store' } });
+        const opts = { maxBytes: 32 * 1024 * 1024, headers: { 'Access-Control-Allow-Origin': '*', 'Cross-Origin-Resource-Policy': 'cross-origin', 'Cache-Control': 'no-store' } };
+        // Assets of a person's preview are read by their host, as them.
+        if (found.io) return await found.io.serve(req, res, found.abs, found.stat, found.mime, opts);
+        return await fileMedia.serveFile(req, res, found, found.mime, opts);
       } catch (e) { return json(res, 404, { error: e.message }); }
     }
     // Who is asking. A credential in the URL (an invite link, the install
@@ -21529,13 +21705,22 @@ async function handleRequest(req, res) {
         let body = '';
         for await (const chunk of req) { body += chunk; if (body.length > 16384) throw Error('Preview request too large'); }
         const input = JSON.parse(body);
-        const found = await transcriptFilePath(input.id, input.path, FILE_EDIT_MAX, isConsoleRequest(req));
+        // A person on their own account: the page and its assets are found and
+        // read as them (design/105).
+        const mine = ownFilesOf(identity);
+        let io = null, realRoot = null, found;
+        if (mine) {
+          const { abs } = await accountFiles.locate(mine.host, ownCandidates(mine, input.id, input.path));
+          found = { abs };
+          io = ioOfMine(mine);
+          realRoot = await mine.host.call('realpath', path.dirname(abs));
+        } else found = await transcriptFilePath(input.id, input.path, FILE_EDIT_MAX, isConsoleRequest(req));
         assertPathAccess(identity, found.abs, 'see');
         // Retain only the proof, not the HTTP request/socket. Re-resolve it so
         // sign-in revocation, disabled accounts and sharing changes take effect.
         const proof = { isLocal: isLocalRequest(req), cookie: signInCookie(req), authorization: req.headers.authorization };
         const authorize = abs => assertPathAccess(LAN_TOKEN ? usersLib.identify({ roster, installToken: LAN_TOKEN, ...proof }) : ownerIdentity(), abs, 'see');
-        json(res, 200, { ...previewAssets.create(found, { authorize }), folder: path.dirname(found.abs) });
+        json(res, 200, { ...previewAssets.create(found, { authorize, io, realRoot }), folder: path.dirname(found.abs) });
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/file/preview' && req.method === 'DELETE') {
       previewAssets.revoke(u.searchParams.get('token')); json(res, 200, { ok: true });
@@ -21699,7 +21884,7 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/conversation/file-event') {
       try { json(res, 200, await conversationFileEventResponse(
         u.searchParams.get('id') || '', u.searchParams.get('call') || '',
-        u.searchParams.get('ts') || '', u.searchParams.get('path') || ''));
+        u.searchParams.get('ts') || '', u.searchParams.get('path') || '', identity));
       } catch (e) { json(res, 404, { error: e.message }); }
     } else if (u.pathname === '/api/project/diffs') {
       const project = u.searchParams.get('name') || '';
@@ -21751,7 +21936,10 @@ async function handleRequest(req, res) {
       const timeout = setTimeout(abort, 5000);
       try {
         const dir = require('./pisdk-runtime.js').piPackageDir();
-        const items = await require('./file-completion.js').completeFiles({ piDir: dir, root, cwd, query, signal: ctl.signal });
+        // A person on their own account: their folders, listed as them (design/105).
+        const mine = ownFilesOf(identity);
+        const items = mine ? await mine.host.call('complete', { piDir: mine.mapPath(dir), root, cwd, query })
+          : await require('./file-completion.js').completeFiles({ piDir: dir, root, cwd, query, signal: ctl.signal });
         if (!res.destroyed) json(res, 200, { items });
       } finally { clearTimeout(timeout); res.removeListener('close', abort); }
     } else if (u.pathname === '/api/conversation/changes' && req.method === 'POST') {
@@ -21764,7 +21952,7 @@ async function handleRequest(req, res) {
         assertCan(identity, 'see', targetOf(key), 'this conversation');
         const groups = (Array.isArray(input.groups) ? input.groups : []).slice(0, 5000)
           .map(g => (Array.isArray(g) ? g : []).filter(c => typeof c === 'string' && c.length <= 200).slice(0, 2000)).filter(g => g.length);
-        json(res, 200, await stepChanges().changes(key, groups));
+        json(res, 200, await stepChanges(identity).changes(key, groups));
       } catch (e) { json(res, e.status || 500, { error: e.message }); }
     } else if ((u.pathname === '/api/conversation/change' || u.pathname === '/api/conversation/change-blob') && req.method === 'GET') {
       try {
@@ -21774,8 +21962,8 @@ async function handleRequest(req, res) {
         if (!calls.length || !path.isAbsolute(abs)) return json(res, 400, { error: 'Name the steps and the file' });
         assertPathAccess(identity, abs, 'see');
         const picture = u.pathname.endsWith('-blob');
-        if (!picture) return json(res, 200, await stepChanges().content(key, calls, abs));
-        const bytes = await stepChanges().blob(key, calls, abs, u.searchParams.get('side') === 'old' ? 'old' : 'next');
+        if (!picture) return json(res, 200, await stepChanges(identity).content(key, calls, abs));
+        const bytes = await stepChanges(identity).blob(key, calls, abs, u.searchParams.get('side') === 'old' ? 'old' : 'next');
         const mime = imageMimeForPath(abs);
         if (!mime) return json(res, 415, { error: 'Only pictures are shown this way' });
         res.writeHead(200, { 'Content-Type': mime, 'Content-Length': bytes.length, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
@@ -21934,7 +22122,7 @@ async function handleRequest(req, res) {
       try { json(res, 200, filesRidgeResponse(u.searchParams.get('name') || '')); }
       catch (e) { json(res, 503, { error: e.message }); }
     } else if (u.pathname === '/api/files/project') {
-      try { json(res, 200, await filesProjectResponse(u.searchParams.get('name') || '')); }
+      try { json(res, 200, await filesProjectResponse(u.searchParams.get('name') || '', viewerIo(identity))); }
       catch (e) { json(res, e.message === 'project not found' ? 404 : 500, { error: e.message }); }
     } else if (u.pathname === '/api/files/readme' && req.method === 'POST') {
       let body = '';
@@ -22020,7 +22208,17 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/doc/save' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
-      try { const p = JSON.parse(body || '{}'); assertPathAccess(identity, path.resolve(expandHomePath(String(p.path || ''))), 'act'); json(res, 200, await docSaveResponse(p, identity.user)); }
+      try {
+        const p = JSON.parse(body || '{}');
+        const mine = ownFilesOf(identity);
+        if (mine) {
+          if (!path.isAbsolute(String(p.path || '')) && !String(p.path || '').startsWith('~')) throw new Error('an absolute path is needed');
+          const abs = path.resolve(accountFiles.expandHome(mine.home, String(p.path || '')));
+          assertPathAccess(identity, abs, 'act');
+          return json(res, 200, await docSaveAs(mine, abs, p, identity.user));
+        }
+        assertPathAccess(identity, path.resolve(expandHomePath(String(p.path || ''))), 'act'); json(res, 200, await docSaveResponse(p, identity.user));
+      }
       catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/doc/commit' && req.method === 'POST') {
       let body = '';
@@ -22030,7 +22228,7 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/doc/create' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
-      try { json(res, 200, await docCreateResponse(JSON.parse(body || '{}'))); }
+      try { json(res, 200, await docCreateResponse(JSON.parse(body || '{}'), identity)); }
       catch (e) { json(res, 400, { error: e.message }); }
     } else if ((u.pathname === '/api/notes/new' || u.pathname === '/api/ink/new') && req.method === 'POST') {
       let body = '';
@@ -22462,7 +22660,7 @@ async function handleRequest(req, res) {
       const key = u.searchParams.get('id');
       if (!key || !index[key]) return json(res, 404, { error: 'not found' });
       try {
-        const [wire, pending] = await Promise.all([capturedSystemPrompt(key, 'wire'), capturedSystemPrompt(key, 'pending')]);
+        const [wire, pending] = await Promise.all([capturedSystemPrompt(key, 'wire', identity), capturedSystemPrompt(key, 'pending', identity)]);
         json(res, 200, { wire, pending });
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/compare') {
@@ -23747,13 +23945,27 @@ async function handleRequest(req, res) {
       const key = u.searchParams.get('id');
       let cwd = null;
       if (key && index[key]) cwd = sessionPathsFor(key).cwd;
-      const out = snippetsLib.listSnippets({ cwd, uses: snippetsLib.loadUses(SNIPPET_USES_FILE) });
-      json(res, 200, out);
+      // A person on their own account: their own prompt folders, read as them.
+      const mine = ownFilesOf(identity);
+      try {
+        const out = mine ? await mine.host.call('snippets', { cwd, uses: snippetsLib.loadUses(SNIPPET_USES_FILE) })
+          : snippetsLib.listSnippets({ cwd, uses: snippetsLib.loadUses(SNIPPET_USES_FILE) });
+        json(res, 200, out);
+      } catch (e) { json(res, 500, { error: e.message }); }
     } else if (u.pathname === '/api/snippets' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
       try {
         const p = JSON.parse(body || '{}');
+        const mine = ownFilesOf(identity);
+        if (mine) {
+          const cwd = p.scope === 'project' && p.id && index[String(p.id)] ? sessionPathsFor(String(p.id)).cwd : null;
+          if (p.scope === 'project' && !cwd) throw new Error('project snippets need a conversation with a project folder');
+          let made;
+          try { made = await mine.host.call('snippetCreate', { scope: p.scope === 'project' ? 'project' : 'global', cwd, name: p.name, body: p.body, description: p.description, kind: p.kind, argumentHint: p.argumentHint, overwrite: p.overwrite === true }); }
+          catch (e) { if (e.code === 'EXISTS') { const [msg, at] = e.message.split('\u0000'); throw Object.assign(new Error(msg), { code: 'EXISTS', path: at }); } throw e; }
+          return json(res, 200, { ok: true, ...made, scope: p.scope === 'project' ? 'project' : 'global' });
+        }
         let dir = snippetsLib.GLOBAL_DIR;
         if (p.scope === 'project') {
           const key = String(p.id || '');
@@ -23773,7 +23985,8 @@ async function handleRequest(req, res) {
       try {
         const p = JSON.parse(body || '{}');
         const abs = path.resolve(expandHomePath(String(p.path || '')));
-        if (!snippetsLib.isSnippetPath(abs)) throw new Error('not a snippet path');
+        const mine = ownFilesOf(identity);
+        if (!snippetsLib.isSnippetPath(abs, mine ? path.join(mine.home, '.pi', 'agent', 'prompts') : undefined)) throw new Error('not a snippet path');
         json(res, 200, await snippetsLib.bumpUse(SNIPPET_USES_FILE, abs));
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname.startsWith('/api/live-terminal/')) {
@@ -25076,6 +25289,11 @@ async function collabUpgrade(req, socket, head) {
     } else if (m[1] === 'draft') {
       if (!/^[A-Za-z0-9_-]{6,64}$/.test(m[2])) return refuseUpgrade(socket, 400, 'Bad Request');
     } else {
+      // A person on their own account (design/105) edits files as themselves
+      // (the editor's own open and save, done by their host). A shared copy
+      // here would read and save with this server's rights: a file their
+      // account may not read, or one that would stop being theirs.
+      if (ownFilesOf(identity)) return refuseUpgrade(socket, 403, 'Forbidden');
       const abs = path.resolve(expandHomePath(m[2]));
       const project = projectOfPath(abs);
       const target = { project, creator: projectCreatorOf(project) };

@@ -240,10 +240,27 @@ it end to end, as the person.
   own, the owner running through the mediator like everyone. Second
   deployment mode of the same code (design/46); not done.
 - **Not every feature is theirs yet.** Refused for people on their own
-  account until ported, with the reason: file operations (create, rename,
-  delete), notebooks, change reviews and file history drawers, artifacts and
-  previews, shares and publications, git views, voice, AI programs,
-  delegations' views, codex and Claude Code runs, the desktop terminal.
+  account until ported, with the reason: notebooks, change reviews, the
+  project's and a file's history drawers (git and the saved file history of
+  a project), shares and publications, git views, AI programs, delegations'
+  views, codex and Claude Code runs, the desktop terminal.
+  Ported on 2026-10-26 (Lilly met them the first day): artifacts and their
+  previews, a conversation's pictures, recorded edits and what its steps
+  changed, the system prompt their agent saw, the composer's @ files and
+  snippets, Markdown documents, notes, the Files browser's rename, copy,
+  delete and "recently deleted", HTML file previews. Their host
+  (account-host.js) does the disk work and answers from **their own saved
+  file history** (their agents keep it in their home; server.js `viewerIo`):
+  so a person on their own account sees versions of what their agents
+  made, and the owner, reading their conversation, sees the files as his
+  account may read them, without versions. What they delete waits in their
+  own "recently deleted", in their home.
+- **A shared copy of a file (the live editor, collab) is not theirs:** it
+  reads and saves with this server's rights, so it is refused to people on
+  their own account (until 2026-10-26 it was not, through the socket, which
+  the route gate does not see). Their editor uses its single-person open and
+  save, done as them; two people typing in one file see each other only
+  when neither runs as their own account.
 - **Their old conversations stay the server's account's.** They read them
   and fork to continue. Moving records between keys (notes, titles,
   filings, sharing rules) would touch fifteen stores for history that is

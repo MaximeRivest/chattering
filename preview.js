@@ -284,9 +284,12 @@ function createPreviewHandler(deps) {
       const abs = path.resolve(root, rel);
       if (!inside(root, abs)) throw httpError(400, 'Outside the artifact');
       await deps.authorize(claims, abs);
+      // Whose disk and file history the preview reads (deps.ioFor: a person
+      // on their own account, read as them); by default this process's.
+      const io = (deps.ioFor && await deps.ioFor(claims)) || { store: deps.store, realpath: p => fsp.realpath(p), stat: p => fsp.stat(p), readFile: p => fsp.readFile(p), serveFile: deps.serveFile };
       // The artifact root of a typed artifact (slides) is its viewer, when the
       // folder has no page of its own.
-      let found = await readVersion(deps.store, claims, version, abs);
+      let found = await readVersion(io, claims, version, abs);
       if (!found && claims.t && (rel === 'index.html' || rel === claims.e) && deps.typeViewer(claims.t)) {
         found = { bytes: Buffer.from(deps.typeViewer(claims.t)), mime: 'text/html; charset=utf-8', immutable: false, source: 'viewer' };
       }
@@ -294,7 +297,7 @@ function createPreviewHandler(deps) {
       const headers = { ...common(), 'X-Chattering-Source': found.source,
         'Cache-Control': found.immutable ? 'private, max-age=31536000, immutable' : 'no-cache' };
       if (found.stream) {
-        return deps.serveFile(req, res, found.stream, found.mime, { maxBytes: FILE_MAX, headers });
+        return io.serveFile(req, res, found.stream, found.mime, { maxBytes: FILE_MAX, headers });
       }
       let body = found.bytes;
       if (found.mime.startsWith('text/html')) body = Buffer.from(withKit(body.toString('utf8')));
@@ -312,16 +315,17 @@ function createPreviewHandler(deps) {
 // could not capture or did not keep (older than its declaration, too large,
 // or not named by the page, design/101) falls back to disk and says so in
 // X-Chattering-Source.
-async function readVersion(store, claims, version, abs) {
+async function readVersion(io, claims, version, abs) {
+  const store = io.store;
   const live = async source => {
     let real;
-    try { real = await fsp.realpath(abs); } catch { return null; }
+    try { real = await io.realpath(abs); } catch { return null; }
     if (!inside(claims.r, real)) return null;
-    const stat = await fsp.stat(real);
+    const stat = await io.stat(real);
     if (!stat.isFile()) return null;
     if (stat.size > FILE_MAX) throw httpError(413, 'This file is over 64 MB');
     const mime = mimeOf(real);
-    if (mime.startsWith('text/html')) return { bytes: await fsp.readFile(real), mime, immutable: false, source };
+    if (mime.startsWith('text/html')) return { bytes: Buffer.from(await io.readFile(real)), mime, immutable: false, source };
     return { stream: { abs: real, stat }, mime, immutable: false, source };
   };
   if (version === 'live') return live('live');
