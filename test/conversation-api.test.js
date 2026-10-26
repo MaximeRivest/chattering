@@ -73,7 +73,8 @@ test('stale continuation confirmation cannot append a branch anchor', async () =
     index: { chat: { source: 'pi' } }, absPathForKey: key => key, conversationFlow: Flow,
     headlessRuns: new Map(), agentRunJobs: new Map(), findRunningConversation: () => null,
     withSessionOp: async (_, fn) => fn(), stopAnyWarmSession() {},
-    fsp: { readFile: async () => raw([msg('p', null, 'user', 'question'), msg('new', 'p', 'assistant', 'new answer')]), appendFile: async () => { appended = true; } },
+    fsp: { readFile: async () => raw([msg('p', null, 'user', 'question'), msg('new', 'p', 'assistant', 'new answer')]) },
+    assertRunsHere() {}, backgroundPrincipalFor: () => null, conversationFile: () => ({ append: async () => { appended = true; } }),
   });
   vm.runInContext(extract('async function branchSession(', '\n// ----------'), ctx);
   await assert.rejects(ctx.branchSession('chat', 'p', 'old'), /advanced on another screen/);

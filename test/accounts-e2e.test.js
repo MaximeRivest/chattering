@@ -187,6 +187,25 @@ test('a person runs as their own account: commands, conversations, forks, the st
   const file = path.join(sessionsRoot, started.key.slice(started.key.indexOf(':') + 1));
   assert.equal(fs.statSync(file).uid, Number(execFileSync('id', ['-u', ACCOUNT], { encoding: 'utf8' })), 'the file is her account\u2019s');
   assert.ok(model.requests.length >= 1, 'the model was asked');
+  // She edits her conversation (2026-10-26: refused, then written with this
+  // server's rights, which her folder does not give): a corrected reply is
+  // kept beside the original, and an edited question is asked at the same
+  // point. The file stays hers, and the owner changes neither.
+  const replyAt = conv.messages.findIndex(m => m.role === 'assistant');
+  const raw = await (await get(remote + '/api/transcript/raw?id=' + encodeURIComponent(started.key) + '&i=' + replyAt, tess)).json();
+  assert.ok(raw.eid && raw.sha, fail('raw: ' + JSON.stringify(raw)));
+  const edited = await (await post(remote + '/api/transcript/edit', { id: started.key, i: replyAt, eid: raw.eid, baseSha: raw.sha, text: raw.raw.replace('Hello from the fixture', 'Corrected by Tess'), branch: true }, tess)).json();
+  assert.equal(edited.branched, true, fail('edit: ' + JSON.stringify(edited)));
+  assert.match(fs.readFileSync(file, 'utf8'), /Corrected by Tess/);
+  assert.equal(fs.statSync(file).uid, Number(execFileSync('id', ['-u', ACCOUNT], { encoding: 'utf8' })), 'still her file after the edit');
+  // Going on from the original reply moves where the conversation continues.
+  const reask = await post(remote + '/api/node/send', { id: started.key, node: raw.eid, prompt: 'say hello again ' + tag, models: [{ provider: ai.name, modelId: 'fixture-chat' }] }, tess);
+  assert.ok(reask.ok, fail('re-ask: ' + await reask.clone().text()));
+  await until(async () => { const jobs = await (await get(local + '/api/jobs')).json(); return !jobs.some(x => x.key === started.key && x.status === 'running'); }, 90000, 'the re-asked question');
+  assert.match(fs.readFileSync(file, 'utf8'), /say hello again/);
+  const ownerEdit = await post(local + '/api/transcript/edit', { id: started.key, i: replyAt, eid: raw.eid, baseSha: raw.sha, text: 'the owner was here', branch: true });
+  assert.equal(ownerEdit.status, 409, 'the owner forks her conversation, never edits it');
+  assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /the owner was here/);
   // Her Pi folder holds a placeholder the key proxy swaps, never a key.
   const herAuth = asTest('cat ~/.local/state/chattering/pi-agent/auth.json');
   assert.equal(herAuth.status, 0, herAuth.stderr);

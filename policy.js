@@ -483,6 +483,11 @@ const ACCOUNT_ROUTES = {
   '/api/node/commands': 'theirs', 'POST /api/node/compose': 'theirs', '/api/conversation/thinking': 'theirs', '/api/conversation/compact': 'theirs',
   '/api/conversation/agent-mode': 'theirs', '/api/conversation/start-loose': 'theirs', '/api/project/start': 'theirs',
   '/api/exec': 'theirs', '/api/live-terminal/*': 'theirs', '/api/fork': 'theirs', '/api/fork-edit': 'theirs',
+  // Changing a stored conversation (an edited message, where it continues,
+  // parallel answers kept together): written by the file helper of the
+  // account that keeps it (server.js conversationFile); reading one
+  // message's saved text is reading the conversation.
+  '/api/transcript/edit': 'theirs', '/api/branch': 'theirs', '/api/node/both': 'theirs', '/api/transcript/raw': 'index',
   // Files, read and written by their host process as them (account-files.js).
   '/api/path/info': 'theirs', '/api/path/read': 'theirs', '/api/path/exists': 'theirs', '/api/path/content': 'theirs',
   '/api/conversation/file-content': 'theirs', '/api/file/media': 'theirs', '/api/file/read': 'theirs', '/api/file/save': 'theirs', '/api/fs/dirs': 'theirs',

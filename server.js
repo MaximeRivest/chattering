@@ -3327,9 +3327,10 @@ async function conversationSnapshotMatches(sessionPath, expectedLeaf) {
   return conversationFlow.sameContext(entries, expectedLeaf);
 }
 
-async function branchSession(key, nodeId, expectedLeaf = null) {
+async function branchSession(key, nodeId, expectedLeaf = null, principal = null) {
   const entry = index[key];
   if (!entry) throw new Error('not found');
+  assertRunsHere(key, principal || backgroundPrincipalFor(key), 'change where it continues');
   if (entry.source === 'claude')
     throw new Error('Claude cannot branch in place — its CLI always continues at the file end. Use fork instead.');
   if (entry.source === 'codex')
@@ -3368,7 +3369,7 @@ async function branchSession(key, nodeId, expectedLeaf = null) {
       timestamp: new Date().toISOString(),
       targetId: nodeId,
     };
-    await fsp.appendFile(absPath, JSON.stringify(anchor) + '\n');
+    await conversationFile(absPath).append(JSON.stringify(anchor) + '\n');
     // Refresh the index and the parse cache NOW: the next fetch must already
     // fold the old continuation as an other branch. Waiting for the file
     // watcher leaves a stale transcript for a debounce beat.
@@ -4087,7 +4088,7 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
           }
           if (!found) throw new Error('branch point not found in the session file');
           const anchor = { type: 'label', id: crypto.randomBytes(4).toString('hex'), parentId: node, timestamp: new Date().toISOString(), targetId: node };
-          await fsp.appendFile(sessionPath, JSON.stringify(anchor) + '\n');
+          await conversationFile(sessionPath).append(JSON.stringify(anchor) + '\n');
         }
       }
       job.statusText = 'running';
@@ -4512,17 +4513,13 @@ async function reintegrateFanout(rootKey, fanoutId) {
     // result would carry a parent cycle.
     const merged = fanoutMerge.computeFanoutMerge(rootRaw, forkRaws, { fanoutId });
     if (merged.healed) console.error('fan-out merge healed', merged.healed, 'torn line(s) in', rootKey);
-    if (merged.changed) {
-      const tmp = rootPath + '.tmp-' + process.pid;
-      await fsp.writeFile(tmp, merged.content);
-      await platform.renameRetry(tmp, rootPath);
-    }
+    if (merged.changed) await conversationFile(rootPath).replace(merged.content);
     const bothId = merged.bothId;
     // Root is durable — NOW retire the scaffolding. Bytes stay on disk as
     // .merged for recovery; the scanner and watcher only see .jsonl files.
     for (const [k] of forks) {
       const absF = absPathForKey(k);
-      try { await fsp.rename(absF, absF + '.merged'); } catch {}
+      try { await conversationFile(absF).rename(absF + '.merged'); } catch {}
       delete index[k];
       fsp.unlink(cachePathFor(k)).catch(() => {});
       if (searchIdx) try { searchIdx.removeConversation(k); } catch {}
@@ -4708,8 +4705,9 @@ async function startAggregate(key, { node, provider, modelId, instruction, answe
 
 // A "both" node quotes every parallel reply as one assistant turn. Continue
 // from it to keep every opinion in context without synthesizing a merge.
-async function ensureBothBridge(key, node) {
+async function ensureBothBridge(key, node, principal = null) {
   const { sessionPath } = sessionPathsFor(key);
+  assertRunsHere(key, principal || backgroundPrincipalFor(key), 'change it');
   if (headlessRuns.has(sessionPath) || findRunningConversation(key)) throw new Error('Stop the active run or close its terminal before including answers.');
   return withSessionOp(sessionPath, async () => {
     // Recheck inside the file lock. Two fast clicks must not add two bridges.
@@ -4725,7 +4723,7 @@ async function ensureBothBridge(key, node) {
     stopAnyWarmSession(sessionPath);
     const raw = await fsp.readFile(sessionPath, 'utf8');
     const nl = !raw || raw.endsWith('\n') ? '' : '\n';
-    await fsp.appendFile(sessionPath, nl + JSON.stringify(both) + '\n');
+    await conversationFile(sessionPath).append(nl + JSON.stringify(both) + '\n');
     await reindexIfChanged(key);
     return { id: both.id, existed: false };
   });
@@ -7638,6 +7636,30 @@ function otherAccountFor(key, identity) {
   return { account: stored, name: stored ? (person ? person.name : stored) : null };
 }
 const personWithAccount = name => roster.users.find(u => ownAccountOf(u) === name) || null;
+// ---- changing a stored conversation (design/105) ----
+// A person's conversations are in their own folder, which this server's
+// account may read but not change, and must not: a file replaced from
+// here would become this account's, and their own Pi could no longer
+// write it. Every change Chattering makes to a stored conversation (a
+// branch point, an edited message, a merged set of parallel answers) is
+// written by the file helper of the account that keeps it, as them.
+// Ours: written here, as before. Who may ask is checked by the caller.
+function conversationFile(absPath) {
+  const keeper = accountOfSource(sourceOfPath(absPath));
+  if (!keeper) return {
+    append: text => fsp.appendFile(absPath, text),
+    replace: text => writeFileAtomic(absPath, text, { sync: true }),
+    rename: to => fsp.rename(absPath, to),
+  };
+  const person = personWithAccount(keeper);
+  if (!person) throw Object.assign(new Error(`This conversation is kept by the account ${keeper}, which no one here runs as any more: Chattering cannot change it. Fork it: the copy is yours.`), { status: 409 });
+  const host = () => accountManager.hostFor(person);
+  return {
+    append: text => host().call('append', absPath, text),
+    replace: text => host().call('write', absPath, text),
+    rename: to => host().call('rename', absPath, to),
+  };
+}
 // ---- folders that moved to a person's own account (design/105) ----
 // A project folder moved from this server's account to a person's (or
 // anywhere else): recorded here, so a fork of a conversation that worked in
@@ -16911,7 +16933,8 @@ async function transcriptTarget(key, i) {
   if (entry.source === 'agy' || entry.source === 'muse') throw Object.assign(new Error(`${agentNameOf(entry)}'s own program owns this conversation's file: it is read here, not edited.`), { status: 409 });
   const abs = absPathForKey(key);
   if (!abs) throw new Error('no session file for this conversation');
-  const rawText = await fsp.readFile(abs, 'utf8');
+  // In a person's folder: only a file their account owns, never a link.
+  const rawText = await readTranscriptText(abs);
   const { messages } = await parseConversationFile(abs);
   const m = messages[i];
   if (!m) throw new Error('message not found — reload the conversation');
@@ -16992,9 +17015,12 @@ async function transcriptRawResponse(key, i) {
   return { key, i, eid: target.m.eid, role: target.m.role, kind: target.kind, raw: target.raw, sha: sha256Hex(target.raw) };
 }
 
-async function transcriptEditResponse(body) {
+async function transcriptEditResponse(body, principal = null) {
   const { id: key, i, baseSha, text } = body;
   if (typeof text !== 'string') throw new Error('missing text');
+  // Only the account that keeps a conversation changes it (fork to change
+  // someone else's); its file helper writes the change (conversationFile).
+  assertRunsHere(key, principal || backgroundPrincipalFor(key), 'edit it');
   // Codex owns its files: Chattering reads them and never rewrites one.
   if (sessionPathsFor(key).entry.source === 'codex') throw Object.assign(new Error('Codex keeps its own conversation file; Chattering does not edit it. Edit the question to ask it on a new path (a fork).'), { status: 409 });
   if (body.branch) {
@@ -17013,13 +17039,16 @@ async function transcriptEditResponse(body) {
       target.d.chattering = { kind: 'edit', sourceEntryId: body.eid, author: 'user' };
       target.d.timestamp = new Date().toISOString();
       // Append a sibling. All existing descendants keep their original parent.
-      await fsp.appendFile(sessionPath, (target.lines.at(-1) === '' ? '' : '\n') + JSON.stringify(target.d) + '\n');
+      await conversationFile(sessionPath).append((target.lines.at(-1) === '' ? '' : '\n') + JSON.stringify(target.d) + '\n');
       await reindexIfChanged(key);
       return { ok: true, branched: true, node, role: target.m.role };
     });
   }
   await releaseHeadless(absPathForKey(key), 'transcript edit');
   const running = findRunningConversation(key);
+  // A person's own Pi in their terminal is theirs to close: this server
+  // can neither stop it nor reopen it on their screen.
+  if (running && accountOfSource(sessionPathsFor(key).entry.source)) throw Object.assign(new Error('This conversation is open in your terminal: close it there first, then edit.'), { status: 409 });
   if (running) {
     await stopRunningAgent(running);
     await waitFileQuiet(absPathForKey(key));
@@ -17038,7 +17067,7 @@ async function transcriptEditResponse(body) {
   // never a truncated file, even if the process dies mid-write. The session
   // watcher (watchTree) follows the path by name, so the rename does not
   // detach live updates the way Node's recursive watcher once did.
-  await writeFileAtomic(target.abs, target.lines.join('\n'), { sync: true });
+  await conversationFile(target.abs).replace(target.lines.join('\n'));
   // Reindex now: the client reloads at once and must not see the stale cache.
   await reindexIfChanged(key);
   let reopened = false;
@@ -22040,12 +22069,12 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/vouch/all' && req.method === 'GET') {
       json(res, 200, vouchAllResponse());
     } else if (u.pathname === '/api/transcript/raw' && req.method === 'GET') {
-      try { json(res, 200, await transcriptRawResponse(u.searchParams.get('id') || '', Number(u.searchParams.get('i')))); }
-      catch (e) { json(res, 400, { error: e.message }); }
+      try { assertCan(identity, 'see', targetOf(u.searchParams.get('id') || ''), 'this conversation'); json(res, 200, await transcriptRawResponse(u.searchParams.get('id') || '', Number(u.searchParams.get('i')))); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/transcript/edit' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
-      try { json(res, 200, await transcriptEditResponse(JSON.parse(body || '{}'))); }
+      try { const p = JSON.parse(body || '{}'); assertCan(identity, 'act', targetOf(p.id), 'this conversation'); json(res, 200, await transcriptEditResponse(p, principalFor(identity))); }
       catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/diff-event') {
       const id = u.searchParams.get('id') || '';
@@ -22671,8 +22700,9 @@ async function handleRequest(req, res) {
       for await (const chunk of req) body += chunk;
       try {
         const p = JSON.parse(body || '{}');
-        json(res, 200, { ok: true, ...(await ensureBothBridge(p.id, p.node)) });
-      } catch (e) { json(res, 400, { error: e.message }); }
+        assertCan(identity, 'act', targetOf(p.id), 'this conversation');
+        json(res, 200, { ok: true, ...(await ensureBothBridge(p.id, p.node, principalFor(identity))) });
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/run/abort' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
@@ -22730,7 +22760,7 @@ async function handleRequest(req, res) {
       for await (const chunk of req) body += chunk;
       const parsed = JSON.parse(body);
       if (!parsed.id || !index[parsed.id]) return json(res, 404, { error: 'not found' });
-      try { assertCan(identity, 'act', targetOf(parsed.id), 'this conversation'); json(res, 200, await branchSession(parsed.id, parsed.node, parsed.expectedLeaf)); }
+      try { assertCan(identity, 'act', targetOf(parsed.id), 'this conversation'); json(res, 200, await branchSession(parsed.id, parsed.node, parsed.expectedLeaf, principalFor(identity))); }
       catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/fork' && req.method === 'POST') {
       let body = '';

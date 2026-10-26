@@ -14,7 +14,8 @@ function fixture(role = 'assistant', active = false) {
     withSessionOp: async (_, work) => work(), headlessRuns: new Map(active ? [['/session', {}]] : []), agentRunJobs: new Map(),
     findRunningConversation: () => null, stopAnyWarmSession() {}, transcriptTarget: async () => target,
     sha256Hex: x => x, crypto: { randomBytes: () => ({ toString: () => 'new' }) },
-    fsp: { appendFile: async (_, text) => { appended = JSON.parse(text); } }, reindexIfChanged: async () => {},
+    assertRunsHere() {}, backgroundPrincipalFor: () => null,
+    conversationFile: () => ({ append: async text => { appended = JSON.parse(text); } }), reindexIfChanged: async () => {},
   });
   vm.runInContext(fn, ctx);
   return { run: overrides => ctx.transcriptEditResponse({ id: 'key', i: 0, eid: 'old', baseSha: 'old', text: 'corrected', branch: true, ...overrides }), original, get appended() { return appended; } };
