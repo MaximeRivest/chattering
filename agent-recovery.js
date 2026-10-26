@@ -76,11 +76,12 @@ class AgentRecovery {
     require('./platform.js').renameSyncRetry(tmp, this.file);
     this.changed(this.snapshot());
   }
-  observe({ id, key, title, model, reason, version, eligible = false, historical = false, attempts = 0 }) {
+  // user: whose run it was (the person who asked); they see and resume it.
+  observe({ id, key, title, model, reason, version, eligible = false, historical = false, attempts = 0, user = null }) {
     if (this.records.has(id)) return;
     for (const r of this.records.values()) if (r.key === key && r.state === 'pending') r.state = 'superseded';
     const kind = failureKind(reason);
-    this.records.set(id, { id, key, title, model, reason: String(reason || 'Interrupted').slice(0, 500), version,
+    this.records.set(id, { id, key, title, model, reason: String(reason || 'Interrupted').slice(0, 500), version, user: typeof user === 'string' ? user : null,
       kind, eligible, auto: eligible && kind === 'network' && !historical,
       attempts, state: 'pending', createdAt: this.now(), nextCheckAt: this.now() + 30000 * 2 ** Math.min(attempts, 3), goodChecks: 0 });
     this.save();
@@ -89,7 +90,7 @@ class AgentRecovery {
     return { enabled: this.enabled(), network: this.network, interrupted: [...this.records.values()]
       .filter(r => r.state === 'pending' || r.state === 'resuming')
       .sort((a, b) => b.createdAt - a.createdAt)
-      .map(r => ({ id: r.id, key: r.key, title: r.title, model: r.model, reason: r.reason, kind: r.kind,
+      .map(r => ({ id: r.id, key: r.key, user: r.user || null, title: r.title, model: r.model, reason: r.reason, kind: r.kind,
         createdAt: r.createdAt, attempts: r.attempts, state: r.state, canResume: r.eligible,
         waiting: this.enabled() && r.auto && r.attempts < MAX_ATTEMPTS && this.now() - r.createdAt < AUTO_WINDOW_MS,
         note: r.note || (!r.eligible ? 'Open the conversation to continue.' : r.attempts >= MAX_ATTEMPTS ? 'Automatic attempts exhausted. Resume when ready.' : '') })) };

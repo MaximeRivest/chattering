@@ -70,6 +70,11 @@ test('two people, two lists (conversations, open files, recent files), on a real
     { path: '/work/max-agent.py', actor: 'agent', at, project: '', kind: 'edited', key: keys.max },
     { path: '/work/lil-agent.py', actor: 'agent', at, project: '', kind: 'edited', key: keys.lil }] }));
 
+  // Interrupted runs: Lilly's (who asked is known), and an older record of
+  // nobody's of a conversation only Max typed in.
+  fs.mkdirSync(path.join(home, 'cache'), { recursive: true });
+  const rec = (id, key, user) => ({ id, key, user, title: id, model: null, reason: 'Claude Code request failed (400)', version: 'v', kind: 'error', eligible: false, auto: false, attempts: 0, state: 'pending', createdAt: Date.now(), nextCheckAt: Date.now() + 1e9, goodChecks: 0 });
+  fs.writeFileSync(path.join(home, 'cache', 'agent-interruptions.json'), JSON.stringify([rec('run:lil', keys.lil, 'u_lil'), rec('run:old', keys.max, null)]));
   const port = await freePort(), tlsPort = await freePort();
   registerConsole(port, 'install-tok');
   let log = '';
@@ -119,6 +124,19 @@ test('two people, two lists (conversations, open files, recent files), on a real
   // Hiding an agents' entry hides it for her alone.
   assert.ok((await fetch(base + '/api/recent-files', { method: 'POST', headers: { 'Content-Type': 'application/json', ...lilly }, body: JSON.stringify({ remove: '/work/lil-agent.py', actor: 'agent' }) })).ok);
   assert.ok(!(await files('/api/recent-files', lilly)).includes('/work/lil-agent.py'));
+  // Interrupted runs ("needs attention" rows) are each person's own.
+  const interrupted = async headers => (await (await fetch(base + '/api/agents/recovery', { headers: headers || {} })).json()).interrupted.map(r => r.id).sort();
+  assert.deepEqual(await interrupted(lilly), ['run:lil']);
+  assert.deepEqual(await interrupted(), ['run:old'], 'her stopped run is not in his list (2026-10-26)');
+  const notHers = await fetch(base + '/api/agents/recovery', { method: 'POST', headers: { 'Content-Type': 'application/json', ...lilly }, body: JSON.stringify({ id: 'run:old', action: 'dismiss' }) });
+  assert.equal(notHers.status, 403, 'nor can she dismiss his');
+  // He opens her conversation to look, then closes it: it stays closed when she replies.
+  assert.ok((await post({ open: [keys.lil] })).ok);
+  assert.ok((await post({ dismiss: [keys.lil] })).ok);
+  const after = await listOf();
+  assert.ok(!agentread.isListed(after, keys.lil, Date.now() + 365 * 86400000), 'closed for good: a later reply does not bring hers back');
+  assert.ok((await post({ dismiss: [keys.max] })).ok);
+  assert.ok(agentread.isListed(await listOf(), keys.max, Date.now() + 60000), 'his own comes back with a reply, as before');
   // Each list is saved in its own file, and survives a restart of the reader.
   for (let i = 0; i < 40 && !fs.existsSync(path.join(notes, 'agent-read', 'u_lil.json')); i++) await new Promise(r => setTimeout(r, 100));
   await new Promise(r => setTimeout(r, 1300));

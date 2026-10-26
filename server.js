@@ -5097,13 +5097,18 @@ function agentReadOpen(keys, who = null) {
   }
   if (any) agentReadApply(id, merged);
 }
+// Closing someone else's conversation (one the person never typed in, kept
+// by another account or typed by others) is for good: their replies do not
+// bring it back to this list. Undo, or opening it again, still does.
+const CLOSED_FOR_GOOD = 8.64e15; // the last moment a Date can name
 function agentReadDismiss(keys, who = null) {
   const id = agentReadPerson(who), state = agentReadOf(id);
   const merged = { dismissed: {} };
   let any = false;
   for (const key of keys) {
     if (!key || !index[key]) continue;
-    const d = agentReadLib.dismiss(state, key, { mtimeMs: index[key].mtimeMs });
+    const others = !conversationPeople(key).includes(id);
+    const d = agentReadLib.dismiss(state, key, others ? { now: CLOSED_FOR_GOOD } : { mtimeMs: index[key].mtimeMs });
     if (d) { Object.assign(merged.dismissed, d.dismissed); any = true; }
   }
   if (any) agentReadApply(id, merged);
@@ -7322,7 +7327,8 @@ const recoveryLib = require('./agent-recovery.js');
 const agentRecovery = new recoveryLib.AgentRecovery({
   file: path.join(CACHE_DIR, 'agent-interruptions.json'),
   enabled: () => appSettings.autoResumeNetwork && !shuttingDown && process.env.CHATTERING_DISABLE_NETWORK_RECOVERY !== '1',
-  changed: recovery => broadcast({ type: 'agent-recovery', recovery }),
+  // Each person is told about their own interrupted runs (recoveryFor).
+  changed: () => broadcastRecovery(),
   endpoint: r => {
     let custom = {};
     try { custom = JSON.parse(fs.readFileSync(PI_MODELS_FILE, 'utf8')); } catch {}
@@ -7349,6 +7355,32 @@ const agentRecovery = new recoveryLib.AgentRecovery({
     });
   },
 });
+// Whose a conversation is, for things nobody asked for by name: who typed
+// in it, else the person whose account keeps it, else the owner.
+function conversationPeople(key) {
+  const e = key && index[key];
+  const owner = usersLib.ownerOf(roster).id;
+  if (!e) return [owner];
+  const typed = [...new Set((e.participants || []).map(x => usersLib.resolveId(roster, x.id)).filter(id => usersLib.findUser(roster, id)))];
+  if (typed.length) return typed;
+  const keeper = accountOfSource(e.source);
+  const person = keeper ? personWithAccount(keeper) : null;
+  return [person ? person.id : owner];
+}
+// A person's interrupted runs (the side list's "needs attention" rows): the
+// runs they asked for, and older records (who asked was not kept) of
+// conversations that are theirs. Never another person's (2026-10-26).
+function recoveryFor(identity) {
+  const snap = agentRecovery.snapshot();
+  const me = agentReadPerson(identity || null);
+  const can = receiverFor(identity || identityOfUserId(me));
+  const mine = r => (r.user ? usersLib.resolveId(roster, r.user) === me : conversationPeople(r.key).includes(me)) && can.key(r.key);
+  return { ...snap, interrupted: snap.interrupted.filter(mine) };
+}
+function broadcastRecovery() {
+  const people = new Set([...sseByConn.values()].map(c => c.identity && c.identity.user ? usersLib.resolveId(roster, c.identity.user.id) : null).filter(Boolean));
+  for (const id of people) broadcastToPerson(id, { type: 'agent-recovery', recovery: recoveryFor(identityOfUserId(id)) });
+}
 function captureInterruptedRun(job, key, historical = false) {
   if (!key || !index[key]) return;
   if (historical && [...agentRecovery.records.values()].some(r => r.key === key && r.id !== job.id && r.createdAt > (job.finishedAt || job.startedAt))) return;
@@ -7359,7 +7391,7 @@ function captureInterruptedRun(job, key, historical = false) {
       reason: job.error || job.statusText, version: recoveryLib.fileVersion(absPathForKey(key)),
       eligible: !job.fanoutId && (job.recoveryEligible === true || historical),
       historical: historical || job.recoveryPromptSaved !== true,
-      attempts: job.recoveryAttempts || 0 });
+      attempts: job.recoveryAttempts || 0, user: job.askedBy || conversationPeople(key)[0] || null });
   } catch (e) { console.error('[agent recovery record]', e.message); }
 }
 function saveAppSettings() {
@@ -18644,6 +18676,8 @@ async function startProjectConversation(options) {
       status: 'running', statusText: text ? 'starting' : 'ready',
       startedAt: Date.now(), model: leadModel ? leadModel.provider + '/' + leadModel.modelId : null,
       recoveryEligible: !!text,
+      // Whose question this answers (notifications, interrupted runs).
+      askedBy: text ? principal.user.id : null,
     };
     let handle = null;
     if (text) {
@@ -23552,7 +23586,7 @@ async function handleRequest(req, res) {
         // The links in the answer should already carry the Windows address.
         if (lanWanted()) await refreshWindowsHostAddresses();
       }
-      broadcast({ type: 'agent-recovery', recovery: agentRecovery.snapshot() });
+      broadcastRecovery();
       memoryModelHealth.setIdentity(currentModelLabel());
       // A new URL or namespace means a different remote index: re-push all.
       if (searchIdx && (appSettings.semanticUrl || '') + '|' + semNs() !== prevSemTarget) {
@@ -23623,16 +23657,18 @@ async function handleRequest(req, res) {
         json(res, 200, { ok: true, task: delegationView(task) });
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/agents/recovery' && req.method === 'GET') {
-      json(res, 200, agentRecovery.snapshot());
+      json(res, 200, recoveryFor(identity));
     } else if (u.pathname === '/api/agents/recovery' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) { body += chunk; if (body.length > 4096) return json(res, 413, { error: 'Request too large.' }); }
       try {
         const p = JSON.parse(body || '{}');
+        // A person acts on their own interrupted runs; the owner tier on any.
+        if (!policy.isOwnerTier(identity) && !recoveryFor(identity).interrupted.some(r => r.id === p.id)) throw Object.assign(new Error('That interrupted run is not yours.'), { status: 403 });
         if (p.action === 'dismiss') { agentRecovery.dismiss(p.id); json(res, 200, { ok: true }); }
         else if (p.action === 'resume') { const job = await agentRecovery.resume(p.id); json(res, 200, { ok: true, job: jobView(job) }); }
         else throw new Error('Unknown recovery action.');
-      } catch (e) { json(res, 409, { error: e.message }); }
+      } catch (e) { json(res, e.status || 409, { error: e.message }); }
     } else if (u.pathname === '/api/agents/active') {
       // running: a live pi/claude process. writing: file changed in 5 min.
       // recent: file changed in the last hour and not already listed.
@@ -23657,7 +23693,7 @@ async function handleRequest(req, res) {
       }
       writing.sort((a, b) => a.ageMs - b.ageMs);
       recent.sort((a, b) => a.ageMs - b.ageMs);
-      json(res, 200, { running, writing, recent: recent.slice(0, 15), procs: agentProcsView(running), recovery: agentRecovery.snapshot() });
+      json(res, 200, { running, writing, recent: recent.slice(0, 15), procs: agentProcsView(running), recovery: recoveryFor(identity) });
     } else if (u.pathname === '/api/snippets' && req.method === 'GET') {
       // Snippets and prompt templates visible from this conversation's cwd:
       // pi's own prompt folders, read from disk each time (a handful of
