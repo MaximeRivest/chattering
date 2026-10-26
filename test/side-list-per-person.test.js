@@ -47,7 +47,7 @@ test('split: each person keeps the conversations they typed in; nobody\u2019s go
   assert.equal(out.max.dismissed.d, 3000, 'a closed one stays closed, and restorable, in its owner\u2019s list');
 });
 
-test('two people, two lists, on a real server; the old shared list split on first start', { timeout: 120000 }, async t => {
+test('two people, two lists (conversations, open files, recent files), on a real server; the old shared lists split on first start', { timeout: 120000 }, async t => {
   const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'side-list-')));
   const agent = path.join(home, '.pi', 'agent'), sessions = path.join(agent, 'sessions');
   const keys = { max: conversation(sessions, '01a0max0000000000000000000000000000', 'u_max'), lil: conversation(sessions, '01a0lil0000000000000000000000000000', 'u_lil'),
@@ -62,6 +62,13 @@ test('two people, two lists, on a real server; the old shared list split on firs
   const old = agentread.createState(Date.parse('2026-10-01'));
   Object.assign(old, { opened: { [keys.max]: Date.now(), [keys.lil]: Date.now(), [keys.nobody]: Date.now() }, groups: { gRecorn: { name: 'recorn', order: 0, folded: false } }, member: { [keys.lil]: 'gRecorn' } });
   fs.writeFileSync(path.join(notes, 'agent-read.json'), JSON.stringify(old));
+  // The household's old recent files: one person's open (who, not recorded)
+  // and what agents touched in each one's conversation.
+  const at = Date.now() - 60000;
+  fs.writeFileSync(path.join(notes, 'recent-files.json'), JSON.stringify({ version: 2, dismissed: {}, files: [
+    { path: '/work/someone-opened.md', actor: 'human', at, project: '', kind: 'opened' },
+    { path: '/work/max-agent.py', actor: 'agent', at, project: '', kind: 'edited', key: keys.max },
+    { path: '/work/lil-agent.py', actor: 'agent', at, project: '', kind: 'edited', key: keys.lil }] }));
 
   const port = await freePort(), tlsPort = await freePort();
   registerConsole(port, 'install-tok');
@@ -96,6 +103,22 @@ test('two people, two lists, on a real server; the old shared list split on firs
   // He closes his; hers is untouched.
   assert.ok((await post({ dismiss: [keys.nobody] })).ok);
   assert.ok(!listed(await listOf()).includes(keys.nobody));
+  // Open files: what Lilly keeps open is hers.
+  const files = async (route, headers) => (await (await fetch(base + route, { headers: headers || {} })).json()).files.map(f => f.path).sort();
+  const keepRes = await fetch(base + '/api/open-files', { method: 'POST', headers: { 'Content-Type': 'application/json', ...lilly }, body: JSON.stringify({ keep: [{ path: '/work/lillys-notes.md' }] }) });
+  assert.ok(keepRes.ok, await keepRes.text());
+  assert.deepEqual(await files('/api/open-files', lilly), ['/work/lillys-notes.md']);
+  assert.deepEqual(await files('/api/open-files'), [], 'not in his');
+  // Recent files: what she opens is hers; the agents' follow whose conversation it was.
+  assert.ok((await fetch(base + '/api/recent-files', { method: 'POST', headers: { 'Content-Type': 'application/json', ...lilly }, body: JSON.stringify({ path: '/work/she-opened.md' }) })).ok);
+  const hers = await files('/api/recent-files', lilly), his = await files('/api/recent-files');
+  assert.ok(hers.includes('/work/she-opened.md') && hers.includes('/work/lil-agent.py'), JSON.stringify(hers));
+  assert.ok(!hers.includes('/work/someone-opened.md') && !hers.includes('/work/max-agent.py'), JSON.stringify(hers));
+  assert.ok(his.includes('/work/someone-opened.md') && his.includes('/work/max-agent.py'), 'old opens of nobody known are the owner\u2019s: ' + JSON.stringify(his));
+  assert.ok(!his.includes('/work/she-opened.md') && !his.includes('/work/lil-agent.py'), JSON.stringify(his));
+  // Hiding an agents' entry hides it for her alone.
+  assert.ok((await fetch(base + '/api/recent-files', { method: 'POST', headers: { 'Content-Type': 'application/json', ...lilly }, body: JSON.stringify({ remove: '/work/lil-agent.py', actor: 'agent' }) })).ok);
+  assert.ok(!(await files('/api/recent-files', lilly)).includes('/work/lil-agent.py'));
   // Each list is saved in its own file, and survives a restart of the reader.
   for (let i = 0; i < 40 && !fs.existsSync(path.join(notes, 'agent-read', 'u_lil.json')); i++) await new Promise(r => setTimeout(r, 100));
   await new Promise(r => setTimeout(r, 1300));

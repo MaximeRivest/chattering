@@ -6502,52 +6502,170 @@ function recentFilesChanged() {
     recentFilesChanged.t = null;
     const delta = recentFilesLib.diff(recentFilesBroadcastSnapshot, recentFileState.files);
     recentFilesBroadcastSnapshot = recentFileState.files;
-    if (delta.upsert.length || delta.remove.length) broadcast({ type: 'recent-files', delta });
+    if (!delta.upsert.length && !delta.remove.length) return;
+    // Each person gets the agents' entries that are theirs (recentAgentFilter).
+    const people = new Set([...sseByConn.values()].map(c => c.identity && c.identity.user ? usersLib.resolveId(roster, c.identity.user.id) : null).filter(Boolean));
+    for (const id of people) {
+      const upsert = delta.upsert.filter(recentAgentFilter(id));
+      if (upsert.length || delta.remove.length) broadcastToPerson(id, { type: 'recent-files', delta: { upsert, remove: delta.remove } });
+    }
   }, 250);
 }
-function recentFilesTouch(p, { project = '', kind = 'opened', actor = 'human', key = '' } = {}) {
+// ---- recent files, per person (2026-10-26) ----
+// What agents touched is a fact of their conversations: one shared store
+// (above), each person shown the entries of conversations that are theirs.
+// What a person opened or saved is theirs alone: NOTES_DIR/recent-files/
+// <person id>.json, which also keeps what they hid. The household's old
+// entries of people (who was not recorded) go, on first start, to whoever's
+// account now holds the file (a folder that moved follows its move), else
+// to the owner.
+const RECENT_FILES_DIR = path.join(NOTES_DIR, 'recent-files');
+const recentByPerson = new Map(), recentPersonSnapshot = new Map();
+let recentMigrated = false;
+const recentFileOfPerson = id => path.join(RECENT_FILES_DIR, String(id).replace(/[^A-Za-z0-9_-]/g, '_') + '.json');
+// Whose account holds a path now: a person on their own account, else the owner.
+function personOfPath(abs) {
+  const m = /^\/home\/([^/]+)\//.exec(String(abs || ''));
+  const person = m ? personWithAccount(m[1]) : null;
+  return (person || usersLib.ownerOf(roster)).id;
+}
+function migrateRecentFiles() {
+  recentMigrated = true;
+  const humans = recentFileState.files.filter(f => f.actor === 'human');
+  if (fs.existsSync(RECENT_FILES_DIR) || !humans.length) return;
+  const by = new Map();
+  for (const f of humans) {
+    const now = movedFolder(f.path);
+    const id = personOfPath(now);
+    if (!by.has(id)) by.set(id, []);
+    by.get(id).push({ ...f, path: now });
+  }
+  fs.mkdirSync(RECENT_FILES_DIR, { recursive: true });
+  for (const [id, files] of by) { const s = recentFilesLib.normalize(null); recentFilesLib.merge(s, files); fs.writeFileSync(recentFileOfPerson(id), JSON.stringify(s) + '\n'); }
+  recentFileState.files = recentFileState.files.filter(f => f.actor !== 'human');
+  for (const k of Object.keys(recentFileState.dismissed)) if (k.startsWith('human\0')) delete recentFileState.dismissed[k];
+  recentFilesBroadcastSnapshot = recentFileState.files;
+  saveRecentFilesSoon();
+  console.log('[recent files] one list per person: ' + [...by].map(([id, f]) => (usersLib.findUser(roster, id) || { name: id }).name + ' ' + f.length).join(', '));
+}
+function recentFilesOfPerson(who) {
+  if (!recentMigrated) migrateRecentFiles();
+  const id = agentReadPerson(who);
+  let s = recentByPerson.get(id);
+  if (!s) {
+    try { s = recentFilesLib.normalize(JSON.parse(fs.readFileSync(recentFileOfPerson(id), 'utf8'))); } catch { s = recentFilesLib.normalize(null); }
+    recentByPerson.set(id, s);
+    recentPersonSnapshot.set(id, s.files);
+  }
+  return s;
+}
+function recentPersonChanged(id) {
+  const key = 'recentPerson:' + id;
+  if (recentPersonChanged[key]) return;
+  recentPersonChanged[key] = setTimeout(() => {
+    recentPersonChanged[key] = null;
+    const s = recentFilesOfPerson(id);
+    fs.mkdirSync(RECENT_FILES_DIR, { recursive: true });
+    writeFileAtomic(recentFileOfPerson(id), JSON.stringify(s) + '\n').catch(e => console.error('recent files:', e.message));
+    const delta = recentFilesLib.diff(recentPersonSnapshot.get(id) || [], s.files);
+    recentPersonSnapshot.set(id, s.files);
+    if (delta.upsert.length || delta.remove.length) broadcastToPerson(id, { type: 'recent-files', delta });
+  }, 250);
+}
+// The agents' entries a person sees: of conversations in their side list,
+// that they typed in, or that their account keeps; nobody's go to the owner.
+// Not those they hid.
+function recentAgentFilter(who) {
+  const id = agentReadPerson(who), list = agentReadOf(id), mine = recentFilesOfPerson(id), owner = usersLib.ownerOf(roster).id;
+  return f => {
+    if (f.actor !== 'agent' || f.at <= (mine.dismissed['agent\0' + f.path] || 0)) return false;
+    const e = f.key && index[f.key];
+    if (!e) return id === owner;
+    if (list.opened[f.key]) return true;
+    const typed = (e.participants || []).map(x => usersLib.resolveId(roster, x.id));
+    if (typed.length) return typed.includes(id);
+    const keeper = accountOfSource(e.source);
+    return keeper ? (personWithAccount(keeper) || {}).id === id : id === owner;
+  };
+}
+// One person's recent files: theirs, then the agents' they see.
+function recentFilesFor(who) {
+  const agent = recentAgentFilter(who);
+  return [...recentFilesOfPerson(who).files, ...recentFileState.files.filter(agent)].sort((a, b) => b.at - a.at);
+}
+function recentFilesTouch(p, { project = '', kind = 'opened', actor = 'human', key = '', who = null } = {}) {
   const abs = String(p || '');
   if (!path.isAbsolute(abs)) return;
-  const have = recentFileState.files.find(f => f.path === abs && f.actor === actor);
-  const at = Math.max(Date.now(), (recentFileState.files.find(f => f.actor === actor)?.at || 0) + 1);
+  const id = actor === 'human' ? agentReadPerson(who) : null;
+  const state = id ? recentFilesOfPerson(id) : recentFileState;
+  const have = state.files.find(f => f.path === abs && f.actor === actor);
+  const at = Math.max(Date.now(), (state.files.find(f => f.actor === actor)?.at || 0) + 1);
   // Update every visit: opening A, then B, then A must put A first even
   // within a minute. Only disk writes and broadcasts are coalesced.
-  if (recentFilesLib.merge(recentFileState, [{ path: abs, at, actor, kind, key,
-    project: project || have?.project || projectNameOf(path.dirname(abs)) }])) recentFilesChanged();
+  if (recentFilesLib.merge(state, [{ path: abs, at, actor, kind, key,
+    project: project || have?.project || projectNameOf(path.dirname(abs)) }])) { if (id) recentPersonChanged(id); else recentFilesChanged(); }
 }
-function recentFilesForget(p, actor = 'human') {
-  if (recentFilesLib.forget(recentFileState, p, actor)) recentFilesChanged();
+// Hiding is the person's: their own entry goes, an agents' entry is hidden
+// for them alone.
+function recentFilesForget(p, actor = 'human', who = null) {
+  const id = agentReadPerson(who);
+  if (recentFilesLib.forget(recentFilesOfPerson(id), p, actor)) recentPersonChanged(id);
+  if (actor !== 'human') broadcastToPerson(id, { type: 'recent-files', delta: { upsert: [], remove: [{ actor: 'agent', path: p }] } });
 }
 // ---------- open files: the side list's kept files (design/77) ----------
 // Pinned, run or edited by a person; one list for every device, like the
 // conversation list. Rules in open-files-store.js.
+// One per person since 2026-10-26 (NOTES_DIR/open-files/<person id>.json),
+// like the conversation list: what one keeps open is not the other's. A
+// rename or a delete changes every list that holds the file. The household's
+// old list (open-files.json) becomes the owner's.
 const OPEN_FILES_FILE = path.join(NOTES_DIR, 'open-files.json');
-let openFileState = openFilesLib.createState();
-try { openFileState = openFilesLib.normalize(JSON.parse(fs.readFileSync(OPEN_FILES_FILE, 'utf8'))); } catch {}
-function saveOpenFilesSoon() {
-  clearTimeout(saveOpenFilesSoon.t);
-  saveOpenFilesSoon.t = setTimeout(() => {
-    fs.mkdirSync(path.dirname(OPEN_FILES_FILE), { recursive: true });
-    writeFileAtomic(OPEN_FILES_FILE, JSON.stringify(openFileState) + '\n').catch(e => console.error('open files:', e.message));
-  }, 500);
+const OPEN_FILES_DIR = path.join(NOTES_DIR, 'open-files');
+const openFilesByPerson = new Map();
+const openFileOfPerson = id => path.join(OPEN_FILES_DIR, String(id).replace(/[^A-Za-z0-9_-]/g, '_') + '.json');
+function openFilesOf(who) {
+  const id = agentReadPerson(who);
+  let s = openFilesByPerson.get(id);
+  if (s) return s;
+  try { s = openFilesLib.normalize(JSON.parse(fs.readFileSync(openFileOfPerson(id), 'utf8'))); }
+  catch {
+    s = openFilesLib.createState();
+    if (id === usersLib.ownerOf(roster).id && fs.existsSync(OPEN_FILES_FILE)) {
+      try { s = openFilesLib.normalize(JSON.parse(fs.readFileSync(OPEN_FILES_FILE, 'utf8'))); } catch {}
+      fs.mkdirSync(OPEN_FILES_DIR, { recursive: true });
+      fs.writeFileSync(openFileOfPerson(id), JSON.stringify(s) + '\n');
+      fs.renameSync(OPEN_FILES_FILE, OPEN_FILES_FILE.replace(/\.json$/, '.shared-until-2026-10-26.json'));
+    }
+  }
+  openFilesByPerson.set(id, s);
+  return s;
 }
+// Every person's list, for a file that moved or went away.
+function openFilesEveryone() { return roster.users.filter(u => !u.disabled).map(u => u.id); }
+const openFilesSaveTimers = new Map();
 // The whole list travels: it is short, and a browser that missed an event
-// is right again with the next one.
-function openFilesChanged() {
-  saveOpenFilesSoon();
-  broadcast({ type: 'open-files', rev: openFileState.rev, files: openFileState.files });
+// is right again with the next one. Only to its person's screens.
+function openFilesChanged(who) {
+  const id = agentReadPerson(who), s = openFilesOf(id);
+  clearTimeout(openFilesSaveTimers.get(id));
+  openFilesSaveTimers.set(id, setTimeout(() => {
+    fs.mkdirSync(OPEN_FILES_DIR, { recursive: true });
+    writeFileAtomic(openFileOfPerson(id), JSON.stringify(s) + '\n').catch(e => console.error('open files:', e.message));
+  }, 500));
+  broadcastToPerson(id, { type: 'open-files', rev: s.rev, files: s.files });
 }
-// The list as this person may see it: a project closed to them (design/53)
-// does not show through the files others keep in it. Same rule as the event.
+// The list as this person may see it: a project closed to them since
+// (design/53) does not show through it. Same rule as the event.
 function openFilesFor(identity) {
-  const receiver = receiverFor(identity);
+  const receiver = receiverFor(identity), s = openFilesOf(identity);
   const folders = receiver.all ? null : projectFolders();
-  return { rev: openFileState.rev, files: receiver.all ? openFileState.files : openFileState.files.filter(f => receiver.path(f.path, folders)) };
+  return { rev: s.rev, files: receiver.all ? s.files : s.files.filter(f => receiver.path(f.path, folders)) };
 }
 // { keep: [{path, project}] }, { close: [path] }, { restore: [{path, project, at}] }.
 // Paths are resolved as every file route resolves them; a path this person
 // may not see is not kept, and is named in the answer (refused).
 function openFilesApply(identity, body) {
+  const openFileState = openFilesOf(identity);
   const resolve = p => path.resolve(expandHomePath(String(p || '')));
   const refused = [];
   const seeable = raw => {
@@ -6565,7 +6683,7 @@ function openFilesApply(identity, body) {
     const abs = f && f.path ? seeable(f.path) : null;
     if (abs) changed = openFilesLib.keep(openFileState, { path: abs, project: String(f.project || '') || projectNameOf(path.dirname(abs)) || '' }) || changed;
   }
-  if (changed) openFilesChanged();
+  if (changed) openFilesChanged(identity);
   return { refused };
 }
 const MEMORY_DOC_KINDS = ['overview', 'intent', 'environment', 'status'];
@@ -16070,12 +16188,14 @@ async function filesOpResponse(identity, body) {
       return target;
     });
     rememberFileOp(identity, out.to); // when it came back under another name
-    let changed = false;
+    // Back in the lists of whoever had it open (an older record: the owner's).
+    const touched = new Set();
     for (const f of record.openFiles || []) {
       const p = out.to + f.path.slice(record.from.length);
-      changed = openFilesLib.restore(openFileState, { ...f, path: p }) || changed;
+      const { person, ...file } = f;
+      if (openFilesLib.restore(openFilesOf(person || usersLib.ownerOf(roster).id), { ...file, path: p })) touched.add(person || usersLib.ownerOf(roster).id);
     }
-    if (changed) openFilesChanged();
+    for (const id of touched) openFilesChanged(id);
     return { ok: true, op, to: out.to, rel: platform.toPortable(path.relative(root, out.to)), renamed: out.renamed, directory: out.directory };
   }
   const entry = await fileOps.entryAt(root, body.rel);
@@ -16085,7 +16205,7 @@ async function filesOpResponse(identity, body) {
     if (name !== entry.name) await releaseSharedFilesUnder(identity, entry.abs);
     rememberFileOp(identity, entry.abs, path.join(entry.parent, name));
     const out = await fileOps.renameEntry(root, body.rel, name);
-    if (out.changed && openFilesLib.move(openFileState, out.from, out.to, path.sep)) openFilesChanged();
+    if (out.changed) for (const id of openFilesEveryone()) if (openFilesLib.move(openFilesOf(id), out.from, out.to, path.sep)) openFilesChanged(id);
     return { ok: true, op, from: out.from, to: out.to, rel: out.rel, directory: out.directory, changed: out.changed };
   }
   if (op === 'duplicate') {
@@ -16097,11 +16217,11 @@ async function filesOpResponse(identity, body) {
   if (op === 'delete') {
     await releaseSharedFilesUnder(identity, entry.abs);
     rememberFileOp(identity, entry.abs);
-    const openFiles = openFilesLib.closeUnder(openFileState, entry.abs, path.sep);
+    const openFiles = openFilesEveryone().flatMap(id => openFilesLib.closeUnder(openFilesOf(id), entry.abs, path.sep).map(f => ({ ...f, person: id })));
     let record;
     try { record = await deletedFiles.put(entry.abs, { project: String(body.name), root, rel: platform.toPortable(path.relative(root, entry.abs)), user: identity?.user?.id || null, openFiles }); }
-    catch (e) { for (const f of openFiles) openFilesLib.restore(openFileState, f); throw e; }
-    if (openFiles.length) openFilesChanged();
+    catch (e) { for (const { person, ...f } of openFiles) openFilesLib.restore(openFilesOf(person), f); throw e; }
+    for (const id of new Set(openFiles.map(f => f.person))) openFilesChanged(id);
     return { ok: true, op, from: entry.abs, id: record.id, directory: record.directory, keptDays: Math.round(fileOps.RETAIN_MS / 86400000) };
   }
   throw new Error('unknown file operation');
@@ -23805,9 +23925,12 @@ async function handleRequest(req, res) {
       try { assertCan(identity, 'act', targetOf(parsed.id), 'this conversation'); json(res, 200, await actOnConversation(parsed.id, parsed)); }
       catch (e) { json(res, e.status || 500, { error: e.message }); }
     } else if (u.pathname === '/api/recent-files' && req.method === 'GET') {
+      // This person's (2026-10-26): what they opened or saved, and what
+      // agents did in conversations that are theirs.
       const receiver = receiverFor(identity);
       const folders = receiver.all ? null : projectFolders();
-      json(res, 200, { files: receiver.all ? recentFileState.files : recentFileState.files.filter(f => (f.key ? receiver.key(f.key) : true) && receiver.path(f.path, folders)) });
+      const files = recentFilesFor(identity);
+      json(res, 200, { files: receiver.all ? files : files.filter(f => (f.key ? receiver.key(f.key) : true) && receiver.path(f.path, folders)) });
     } else if (u.pathname === '/api/recent-files' && req.method === 'POST') {
       // { path, project } records an open; { remove: path } forgets one.
       let body = '';
@@ -23815,9 +23938,9 @@ async function handleRequest(req, res) {
       try {
         const p = JSON.parse(body || '{}');
         if (p.actor != null && !['human', 'agent', 'both'].includes(p.actor)) throw new Error('unknown file activity source');
-        if (p.remove) recentFilesForget(p.remove, p.actor || 'human');
-        else if (p.path) recentFilesTouch(path.resolve(expandHomePath(String(p.path))), { project: String(p.project || ''), kind: 'opened' });
-        json(res, 200, { files: recentFileState.files });
+        if (p.remove) recentFilesForget(p.remove, p.actor || 'human', identity);
+        else if (p.path) recentFilesTouch(path.resolve(expandHomePath(String(p.path))), { project: String(p.project || ''), kind: 'opened', who: identity });
+        json(res, 200, { files: recentFilesFor(identity) });
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/open-files' && req.method === 'GET') {
       json(res, 200, openFilesFor(identity));

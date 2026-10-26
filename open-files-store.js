@@ -4,8 +4,8 @@
 //
 // A file is on the list because a person meant it: they pinned it, ran a
 // cell in it, or edited it. Opening a file to look at it adds nothing. The
-// list is the household's, like the conversation list (agentread.js): one
-// per Chattering install, written by its members.
+// list is the person's, like the conversation list (agentread.js): one per
+// person since 2026-10-26, shared by their devices (server.js openFilesOf).
 //
 // Each entry is { path, project, at }. `at` is when the file joined the list,
 // and the list is ordered by it, newest first. Keeping a file that is
