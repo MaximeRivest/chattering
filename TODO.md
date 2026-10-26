@@ -203,8 +203,10 @@ The iFlytek part is now its own chapter, with the pen at its centre: **design/99
 - [x] Identity separate from execution principal: a person linked to their own computer account runs as it (agents, commands, forks, files through Chattering), through one sudo rule and `chattering-as`; their conversations in a folder of theirs the server reads only when they own the file; routes that would use the server's rights refuse them until ported (`design/105`, 2026-10-24)
 - [ ] Port the rest to people on their own account (design/105 "Trade-offs"): file operations, notebooks, change reviews and file-history drawers, artifacts and previews, git views, shares, delegations' views, codex/Claude Code runs
 - [ ] Dedicated service account with nothing of its own; the owner runs through the mediator like everyone (design/105, first trade-off)
-- [ ] Shared projects between two accounts: shared folder, group, default ACLs, `core.sharedRepository`, per-path `safe.directory`
-- [ ] Lilly's and Jacob's move on lambda: which projects are whose (segbench, kneesandtoes and recorn are intertwined), `scripts/account-move.js`, her SSH key and GitHub login on her account, Jacob's desktop login
+- [x] Shared projects between two accounts (design/105 "Shared projects", 2026-10-26): ACLs set as the owner, labels in the list, Gantt and project page, share button
+- [x] Lilly's move on lambda (2026-10-26): recorn, segbench, kneesandtoes, lilly-phd in /home/lilly/Projects, shared with Maxime; anatomist and chattering shared with her; her GitHub login and Python environments on her account
+- [ ] Shared folders repair themselves (a tool's chmod narrows the mask): repair on open, or a periodic pass
+- [ ] Jacob: his desktop login, his own models (spending limit)
 - [ ] Company hub: SSO/OIDC, roles and groups, per-person keys and costs, protected audit log, retention, backups, load test (`design/46` "Team scale"), after item 2
 
 **Job to be done.** Several people — a household now, a small team or a class next, a company hub after that — work in one Chattering with clear identities, attribution, permissions and budgets; an owner can see and administer all of it; a new machine can be brought to the same version reliably.

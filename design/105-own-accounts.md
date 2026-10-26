@@ -167,6 +167,59 @@ forks of conversations that worked in the old place work in the new one,
 registered projects follow their folder. Conversations are not moved: they
 ran as the account that keeps them.
 
+## Shared projects (2026-10-26)
+
+Two people share a project folder; each works in it as themselves. The
+truth is the file system (POSIX ACLs, `getfacl`), set by `folder-shares.js`
+**as the folder's owner** (an owner may set the ACLs of their own files: no
+administrator right is used). Sharing F (A's) with B:
+
+1. a passage through A's home and each folder down to F (`u:B:--x`): B can
+   reach F, not list anything on the way;
+2. everything else in those folders closed to B (`u:B:---`, which wins over
+   "other"), and so are entries made later (default `u:B:---`). A home holds
+   things that were world-readable only because nobody could walk in: on
+   lambda, the install token file and several `.env` files. Closing them
+   one by one would miss some; closing all but the way in misses none;
+3. F open both ways (`u:B:rwX` on A's files, defaults `d:u:B:rwX,d:u:A:rwX`
+   on its folders, so what either makes stays shared);
+4. B's git trusts F (`safe.directory` in B's `~/.gitconfig`).
+
+Homes are 0710 (NixOS re-applies homeMode at every switch; at 0700 the mask
+would hide step 1; each person's group holds only them). Files of a third
+account inside F are reported, not changed.
+
+Chattering shows each project's owner and who shares it (one `getfacl` over
+every project folder, a minute's cache): a label in the project list and
+on the Gantt's rows ("Lilly's", "shared"), a "shared projects" choice in the
+Gantt's filter, and a line on the project page with the owner's buttons
+("share with …", "stop sharing with …": the folder's owner or an
+administrator). New conversations in someone else's shared project run as
+the person starting them, in that folder; existing ones belong to whoever
+keeps them (fork to continue). `scripts/share-folder.js` does the same from
+a terminal.
+
+## Codex through the key proxy
+
+Pi's Codex provider takes only a sign-in credential and reads the ChatGPT
+account id out of its key (a JWT). A person's placeholder is therefore an
+unsigned JWT carrying the owner's account id (an identifier) and the grant,
+stored as a sign-in that expires in ten years (never refreshed). The proxy
+finds the grant in it, swaps the owner's token in, and joins WebSocket
+connections (Codex's preferred transport) the same way. Each person's grant
+names the AI accounts chosen for them (`modelProviders`); the proxy refuses
+the rest, whatever their Pi asks.
+
+**Claude Code through the proxy reaches Anthropic and is refused** on
+lambda (2026-10-26): Anthropic recognises a third-party agent program by
+its system prompt (Pi's stock one) and bills it to "extra usage", which the
+plan does not have. The owner's own requests pass because his Pi prompt is
+customised. Rewriting a person's prompt so it is not recognised would
+work around Anthropic's billing rules: not done. Extra usage on the
+account, or another provider, makes it answer.
+`scripts/account-models-check.js ACCOUNT --providers … --refused …` checks
+it end to end, as the person.
+
 ## Trade-offs, stated
 
 - **The server's account is still the owner's** on lambda (maxime: an
@@ -195,9 +248,16 @@ ran as the account that keeps them.
   a repository another account owns, and nothing here weakens that: a
   member's `.git/config` could otherwise run code as the server). Git views
   of their repositories are refused for now.
-- **A shared project** (two people's work in one folder) is not a move: it
-  needs a shared folder with a group, default ACLs, `core.sharedRepository`
-  and `safe.directory` for exactly that path. Not built.
+- **Shared folders can drift.** A tool that sets a file's mode explicitly
+  (`chmod 644`) narrows the ACL mask, and the other person loses write on
+  that file; a file moved in from elsewhere keeps its old rights. Sharing
+  again (the button, or `scripts/share-folder.js`) repairs it. Not automatic.
+- **Git hooks run as whoever uses git.** B trusts A's repository, so A's
+  hooks run as B there. Between two administrators this grants nothing new;
+  between others it would be a real grant, and sharing says so.
+- **A shared folder's ACL entries for files the other person made** stay
+  when sharing stops (the owner cannot change another account's files);
+  the folder itself closes, which is what counts.
 - **No caps by default** for people (guests have them): the slice is there,
   set properties on it to cap someone (`systemctl --user set-property
   chattering-person-<account>.slice MemoryMax=…`).
