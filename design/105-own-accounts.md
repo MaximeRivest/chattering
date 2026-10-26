@@ -180,7 +180,12 @@ administrator right is used). Sharing F (A's) with B:
    "other"), and so are entries made later (default `u:B:---`). A home holds
    things that were world-readable only because nobody could walk in: on
    lambda, the install token file and several `.env` files. Closing them
-   one by one would miss some; closing all but the way in misses none;
+   one by one would miss some; closing all but the way in misses none.
+   What B already reaches there is left as it is: a folder shared with B,
+   and a passage (`--x`) B was given to something deeper (on lambda,
+   `~/.cache` on the way to the model cache, `~/.local` to uv's Pythons).
+   Until 2026-10-26 a passage counted as closed; sharing anatomist and
+   chattering then cut Lilly off from both without anyone seeing it;
 3. F open both ways (`u:B:rwX` on A's files, defaults `d:u:B:rwX,d:u:A:rwX`
    on its folders, so what either makes stays shared);
 4. B's git trusts F (`safe.directory` in B's `~/.gitconfig`).
@@ -188,6 +193,12 @@ administrator right is used). Sharing F (A's) with B:
 Homes are 0710 (NixOS re-applies homeMode at every switch; at 0700 the mask
 would hide step 1; each person's group holds only them). Files of a third
 account inside F are reported, not changed.
+
+Folders an agent makes next to a project (not inside it) are not part of
+the project: moving `recorn` on 2026-10-26 left `corn-skill-models` and
+three siblings in the old home, closed to her, and her agent could not
+write its notes. They were found from who wrote in the conversations that
+worked in each folder (the `chattering-author` entries), and moved too.
 
 Chattering shows each project's owner and who shares it (one `getfacl` over
 every project folder, a minute's cache): a label in the project list and

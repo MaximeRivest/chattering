@@ -53,6 +53,19 @@ other::r-x
 `);
   assert.deepEqual(shares.sharingOf(out.get('/home/lilly/Projects/recorn')), { owner: 'lilly', with: [{ account: 'maxime', write: true }] });
   assert.deepEqual(shares.sharingOf(out.get('/home/maxime/Projects/chattering')), { owner: 'maxime', with: [{ account: 'lilly', write: false }] }, 'the mask wins');
+  const way = shares.parseGetfacl(`# file: home/maxime/.cache
+# owner: maxime
+user::rwx
+user:lilly:--x
+user:jacob:---
+group::---
+mask::--x
+other::---
+`).get('/home/maxime/.cache');
+  assert.equal(shares.isOpenTo(way, 'lilly'), true, 'a passage to something given is left open by a later share');
+  assert.equal(shares.isOpenTo(way, 'jacob'), false);
+  assert.equal(shares.isOpenTo(way, 'nobody'), false);
+  assert.deepEqual(shares.sharingOf(way), { owner: 'maxime', with: [] }, 'and it is still not a share');
 });
 
 test('Codex: the placeholder is a sign-in credential Pi reads the account from, holding only the grant', () => {
@@ -103,8 +116,12 @@ const skipReal = process.platform !== 'linux' ? 'Linux only' : !sudo || !mediato
 test('for real: a shared folder opens both ways; the rest of the home stays closed; unsharing closes it', { skip: skipReal || false, timeout: 120000 }, async t => {
   const tag = 'share-' + process.pid;
   const proj = '/home/chattering-test/Projects/' + tag, other = '/home/chattering-test/Projects/' + tag + '-private';
+  // Given earlier, deeper in the home: a passage (--x) to a readable folder,
+  // as ~/.cache on the way to a model cache. Sharing must not cut it.
+  const given = '/home/chattering-test/' + tag + '-cache', givenIn = given + '/hub';
   assert.equal(asTest(`mkdir -p ${proj}/d ${other} && echo a > ${proj}/d/a && echo p > ${other}/p && chmod -R a+rX ${proj} ${other} && cd ${proj} && git init -q`).status, 0);
-  t.after(() => { asTest(`rm -rf ${proj} ${other}`); spawnSync('git', ['config', '--file', path.join(os.homedir(), '.gitconfig'), '--unset-all', 'safe.directory', proj.replace(/[.]/g, '\\.') + '.*']); });
+  assert.equal(asTest(`mkdir -p ${givenIn} && echo w > ${givenIn}/w && chmod 700 ${given} && setfacl -m u:${me}:--x ${given} && setfacl -m u:${me}:r-x ${givenIn} && setfacl -m u:${me}:r-- ${givenIn}/w && setfacl -m u:${me}:--x /home/chattering-test`).status, 0);
+  t.after(() => { asTest(`rm -rf ${proj} ${other} ${given}`); spawnSync('git', ['config', '--file', path.join(os.homedir(), '.gitconfig'), '--unset-all', 'safe.directory', proj.replace(/[.]/g, '\\.') + '.*']); });
   const as = shares.runnerFor({ serviceUser: me });
   const out = await shares.setShare({ folder: proj, withAccount: me, as });
   assert.deepEqual(out.problems, []);
@@ -115,6 +132,7 @@ test('for real: a shared folder opens both ways; the rest of the home stays clos
   assert.equal(spawnSync('git', ['-C', proj, 'status', '--short'], { encoding: 'utf8' }).status, 0, 'git trusts it');
   assert.throws(() => fs.readFileSync(path.join(other, 'p')), /EACCES/, 'a world-readable sibling stays closed');
   assert.throws(() => fs.readdirSync('/home/chattering-test'), /EACCES/, 'the home is a passage, not a listing');
+  assert.equal(fs.readFileSync(givenIn + '/w', 'utf8'), 'w\n', 'what was given earlier, behind a passage, stays reachable');
   const g = shares.parseGetfacl(spawnSync('getfacl', ['-p', proj], { encoding: 'utf8' }).stdout);
   assert.deepEqual(shares.sharingOf(g.get(proj)), { owner: 'chattering-test', with: [{ account: me, write: true }] });
   const off = await shares.setShare({ folder: proj, withAccount: me, off: true, as });

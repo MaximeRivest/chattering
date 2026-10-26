@@ -93,6 +93,7 @@ function parseGetfacl(text) {
   const finish = () => {
     if (!cur) return;
     for (const [u, r] of Object.entries(cur.raw)) cur.users[u] = mask ? [...r].map((c, i) => (c !== '-' && mask[i] !== '-') ? c : '-').join('') : r;
+    cur.entries = cur.raw;
     delete cur.raw;
   };
   for (const line of String(text).split('\n')) {
@@ -105,6 +106,14 @@ function parseGetfacl(text) {
   }
   finish();
   return out;
+}
+// Whether `account` has its own entry on this folder that lets it in:
+// reading (shared) or passing through (--x, the way to something shared).
+// Uses the raw entry, not the mask-limited one: a passage is a decision
+// someone made, even while the mask hides it.
+function isOpenTo(acl, account) {
+  const r = acl && (acl.entries || {})[account];
+  return !!r && (r[0] === 'r' || r[2] === 'x');
 }
 // A folder's sharing as Chattering shows it: its owner and who else may
 // read or write it (a person, not a mere passage: --x does not count).
@@ -171,12 +180,17 @@ async function setShare({ folder, withAccount, off = false, as, owner = null, ac
       if (r.code !== 0) { problems.push(`listing ${dir} as ${owner}: ${r.stderr.trim()}`); lists.set(dir, []); continue; }
       const entries = r.stdout.split('\n').filter(Boolean).map(l => { const [y, ...n] = l.split('\t'); return { name: n.join('\t'), type: y === 'd' ? 'dir' : y === 'l' ? 'link' : 'file' }; });
       lists.set(dir, entries);
-      // Already shared with them: left open.
+      // Already open to them, left as is: a folder shared with them (r), and
+      // also a mere passage (--x) to something deeper they were given
+      // (~/.cache on the way to a model cache, say). Closing a passage cuts
+      // off everything behind it without anyone noticing (2026-10-26:
+      // sharing a project closed ~/.local and ~/.cache, and Lilly lost the
+      // Python installs and model weights she had been given).
       const dirs = entries.filter(e => e.type === 'dir').map(e => path.join(dir, e.name));
       const shared = new Set();
       for (let i = 0; i < dirs.length; i += 200) {
         const g = await as(owner, ['getfacl', '-p', '--', ...dirs.slice(i, i + 200)]);
-        for (const [p, acl] of parseGetfacl(g.stdout)) { const r2 = acl.users[withAccount]; if (r2 && r2[0] === 'r') shared.add(path.basename(p)); }
+        for (const [p, acl] of parseGetfacl(g.stdout)) { if (isOpenTo(acl, withAccount)) shared.add(path.basename(p)); }
       }
       open.set(dir, shared);
     }
@@ -201,4 +215,4 @@ async function setShare({ folder, withAccount, off = false, as, owner = null, ac
   return { folder: f, owner, with: withAccount, off, steps, problems };
 }
 
-module.exports = { ancestors, shareCommands, unshareCommands, parseGetfacl, sharingOf, runnerFor, setShare };
+module.exports = { ancestors, shareCommands, unshareCommands, parseGetfacl, sharingOf, isOpenTo, runnerFor, setShare };
