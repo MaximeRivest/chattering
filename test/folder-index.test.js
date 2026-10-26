@@ -70,6 +70,7 @@ function server(t) {
     foldsLib: { isLooseCwd: c => c === home || c === path.join(home, 'Projects') },
     LOOSE_PROJECT: 'Loose conversations', index: {}, createdProjects: {}, conversationProjects: {},
     canonicalProjectName: x => x, expandHomePath: x => x.replace(/^~(?=$|\/)/, home),
+    ...require('./helpers/local-actor.js').actorGlobals(home), accountFiles: require('../account-files.js'),
   });
   b.projectNameOf = cwd => b.foldsLib.isLooseCwd(cwd) ? 'Loose conversations' : rawProjectOf(cwd);
   b.projectOfEntry = entry => b.projectNameOf(entry.cwd);

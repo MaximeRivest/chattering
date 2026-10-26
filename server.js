@@ -7875,7 +7875,7 @@ function actorOf(identity) {
 // holds it, else this server's. Work on someone's repository (git reads
 // their config and runs their hooks) is done as its owner, whoever asked;
 // who may see the answer is the app's decision (projectVisible).
-function personOfPath(p) {
+function accountPersonOfPath(p) {
   const m = /^\/home\/([^/]+)(?:\/|$)/.exec(path.resolve(String(p || '')));
   if (!m) return null;
   const person = personWithAccount(m[1]);
@@ -7908,14 +7908,14 @@ async function reachable(identity, p) {
 function groupByActor(paths) {
   const by = new Map();
   for (const p of paths) {
-    const person = personOfPath(p), k = person ? person.id : '';
+    const person = accountPersonOfPath(p), k = person ? person.id : '';
     if (!by.has(k)) by.set(k, { actor: actorForPath(p), paths: [] });
     by.get(k).paths.push(p);
   }
   return [...by.values()].map(g => [g.actor, g.paths]);
 }
 function actorForPath(p) {
-  const person = personOfPath(p);
+  const person = accountPersonOfPath(p);
   const mine = person ? filesOfPerson(person) : null;
   return mine ? actorOfMine(mine) : localActor;
 }

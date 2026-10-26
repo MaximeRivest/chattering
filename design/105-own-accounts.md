@@ -239,22 +239,9 @@ it end to end, as the person.
   expert would choose is a dedicated service account with nothing of its
   own, the owner running through the mediator like everyone. Second
   deployment mode of the same code (design/46); not done.
-- **Not every feature is theirs yet.** Refused for people on their own
-  account until ported, with the reason: notebooks, change reviews, the
-  project's and a file's history drawers (git and the saved file history of
-  a project), shares and publications, git views, AI programs, delegations'
-  views, codex and Claude Code runs, the desktop terminal.
-  Ported on 2026-10-26 (Lilly met them the first day): artifacts and their
-  previews, a conversation's pictures, recorded edits and what its steps
-  changed, the system prompt their agent saw, the composer's @ files and
-  snippets, Markdown documents, notes, the Files browser's rename, copy,
-  delete and "recently deleted", HTML file previews. Their host
-  (account-host.js) does the disk work and answers from **their own saved
-  file history** (their agents keep it in their home; server.js `viewerIo`):
-  so a person on their own account sees versions of what their agents
-  made, and the owner, reading their conversation, sees the files as his
-  account may read them, without versions. What they delete waits in their
-  own "recently deleted", in their home.
+- **Not every feature is theirs yet.** What is theirs, what is still
+  refused and why, and the end state (an unprivileged hub, the owner
+  through the mediator like everyone): design/106.
 - **A shared copy of a file (the live editor, collab) is not theirs:** it
   reads and saves with this server's rights, so it is refused to people on
   their own account (until 2026-10-26 it was not, through the socket, which

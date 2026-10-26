@@ -130,7 +130,9 @@ function accountPath(account, { nodePath = process.execPath } = {}) {
 // its keys must not reach anyone else. HOME, USER, LOGNAME and SHELL are
 // the person's, set by chattering-as from the account database.
 const HOST_ENV_ALLOW = new Set(['TERM', 'COLORTERM', 'LANG', 'LANGUAGE', 'LC_ALL', 'LC_CTYPE', 'LC_MESSAGES', 'LC_NUMERIC', 'LC_TIME', 'TZ', 'TZDIR',
-  'SSL_CERT_FILE', 'NIX_SSL_CERT_FILE', 'CURL_CA_BUNDLE', 'GIT_SSL_CAINFO', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'NODE_OPTIONS', 'UV_NATIVE_TLS', 'NIX_PATH', 'LOCALE_ARCHIVE']);
+  'SSL_CERT_FILE', 'NIX_SSL_CERT_FILE', 'CURL_CA_BUNDLE', 'GIT_SSL_CAINFO', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'NODE_OPTIONS', 'UV_NATIVE_TLS', 'NIX_PATH', 'LOCALE_ARCHIVE',
+  // How long their agents' file history may take per step (tuning, no secret).
+  'CHATTERING_CHECKPOINT_WAIT_MS', 'CHATTERING_CHECKPOINT_BEHIND_MS']);
 const NEVER = new Set(['HOME', 'USER', 'LOGNAME', 'SHELL', 'MAIL', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'XAUTHORITY', 'DISPLAY', 'WAYLAND_DISPLAY', 'SSH_AUTH_SOCK']);
 function accountEnv({ hostEnv = process.env, account, nodePath = process.execPath, principalEnv = {}, extra = {} }) {
   const env = {};

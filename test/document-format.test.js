@@ -33,6 +33,7 @@ async function harness(t) {
     recentProjectFileActivity: () => null,
     // Shared documents and people: not exercised here.
     collab: { has: () => false, setText: () => false }, collabDiskWritten: () => {}, usersLib: { ownerOf: () => ({ id: 'owner' }) }, roster: {},
+    ...require('./helpers/local-actor.js').actorGlobals(root),
   });
   vm.runInContext(source, ctx);
   // Revision naming is unrelated to saving formats; never start background model calls.
