@@ -32,6 +32,15 @@ function run(file, args, { cwd, input = null, timeout = 30000, maxBuffer = 32 * 
   });
 }
 
+// rat's plot folder for this account (rat writes plots and displays there).
+const ratPlotDir = () => path.join(process.env.XDG_CACHE_HOME || path.join(require('os').homedir(), '.cache'), 'rat', 'plots');
+async function ratOutput(p, ext) {
+  const file = await fsp.realpath(abs(p)).catch(() => null);
+  const dir = await fsp.realpath(ratPlotDir()).catch(() => null);
+  if (!file || !dir || !file.startsWith(dir + path.sep) || path.extname(file).toLowerCase() !== ext) throw Object.assign(new Error('not a plot made by a rat kernel on this machine'), { status: 404 });
+  return file;
+}
+
 const OPS = {
   // ---- files ----
   // Many paths at once (a listing of hundreds of documents is one call).
@@ -43,6 +52,21 @@ const OPS = {
   'fs.readableMany': async paths => (await Promise.all((paths || []).slice(0, 5000).map(async p => {
     try { await fsp.access(abs(p), fs.constants.R_OK); return p; } catch { return null; }
   }))).filter(Boolean),
+  // ---- notebooks (rat) ----
+  // A plot or display a kernel of theirs made: only from their rat's plot
+  // folder (the kernel writes there; a path elsewhere is refused).
+  'rat.plot': async p => fsp.readFile(await ratOutput(p, '.png')),
+  'rat.display': async p => JSON.parse(await fsp.readFile(await ratOutput(p, '.json'), 'utf8')),
+  // Keep bytes with a notebook's project: <dir>/<name>, written once (same
+  // content, same name). Answers the path relative to the notebook.
+  'notebook.keep': async (dir, name, bytes, docDir) => {
+    if (!/^[0-9a-f]{12}\.[a-z]{2,5}$/.test(name)) throw new Error('bad asset name');
+    await fsp.mkdir(abs(dir), { recursive: true });
+    const dest = path.join(abs(dir), name);
+    try { await fsp.writeFile(dest, Buffer.from(bytes), { flag: 'wx' }); } catch (e) { if (e.code !== 'EEXIST') throw e; }
+    return path.relative(abs(docDir), dest).split(path.sep).join('/');
+  },
+  'notebook.list': (root, opts) => require('./notebook-derive.js').listNotebooks(abs(root), opts),
   // ---- git: always as the repository's owner (design/106) ----
   'git.run': (root, args, opts = {}) => run('git', ['-C', abs(root), ...args], opts),
   // Who last changed one line of a file being edited (the text as typed).

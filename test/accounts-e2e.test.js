@@ -493,6 +493,33 @@ test('a person on their own account: artifacts, pictures, changes, documents and
   assert.notEqual(injected.status, 200, 'an option is never passed to git as a commit');
   assert.equal(asTest(`test -e ${proj}/x`).status, 1);
 
+  // Notebooks: her own rat (a stand-in in her ~/.local/bin, on her PATH)
+  // runs her kernels, as her; a run's plot is read from her rat's folder and
+  // kept with her project, as her.
+  asTest(`mkdir -p ~/.local/bin && cat > ~/.local/bin/rat <<'SH'
+#!/bin/sh
+case "$1" in
+  run) mkdir -p ~/.cache/rat/plots; printf 'PLOT-OF-%s' "$(id -un)" > ~/.cache/rat/plots/p1.png; echo "ran as $(id -un) in $(pwd)" ;;
+  resolve) printf '{"name":"stub","cwd":"%s"}\\n' "$(pwd)" ;;
+  doctor) printf '{"who":"%s"}\\n' "$(id -un)" ;;
+  status) echo '[]' ;;
+  *) echo '{}' ;;
+esac
+SH
+chmod +x ~/.local/bin/rat && printf '# A notebook\\n' > ${proj}/nb.md`);
+  t.after(() => asTest('rm -rf ~/.local/bin/rat ~/.cache/rat'));
+  const ran = await okJson('run cell', post(remote + '/api/doc/run-cell', { doc: proj + '/nb.md', lang: 'python', code: 'print(1)' }, tess));
+  assert.match(ran.out, new RegExp('ran as ' + ACCOUNT + ' in ' + proj), JSON.stringify(ran));
+  const doctor = await okJson('doctor', get(remote + `/api/doc/doctor?doc=${encodeURIComponent(proj + '/nb.md')}`, tess));
+  assert.equal(doctor.who, ACCOUNT);
+  const plotPath = `/home/${ACCOUNT}/.cache/rat/plots/p1.png`;
+  assert.equal(await (await ok('plot', get(remote + `/api/doc/plot?path=${encodeURIComponent(plotPath)}`, tess))).text(), 'PLOT-OF-' + ACCOUNT);
+  const kept = await okJson('keep plots', post(remote + '/api/doc/plots', { doc: proj + '/nb.md', lang: 'python', paths: [plotPath] }, tess));
+  assert.match(kept.images[0].src, /^_assets\/generated\/[0-9a-f]{12}\.png$/);
+  theirs(kept.images[0].src);
+  const notAPlot = await get(remote + `/api/doc/plot?path=${encodeURIComponent(path.join(secretDir, 'plan.md'))}`, tess);
+  assert.notEqual(notAPlot.status, 200, 'only her rat\u2019s plot folder');
+
   // A file this server can read but her account cannot stays closed.
   const secret = await get(remote + `/api/artifacts/blob?id=${k}&path=${encodeURIComponent(path.join(secretDir, 'plan.md'))}`, tess);
   assert.notEqual(secret.status, 200);

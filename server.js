@@ -19217,7 +19217,9 @@ async function ratSpawn(args, { cwd, env = null } = {}) {
   if (!rat.path) return null;
   const principal = await currentPrincipal(cwd ? projectOfPath(cwd) : null);
   assertPrincipalCanRun(principal, 'a notebook cell');
-  const launched = principal.walls ? principal.walls.launch(rat.path, args, { cwd }) : { file: rat.path, args, env: process.env };
+  // Someone on their own account runs their own rat (their PATH, their
+  // kernels and environments), as them.
+  const launched = principal.walls ? principal.walls.launch(principal.walls.kind === 'account' ? 'rat' : rat.path, args, { cwd }) : { file: rat.path, args, env: process.env };
   const child = spawn(launched.file, launched.args, { cwd: principal.walls ? undefined : (cwd || os.homedir()), env: env ? { ...launched.env, ...env } : launched.env });
   if (principal.guest) { child.guestId = principal.user.id; guestChildren.add(child); child.on('close', () => guestChildren.delete(child)); }
   return child;
@@ -19477,21 +19479,28 @@ function notebookPath(p) {
   if (!p || typeof p !== 'string') return null;
   try { return fs.statSync(p).isFile() ? p : null; } catch { return null; }
 }
+// The same, looked at as the requester (design/106): a notebook of someone
+// on their own account is a file of theirs.
+async function notebookPathFor(identity, p) {
+  if (!p || typeof p !== 'string' || !path.isAbsolute(p)) return null;
+  try { return (await actorOf(identity).io.stat(p)).isFile() ? path.resolve(p) : null; } catch { return null; }
+}
 
 // Where a conversation's project keeps its notebooks (design/41).
 // A real project keeps them at its root (a conversation started in a
 // subfolder still files them with the project). A loose conversation has
 // only the folder it ran in; the home folder is not a project.
-function notebookRootFor(key) {
+async function notebookRootFor(key) {
   const entry = index[key];
   if (!entry) throw new Error('not found');
   const project = projectOfEntry(entry, key);
   if (project && project !== LOOSE_PROJECT && project !== '?') {
     const meta = projectMetaFor(project);
-    if (meta && meta.cwd && fs.existsSync(meta.cwd)) return { project, root: path.resolve(meta.cwd) };
+    if (meta && meta.cwd && await pathExists(meta.cwd)) return { project, root: path.resolve(meta.cwd) };
   }
   const cwd = entry.cwd ? path.resolve(entry.cwd) : '';
-  if (!cwd || cwd === path.resolve(os.homedir()) || !fs.existsSync(cwd)) throw new Error('this conversation has no project folder to keep notebooks in (it ran in the home folder)');
+  const home = actorForPath(cwd).home;
+  if (!cwd || cwd === path.resolve(home) || !await pathExists(cwd)) throw new Error('this conversation has no project folder to keep notebooks in (it ran in the home folder)');
   return { project: project || LOOSE_PROJECT, root: cwd };
 }
 
@@ -19509,7 +19518,7 @@ async function deriveNotebookFromAnswer(key, entryId) {
   derivingNotebooks.add(lockKey);
   try {
     await assertDelegationOwnership(sessionPath);
-    const { project, root } = notebookRootFor(key);
+    const { project, root } = await notebookRootFor(key);
     const notebooksDir = path.join(root, notebookDerive.NOTEBOOKS_DIR);
     const existing = notebookDerive.listNotebooks(root, { conversation: key });
     // What the project's environment says about its own packages (rat's
@@ -24522,7 +24531,7 @@ async function handleRequest(req, res) {
       const runtime = RAT_LANGS[String(lang || '').toLowerCase()];
       if (!runtime) return json(res, 400, { error: 'no rat runtime for language "' + lang + '"' });
       if (!code || typeof code !== 'string' || !code.trim()) return json(res, 400, { error: 'code required' });
-      const doc = notebookPath(parsed.doc);
+      const doc = await notebookPathFor(identity, parsed.doc);
       if (!doc) return json(res, 400, { error: 'doc (the notebook path) is required' });
       const runIdIn = String(parsed.runId || '') || ('run-' + Date.now());
       if (parsed.stream && ratSpeaksEvents()) {
@@ -24585,7 +24594,7 @@ async function handleRequest(req, res) {
       // Can this notebook run as it is? Pure passthrough of `rat doctor
       // <notebook> --json`: project, environment, declared requirements,
       // kernel, and the plan `ensure` would carry out. Nothing changes.
-      const doc = notebookPath(u.searchParams.get('doc'));
+      const doc = await notebookPathFor(identity, u.searchParams.get('doc'));
       if (!doc) return json(res, 400, { error: 'doc (the notebook path) is required' });
       const rat = ratBinary();
       if (!rat.path) return json(res, 200, { ratMissing: true, error: RAT_MISSING });
@@ -24596,7 +24605,7 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/doc/setup-guide' && req.method === 'GET') {
       // How to install a language on this computer: `rat guide`, for the
       // person or their AI. Installs nothing.
-      const doc = notebookPath(u.searchParams.get('doc'));
+      const doc = await notebookPathFor(identity, u.searchParams.get('doc'));
       if (!doc) return json(res, 400, { error: 'doc (the notebook path) is required' });
       const lang = String(u.searchParams.get('lang') || '');
       if (!/^[a-z]{1,12}$/.test(lang)) return json(res, 400, { error: 'lang is a language name' });
@@ -24607,7 +24616,7 @@ async function handleRequest(req, res) {
       json(res, 200, out);
     } else if (u.pathname === '/api/doc/kernel' && req.method === 'GET') {
       // The notebook's kernel: which one, whether it runs, idle or busy.
-      const doc = notebookPath(u.searchParams.get('doc'));
+      const doc = await notebookPathFor(identity, u.searchParams.get('doc'));
       if (!doc) return json(res, 400, { error: 'doc (the notebook path) is required' });
       const runtime = RAT_LANGS[String(u.searchParams.get('lang') || 'py').toLowerCase()];
       if (!runtime) return json(res, 400, { error: 'no rat runtime for that language' });
@@ -24618,7 +24627,7 @@ async function handleRequest(req, res) {
       // What the kernel holds: `rat look` (overview) or `rat look --at x`.
       // Never starts a kernel, and never waits behind a running cell (the
       // kernel answers a look only between runs): both are said instead.
-      const doc = notebookPath(u.searchParams.get('doc'));
+      const doc = await notebookPathFor(identity, u.searchParams.get('doc'));
       if (!doc) return json(res, 400, { error: 'doc (the notebook path) is required' });
       const runtime = RAT_LANGS[String(u.searchParams.get('lang') || 'py').toLowerCase()];
       if (!runtime) return json(res, 400, { error: 'no rat runtime for that language' });
@@ -24813,7 +24822,7 @@ async function handleRequest(req, res) {
       for await (const chunk of req) body += chunk;
       let parsed;
       try { parsed = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
-      const doc = notebookPath(parsed.doc);
+      const doc = await notebookPathFor(identity, parsed.doc);
       if (!doc) return json(res, 400, { error: 'doc (the notebook path) is required' });
       const runtime = RAT_LANGS[String(parsed.lang || '').toLowerCase()];
       if (!runtime) return json(res, 200, { items: [], reason: 'not a runnable language' });
@@ -24847,15 +24856,15 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/doc/plot' && req.method === 'GET') {
       // A plot a kernel just made, shown while its cell runs.
       try {
-        const abs = await ratPlotFile(u.searchParams.get('path'));
+        const bytes = Buffer.from(await actorOf(identity).op('rat.plot', String(u.searchParams.get('path') || '')));
         res.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'private, max-age=3600' });
-        return res.end(await fsp.readFile(abs));
+        return res.end(bytes);
       } catch (e) { return json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/doc/display' && req.method === 'GET') {
       // A display a kernel just made, shown while its cell runs: the page,
       // the image or the text it becomes — sandboxed.
       try {
-        const choice = displayChoice(await ratDisplayBundle(u.searchParams.get('path')));
+        const choice = displayChoice(await actorOf(identity).op('rat.display', String(u.searchParams.get('path') || '')));
         if (choice.kind === 'text') {
           res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'private, max-age=3600', ...SANDBOXED });
           return res.end(choice.text);
@@ -24872,7 +24881,7 @@ async function handleRequest(req, res) {
       for await (const chunk of req) body += chunk;
       let parsed;
       try { parsed = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
-      const doc = notebookPath(parsed.doc);
+      const doc = await notebookPathFor(identity, parsed.doc);
       if (!doc) return json(res, 400, { error: 'doc (the notebook path) is required' });
       const runtime = RAT_LANGS[String(parsed.lang || 'py').toLowerCase()] || 'py';
       const items = Array.isArray(parsed.items) ? parsed.items.slice(0, 100) : [];
@@ -24881,22 +24890,18 @@ async function handleRequest(req, res) {
         const resolved = ratJson((await ratExec(['resolve', '--doc', doc, runtime, '--json'], { cwd: path.dirname(doc), timeoutMs: 20000 })).out);
         const root = resolved && resolved.cwd ? resolved.cwd : path.dirname(doc);
         const dir = path.join(root, GENERATED_ASSETS_DIR);
-        if (!(dir + path.sep).startsWith(os.homedir() + path.sep)) throw Object.assign(new Error('the project is outside home'), { status: 403 });
+        // Kept as the requester, in their home (design/106).
+        const actor = actorOf(identity);
+        if (!(dir + path.sep).startsWith(actor.home + path.sep)) throw Object.assign(new Error('the project is outside home'), { status: 403 });
         assertPathAccess(identity, dir, 'act');
-        await fsp.mkdir(dir, { recursive: true });
-        const save = async (bytes, ext) => {
-          const name = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 12) + ext;
-          const dest = path.join(dir, name);
-          if (!fs.existsSync(dest)) await fsp.writeFile(dest, bytes);
-          return path.relative(path.dirname(doc), dest).split(path.sep).join('/');
-        };
+        const save = (bytes, ext) => actor.op('notebook.keep', dir, crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 12) + ext, bytes, path.dirname(doc));
         const parts = [];
         for (const item of items) {
           if (item && item.kind === 'plot') {
-            parts.push({ kind: 'image', src: await save(await fsp.readFile(await ratPlotFile(item.path)), '.png'), alt: 'plot' });
+            parts.push({ kind: 'image', src: await save(Buffer.from(await actor.op('rat.plot', String(item.path || ''))), '.png'), alt: 'plot' });
             continue;
           }
-          const choice = displayChoice(await ratDisplayBundle(item && item.path));
+          const choice = displayChoice(await actor.op('rat.display', String((item && item.path) || '')));
           if (choice.kind === 'page') parts.push({ kind: 'embed', src: await save(choice.bytes, choice.ext), height: choice.height });
           else if (choice.kind === 'image') parts.push({ kind: 'image', src: await save(choice.bytes, choice.ext), alt: 'plot' });
           else parts.push({ kind: 'text', text: choice.text });
@@ -24911,7 +24916,7 @@ async function handleRequest(req, res) {
       for await (const chunk of req) body += chunk;
       let parsed;
       try { parsed = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
-      const doc = notebookPath(parsed.doc);
+      const doc = await notebookPathFor(identity, parsed.doc);
       if (!doc) return json(res, 400, { error: 'doc (the notebook path) is required' });
       const runtime = RAT_LANGS[String(parsed.lang || 'py').toLowerCase()] || 'py';
       const paths = Array.isArray(parsed.paths) ? parsed.paths.slice(0, 50) : [];
@@ -24920,16 +24925,14 @@ async function handleRequest(req, res) {
         const resolved = ratJson((await ratExec(['resolve', '--doc', doc, runtime, '--json'], { cwd: path.dirname(doc), timeoutMs: 20000 })).out);
         const root = resolved && resolved.cwd ? resolved.cwd : path.dirname(doc);
         const dir = path.join(root, GENERATED_ASSETS_DIR);
-        if (!(dir + path.sep).startsWith(os.homedir() + path.sep)) throw Object.assign(new Error('the project is outside home'), { status: 403 });
+        const actor = actorOf(identity);
+        if (!(dir + path.sep).startsWith(actor.home + path.sep)) throw Object.assign(new Error('the project is outside home'), { status: 403 });
         assertPathAccess(identity, dir, 'act');
-        await fsp.mkdir(dir, { recursive: true });
         const images = [];
         for (const p of paths) {
-          const bytes = await fsp.readFile(await ratPlotFile(p));
-          const name = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 12) + '.png';
-          const dest = path.join(dir, name);
-          if (!fs.existsSync(dest)) await fsp.writeFile(dest, bytes);
-          images.push({ src: path.relative(path.dirname(doc), dest).split(path.sep).join('/'), alt: 'plot' });
+          const bytes = Buffer.from(await actor.op('rat.plot', String(p || '')));
+          const src = await actor.op('notebook.keep', dir, crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 12) + '.png', bytes, path.dirname(doc));
+          images.push({ src, alt: 'plot' });
         }
         json(res, 200, { images });
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
@@ -24948,7 +24951,7 @@ async function handleRequest(req, res) {
       const client = sseByConn.get(conn);
       if (!client || docRunOwner(client.identity) !== docRunOwner(identity)) return json(res, 404, { error: 'no such event stream for you' });
       if (!parsed.doc) { docFollowDetach(conn); return json(res, 200, { ok: true, kernels: [] }); }
-      const doc = notebookPath(parsed.doc);
+      const doc = await notebookPathFor(identity, parsed.doc);
       if (!doc) return json(res, 400, { error: 'doc (the notebook path) is required' });
       if (!ratBinary().path) return json(res, 200, { ratMissing: true, kernels: [] });
       if (!ratFollowsKernels()) return json(res, 200, { unsupported: 'this rat cannot follow kernels (rat events); update rat', kernels: [] });
@@ -24977,7 +24980,7 @@ async function handleRequest(req, res) {
       for await (const chunk of req) body += chunk;
       let parsed;
       try { parsed = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
-      const doc = notebookPath(parsed.doc);
+      const doc = await notebookPathFor(identity, parsed.doc);
       if (!doc) return json(res, 400, { error: 'doc (the notebook path) is required' });
       const runtime = RAT_LANGS[String(parsed.lang || 'py').toLowerCase()];
       if (!runtime) return json(res, 400, { error: 'no rat runtime for that language' });
@@ -25001,7 +25004,7 @@ async function handleRequest(req, res) {
       for await (const chunk of req) body += chunk;
       let parsed;
       try { parsed = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
-      const doc = notebookPath(parsed.doc);
+      const doc = await notebookPathFor(identity, parsed.doc);
       if (!doc) return json(res, 400, { error: 'doc (the notebook path) is required' });
       const args = ['ensure', doc, '--json'];
       if (parsed.recreate === true) args.push('--recreate');
@@ -25029,8 +25032,9 @@ async function handleRequest(req, res) {
       const key = String(u.searchParams.get('key') || '');
       if (!index[key]) return json(res, 404, { error: 'not found' });
       let root;
-      try { ({ root } = notebookRootFor(key)); } catch { return json(res, 200, { notebooks: [] }); }
-      const notebooks = notebookDerive.listNotebooks(root, { conversation: key }).map(n => ({ path: n.path, title: n.title, entry: n.source.entry, created: n.source.created, after: n.after, root }));
+      try { ({ root } = await notebookRootFor(key)); } catch { return json(res, 200, { notebooks: [] }); }
+      // Read as the folder's owner (design/106).
+      const notebooks = (await actorForPath(root).op('notebook.list', root, { conversation: key })).map(n => ({ path: n.path, title: n.title, entry: n.source.entry, created: n.source.created, after: n.after, root }));
       json(res, 200, { notebooks, root });
     } else if (u.pathname === '/api/doc/play-prerequisites' && req.method === 'POST') {
       // Run the notebook's `rat.after` chain (each once per kernel) before
@@ -25039,7 +25043,7 @@ async function handleRequest(req, res) {
       for await (const chunk of req) body += chunk;
       let parsed;
       try { parsed = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
-      const doc = notebookPath(parsed.doc);
+      const doc = await notebookPathFor(identity, parsed.doc);
       if (!doc) return json(res, 400, { error: 'doc (the notebook path) is required' });
       const rat = ratBinary();
       if (!rat.path) return json(res, 200, { ratMissing: true, error: RAT_MISSING });

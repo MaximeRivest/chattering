@@ -515,6 +515,12 @@ const ACCOUNT_ROUTES = {
   '/api/git/file-feedback': 'theirs', '/api/project/file-history': 'theirs', '/api/project/file-history/commit': 'theirs', '/api/project/docs': 'theirs',
   '/api/files/touched': 'theirs', '/api/file/history-scope': 'theirs', '/api/file/blame': 'theirs', '/api/file/line-info': 'theirs',
   '/api/doc/commit': 'theirs', '/api/doc/asset': 'theirs',
+  // Notebooks (rat): their own rat runs their kernels, as them; plots,
+  // displays and the files a run keeps are read and written by their host.
+  '/api/doc/run-cell': 'theirs', '/api/doc/run-input': 'theirs', '/api/doc/cancel-run': 'theirs', '/api/doc/doctor': 'theirs',
+  '/api/doc/setup-guide': 'theirs', '/api/doc/kernel': 'theirs', '/api/doc/variables': 'theirs', '/api/doc/plot': 'theirs',
+  '/api/doc/display': 'theirs', '/api/doc/ensure': 'theirs', '/api/doc/notebooks': 'theirs', '/api/doc/play-prerequisites': 'theirs',
+  '/api/doc/complete': 'theirs', '/api/doc/plots': 'theirs', '/api/doc/outputs': 'theirs', '/api/doc/follow': 'theirs',
   // Documents and notes: written by their host, as them.
   '/api/files/op': 'theirs', '/api/file/preview': 'theirs', '/api/doc/save': 'theirs', '/api/doc/create': 'theirs', '/api/ink/new': 'theirs', '/api/notes/new': 'theirs', '/api/notes/convert': 'theirs', '/api/snippets': 'theirs', '/api/snippets/used': 'index',
   // This server's own records: the index, the notes tree, the file ledger,
