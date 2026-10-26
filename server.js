@@ -5430,7 +5430,11 @@ async function frogSend({ id, text }, identity) {
   if (liveHeld.has(sessionPath)) {
     out = { via: 'its own program', ...(await liveTerminals().send(key, body)) };
   } else if (isPiSource(entry.source) || entry.source === 'codex') {
-    const r = await startAgentRun(key, { message: body, allowQueue: true, principal, input: 'frog' });
+    // The model its menu shows, the one the person's own send would use
+    // (not only the file's last one, which may be a run that failed for
+    // usage). Queued behind a running turn: that turn's model.
+    const lead = isPiSource(entry.source) && !headlessRuns.has(sessionPath) ? (await inferredConversationModels(key, null).catch(() => []))[0] : null;
+    const r = await startAgentRun(key, { message: body, allowQueue: true, principal, input: 'frog', provider: lead && lead.provider, modelId: lead && lead.modelId });
     out = r && r.queued ? { via: 'chattering', queued: true } : { via: 'chattering', job: jobView(r) };
   } else {
     const live = liveTerminalFor(key, identity);
@@ -5954,9 +5958,17 @@ async function frogFresh({ id, message, title }, identity) {
   await fsp.mkdir(path.dirname(file), { recursive: true });
   await writeFileAtomic(file, handoffLib.piSessionLines({ sessionId, cwd, turns, mode: modeDef, from: key }).map(e => JSON.stringify(e)).join('\n') + '\n');
   const newKey = await indexNewSessionFile(file);
+  // Its models: the ones the person would send with in the old one (its
+  // model menu), else the model of its last reply, else what their own new
+  // conversation would start with. Never none: pi's default may be out of
+  // usage (design/102).
   const c = entry.ctx;
-  const model = c && c.provider && c.model ? { provider: c.provider, modelId: c.model } : null;
-  if (model) saveConversationModels(newKey, [model]);
+  const strip = isPiSource(entry.source) ? await inferredConversationModels(key, data).catch(() => []) : [];
+  const models = strip.length ? strip
+    : c && c.provider && c.model ? [{ provider: c.provider, modelId: c.model }]
+    : newConversationModels(principalFor(identity)).models;
+  const model = models[0] || null;
+  if (model) saveConversationModels(newKey, models);
   agentReadOpen([newKey]);
   const gid = agentRead.member[key];
   if (gid && agentRead.groups[gid]) agentReadGroups({ member: { [newKey]: gid } }, identity);
@@ -18166,10 +18178,15 @@ async function startConversationFromDraft(p, principal = null) {
       catch (e) { out.warnings.push('reasoning “' + thinking + '” not applied: ' + e.message); }
     }
     if (prompt) {
+      // Nothing picked (the frog's start_conversation, a script): the models
+      // the conversation was just made with, the person's last pick, as the
+      // web's draft sends them. Without them the run named no model and pi
+      // answered with its own default, maybe one out of usage (design/102).
+      const runModels = models.length ? models : normalizePickedModels(started.models);
       try {
-        if (models.length >= 2) out.runs = await startFanOut(key, { node: null, models, message: prompt, images, force: false });
+        if (runModels.length >= 2) out.runs = await startFanOut(key, { node: null, models: runModels, message: prompt, images, force: false });
         else out.job = jobView(await startAgentRun(key, {
-          node: null, provider: models[0] && models[0].provider, modelId: models[0] && models[0].modelId,
+          node: null, provider: runModels[0] && runModels[0].provider, modelId: runModels[0] && runModels[0].modelId,
           message: prompt, images, force: false, allowQueue: false, principal, input: p.input, coauthors: draftCoauthors,
         }));
       } catch (e) { out.runError = e.message; }
