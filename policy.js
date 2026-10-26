@@ -69,7 +69,7 @@ const ROUTES = {
   '/api/modes/delete': 'member',
   '/api/jobs': 'guest', // filtered per person
   'GET /api/agent-read': 'guest', // filtered per person
-  'POST /api/agent-read': 'guest', // one household inbox: a guest's marks are answered, not written
+  'POST /api/agent-read': 'guest', // each person's own list (2026-10-26); a guest marks only what they may see
   'POST /api/agent-read/group-name': 'member', // a model call naming a group of the list (design/96)
   'GET /api/recent-files': 'guest', // filtered per person
   // The household's open files (design/77); a guest keeps theirs in the browser.
