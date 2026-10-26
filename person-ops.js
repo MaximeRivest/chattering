@@ -1,0 +1,124 @@
+'use strict';
+// person-ops.js — the operations Chattering performs on someone's files and
+// programs (design/106). One table, one code path for everyone: the hub runs
+// it in its own process for its own account, and each person's host
+// (account-host.js) runs the very same functions as them, so Linux decides
+// what the operation may touch. Whole operations cross the boundary (run
+// git, list a folder, save a note), never single system calls: a remote
+// call is not a local one (it can be slow or fail half-way), and an
+// operation is something one can name, audit and test.
+//
+// Every operation takes plain data and returns plain data (structured
+// clone: Buffers, Maps and Dates survive). Paths must be absolute.
+const fs = require('fs');
+const fsp = fs.promises;
+const path = require('path');
+const { execFile } = require('child_process');
+
+const abs = p => {
+  if (typeof p !== 'string' || !path.isAbsolute(p) || p.includes('\0')) throw Object.assign(new Error('an absolute path is needed'), { code: 'EINVAL' });
+  return path.resolve(p);
+};
+
+// A program's output. Never a shell: file and arguments as given.
+function run(file, args, { cwd, input = null, timeout = 30000, maxBuffer = 32 * 1024 * 1024, encoding = 'utf8', env = null } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(file, args.map(String), { cwd: cwd ? abs(cwd) : undefined, timeout, maxBuffer, encoding: encoding === 'buffer' ? 'buffer' : 'utf8', windowsHide: true, ...(env ? { env: { ...process.env, ...env } } : {}) },
+      (error, stdout, stderr) => {
+        if (error) return reject(Object.assign(new Error(String(stderr || error.message).trim() || error.message), { code: error.code, exitCode: typeof error.code === 'number' ? error.code : null }));
+        resolve(stdout);
+      });
+    if (input != null) child.stdin.end(input); else child.stdin.end();
+  });
+}
+
+const OPS = {
+  // ---- files ----
+  // Many paths at once (a listing of hundreds of documents is one call).
+  'fs.statMany': async paths => Object.fromEntries(await Promise.all((paths || []).slice(0, 5000).map(async p => {
+    try { const st = await fsp.stat(abs(p)); return [p, { type: st.isDirectory() ? 'dir' : st.isFile() ? 'file' : 'other', size: st.size, mtimeMs: st.mtimeMs }]; }
+    catch { return [p, null]; }
+  }))),
+  // Which of these paths this account may read (a listing filtered to what they reach).
+  'fs.readableMany': async paths => (await Promise.all((paths || []).slice(0, 5000).map(async p => {
+    try { await fsp.access(abs(p), fs.constants.R_OK); return p; } catch { return null; }
+  }))).filter(Boolean),
+  // ---- git: always as the repository's owner (design/106) ----
+  'git.run': (root, args, opts = {}) => run('git', ['-C', abs(root), ...args], opts),
+  // Who last changed one line of a file being edited (the text as typed).
+  'git.blameLine': (file, text, line) => require('./live-file-services.js').blameLine(abs(file), String(text), Number(line)),
+  // A picture beside a document, for the editor's rendered view.
+  'files.readAsset': async (file, max) => {
+    const st = await fsp.stat(abs(file));
+    if (!st.isFile()) throw new Error('not a file');
+    if (st.size > max) throw new Error('asset too large');
+    return fsp.readFile(abs(file));
+  },
+  'git.findRoot': dir => require('./gitmeta.js').findGitRoot(abs(dir)),
+  'git.readHead': root => require('./gitmeta.js').readHead(abs(root)),
+  'git.readRemoteUrl': (root, remote) => require('./gitmeta.js').readRemoteUrl(abs(root), remote),
+  'git.listWorktrees': root => require('./gitmeta.js').listWorktrees(abs(root)),
+  'git.worktreesStamp': root => require('./gitmeta.js').worktreesStamp(abs(root)),
+};
+
+// The composer's @ completion: the files of a folder of theirs, listed as them.
+OPS['files.complete'] = async ({ piDir, root, cwd, query }) => {
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 5000);
+  try { return await require('./file-completion.js').completeFiles({ piDir: abs(piDir), root: abs(root), cwd: abs(cwd), query: String(query || ''), signal: ctl.signal }); }
+  finally { clearTimeout(timer); }
+};
+// Their snippets and prompt templates (Pi's prompt folders: theirs, and the
+// project's), listed and saved as them.
+OPS['snippets.list'] = async ({ cwd = null, uses = {} } = {}) => require('./snippets.js').listSnippets({ cwd: cwd ? abs(cwd) : null, uses });
+OPS['snippets.create'] = async ({ scope, cwd, ...fields }) => {
+  const lib = require('./snippets.js');
+  const dir = scope === 'project' ? lib.projectDirFor(abs(cwd)) : lib.GLOBAL_DIR;
+  if (!dir) throw new Error('this conversation has no project folder — save it as a global snippet');
+  try { return await lib.createSnippet({ dir, ...fields }); }
+  catch (e) { e.code = e.code || null; if (e.code === 'EXISTS') e.message = e.message + '\u0000' + (e.path || ''); throw e; }
+};
+// A new note, or an empty note changing kind (ink-notes.js), made as them.
+OPS['notes.create'] = async opts => require('./ink-notes.js').create({ ...opts, folder: abs(opts.folder) });
+OPS['notes.convert'] = async opts => require('./ink-notes.js').convert({ ...opts, path: abs(opts.path) });
+// The Files browser's operations in a folder of theirs, as them; what they
+// delete waits in their own "recently deleted" (in their home), never in
+// anyone else's. `roots`: the project's folders a restore may go back into.
+let trash = null;
+OPS['files.op'] = async ({ op, root, rel, to, id, project, user, roots = [] }) => {
+  const ops = require('./file-ops.js');
+  trash ||= ops.createTrash(path.join(require('./platform.js').appDirs().data, 'deleted-files'));
+  const portable = p => p.split(path.sep).join('/');
+  if (op === 'deleted') return (await trash.list(r => r.project === project)).map(r => ({ id: r.id, name: r.name, rel: r.rel || r.name, root: r.root || '', at: r.at, directory: !!r.directory, until: r.at + ops.RETAIN_MS, from: r.from }));
+  if (op === 'restore') {
+    const allowed = roots.map(abs);
+    const out = await trash.restore(String(id || ''), async r => {
+      if (r.project !== project) throw Object.assign(new Error('This deleted item is no longer kept.'), { status: 404 });
+      const base = allowed.includes(r.root) ? r.root : allowed[0];
+      const relTo = path.relative(base, r.from);
+      if (!base || !relTo || relTo.startsWith('..') || path.isAbsolute(relTo)) throw new Error('Its folder is no longer part of this project.');
+      const parent = path.resolve(base, path.dirname(relTo));
+      await fsp.mkdir(parent, { recursive: true });
+      const real = await fsp.realpath(parent);
+      if (real !== base && !real.startsWith(base + path.sep)) throw new Error('Its folder now leads outside this project.');
+      return path.join(real, r.name);
+    });
+    return { from: out.from, to: out.to, renamed: out.renamed, directory: out.directory, root: out.root };
+  }
+  const entry = await ops.entryAt(abs(root), rel);
+  if (op === 'entry') return { abs: entry.abs, name: entry.name, parent: entry.parent, directory: entry.directory };
+  if (op === 'rename') return ops.renameEntry(entry.root, rel, ops.checkName(to));
+  if (op === 'duplicate') return ops.duplicateEntry(entry.root, rel);
+  if (op === 'delete') {
+    const record = await trash.put(entry.abs, { project: String(project || ''), root: entry.root, rel: portable(path.relative(entry.root, entry.abs)), user: user || null });
+    return { id: record.id, from: entry.abs, directory: record.directory };
+  }
+  throw new Error('unknown file operation');
+};
+
+function has(name) { return Object.prototype.hasOwnProperty.call(OPS, name); }
+async function call(name, ...args) {
+  if (!has(name)) throw Object.assign(new Error('unknown operation ' + name), { code: 'ENOSYS' });
+  return OPS[name](...args);
+}
+
+module.exports = { call, has, names: () => Object.keys(OPS), run };

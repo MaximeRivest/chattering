@@ -71,59 +71,9 @@ const OPS = {
     return checkpointStore[method](...args);
   },
 };
-// The composer's @ completion: the files of a folder of theirs, listed as them.
-OPS.complete = async ({ piDir, root, cwd, query }) => {
-  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 5000);
-  try { return await require('./file-completion.js').completeFiles({ piDir: abs(piDir), root: abs(root), cwd: abs(cwd), query: String(query || ''), signal: ctl.signal }); }
-  finally { clearTimeout(timer); }
-};
-// Their snippets and prompt templates (Pi's prompt folders: theirs, and the
-// project's), listed and saved as them.
-OPS.snippets = async ({ cwd = null, uses = {} } = {}) => require('./snippets.js').listSnippets({ cwd: cwd ? abs(cwd) : null, uses });
-OPS.snippetCreate = async ({ scope, cwd, ...fields }) => {
-  const lib = require('./snippets.js');
-  const dir = scope === 'project' ? lib.projectDirFor(abs(cwd)) : lib.GLOBAL_DIR;
-  if (!dir) throw new Error('this conversation has no project folder — save it as a global snippet');
-  try { return await lib.createSnippet({ dir, ...fields }); }
-  catch (e) { e.code = e.code || null; if (e.code === 'EXISTS') e.message = e.message + '\u0000' + (e.path || ''); throw e; }
-};
-// A new note, or an empty note changing kind (ink-notes.js), made as them.
-OPS.noteCreate = async opts => require('./ink-notes.js').create({ ...opts, folder: abs(opts.folder) });
-OPS.noteConvert = async opts => require('./ink-notes.js').convert({ ...opts, path: abs(opts.path) });
-// The Files browser's operations in a folder of theirs, as them; what they
-// delete waits in their own "recently deleted" (in their home), never in
-// anyone else's. `roots`: the project's folders a restore may go back into.
-let trash = null;
-OPS.fileOp = async ({ op, root, rel, to, id, project, user, roots = [] }) => {
-  const ops = require('./file-ops.js');
-  trash ||= ops.createTrash(path.join(require('./platform.js').appDirs().data, 'deleted-files'));
-  const portable = p => p.split(path.sep).join('/');
-  if (op === 'deleted') return (await trash.list(r => r.project === project)).map(r => ({ id: r.id, name: r.name, rel: r.rel || r.name, root: r.root || '', at: r.at, directory: !!r.directory, until: r.at + ops.RETAIN_MS, from: r.from }));
-  if (op === 'restore') {
-    const allowed = roots.map(abs);
-    const out = await trash.restore(String(id || ''), async r => {
-      if (r.project !== project) throw Object.assign(new Error('This deleted item is no longer kept.'), { status: 404 });
-      const base = allowed.includes(r.root) ? r.root : allowed[0];
-      const relTo = path.relative(base, r.from);
-      if (!base || !relTo || relTo.startsWith('..') || path.isAbsolute(relTo)) throw new Error('Its folder is no longer part of this project.');
-      const parent = path.resolve(base, path.dirname(relTo));
-      await fsp.mkdir(parent, { recursive: true });
-      const real = await fsp.realpath(parent);
-      if (real !== base && !real.startsWith(base + path.sep)) throw new Error('Its folder now leads outside this project.');
-      return path.join(real, r.name);
-    });
-    return { from: out.from, to: out.to, renamed: out.renamed, directory: out.directory, root: out.root };
-  }
-  const entry = await ops.entryAt(abs(root), rel);
-  if (op === 'entry') return { abs: entry.abs, name: entry.name, parent: entry.parent, directory: entry.directory };
-  if (op === 'rename') return ops.renameEntry(entry.root, rel, ops.checkName(to));
-  if (op === 'duplicate') return ops.duplicateEntry(entry.root, rel);
-  if (op === 'delete') {
-    const record = await trash.put(entry.abs, { project: String(project || ''), root: entry.root, rel: portable(path.relative(entry.root, entry.abs)), user: user || null });
-    return { id: record.id, from: entry.abs, directory: record.directory };
-  }
-  throw new Error('unknown file operation');
-};
+// Every named operation (person-ops.js): the same code the hub runs for
+// its own account, run here as them.
+OPS.op = (name, ...args) => require('./person-ops.js').call(name, ...args);
 const CHECKPOINT_METHODS = new Set(['boundariesByCalls', 'boundariesBetween', 'snapshot', 'snapshotHeads', 'blob', 'diffTrees', 'targets', 'targetVersion', 'declareArtifact']);
 let checkpointStore = null;
 

@@ -170,9 +170,9 @@ test('a person runs as their own account: commands, conversations, forks, the st
   const viaLink = await (await get(remote + '/api/file/read?path=' + encodeURIComponent(path.join(proj, 'link.md')), tess)).json();
   assert.doesNotMatch(JSON.stringify(viaLink), /THE OWNER SECRET PLAN/);
   // Routes that would use this server's rights are refused, with the reason.
-  const repos = await get(remote + '/api/git/repos', tess);
-  assert.equal(repos.status, 403);
-  assert.match((await repos.json()).error, /your own computer account/);
+  const reviews = await get(remote + '/api/reviews', tess);
+  assert.equal(reviews.status, 403);
+  assert.match((await reviews.json()).error, /your own computer account/);
 
   // A conversation as her: in her folder, written by her account, answered
   // through the key proxy (her Pi holds a placeholder, never a key).
@@ -316,6 +316,11 @@ test('a person on their own account: artifacts, pictures, changes, documents and
   const ownerSessDir = path.join(agent, 'sessions', accounts.sessionsRootFor ? require('../runtime.js').piSessionDirName(shared) : '');
   fs.mkdirSync(ownerSessDir, { recursive: true });
   const ownerId = '01a0owner' + '0'.repeat(27);
+  // The owner's private repository, known to the app (a conversation worked there).
+  execFileSync('git', ['init', '-q', secretDir]); execFileSync('git', ['-C', secretDir, '-c', 'user.name=o', '-c', 'user.email=o@x', 'commit', '-q', '--allow-empty', '-m', 'owner secret commit']);
+  const secretSess = path.join(agent, 'sessions', require('../runtime.js').piSessionDirName(secretDir));
+  fs.mkdirSync(secretSess, { recursive: true });
+  fs.writeFileSync(path.join(secretSess, '2026-10-24T09-00-00-000Z_01a0secret00000000000000000000000.jsonl'), JSON.stringify({ type: 'session', version: 3, id: '01a0secret00000000000000000000000', timestamp: '2026-10-24T09:00:00.000Z', cwd: secretDir }) + '\n');
   fs.writeFileSync(path.join(ownerSessDir, `2026-10-24T10-00-00-000Z_${ownerId}.jsonl`), line({ type: 'session', version: 3, id: ownerId, timestamp: '2026-10-24T10:00:00.000Z', cwd: shared })
     + line({ type: 'message', id: 'm1', parentId: null, timestamp: '2026-10-24T10:00:01.000Z', message: { role: 'user', content: 'the owner asks' } })
     + line({ type: 'message', id: 'm2', parentId: 'm1', timestamp: '2026-10-24T10:00:02.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'the owner hears' }], model: 'x' } }));
@@ -378,6 +383,8 @@ test('a person on their own account: artifacts, pictures, changes, documents and
   const okJson = async (what, resP) => (await ok(what, resP)).json();
   const theirs = rel => assert.equal(asTest(`stat -c %U '${path.join(proj, rel)}'`).stdout.trim(), ACCOUNT, rel + ' is hers');
 
+  // Her project is a repository of hers (git views, below).
+  asTest(`cd ${proj} && git init -q && git add notes.md && git -c user.name=Tess -c user.email=tess@example.org commit -q -m 'first notes' && git config user.name Tess && git config user.email tess@example.org`);
   // Her agent makes a page; the artifact tool (her token) declares it.
   const started = await okJson('start', post(remote + '/api/conversation/start-loose', { folder: proj, prompt: 'make a page ' + tag, models: [{ provider: ai.name, modelId: 'fixture-chat' }] }, tess));
   await until(async () => { const jobs = await (await get(local + '/api/jobs')).json(); return !jobs.some(x => x.key === started.key && x.status === 'running'); }, 90000, 'her run');
@@ -456,6 +463,35 @@ test('a person on their own account: artifacts, pictures, changes, documents and
   asTest(`printf 'body{color:red}' > ${proj}/site/style.css`);
   const grant = await okJson('file preview', post(remote + '/api/file/preview', { id: started.key, path: proj + '/site/index.html' }, tess));
   assert.equal(await (await ok('asset', get(remote + grant.base + 'style.css'))).text(), 'body{color:red}');
+
+  // Git, as the repository's owner (her), and history views of her project.
+  const repos = await okJson('git repos', get(remote + '/api/git/repos?refresh=1', tess));
+  assert.ok(repos.repos.some(r => r.root === proj), fail('her repository is listed: ' + JSON.stringify(repos.repos.map(r => r.root))));
+  assert.ok(!repos.repos.some(r => r.root === secretDir), 'a repository her account cannot open is not listed');
+  const hist = await okJson('git history', get(remote + `/api/git/file-history?repo=${encodeURIComponent(proj)}`, tess));
+  assert.ok(hist.rows.some(r => r.relativePath === 'notes.md'), JSON.stringify(hist.rows.map(r => r.relativePath)));
+  const commits = hist.repositories[0].commitCount;
+  assert.ok(commits >= 1);
+  await okJson('project history', get(remote + `/api/project/file-history?name=${tag}&light=1`, tess));
+  const docs = await okJson('project docs', get(remote + `/api/project/docs?name=${tag}`, tess));
+  assert.ok(docs.docs.some(d => d.rel === 'notes.md'), JSON.stringify(docs.docs.map(d => d.rel)));
+  await okJson('history scope', get(remote + `/api/file/history-scope?path=${encodeURIComponent(proj + '/notes.md')}&project=${tag}`, tess));
+  // The file ledger is off in this test server: the route answers, it is not refused.
+  const touched = await get(remote + `/api/files/touched?path=${encodeURIComponent(proj + '/notes.md')}`, tess);
+  assert.ok(touched.status === 200 || /ledger is unavailable/.test(await touched.text()), 'touched: ' + touched.status);
+  const text = asTest(`cat ${proj}/notes.md`).stdout;
+  const lineInfo = await okJson('line info', get(remote + `/api/file/line-info?path=${encodeURIComponent(proj + '/notes.md')}&sha=${require('crypto').createHash('sha256').update(text).digest('hex')}&line=1`, tess));
+  assert.ok(lineInfo.kind, JSON.stringify(lineInfo));
+  const committed = await okJson('doc commit', post(remote + '/api/doc/commit', { path: proj + '/notes.md', text: text + 'more\n' }, tess));
+  assert.ok(committed.hash, JSON.stringify(committed));
+  assert.equal(asTest(`git -C ${proj} log -1 --format=%an`).stdout.trim(), 'Tess', 'committed with her own git identity, by her account');
+  // The owner's repository: closed to her, as Linux closes it.
+  const closed = await get(remote + `/api/git/file-history?repo=${encodeURIComponent(secretDir)}`, tess);
+  assert.equal(closed.status, 403);
+  assert.doesNotMatch(await closed.text(), /owner secret commit/);
+  const injected = await get(remote + `/api/git/file-history/interval?repo=${encodeURIComponent(proj)}&from=git:--output=${encodeURIComponent(proj + '/x')}&to=git:HEAD`, tess);
+  assert.notEqual(injected.status, 200, 'an option is never passed to git as a commit');
+  assert.equal(asTest(`test -e ${proj}/x`).status, 1);
 
   // A file this server can read but her account cannot stays closed.
   const secret = await get(remote + `/api/artifacts/blob?id=${k}&path=${encodeURIComponent(path.join(secretDir, 'plan.md'))}`, tess);

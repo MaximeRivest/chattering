@@ -508,6 +508,13 @@ const ACCOUNT_ROUTES = {
   '/api/conversation/media': 'index', '/api/conversation/diffs': 'index',
   '/api/conversation/file-event': 'theirs', '/api/conversation/sysprompt': 'theirs',
   '/api/files/complete': 'theirs', '/api/files/project': 'theirs',
+  // Git and project history (design/106): git runs as the repository's
+  // owner, files are read as the requester, the repository must be one this
+  // app indexed; who may see a project is the app's decision.
+  '/api/git/repos': 'theirs', '/api/git/file-history': 'theirs', '/api/git/file-history/commit': 'theirs', '/api/git/file-history/interval': 'theirs',
+  '/api/git/file-feedback': 'theirs', '/api/project/file-history': 'theirs', '/api/project/file-history/commit': 'theirs', '/api/project/docs': 'theirs',
+  '/api/files/touched': 'theirs', '/api/file/history-scope': 'theirs', '/api/file/blame': 'theirs', '/api/file/line-info': 'theirs',
+  '/api/doc/commit': 'theirs', '/api/doc/asset': 'theirs',
   // Documents and notes: written by their host, as them.
   '/api/files/op': 'theirs', '/api/file/preview': 'theirs', '/api/doc/save': 'theirs', '/api/doc/create': 'theirs', '/api/ink/new': 'theirs', '/api/notes/new': 'theirs', '/api/notes/convert': 'theirs', '/api/snippets': 'theirs', '/api/snippets/used': 'index',
   // This server's own records: the index, the notes tree, the file ledger,

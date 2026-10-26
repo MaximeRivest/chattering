@@ -6948,7 +6948,7 @@ async function gitRemoteFor(root) {
   const hit = remoteUrlCache.get(root);
   if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.remote;
   let remote = '';
-  try { remote = await gitmeta.readRemoteUrl(root); } catch {} // .git/config read, no spawn
+  try { remote = await gitMeta.readRemoteUrl(root); } catch {} // .git/config read, no spawn
   remoteUrlCache.set(root, { at: Date.now(), remote });
   return remote;
 }
@@ -7820,7 +7820,9 @@ const runShareAs = folderShares.runnerFor({ serviceUser: SERVICE_USER });
 const accountFiles = require('./account-files.js');
 function ownFilesOf(identity) {
   if (!identity || !identity.user || policy.isOwnerTier(identity)) return null;
-  const person = usersLib.findUser(roster, identity.user.id);
+  return filesOfPerson(usersLib.findUser(roster, identity.user.id));
+}
+function filesOfPerson(person) {
   if (!ownAccountOf(person)) return null;
   const walls = accountManager.wallsFor(person);
   if (walls.blocked) walls.launch(); // their account is not ready: say why
@@ -7853,6 +7855,69 @@ function ioOfMine(mine) {
 function viewerIo(identity) {
   const mine = ownFilesOf(identity);
   return mine ? ioOfMine(mine) : serverIo;
+}
+// ---- actors (design/106) ----
+// Who performs an operation on files and programs: this server's own
+// account (in process), or a person's account (their host, as them). The
+// same operations either way (person-ops.js), so nothing is built for one
+// and missing for the other.
+const personOps = require('./person-ops.js');
+const localActor = { kind: 'local', account: SERVICE_USER, home: os.homedir(), op: (name, ...args) => personOps.call(name, ...args), io: serverIo };
+function actorOfMine(mine) {
+  return { kind: 'account', account: mine.account, home: mine.home, mine, op: (name, ...args) => mine.host.call('op', name, ...args), io: ioOfMine(mine) };
+}
+// The requester's actor: what they do, they do as themselves.
+function actorOf(identity) {
+  const mine = ownFilesOf(identity);
+  return mine ? actorOfMine(mine) : localActor;
+}
+// The account a path belongs to: the person on their own account whose home
+// holds it, else this server's. Work on someone's repository (git reads
+// their config and runs their hooks) is done as its owner, whoever asked;
+// who may see the answer is the app's decision (projectVisible).
+function personOfPath(p) {
+  const m = /^\/home\/([^/]+)(?:\/|$)/.exec(path.resolve(String(p || '')));
+  if (!m) return null;
+  const person = personWithAccount(m[1]);
+  return person && ownAccountOf(person) ? person : null;
+}
+// Whether a path exists, asked as its owner (a person's folder is not this
+// server's to look into, design/106).
+async function pathExists(p) {
+  if (!p) return false;
+  const actor = actorForPath(p);
+  try { await actor.io.stat(path.resolve(p)); return true; } catch { return false; }
+}
+// The routes that name a folder or file, and where in the request it is.
+const projectFolderOf = name => { const meta = projectMetaFor(name || ''); return meta && meta.cwd ? meta.cwd : null; };
+const REACHES = {
+  '/api/git/file-history': u => u.searchParams.get('repo'), '/api/git/file-history/commit': u => u.searchParams.get('repo'),
+  '/api/git/file-history/interval': u => u.searchParams.get('repo'),
+  '/api/project/file-history': u => projectFolderOf(u.searchParams.get('name')), '/api/project/file-history/commit': u => projectFolderOf(u.searchParams.get('name')),
+  '/api/project/docs': u => projectFolderOf(u.searchParams.get('name')),
+  '/api/files/touched': u => u.searchParams.get('path'), '/api/file/history-scope': u => u.searchParams.get('path'),
+};
+// Whether the requester's own account reaches a path (the server's own
+// account, and everyone running as it, reach what it reaches).
+async function reachable(identity, p) {
+  const mine = ownFilesOf(identity);
+  if (!mine) return true;
+  try { await mine.host.call('access', path.resolve(String(p)), fs.constants.R_OK); return true; } catch { return false; }
+}
+// Paths grouped by the actor that owns them: [[actor, paths], …].
+function groupByActor(paths) {
+  const by = new Map();
+  for (const p of paths) {
+    const person = personOfPath(p), k = person ? person.id : '';
+    if (!by.has(k)) by.set(k, { actor: actorForPath(p), paths: [] });
+    by.get(k).paths.push(p);
+  }
+  return [...by.values()].map(g => [g.actor, g.paths]);
+}
+function actorForPath(p) {
+  const person = personOfPath(p);
+  const mine = person ? filesOfPerson(person) : null;
+  return mine ? actorOfMine(mine) : localActor;
 }
 // Where a path named in a conversation may be, for them.
 function ownCandidates(mine, key, pathValue) {
@@ -13873,9 +13938,19 @@ function execText(file, args, options = {}) {
   });
 }
 
+// Git runs as the repository's owner (design/106): their config and hooks
+// are theirs to run, never this server's.
 async function gitText(root, args) {
-  return execText('git', ['-C', root, ...args]);
+  return String(await actorForPath(root).op('git.run', root, args));
 }
+// The spawn-free git metadata (gitmeta.js), read as the repository's owner.
+const gitMeta = {
+  findGitRoot: dir => actorForPath(dir).op('git.findRoot', dir),
+  readHead: root => actorForPath(root).op('git.readHead', root),
+  readRemoteUrl: (root, remote) => actorForPath(root).op('git.readRemoteUrl', root, remote),
+  listWorktrees: root => actorForPath(root).op('git.listWorktrees', root),
+  worktreesStamp: root => actorForPath(root).op('git.worktreesStamp', root),
+};
 
 // Every checkout that belongs to the project. Two sources: the git root of
 // each conversation cwd, and every indexed checkout whose project
@@ -13925,7 +14000,7 @@ async function projectGitRepositories(meta) {
   const roots = new Set();
   for (const cwd of [...new Set(meta.entries.map(({ entry }) => entry.cwd).filter(Boolean))]) {
     const root = await gitRootForCwd(cwd); // cached .git walk-up, no spawn
-    if (root && fs.existsSync(root)) roots.add(path.resolve(root));
+    if (root && await pathExists(root)) roots.add(path.resolve(root));
   }
   let listed = [];
   try { listed = await discoverGitRepos(); } catch {}
@@ -13933,7 +14008,7 @@ async function projectGitRepositories(meta) {
     if (roots.size >= PROJECT_REPOSITORY_LIMIT) break;
     if (!repo || !repo.root || repo.project !== meta.project) continue;
     const root = path.resolve(repo.root);
-    if (!roots.has(root) && fs.existsSync(root)) roots.add(root);
+    if (!roots.has(root) && await pathExists(root)) roots.add(root);
   }
   return [...roots].sort((a, b) => b.length - a.length);
 }
@@ -14121,11 +14196,11 @@ async function walkGitRoots(dir, depth, maxDepth, out) {
 
 async function worktreeRoots(root) {
   // File reads only (gitmeta): no `git worktree list` spawn.
-  const stamp = await gitmeta.worktreesStamp(root);
+  const stamp = await gitMeta.worktreesStamp(root);
   const hit = worktreeCache.get(root);
   if (hit && hit.stamp === stamp) return hit.roots;
   let roots = [];
-  try { roots = await gitmeta.listWorktrees(root); } catch {}
+  try { roots = await gitMeta.listWorktrees(root); } catch {}
   const value = roots.length ? roots : [path.resolve(root)];
   worktreeCache.set(root, { stamp, roots: value });
   return value;
@@ -14138,7 +14213,7 @@ async function gitRootForCwd(cwd) {
   if (cached && Date.now() - cached.at < CWD_GIT_ROOT_TTL_MS) return cached.root;
   // Walk up to `.git` instead of `git rev-parse --show-toplevel`: same answer
   // for every checkout the server meets, and no child process.
-  const root = await gitmeta.findGitRoot(cwd);
+  const root = await gitMeta.findGitRoot(cwd);
   cwdGitRootCache.set(cwd, { at: Date.now(), root });
   return root;
 }
@@ -14164,7 +14239,7 @@ async function scanGitRoots() {
 // this does not rescan the whole index per repository.
 async function refreshGitRepoCard(root, prev, known) {
   let head = '', branch = null;
-  try { ({ head, branch } = await gitmeta.readHead(root)); } catch { return null; }
+  try { ({ head, branch } = await gitMeta.readHead(root)); } catch { return null; }
   if (!head) return null;
   const project = projectNameForPath(root);
   const hasMemory = known ? known.has(project) : !!projectMetaFor(project);
@@ -14360,6 +14435,11 @@ async function gitIntervalNumstat(root, fromId, toId) {
   const fromHash = String(fromId || '').startsWith('git:') ? String(fromId).slice(4) : '';
   const toHash = String(toId || '').startsWith('git:') ? String(toId).slice(4) : '';
   if (!fromHash && !toHash) return [];
+  // Only commit names, and only a repository this app knows: anything else
+  // would reach git as an option (--output= writes a file).
+  for (const h of [fromHash, toHash]) if (h && !/^[0-9a-f]{7,40}$/i.test(h)) throw new Error('bad commit hash');
+  root = path.resolve(String(root || ''));
+  if (!(await discoverGitRepos()).some(item => item.root === root)) throw new Error('repository is not indexed');
   const args = ['diff', '--numstat', '--find-renames'];
   if (fromHash && toHash) args.push(fromHash, toHash);
   else if (fromHash) args.push(fromHash);
@@ -14898,7 +14978,7 @@ async function seedProjectFileActivity(repositories, rows, project = '') {
       if (!rel) continue;
       const row = rows.find(item => item.repoRoot === repo.root && item.relativePath === rel);
       if (!row) continue;
-      let stat; try { stat = await fsp.stat(row.path); } catch { continue; }
+      let stat; try { stat = await actorForPath(row.path).io.stat(row.path); } catch { continue; }
       if (stat.mtimeMs < cutoff) continue;
       out.push({
         id: `working:${repo.id}:${rel}:${Math.round(stat.mtimeMs)}`, ts: stat.mtimeMs, path: row.path, repo_root: repo.root, project,
@@ -15512,7 +15592,7 @@ async function projectFileHistoryResponse(project) {
   // (a website/, notes, scripts beside several sub-repositories) are part
   // of the project too. Deepest root first, so an edit inside a
   // sub-repository still matches that repository, never the folder.
-  const projectRoot = meta.cwd && fs.existsSync(meta.cwd) ? path.resolve(meta.cwd) : '';
+  const projectRoot = meta.cwd && await pathExists(meta.cwd) ? path.resolve(meta.cwd) : '';
   if (projectRoot) {
     const projectGitRoot = await gitRootForCwd(projectRoot);
     if (projectGitRoot && !roots.includes(path.resolve(projectGitRoot))) {
@@ -15617,7 +15697,11 @@ async function projectFileHistoryResponse(project) {
   }
   const projectDiffEvents = projectDiffEventsFor(project);
   projectDiffEvents.set(Date.now(), { at: Date.now(), events: [...fullEvents.values()] });
-  const outputRows = [...rows.values()].filter(row => row.current || fs.existsSync(row.path))
+  // Files no longer on disk drop out, asked of each folder's owner at once.
+  const absent = [...rows.values()].filter(row => !row.current).map(row => row.path);
+  const present = new Set();
+  for (const [owner, paths] of groupByActor(absent)) for (const [p, st] of Object.entries(await owner.op('fs.statMany', paths))) if (st) present.add(p);
+  const outputRows = [...rows.values()].filter(row => row.current || present.has(row.path))
     .sort((a, b) => String(b.latestTs || '').localeCompare(String(a.latestTs || '')) || a.relativePath.localeCompare(b.relativePath));
   await seedProjectFileActivity(repositories, outputRows, project);
   for (const repo of repositories) await ledgerIngestRepo(repo.root, repo, project);
@@ -16181,10 +16265,11 @@ async function editableReviewFile(pathValue, reviewId) {
   }
   return editableFilePath(pathValue);
 }
-async function editableFilePath(pathValue, key = '') {
+// actor: whose disk the file is looked for on (design/106): the requester's.
+async function editableFilePath(pathValue, key = '', actor = localActor) {
   let abs = null, st = null;
   for (const candidate of transcriptPathCandidates(key, pathValue)) {
-    try { st = await fsp.stat(candidate); abs = candidate; break; } catch { abs = st = null; }
+    try { st = await actor.io.stat(candidate); abs = candidate; break; } catch { abs = st = null; }
   }
   if (!st) throw new Error('file not found on disk');
   if (!st.isFile()) throw new Error('not a regular file');
@@ -16330,14 +16415,14 @@ async function browsableRootAs(mine, identity, project, rootParam) {
 async function filesOpAs(mine, identity, body) {
   const op = String(body.op || '');
   const { root, roots } = await browsableRootAs(mine, identity, body.name, body.root);
-  const ask = extra => mine.host.call('fileOp', { op, root, rel: body.rel, project: String(body.name || ''), user: identity?.user?.id || null, roots, ...extra });
+  const ask = extra => mine.host.call('op', 'files.op', { op, root, rel: body.rel, project: String(body.name || ''), user: identity?.user?.id || null, roots, ...extra });
   if (op === 'restore') {
     const out = await ask({ id: String(body.id || '') });
     assertPathAccess(identity, out.to, 'act');
     rememberFileOp(identity, out.to);
     return { ok: true, op, to: out.to, rel: platform.toPortable(path.relative(root, out.to)), renamed: out.renamed, directory: out.directory };
   }
-  const entry = await mine.host.call('fileOp', { op: 'entry', root, rel: body.rel });
+  const entry = await mine.host.call('op', 'files.op', { op: 'entry', root, rel: body.rel });
   assertPathAccess(identity, entry.abs, 'act');
   if (op === 'rename') {
     const name = fileOps.checkName(body.to);
@@ -16427,7 +16512,7 @@ async function filesDeletedResponse(identity, project) {
   const mine = ownFilesOf(identity);
   if (mine) {
     await browsableRootAs(mine, identity, project, '');
-    const items = await mine.host.call('fileOp', { op: 'deleted', project });
+    const items = await mine.host.call('op', 'files.op', { op: 'deleted', project });
     return { items: items.map(({ from, ...r }) => r) };
   }
   await browsableRoot(identity, project, '');
@@ -16709,7 +16794,7 @@ function claimAiEdit(abs, text, body) {
 // note's) the person may act on. Refused otherwise, with the status to send.
 async function aiCommandFile(p, identity) {
   if (typeof p !== 'string' || !p) throw Object.assign(new Error('doc (the file) is required'), { status: 400 });
-  const abs = await editableFilePath(p).catch(e => { throw Object.assign(e, { status: 400 }); });
+  const abs = await editableFilePath(p, '', actorOf(identity)).catch(e => { throw Object.assign(e, { status: 400 }); });
   assertPathAccess(identity, abs, 'act');
   return abs;
 }
@@ -16841,20 +16926,23 @@ function scheduleDocCommitTitle(root, hash, diffText) {
 }
 
 // Explicit save = a real Git commit of this one document.
-async function docCommitResponse(body, user = null) {
-  const abs = await editableFilePath(body.path || '');
+async function docCommitResponse(body, user = null, actor = localActor) {
+  const abs = await editableFilePath(body.path || '', '', actor);
   if (!DOCUMENT_EXT.test(abs)) throw new Error('only Markdown-family documents (including .mdx) commit here');
   let sha = null;
   if (typeof body.text === 'string') {
-    sha = (await docSaveResponse({ path: abs, baseSha: body.baseSha, text: body.text, actor: body.actor, input: body.input })).sha;
+    const saveBody = { path: abs, baseSha: body.baseSha, text: body.text, actor: body.actor, input: body.input };
+    sha = (actor.mine ? await docSaveAs(actor.mine, abs, saveBody, user) : await docSaveResponse(saveBody)).sha;
   }
   const dir = path.dirname(abs);
+  // The repository's owner runs git and resolves its real names.
+  const owner = actorForPath(abs);
   let root;
-  try { root = await fsp.realpath((await gitText(dir, ['rev-parse', '--show-toplevel'])).trim()); }
+  try { root = await owner.io.realpath((await gitText(dir, ['rev-parse', '--show-toplevel'])).trim()); }
   catch { throw new Error('this document is not inside a Git repository'); }
   // Both by their real names: git answers the long one (Windows may hand
   // the file over by its short 8.3 name; macOS /var is /private/var).
-  const rel = path.relative(root, await fsp.realpath(abs)).replace(/\\/g, '/');
+  const rel = path.relative(root, await owner.io.realpath(abs)).replace(/\\/g, '/');
   await gitText(root, ['add', '--', rel]);
   const staged = String(await gitText(root, ['diff', '--cached', '--numstat', '--', rel]).catch(() => '')).trim();
   if (!staged) return { ok: true, unchanged: true, path: abs, sha };
@@ -16863,7 +16951,8 @@ async function docCommitResponse(body, user = null) {
   const diffText = await gitText(root, ['diff', '--cached', '--', rel]).catch(() => '');
   // A guest on this machine is the commit's author (git is the one identity
   // carrier every tool reads); the owner keeps their own git identity.
-  const guest = user && user.id !== usersLib.ownerOf(roster).id ? user : null;
+  // Git run as a person's own account carries their own git identity.
+  const guest = owner.kind === 'local' && user && user.id !== usersLib.ownerOf(roster).id ? user : null;
   await gitText(root, ['commit', '--no-verify', ...(guest ? ['--author', `${guest.name} <${guest.id}@chattering>`] : []), '-m', subject, '--', rel]);
   const hash = (await gitText(root, ['rev-parse', 'HEAD'])).trim();
   await recordDocEdit({ ts: Date.now(), path: abs, action: 'commit', hash, subject, user: user ? user.id : undefined });
@@ -16921,7 +17010,7 @@ async function inkNewResponse(body, identity) {
   assertPathAccess(identity, folder, 'act');
   const kind = body.kind === 'text' ? 'text' : 'ink';
   const opts = { folder, kind, when: body.when, tzOffset: body.tzOffset, title: body.title, paper: body.paper };
-  const out = mine ? await mine.host.call('noteCreate', opts) : await inkNotes.create(opts);
+  const out = mine ? await mine.host.call('op', 'notes.create', opts) : await inkNotes.create(opts);
   await recordDocEdit({ ts: Date.now(), path: out.path, action: 'create', actor: 'human', input: kind === 'text' ? 'keyboard' : 'pen', added: 0, removed: 0, sha: sha256Hex(out.text), user: identity && identity.user ? identity.user.id : undefined });
   recentFilesTouch(out.path, { project, kind: 'saved', actor: 'human' });
   return { ok: true, path: out.path, project, kind, sha: sha256Hex(out.text), text: out.text };
@@ -16938,7 +17027,7 @@ async function noteConvertResponse(body, identity) {
   assertPathAccess(identity, abs, 'act');
   const to = body.to === 'text' ? 'text' : 'ink';
   const opts = { path: abs, to, paper: body.paper, when: body.when, title: String(body.title || '').slice(0, 200) };
-  const out = mine ? await mine.host.call('noteConvert', opts) : await inkNotes.convert(opts);
+  const out = mine ? await mine.host.call('op', 'notes.convert', opts) : await inkNotes.convert(opts);
   if (out.unchanged) return { ok: true, path: abs, kind: to };
   const user = identity && identity.user ? identity.user.id : undefined;
   await recordDocEdit({ ts: Date.now(), path: out.path, action: 'create', actor: 'human', input: to === 'text' ? 'keyboard' : 'pen', added: 0, removed: 0, sha: sha256Hex(out.text), user });
@@ -16955,16 +17044,19 @@ async function projectDocsResponse(project) {
   const meta = projectMetaFor(project);
   if (!meta) throw new Error('project not found');
   const roots = await projectGitRepositories(meta);
-  if (!roots.length && meta.cwd && fs.existsSync(meta.cwd)) roots.push(path.resolve(meta.cwd));
+  if (!roots.length && meta.cwd && await pathExists(meta.cwd)) roots.push(path.resolve(meta.cwd));
   const docs = [];
   for (const root of roots) {
     const rels = new Set();
     for (const rel of await gitTrackedPaths(root).catch(() => [])) if (DOCUMENT_EXT.test(rel)) rels.add(rel);
     const untracked = String(await gitText(root, ['ls-files', '-z', '--others', '--exclude-standard']).catch(() => ''));
     for (const rel of untracked.split('\0')) if (DOCUMENT_EXT.test(rel)) rels.add(rel);
+    // As the folder's owner, in one call (design/106).
+    const stats = await actorForPath(root).op('fs.statMany', [...rels].slice(0, 2000).map(rel => path.join(root, rel)));
     for (const rel of rels) {
       const abs = path.join(root, rel);
-      let st; try { st = await fsp.stat(abs); } catch { continue; }
+      const st = stats[abs];
+      if (!st) continue;
       docs.push({ path: abs, rel, root, mtimeMs: st.mtimeMs, recent24: recentProjectFileActivity(abs) });
       if (docs.length >= 800) break;
     }
@@ -16974,17 +17066,16 @@ async function projectDocsResponse(project) {
 }
 
 // Serve a document-relative asset (image) for the editor's rendered view.
-async function docAssetResponse(docPath, src) {
-  const doc = await editableFilePath(docPath || '');
+async function docAssetResponse(docPath, src, actor = localActor) {
+  const doc = await editableFilePath(docPath || '', '', actor);
   const clean = String(src || '').split(/[?#]/)[0];
   if (!clean || /^[a-z]+:/i.test(clean) || clean.startsWith('//')) throw new Error('only relative asset paths resolve here');
   const abs = path.resolve(path.dirname(doc), clean);
   const inside = root => root && (abs === root || abs.startsWith(root.endsWith(path.sep) ? root : root + path.sep));
-  if (!inside(os.homedir())) throw new Error('asset is outside home');
+  if (!inside(actor.home)) throw new Error('asset is outside home');
   const mime = imageMimeForPath(abs) || ({ '.svg': 'image/svg+xml', '.html': 'text/html; charset=utf-8' })[path.extname(abs).toLowerCase()];
   if (!mime) throw new Error('not an image asset');
-  const bytes = await fsp.readFile(abs);
-  if (bytes.length > 24 * 1024 * 1024) throw new Error('asset too large');
+  const bytes = Buffer.from(await actor.op('files.readAsset', abs, 24 * 1024 * 1024));
   return { mime, bytes };
 }
 
@@ -17252,7 +17343,7 @@ async function transcriptEditResponse(body, principal = null) {
   return { ok: true, backup, stopped: !!running, reopened };
 }
 
-async function fileBlameResponse(pathValue, project = '', key = '') {
+async function fileBlameResponse(pathValue, project = '', key = '', actor = localActor) {
   let events = [];
   let scanned = 0;
   if (key && index[key]) {
@@ -17273,7 +17364,7 @@ async function fileBlameResponse(pathValue, project = '', key = '') {
   const fullPath = events[0].path;
   let matchesDisk = null, diskLines = null;
   try {
-    const disk = await fsp.readFile(fullPath, 'utf8');
+    const disk = Buffer.from(await actor.io.readFile(fullPath)).toString('utf8');
     diskLines = disk.split('\n').length;
     matchesDisk = disk === lines.map(l => l.text).join('\n');
   } catch {}
@@ -21467,6 +21558,14 @@ async function handleRequest(req, res) {
       const gate = policy.checkRoute(identity, req.method, u.pathname, u.searchParams,
         (key, right) => !index[key] || canDo(identity, right, targetOf(key)));
       if (!gate.ok) return json(res, gate.status, { error: gate.error });
+      // What a route names (a repository, a project's folder, a file) must be
+      // one the requester's own account can reach (design/106): work done as
+      // the owner of a repository answers only people Linux lets in.
+      const reach = REACHES[u.pathname];
+      if (reach) {
+        const named = reach(u);
+        if (named && !(await reachable(identity, named))) return json(res, 403, { error: 'Your computer account cannot open ' + named + '.' });
+      }
     }
     if (u.pathname === '/logout' && req.method === 'POST') {
       res.writeHead(302, { Location: '/', 'Set-Cookie': clearSignInCookieHeaders(req, { legacyToo: signInCookieOf(req)?.name === 'chattering' }) });
@@ -21938,7 +22037,7 @@ async function handleRequest(req, res) {
         const dir = require('./pisdk-runtime.js').piPackageDir();
         // A person on their own account: their folders, listed as them (design/105).
         const mine = ownFilesOf(identity);
-        const items = mine ? await mine.host.call('complete', { piDir: mine.mapPath(dir), root, cwd, query })
+        const items = mine ? await mine.host.call('op', 'files.complete', { piDir: mine.mapPath(dir), root, cwd, query })
           : await require('./file-completion.js').completeFiles({ piDir: dir, root, cwd, query, signal: ctl.signal });
         if (!res.destroyed) json(res, 200, { items });
       } finally { clearTimeout(timeout); res.removeListener('close', abort); }
@@ -22130,7 +22229,13 @@ async function handleRequest(req, res) {
       try { json(res, 200, await filesCreateReadmeResponse(JSON.parse(body || '{}'))); }
       catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/git/repos') {
-      try { json(res, 200, { repos: await discoverGitRepos(u.searchParams.get('refresh') === '1') }); }
+      try {
+        let repos = await discoverGitRepos(u.searchParams.get('refresh') === '1');
+        // Someone on their own account sees the repositories their account reaches.
+        const mine = ownFilesOf(identity);
+        if (mine) { const can = new Set(await mine.host.call('op', 'fs.readableMany', repos.map(r => r.root))); repos = repos.filter(r => can.has(r.root)); }
+        json(res, 200, { repos });
+      }
       catch (e) { json(res, 500, { error: e.message }); }
     } else if (u.pathname === '/api/git/file-history') {
       try { json(res, 200, await gitFileHistoryResponse(u.searchParams.get('repo') || '')); }
@@ -22156,19 +22261,23 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/file/blame') {
       const pathValue = u.searchParams.get('path') || '';
       if (!pathValue) return json(res, 400, { error: 'missing path' });
-      try { json(res, 200, await fileBlameResponse(pathValue, u.searchParams.get('project') || '', u.searchParams.get('key') || '')); }
+      try { json(res, 200, await fileBlameResponse(pathValue, u.searchParams.get('project') || '', u.searchParams.get('key') || '', actorOf(identity))); }
       catch (e) { json(res, 404, { error: e.message }); }
     } else if (u.pathname === '/api/file/line-info' && req.method === 'GET') {
       try {
-        const file = await editableReviewFile(u.searchParams.get('path') || '', u.searchParams.get('reviewId'));
+        // Read as the requester; the line's history from git, as the
+        // repository's owner (design/106).
+        const actor = actorOf(identity);
+        const file = actor.mine ? await editableFilePath(u.searchParams.get('path') || '', '', actor) : await editableReviewFile(u.searchParams.get('path') || '', u.searchParams.get('reviewId'));
+        assertPathAccess(identity, file, 'see');
         const sha = u.searchParams.get('sha') || '';
         if (!/^[a-f0-9]{64}$/.test(sha)) throw Error('A matching document version is required');
-        const stat = await fsp.stat(file);
+        const stat = await actor.io.stat(file);
         if (!stat.isFile() || stat.size > 2 * 1024 * 1024) json(res, 200, { kind: 'unknown', reason: 'Inline attribution is limited to text files up to 2 MiB' });
         else {
-          const text = await fsp.readFile(file, 'utf8');
+          const text = Buffer.from(await actor.io.readFile(file)).toString('utf8');
           if (sha256Hex(text) !== sha) json(res, 200, { kind: 'stale', reason: 'Disk contents changed; reload when ready for current attribution' });
-          else json(res, 200, { ...await require('./live-file-services.js').blameLine(file, text, Number(u.searchParams.get('line'))), sha });
+          else json(res, 200, { ...await actorForPath(file).op('git.blameLine', file, text, Number(u.searchParams.get('line'))), sha });
         }
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/file/read' && req.method === 'GET') {
@@ -22223,7 +22332,12 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/doc/commit' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
-      try { const p = JSON.parse(body || '{}'); assertPathAccess(identity, path.resolve(expandHomePath(String(p.path || ''))), 'act'); json(res, 200, await docCommitResponse(p, identity.user)); }
+      try {
+        const p = JSON.parse(body || '{}'); const actor = actorOf(identity);
+        const named = String(p.path || '');
+        assertPathAccess(identity, path.resolve(actor.mine ? accountFiles.expandHome(actor.home, named) : expandHomePath(named)), 'act');
+        json(res, 200, await docCommitResponse(p, identity.user, actor));
+      }
       catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/doc/create' && req.method === 'POST') {
       let body = '';
@@ -22245,7 +22359,7 @@ async function handleRequest(req, res) {
       catch (e) { json(res, e.message === 'project not found' ? 404 : 500, { error: e.message }); }
     } else if (u.pathname === '/api/doc/asset' && req.method === 'GET') {
       try {
-        const out = await docAssetResponse(u.searchParams.get('doc') || '', u.searchParams.get('src') || '');
+        const out = await docAssetResponse(u.searchParams.get('doc') || '', u.searchParams.get('src') || '', actorOf(identity));
         // A saved display page (or an SVG) may carry scripts: sandboxed.
         res.writeHead(200, { 'Content-Type': out.mime, 'Cache-Control': 'no-store', ...(/html|svg/.test(out.mime) ? SANDBOXED : {}) });
         return res.end(out.bytes);
@@ -23948,7 +24062,7 @@ async function handleRequest(req, res) {
       // A person on their own account: their own prompt folders, read as them.
       const mine = ownFilesOf(identity);
       try {
-        const out = mine ? await mine.host.call('snippets', { cwd, uses: snippetsLib.loadUses(SNIPPET_USES_FILE) })
+        const out = mine ? await mine.host.call('op', 'snippets.list', { cwd, uses: snippetsLib.loadUses(SNIPPET_USES_FILE) })
           : snippetsLib.listSnippets({ cwd, uses: snippetsLib.loadUses(SNIPPET_USES_FILE) });
         json(res, 200, out);
       } catch (e) { json(res, 500, { error: e.message }); }
@@ -23962,7 +24076,7 @@ async function handleRequest(req, res) {
           const cwd = p.scope === 'project' && p.id && index[String(p.id)] ? sessionPathsFor(String(p.id)).cwd : null;
           if (p.scope === 'project' && !cwd) throw new Error('project snippets need a conversation with a project folder');
           let made;
-          try { made = await mine.host.call('snippetCreate', { scope: p.scope === 'project' ? 'project' : 'global', cwd, name: p.name, body: p.body, description: p.description, kind: p.kind, argumentHint: p.argumentHint, overwrite: p.overwrite === true }); }
+          try { made = await mine.host.call('op', 'snippets.create', { scope: p.scope === 'project' ? 'project' : 'global', cwd, name: p.name, body: p.body, description: p.description, kind: p.kind, argumentHint: p.argumentHint, overwrite: p.overwrite === true }); }
           catch (e) { if (e.code === 'EXISTS') { const [msg, at] = e.message.split('\u0000'); throw Object.assign(new Error(msg), { code: 'EXISTS', path: at }); } throw e; }
           return json(res, 200, { ok: true, ...made, scope: p.scope === 'project' ? 'project' : 'global' });
         }
