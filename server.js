@@ -163,7 +163,9 @@ function loadLanToken() {
   if (process.env.CHATTERING_TOKEN) return String(process.env.CHATTERING_TOKEN);
   try {
     const existing = fs.readFileSync(LAN_TOKEN_FILE, 'utf8').trim();
-    if (existing) return existing;
+    // A file made before the mode was set (or copied with another one) is
+    // closed again: it is the owner's credential (design/105).
+    if (existing) { try { if ((fs.statSync(LAN_TOKEN_FILE).mode & 0o077) !== 0) fs.chmodSync(LAN_TOKEN_FILE, 0o600); } catch {} return existing; }
   } catch {}
   const created = crypto.randomBytes(18).toString('base64url');
   fs.mkdirSync(CACHE_DIR, { recursive: true });
@@ -7424,6 +7426,16 @@ function recordFolderMove(from, to, by = null) {
   return { from: a, to: b, projects };
 }
 
+// Moves recorded while another server ran (scripts/account-move.js): the
+// registry follows them once this one starts, idempotently.
+setImmediate(() => {
+  let changed = 0;
+  for (const [from, mv] of Object.entries(folderMoves)) for (const rec of Object.values(createdProjects)) {
+    if (rec && rec.cwd && (rec.cwd === from || rec.cwd.startsWith(from + '/'))) { rec.cwd = mv.to + rec.cwd.slice(from.length); changed++; }
+  }
+  if (changed) { saveCreatedProjects(); console.log(`[accounts] ${changed} registered project folder(s) follow their move`); }
+});
+
 // Where a Pi fork goes and how it is read and written (design/105). The
 // copy belongs to whoever makes it: a person on their own account gets it
 // in their folder, written by their file helper as them; anyone else, in
@@ -7450,6 +7462,50 @@ function forkPlacement(oldCwd, sourceKey = null) {
   const host = accountManager.hostFor(person);
   return { read, ...moved, dir: principal.walls.sessionDirFor(cwd), publish: (file, text) => host.call('write', file, text, { exclusive: true, mkdirs: true }) };
 }
+
+// ---- shared project folders (design/105, "Shared projects") ----
+// Whose each project folder is and who else may read or write it: the
+// file system's answer (getfacl, one process for every folder), kept a
+// minute and refreshed in the background, so the lists never wait on it.
+const folderShares = require('./folder-shares.js');
+let projectSharingCache = { at: 0, byPath: new Map(), busy: null };
+function refreshProjectSharing() {
+  if (projectSharingCache.busy) return projectSharingCache.busy;
+  const names = new Set(Object.keys(createdProjects).map(n => canonicalProjectName(n)));
+  for (const [key, e] of Object.entries(index)) { const n = e && projectNameOf(e.cwd, key); if (n && n !== '?' && n !== LOOSE_PROJECT) names.add(n); }
+  const folders = [...new Set([...names].map(n => (projectMetaFor(n) || {}).cwd).filter(p => typeof p === 'string' && p.startsWith('/home/')))];
+  projectSharingCache.busy = (async () => {
+    const byPath = new Map();
+    for (let i = 0; i < folders.length; i += 200) {
+      const out = await new Promise(resolve => execFile('getfacl', ['-p', '--', ...folders.slice(i, i + 200)], { maxBuffer: 8 * 1024 * 1024 }, (e, stdout) => resolve(stdout || '')));
+      for (const [p, acl] of folderShares.parseGetfacl(out)) byPath.set(p, folderShares.sharingOf(acl));
+    }
+    // A folder this server cannot see is someone else's, not shared with it:
+    // its owner is the account whose home holds it.
+    for (const f of folders) if (!byPath.has(f)) { const m = /^\/home\/([^/]+)\//.exec(f); if (m && m[1] !== SERVICE_USER) byPath.set(f, { owner: m[1], with: [], hidden: true }); }
+    projectSharingCache = { at: Date.now(), byPath, busy: null };
+  })().catch(e => { projectSharingCache.busy = null; console.error('[shares] ' + e.message); });
+  return projectSharingCache.busy;
+}
+// One project's sharing, as `identity` sees it: the owner (a person when one
+// runs as that account), who it is shared with, and whether it is theirs.
+function projectSharingFor(cwd, identity) {
+  if (Date.now() - projectSharingCache.at > 60000) refreshProjectSharing();
+  const s = cwd && projectSharingCache.byPath.get(cwd);
+  if (!s || !s.owner) return null;
+  const nameOf = account => account === SERVICE_USER ? (usersLib.ownerOf(roster) || {}).name || account : (personWithAccount(account) || {}).name || account;
+  const mine = viewerAccount(identity);
+  const others = s.with.filter(w => w.account !== s.owner && w.account !== SERVICE_USER || (w.account === SERVICE_USER && s.owner !== SERVICE_USER));
+  if (s.owner === mine && !others.length) return null; // one's own, unshared: nothing to say
+  return { owner: s.owner, ownerName: nameOf(s.owner), mine: s.owner === mine, with: others.map(w => ({ account: w.account, name: nameOf(w.account), write: w.write, me: w.account === mine })), hidden: !!s.hidden };
+}
+// The account a person's work runs as: theirs, or this server's.
+function viewerAccount(identity) {
+  const u = identity && identity.user ? usersLib.findUser(roster, identity.user.id) : null;
+  return ownAccountOf(u) || SERVICE_USER;
+}
+// The file system work of sharing, as the right accounts (folder-shares.js).
+const runShareAs = folderShares.runnerFor({ serviceUser: SERVICE_USER });
 
 // The files of a person on their own account, done as them (design/105):
 // their host process and their home, or null for everyone else (the owner
@@ -7691,14 +7747,19 @@ const accountManager = require('./account-manager.js').createAccountManager({
     if (!token) { token = crypto.randomBytes(18).toString('base64url'); guestProxyTokens.set(user.id, token); }
     const url = await keyProxy.url();
     guestProxyPort = Number(new URL(url).port);
-    const providers = await guestProviderList();
+    // Only the AI accounts the owner chose for them (user.modelProviders),
+    // in their Pi folder and in the proxy's grant: the proxy refuses the rest.
+    const allowed = Array.isArray(user.modelProviders) && user.modelProviders.length ? new Set(user.modelProviders) : null;
+    const providers = (await guestProviderList()).filter(p => !allowed || allowed.has(p.id));
+    const missing = allowed ? [...allowed].filter(id => !providers.some(p => p.id === id)) : [];
     const choice = guestModelChoice(null, null, providers);
     let ownerSettings = {};
     try { ownerSettings = JSON.parse(fs.readFileSync(path.join(OWNER_AGENT_DIR, 'settings.json'), 'utf8')); } catch {}
-    await keyProxy.grant(token, { guest: { id: user.id, name: user.name } });
+    await keyProxy.grant(token, { guest: { id: user.id, name: user.name }, providers: allowed ? [...allowed] : null });
     return {
       files: sandboxLib.proxyAgentFiles({ proxy: { url, token }, allowedProviders: providers, ownerSettings, defaults: { provider: choice.provider, model: choice.modelId } }),
       choice: { provider: choice.provider, model: choice.modelId },
+      problems: missing.map(id => `${id} was chosen for ${user.name} but this computer is not signed in to it (or the key proxy cannot pass it on).`),
       env: { PI_CLAUDE_CODE_TRANSPORT: 'api', PI_CLAUDE_CODE_BASE_URL: url + '/claude-code', ...(hostFacts.claudeVersion ? { CLAUDE_CODE_VERSION: hostFacts.claudeVersion } : {}) },
     };
   },
@@ -10560,6 +10621,7 @@ function projectMemoryIndex() {
     }
     if (!meta && !any) continue;
     out.push({
+      sharing: meta && meta.cwd ? projectSharingFor(meta.cwd, currentIdentity()) : null,
       name,
       title: (projectTitles[name] && projectTitles[name].title) || null,
       cwd: (meta && meta.cwd) || null,
@@ -21291,6 +21353,17 @@ async function handleRequest(req, res) {
         const data = await projectResponse(project);
         for (const list of ['recent', 'sessions']) if (Array.isArray(data[list])) data[list] = data[list].filter(r => !r || !r.key || keyVisible(identity, r.key));
         data.canAct = canDo(identity, 'act', { project, creator: projectCreatorOf(project) });
+        // Whose folder it is, and who shares it (design/105). The owner of
+        // the folder (or an administrator) may share it with a person who
+        // runs as an account of their own, or with this server's account.
+        data.sharing = data.cwd ? projectSharingFor(data.cwd, identity) : null;
+        {
+          const s = data.cwd ? projectSharingCache.byPath.get(data.cwd) : null;
+          const ownerAcct = s ? s.owner : null;
+          const canShare = !!ownerAcct && (policy.isOwnerTier(identity) || viewerAccount(identity) === ownerAcct);
+          data.shareTargets = canShare ? [SERVICE_USER, ...roster.users.map(ownAccountOf).filter(Boolean)].filter((a, i, all) => a !== ownerAcct && all.indexOf(a) === i)
+            .map(a => ({ account: a, name: a === SERVICE_USER ? (usersLib.ownerOf(roster) || {}).name || a : (personWithAccount(a) || {}).name || a, shared: !!(s && s.with.some(w => w.account === a && w.write)) })) : [];
+        }
         // Fire-and-forget: opening a project usually precedes opening its
         // file Gantt. Warm the diff cache now so that click is not a cold
         // 2-minute parse of every session file.
@@ -22757,8 +22830,9 @@ async function handleRequest(req, res) {
           if (p.account && !name) throw new Error('not an account name: ' + p.account);
           if (name && name === SERVICE_USER) throw new Error(`${name} is the account this server runs as. Leave ${target.name} unlinked to run as it.`);
           const models = p.models === 'shared' ? 'shared' : p.models === 'own' ? 'own' : undefined;
-          if ((target.account || null) !== name || (models && models !== (target.models || 'own'))) stopGuestProcesses(target.id);
-          usersLib.setAccount(roster, target.id, { account: name, models });
+          const providers = Array.isArray(p.providers) ? p.providers : p.providers === null ? null : undefined;
+          if ((target.account || null) !== name || (models && models !== (target.models || 'own')) || providers !== undefined) stopGuestProcesses(target.id);
+          usersLib.setAccount(roster, target.id, { account: name, models, providers });
           accountManager.forget(target.id);
           if (name) { registerAccountSource(name); await accountManager.refresh(target); }
           out = { user: usersLib.publicUser(target), account: accountManager.publicState(target) };
@@ -22808,6 +22882,26 @@ async function handleRequest(req, res) {
         anywhere.prune();
         json(res, 200, { ...out, users: publicUsers(), groups: roster.groups });
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/project/share' && req.method === 'POST') {
+      // Share a project's folder with another account, or stop (design/105).
+      // Done as the folder's owner, so only they (or an administrator) may.
+      try {
+        const p = await readJsonBody(req, 16 * 1024);
+        const meta = projectMetaFor(String(p.name || ''));
+        if (!meta || !meta.cwd) throw Object.assign(new Error('project not found'), { status: 404 });
+        const withAccount = accountsLib.cleanAccountName(p.with);
+        if (!withAccount) throw new Error('share with which account?');
+        await refreshProjectSharing();
+        const s = projectSharingCache.byPath.get(meta.cwd);
+        const ownerAcct = s && s.owner;
+        if (!ownerAcct) throw new Error('cannot tell whose folder ' + meta.cwd + ' is');
+        if (!(policy.isOwnerTier(identity) || viewerAccount(identity) === ownerAcct)) throw Object.assign(new Error('Only the folder\u2019s owner shares it.'), { status: 403 });
+        if (withAccount !== SERVICE_USER && !personWithAccount(withAccount)) throw new Error(withAccount + ' is not anyone\u2019s account here');
+        const out = await folderShares.setShare({ folder: meta.cwd, withAccount, off: !!p.off, as: runShareAs, owner: ownerAcct });
+        projectSharingCache.at = 0; await refreshProjectSharing();
+        broadcast({ type: 'project-sharing', project: String(p.name) });
+        json(res, out.problems.length ? 207 : 200, { ok: !out.problems.length, ...out, sharing: projectSharingFor(meta.cwd, identity) });
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/accounts/folder-move' && req.method === 'POST') {
       // A folder moved (scripts/account-move.js moves it, then says so here).
       try {
@@ -22820,6 +22914,8 @@ async function handleRequest(req, res) {
       const support = accountManager.support();
       json(res, 200, {
         support: { ...support, available: !!(support.sudo && support.mediator) && platform.IS_LINUX, caps: cgroupState !== false },
+        // What can be shared with people on the owner's models (the key proxy's list).
+        providers: (await guestProviderList().catch(() => [])).map(p => p.id),
         required: !!appSettings.accountsRequired,
         people: roster.users.map(usr => ({ id: usr.id, name: usr.name, role: usr.role, scope: usr.scope, ...accountManager.publicState(usr) })),
       });

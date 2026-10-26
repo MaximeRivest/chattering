@@ -78,7 +78,7 @@ function publicUser(u) {
   return { id: u.id, name: u.name, glyph: u.glyph, color: u.color, role: u.role, scope: SCOPES.includes(u.scope) ? u.scope : 'household', groups: [...(u.groups || [])], disabled: !!u.disabled,
     ...(u.avatar ? { avatar: sha256(u.avatar) } : {}),
     // The computer account their processes run as (design/105), if their own.
-    ...(u.account ? { account: u.account, models: u.models === 'shared' ? 'shared' : 'own' } : {}) };
+    ...(u.account ? { account: u.account, models: u.models === 'shared' ? 'shared' : 'own', ...(u.models === 'shared' && u.modelProviders ? { modelProviders: [...u.modelProviders] } : {}) } : {}) };
 }
 
 function makeUser({ name, role = 'member', groups = [], id = null, scope = 'household' }) {
@@ -127,7 +127,7 @@ function normalizeRoster(raw, { ownerName } = {}) {
       credentials: (Array.isArray(u.credentials) ? u.credentials : []).filter(c => c && typeof c === 'object' && (c.kind === 'install' || typeof c.hash === 'string'))
         .map(c => ({ id: c.id || newId('c'), kind: ['install', 'invite', 'session'].includes(c.kind) ? c.kind : 'invite', hash: c.kind === 'install' ? undefined : c.hash, label: cleanName(c.label).slice(0, 40) || undefined, createdAt: c.createdAt || new Date().toISOString(), lastUsedAt: c.lastUsedAt || undefined, expiresAt: c.expiresAt || undefined })),
       // The computer account they run as, and whose models it uses (design/105).
-      ...(cleanAccount(u.account) ? { account: cleanAccount(u.account), models: u.models === 'shared' ? 'shared' : 'own' } : {}),
+      ...(cleanAccount(u.account) ? { account: cleanAccount(u.account), models: u.models === 'shared' ? 'shared' : 'own', ...(cleanProviders(u.modelProviders) ? { modelProviders: cleanProviders(u.modelProviders) } : {}) } : {}),
       // The company identity a person signs in with (OpenID Connect, design/72).
       ...(u.sso && typeof u.sso.iss === 'string' && typeof u.sso.sub === 'string' ? { sso: { iss: u.sso.iss, sub: u.sso.sub, ...(typeof u.sso.email === 'string' ? { email: u.sso.email } : {}) } } : {}),
     });
@@ -230,7 +230,14 @@ function cleanAccount(raw) {
 // Link a person to a computer account of their own (design/105), or unlink
 // them (account null): what their processes run as. One account is one
 // person's: two people on one account would be one person to the computer.
-function setAccount(roster, id, { account = null, models } = {}) {
+// Which of the owner's AI accounts a person on shared models may use (ids
+// as Pi names them: claude-code, openai-codex). Null: all the key proxy serves.
+function cleanProviders(raw) {
+  if (!Array.isArray(raw)) return null;
+  const out = [...new Set(raw.map(x => String(x || '').trim()).filter(x => /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(x)))];
+  return out.length ? out : null;
+}
+function setAccount(roster, id, { account = null, models, providers } = {}) {
   const u = findUser(roster, id);
   if (!u) throw new Error('no such user');
   const name = account == null || account === '' ? null : cleanAccount(account);
@@ -240,7 +247,8 @@ function setAccount(roster, id, { account = null, models } = {}) {
     if (other) throw Object.assign(new Error(name + ' is already ' + other.name + '\u2019s account'), { status: 409 });
     u.account = name;
     u.models = models === 'shared' ? 'shared' : models === 'own' ? 'own' : (u.models === 'shared' ? 'shared' : 'own');
-  } else { delete u.account; delete u.models; }
+    if (providers !== undefined) { const list = cleanProviders(providers); if (list) u.modelProviders = list; else delete u.modelProviders; }
+  } else { delete u.account; delete u.models; delete u.modelProviders; }
   return u;
 }
 
@@ -469,7 +477,7 @@ function upsertHandoffUser(roster, claimed) {
 }
 
 module.exports = {
-  cleanAccount, setAccount,
+  cleanAccount, setAccount, cleanProviders,
   ROLES, SCOPES, PALETTE, glyphFor, colorFor, publicUser, cleanAvatar, AVATAR_MAX_BYTES, isGuest,
   createRoster, normalizeRoster, loadRoster, saveRoster, ownerOf, findUser,
   addUser, updateUser, transferOwnership, removeUser, mergeUsers, resolveId,

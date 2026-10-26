@@ -79,6 +79,12 @@ async function lookupAccount(name, { exec = run } = {}) {
   return account;
 }
 
+// The account with this uid (getent passwd UID), or null.
+async function lookupAccountByUid(uid, { exec = run } = {}) {
+  if (!Number.isInteger(uid) || uid < 0) return null;
+  try { const name = (await exec('getent', ['passwd', String(uid)])).stdout.split(':')[0]; return cleanAccountName(name); } catch { return null; }
+}
+
 // What stands between linking a person and their runs working. Each problem
 // is a sentence the settings page shows as it is.
 function linkProblems(account, { serviceUser, group = DEFAULT_GROUP } = {}) {
@@ -278,6 +284,6 @@ const secret = () => crypto.randomBytes(18).toString('base64url');
 
 module.exports = {
   MEDIATOR_PROTOCOL, ACCOUNT_NAME, DEFAULT_GROUP, DEFAULT_PEOPLE_DIR, DEFAULT_RUNTIME_DIR,
-  cleanAccountName, lookupAccount, linkProblems, findSudo, findMediator, sessionsRootFor, accountPath, accountEnv,
+  cleanAccountName, lookupAccount, lookupAccountByUid, linkProblems, findSudo, findMediator, sessionsRootFor, accountPath, accountEnv,
   sudoPrefix, runAsArgv, pathMapper, createAccountWalls, personSliceName, probe, openOwned, readOwned, statOwned, listPlain, secret, run,
 };

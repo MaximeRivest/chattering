@@ -80,6 +80,18 @@ function refreshCatalog() {
 // providers other than Anthropic shape requests in provider-specific ways
 // (account ids, project headers) and are left out.
 const HEADER_SWAP_OK = new Set(['anthropic-messages', 'openai-completions', 'openai-responses', 'google-generative-ai', 'pi-messages']);
+// Codex (ChatGPT subscription): Pi reads the account id out of the key (a
+// JWT) and sends it as chatgpt-account-id. The person's placeholder is a
+// JWT too, carrying the owner's account id (an identifier, not a secret)
+// and the grant; the proxy swaps it for the real token (design/105).
+const CODEX_API = 'openai-codex-responses';
+const JWT_CLAIM = 'https://api.openai.com/auth';
+function jwtPayload(token) {
+  const parts = String(token || '').split('.');
+  if (parts.length !== 3) return null;
+  try { return JSON.parse(Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8')); } catch { return null; }
+}
+const codexAccountOf = token => { const p = jwtPayload(token); return p && p[JWT_CLAIM] && typeof p[JWT_CLAIM].chatgpt_account_id === 'string' ? p[JWT_CLAIM].chatgpt_account_id : null; };
 async function guestProviders() {
   const out = [];
   for (const [id, ext] of extensionProviders) {
@@ -88,10 +100,15 @@ async function guestProviders() {
     if (key) out.push({ id, api: null, models: [], extension: true });
   }
   for (const [id, info] of providerBase) {
-    if (!HEADER_SWAP_OK.has(info.api)) continue;
+    if (!HEADER_SWAP_OK.has(info.api) && info.api !== CODEX_API) continue;
     let key = null;
     try { key = await registry.getApiKeyForProvider(id); } catch { key = null; }
     if (!key) continue;
+    if (info.api === CODEX_API) {
+      const accountId = codexAccountOf(key);
+      if (accountId) out.push({ id, api: info.api, models: info.models, codexAccountId: accountId });
+      continue;
+    }
     const isOAuth = typeof key === 'string' && key.includes('sk-ant-oat');
     if (isOAuth && id !== 'anthropic') continue;
     // Providers pi knows only from the owner's models.json need their model list inside the guest too.
@@ -117,8 +134,10 @@ function swapHeader(headers, real) {
 function grantFor(secret) {
   const s = String(secret || '');
   const m = /^(?:sk-ant-oat-guest-|guest-)(.+)$/.exec(s);
-  const token = m ? m[1] : s;
-  return grants.get(token) || null;
+  if (m) return grants.get(m[1]) || null;
+  const claims = jwtPayload(s); // a Codex placeholder
+  if (claims && typeof claims.chattering_grant === 'string') return grants.get(claims.chattering_grant) || null;
+  return grants.get(s) || null;
 }
 function grantOf(headers) {
   for (const name of ['authorization', 'x-api-key', 'x-goog-api-key']) {
@@ -164,6 +183,49 @@ const server = http.createServer(async (req, res) => {
   up.on('error', e => { if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { type: 'api_error', message: 'Chattering key proxy: ' + e.message } })); });
   req.on('close', () => { if (!res.writableEnded) up.destroy(); });
   up.end(payload);
+});
+
+// WebSocket (Codex's preferred transport): the same check and header swap,
+// then the two connections are joined. When the provider refuses the
+// upgrade, its answer goes back as it is and Pi falls back to plain HTTP.
+server.on('upgrade', async (req, socket, head) => {
+  const fail = (code, text) => { try { socket.end(`HTTP/1.1 ${code} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); } catch {} };
+  socket.on('error', () => {});
+  const m = /^\/([^/]+)(\/.*)?$/.exec(req.url || '/');
+  if (!m) return fail(404, 'Not Found');
+  const provider = decodeURIComponent(m[1]);
+  const grant = grantOf(req.headers);
+  if (!grant) return fail(401, 'Unauthorized');
+  if (grant.providers && !grant.providers.has(provider)) return fail(403, 'Forbidden');
+  const base = baseFor(provider);
+  let real = null;
+  try { real = base ? await credentialFor(provider) : null; } catch {}
+  if (!base || !real) return fail(502, 'Bad Gateway');
+  const target = new URL(base.baseUrl + (m[2] || '/'));
+  const { headers } = swapHeader(req.headers, () => real);
+  delete headers.host; headers.host = target.host;
+  const t0 = Date.now();
+  const up = (target.protocol === 'https:' || target.protocol === 'wss:' ? https : http).request(target, { method: req.method, headers });
+  up.on('upgrade', (upRes, upSocket, upHead) => {
+    let raw = `HTTP/1.1 101 Switching Protocols\r\n`;
+    for (let i = 0; i < upRes.rawHeaders.length; i += 2) raw += upRes.rawHeaders[i] + ': ' + upRes.rawHeaders[i + 1] + '\r\n';
+    socket.write(raw + '\r\n');
+    if (upHead && upHead.length) socket.write(upHead);
+    if (head && head.length) upSocket.write(head);
+    upSocket.on('error', () => socket.destroy());
+    socket.on('error', () => upSocket.destroy());
+    upSocket.pipe(socket); socket.pipe(upSocket);
+    socket.on('close', () => { upSocket.destroy(); try { process.send({ type: 'usage', guest: grant.guest, provider, status: 101, ms: Date.now() - t0, bytesOut: 0, bytesIn: 0 }); } catch {} });
+  });
+  up.on('response', upRes => {
+    let raw = `HTTP/1.1 ${upRes.statusCode} ${upRes.statusMessage || ''}\r\n`;
+    for (let i = 0; i < upRes.rawHeaders.length; i += 2) if (!/^(connection|transfer-encoding)$/i.test(upRes.rawHeaders[i])) raw += upRes.rawHeaders[i] + ': ' + upRes.rawHeaders[i + 1] + '\r\n';
+    const chunks = [];
+    upRes.on('data', d => chunks.push(d));
+    upRes.on('end', () => { const body = Buffer.concat(chunks); socket.end(raw + 'Content-Length: ' + body.length + '\r\nConnection: close\r\n\r\n' + body.toString('latin1'), 'latin1'); });
+  });
+  up.on('error', () => fail(502, 'Bad Gateway'));
+  up.end();
 });
 
 process.on('message', async msg => {

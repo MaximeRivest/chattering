@@ -44,6 +44,8 @@ const ROUTES = {
   // People's own computer accounts (design/105): machine administration.
   'GET /api/accounts': 'owner',
   'POST /api/accounts/folder-move': 'owner',
+  // Sharing a project's folder: the folder's owner or an administrator (checked in the handler).
+  'POST /api/project/share': 'member',
   '/api/presence': 'guest',
   // Notifications (design/100): each person manages their own devices.
   '/api/push': 'guest',
@@ -485,6 +487,7 @@ const ACCOUNT_ROUTES = {
   '/api/path/info': 'theirs', '/api/path/read': 'theirs', '/api/path/exists': 'theirs', '/api/path/content': 'theirs',
   '/api/conversation/file-content': 'theirs', '/api/file/media': 'theirs', '/api/file/read': 'theirs', '/api/file/save': 'theirs', '/api/fs/dirs': 'theirs',
   '/api/files/browse': 'theirs', '/api/files/activity': 'index',
+  'POST /api/project/share': 'theirs',
 };
 const ACCOUNT_TABLE = new Map(Object.entries(ACCOUNT_ROUTES));
 function accountRouteEntry(method, pathname) {
@@ -597,6 +600,7 @@ const EVENTS = {
   // No payload: the browser refetches through routes that filter.
   index: () => () => true,
   'project-folds': () => () => true,
+  'project-sharing': ev => can => can.project(ev.project),
   users: () => () => true,
   // A phone paired, connected or removed: the settings page asks again.
   anywhere: () => () => true,

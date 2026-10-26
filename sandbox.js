@@ -93,16 +93,30 @@ function guestAgentDirFor(base, guestId) { return path.join(base, guestId, 'agen
 
 // `dir` is the real folder on disk; `insideDir` is where it appears in the
 // sandbox (~/.pi/agent). The read-only binds returned target `insideDir`.
+// Codex's placeholder: shaped like its real key (a JWT) so Pi can read the
+// account id from it; unsigned, holding the grant the key proxy swaps for
+// the owner's token. Nothing in it is secret but the grant itself.
+function codexPlaceholder(accountId, grant) {
+  // Plain base64 without padding: Pi decodes the middle part with atob,
+  // which refuses the URL-safe alphabet.
+  const b64 = o => Buffer.from(JSON.stringify(o)).toString('base64').replace(/=+$/, '');
+  return b64({ alg: 'none', typ: 'JWT' }) + '.' + b64({ 'https://api.openai.com/auth': { chatgpt_account_id: accountId }, chattering_grant: grant }) + '.chattering';
+}
 // The files of a Pi folder whose keys are placeholders the key proxy swaps
 // for the owner's: auth, providers routed through the proxy, settings
 // (the owner's harmless defaults, never packages or credentials). Pure;
 // guests' sandboxes and people's own accounts (design/105) both use it.
 function proxyAgentFiles({ proxy, allowedProviders, ownerSettings = {}, defaults = {} }) {
-  const placeholder = provider => OAUTH_SHAPED.has(provider) ? 'sk-ant-oat-guest-' + proxy.token : 'guest-' + proxy.token;
+  const placeholder = p => p.codexAccountId ? codexPlaceholder(p.codexAccountId, proxy.token)
+    : OAUTH_SHAPED.has(p.id) ? 'sk-ant-oat-guest-' + proxy.token : 'guest-' + proxy.token;
   const auth = {};
   const providers = {};
   for (const p of allowedProviders) {
-    auth[p.id] = { type: 'api_key', key: placeholder(p.id) };
+    // Pi's Codex provider takes only a sign-in (OAuth) credential: the
+    // placeholder goes in that form, valid for years so Pi never refreshes
+    // it (a refresh would fail: nothing real is in it).
+    auth[p.id] = p.codexAccountId ? { type: 'oauth', access: placeholder(p), refresh: 'chattering-key-proxy', expires: Date.now() + 10 * 365 * 86400000 }
+      : { type: 'api_key', key: placeholder(p) };
     const entry = { baseUrl: proxy.url + '/' + encodeURIComponent(p.id) };
     if (p.api) entry.api = p.api;
     if (p.compat) entry.compat = p.compat;
@@ -280,5 +294,5 @@ function sandboxEnv({ hostEnv = process.env, principalEnv = {}, guest, agentDir,
   return { ...env, ...extra };
 }
 
-module.exports = { ENV_ALLOW, SYSTEM_RO, findBwrap, piSessionDirName, projectSessionDirs, guestAgentDirFor, prepareGuestAgentDir, proxyAgentFiles, createSandbox, sandboxEnv, inside, OAUTH_SHAPED,
+module.exports = { ENV_ALLOW, SYSTEM_RO, findBwrap, piSessionDirName, projectSessionDirs, guestAgentDirFor, prepareGuestAgentDir, proxyAgentFiles, codexPlaceholder, createSandbox, sandboxEnv, inside, OAUTH_SHAPED,
   findSystemdRun, guestSliceName, defaultLimits, resolveLimits, limitProperties, scopePrefix, busEnv, BUS_VARS };

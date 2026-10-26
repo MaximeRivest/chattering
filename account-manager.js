@@ -154,7 +154,7 @@ function createAccountManager(deps) {
     const env = { ...baseEnv, PI_CODING_AGENT_DIR: setup.agentDir, PI_AGENT_DIR: setup.agentDir };
     const scope = await cgroupFor(account);
     const walls = accountsLib.createAccountWalls({ person: user, account, sudo, mediator, env, sessionsRoot, agentDir: setup.agentDir, maps: pub.maps, scope, models });
-    return { status: 'ready', accountName: name, account, walls, sessionsRoot, models, setup, warnings: setup.problems || [], probe: { node: probe.node }, caps: !!scope, published: path.basename(pub.appDir),
+    return { status: 'ready', accountName: name, account, walls, sessionsRoot, models, setup, warnings: [...(setup.problems || []), ...(shared && shared.problems || [])], probe: { node: probe.node }, caps: !!scope, published: path.basename(pub.appDir),
       proxyPort: shared && typeof proxyPort === 'function' ? proxyPort() : null };
   }
 
@@ -189,7 +189,7 @@ function createAccountManager(deps) {
     if (!user || !user.account) return { linked: false };
     const st = states.get(user.id) || { status: 'preparing' };
     return {
-      linked: true, account: user.account, models: user.models === 'shared' ? 'shared' : 'own', status: st.status,
+      linked: true, account: user.account, models: user.models === 'shared' ? 'shared' : 'own', providers: user.models === 'shared' ? (user.modelProviders || null) : null, status: st.status,
       problems: st.problems || [], warnings: st.warnings || [], uid: st.account ? st.account.uid : null, home: st.account ? st.account.home : null,
       sessionsRoot: st.sessionsRoot || null, agentDir: st.setup ? st.setup.agentDir : null, sessions: st.setup ? st.setup.sessions : null,
       ownProviders: st.setup ? st.setup.ownProviders : [], git: st.setup ? st.setup.git : null, caps: !!st.caps, at: st.at || null,

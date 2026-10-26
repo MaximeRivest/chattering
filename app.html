@@ -730,6 +730,10 @@ body:not(.home) #left, body:not(.home) #ganttResize { display: none !important; 
 #ganttGroup { flex: 0 0 auto; height: 24px; min-width: 92px; padding: 0 7px; border: 0; border-left: 1px solid var(--border); border-right: 1px solid var(--border); border-radius: 0; background: var(--accent-strong); color: var(--accent-ink); font: 10px var(--font); }
 #ganttGroup.compact { background: transparent; color: var(--text-dim); }
 #ganttProject:focus, #ganttGroup:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+/* A project's folder that belongs to someone else, or is shared (design/105). */
+.share-badge { display: inline-block; margin-left: 6px; padding: 0 5px; border: 1px solid var(--border); border-radius: 8px; font-size: 10px; line-height: 15px; color: var(--text-dim); font-weight: normal; vertical-align: middle; white-space: nowrap; }
+.pshare { margin-top: 4px; }
+.pshare-actions button { margin-left: 4px; }
 #ganttResize { height: 7px; flex: 0 0 7px; cursor: row-resize; background: var(--surface-2); border-bottom: 1px solid var(--border); position: relative; touch-action: none; }
 #ganttResize::after { content: ""; position: absolute; width: 40px; height: 2px; left: calc(50% - 20px); top: 2px; background: var(--border-strong); }
 #ganttResize:hover, #ganttResize.dragging { background: var(--surface-3); }
@@ -4372,7 +4376,7 @@ function renderSidebarProjects() {
     let metric = p.latest ? tinyAge(now - p.latest) : 'no activity';
     if (sort === 'size') metric = Number.isFinite(st.size) ? (st.size < 1024 ? st.size + ' B' : st.size < 1024 ** 2 ? (st.size / 1024).toFixed(1) + ' KB' : st.size < 1024 ** 3 ? (st.size / 1024 ** 2).toFixed(1) + ' MB' : (st.size / 1024 ** 3).toFixed(1) + ' GB') : 'not measured';
     if (sort === 'born') metric = st.born > 0 ? new Date(st.born).toLocaleDateString() : 'date unavailable';
-    return `<button type="button" class="ag-row panel-project${p.name === active ? ' current' : ''}" data-open-project="${esc(p.name)}" title="${esc(p.name + (p.cwd ? '\n' + p.cwd : ''))}"${p.name === active ? ' aria-current="page"' : ''}><span class="ag-main"><span class="ag-title"><span>${esc(p.title || p.name)}</span></span><span class="ag-sub"><span class="ag-dir">${p.count} ${p.count === 1 ? 'conversation' : 'conversations'}${p.title && p.title !== p.name ? ' · ' + esc(p.name) : ''}</span><span class="ag-age">${esc(metric)}</span></span></span></button>`;
+    return `<button type="button" class="ag-row panel-project${p.name === active ? ' current' : ''}" data-open-project="${esc(p.name)}" title="${esc(p.name + (p.cwd ? '\n' + p.cwd : ''))}"${p.name === active ? ' aria-current="page"' : ''}><span class="ag-main"><span class="ag-title"><span>${esc(p.title || p.name)}</span>${projectSharingBadge(p.name)}</span><span class="ag-sub"><span class="ag-dir">${p.count} ${p.count === 1 ? 'conversation' : 'conversations'}${p.title && p.title !== p.name ? ' · ' + esc(p.name) : ''}</span><span class="ag-age">${esc(metric)}</span></span></span></button>`;
   }).join('');
   const statsStatus = ['born', 'size'].includes(sort) ? sidebarProjectStatsRequest : null;
   const error = sidebarProjectCatalogError || statsStatus?.error;
@@ -5300,6 +5304,8 @@ function applyProjectFolds(folds) {
 }
 
 async function load() {
+  // Who owns each project and who shares it (design/105): labels follow when it arrives.
+  if (!sidebarProjectCatalog.length && !sidebarProjectCatalogRequest) loadSidebarProjectCatalog().then(() => { if (sidebarProjectCatalog.some(p => p.sharing)) { refreshFilterOptions(); if (viewKind === 'home' && tab === 'conv') render(); } });
   if (document.hidden) return;
   let foldsDone = false, foldsResult = null;
   const foldsReq = fetch('/api/project-folds').then(r => r.json()).catch(() => null)
@@ -5355,9 +5361,10 @@ function refreshFilterOptions() {
   $('dir').value = keepDir;
   const projects = [...new Set([...sessions.map(projectOf), ...((projectFolds.created || []).map(c => c.name))])]
     .filter(p => p && p !== '?').sort((a, b) => a.localeCompare(b));
-  $('ganttProject').innerHTML = '<option value="">all projects</option>' +
+  const anyShared = projects.some(p => projectSharingOf(p));
+  $('ganttProject').innerHTML = '<option value="">all projects</option>' + (anyShared ? `<option value="${SHARED_PROJECTS}">shared projects</option>` : '') +
     projects.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('');
-  $('ganttProject').value = projects.includes(keepProject) ? keepProject : '';
+  $('ganttProject').value = projects.includes(keepProject) || (anyShared && keepProject === SHARED_PROJECTS) ? keepProject : '';
   const srcs = [...new Set(sessions.map(s => s.source || 'claude'))].sort();
   $('src').innerHTML = '<option value="">all sources</option>' +
     srcs.map(d => `<option>${esc(d)}</option>`).join('');
@@ -5371,7 +5378,7 @@ function applyFilter() {
     (!dir || shortDir(s.cwd) === dir) &&
     (!src || (s.source || 'claude') === src) &&
     (!who || sessionInvolves(s, who)) &&
-    (!project || projectOf(s) === project));
+    projectFilterMatch(project, projectOf(s)));
   render();
 }
 
@@ -5861,7 +5868,7 @@ function timelineProjectLanes(items) {
   const projectFilter = $('ganttProject').value;
   for (const c of (projectFolds.created || [])) {
     if (!c.name || byProject.has(c.name)) continue;
-    if (projectFilter && projectFilter !== c.name) continue;
+    if (!projectFilterMatch(projectFilter, c.name)) continue;
     if (projFilterActive() && !projFuzzyMatch(c.name)) continue;
     if (sessions.some(s => projectOf(s) === c.name)) continue; // real lanes exist
     byProject.set(c.name, { project: c.name, latest: c.createdAt || Date.now(), count: 0, items: [], born: c.createdAt || 0 });
@@ -5905,7 +5912,7 @@ function projectLabelsHtml(layout) {
     const sug = !phone && !row.mode && (projectFolds.suggestions || []).find(x => x.from === row.project);
     const foldChip = sug ? `<span class="rowfold" data-fold-from="${esc(sug.from)}" data-fold-into="${esc(sug.into)}" title="${esc(sug.reason)} · fold ${esc(sug.from)} into ${esc(sug.into)}">⇄ ${esc(sug.into)}?</span>` : '';
     const body = phone ? `<strong>${esc(main)}</strong>`
-      : `<strong>${esc(main)}</strong><span>${esc(detail)}</span>${repoLink}${foldChip}`;
+      : `<strong>${esc(main)}</strong>${row.mode ? '' : projectSharingBadge(row.project)}<span>${esc(detail)}</span>${repoLink}${foldChip}`;
     return `<div class="project-row-label item${row.project === rowHlProject ? ' hl' : ''}" data-project="${esc(main)}" style="top:${top}px;height:${height}px" title="${esc(main)} · ${esc(detail)} · click to select the row · double click for the project overview">
       ${body}</div>`;
   }).join('')}</div>`;
@@ -5979,6 +5986,26 @@ function mobileDate(value) {
 // computer account (`pi@<account>`, design/105).
 function isPiSource(s) { return s === 'pi' || (typeof s === 'string' && s.startsWith('pi@')); }
 function isPiLike(s) { return isPiSource(s) || s === 'pi-remote'; }
+// Whose a project's folder is and who shares it (design/105), from the
+// project catalog: { text, title } for a label, or null for one's own
+// unshared project.
+function projectSharingOf(name) {
+  const p = (typeof sidebarProjectCatalog !== 'undefined' ? sidebarProjectCatalog : []).find(x => x.name === name);
+  return p && p.sharing || null;
+}
+function projectSharingLabel(s) {
+  if (!s) return null;
+  if (s.mine) return { text: 'shared', title: 'Your folder, shared with ' + s.with.map(w => w.name + (w.write ? '' : ' (read only)')).join(', ') };
+  const withMe = s.with.some(w => w.me);
+  return { text: s.ownerName + '\u2019s', title: s.ownerName + '\u2019s folder' + (withMe ? ', shared with you: you work in it as yourself' : s.hidden ? ', not shared with you' : '') };
+}
+function projectSharingBadge(name) {
+  const l = projectSharingLabel(projectSharingOf(name));
+  return l ? `<span class="share-badge" title="${esc(l.title)}">${esc(l.text)}</span>` : '';
+}
+const SHARED_PROJECTS = '\u0001shared';
+// The Gantt's project filter: one project, or every shared one.
+function projectFilterMatch(filter, project) { return !filter || (filter === SHARED_PROJECTS ? !!projectSharingOf(project) : project === filter); }
 function mobileConversationCard(s) {
   const project = projectOf(s);
   const live = isActive(s) || (s._famMembers || []).some(isActive);
@@ -9071,6 +9098,33 @@ function refreshProjectMemoryControls(project) {
   wireProjectMemoryControls(projectOverview);
 }
 
+// Whose folder this is, who shares it, and the owner's buttons (design/105).
+function projectSharingLine(d) {
+  const s = d.sharing, targets = d.shareTargets || [];
+  let text = '';
+  if (s && !s.mine) text = `<b>${esc(s.ownerName)}\u2019s folder</b>${s.with.some(w => w.me) ? ', shared with you: what you start here runs as you, in this folder.' : s.hidden ? ', not shared with you.' : '.'}`;
+  else if (s && s.mine) text = `Shared with ${s.with.map(w => '<b>' + esc(w.name) + '</b>' + (w.write ? '' : ' (read only)')).join(', ')}: they work here as themselves.`;
+  const buttons = targets.map(t => `<button type="button" class="ghost" data-share-with="${esc(t.account)}" data-share-off="${t.shared ? '1' : ''}">${t.shared ? 'stop sharing with ' + esc(t.name) : 'share with ' + esc(t.name)}</button>`).join('');
+  if (!text && !buttons) return '';
+  return `<div class="pmeta pshare" id="pShare">${text}${buttons ? ' <span class="pshare-actions">' + buttons + '</span>' : ''}</div>`;
+}
+function bindProjectSharing(d) {
+  document.querySelectorAll('#pShare [data-share-with]').forEach(b => b.onclick = async () => {
+    const off = !!b.dataset.shareOff;
+    const who = b.textContent.replace(/^(stop sharing with|share with) /, '');
+    if (!confirm(off ? `Stop sharing ${d.project} with ${who}? Their agents can no longer open its folder; what they wrote there stays.` : `Share ${d.project} with ${who}? They read and write its folder as themselves; their agents can open everything in it. Nothing else of yours opens.`)) return;
+    b.disabled = true; b.textContent = off ? 'unsharing…' : 'sharing…';
+    try {
+      const r = await fetch('/api/project/share', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: d.project, with: b.dataset.shareWith, off }) });
+      const out = await r.json();
+      if (out.error) throw new Error(out.error);
+      if (out.problems && out.problems.length) errToast(out.problems.join(' '));
+      else toast(off ? 'no longer shared' : 'shared');
+      sidebarProjectCatalogRequest = null; loadSidebarProjectCatalog();
+      showProjectOverview(d.project);
+    } catch (e) { errToast(e.message); b.disabled = false; }
+  });
+}
 function renderProjectPanel(d) {
   const color = projectColor(d.project);
   const memory = d.memory || null;
@@ -9105,6 +9159,7 @@ function renderProjectPanel(d) {
     <section id="pPeopleDid" class="psection pdid" hidden aria-label="What other people did in this project lately"></section>
     <section class="psection pdesc">
       <div class="pmeta ps-path">${esc(d.cwd || '')}</div>
+      ${projectSharingLine(d)}
       ${!d.conversations ? '<p>No conversations yet. Start a conversation when you are ready.</p>' : ''}
       <button id="pPurpose" class="ghost">Edit project purpose</button>
       ${memory
@@ -9191,6 +9246,7 @@ function renderProjectPanel(d) {
   $('view').querySelectorAll('[data-p-epic-open]').forEach(b => b.onclick = e => { e.preventDefault(); showEpic(b.dataset.pEpicOpen); });
   wireProjectMemoryControls(d);
   $('pNew').onclick = () => startReviewedConversation(d.project);
+  bindProjectSharing(d);
   $('pAreaNew').onclick = () => openNewAreaForm(d.project);
   $('view').querySelectorAll('[data-area-suggest]').forEach(b => b.onclick = () => openNewAreaForm(d.project, { rel: b.dataset.areaSuggest }));
   $('view').querySelectorAll('[data-area-open]').forEach(c => {
@@ -16397,7 +16453,7 @@ function renderNotesTab() {
     if (!conv) return false;
     if (dir && shortDir(conv.cwd) !== dir) return false;
     if (src && (conv.source || 'claude') !== src) return false;
-    if (project && projectOf(conv) !== project) return false;
+    if (!projectFilterMatch(project, projectOf(conv))) return false;
     return true;
   });
   $('count').textContent = notes.length + ' notes';
@@ -19398,7 +19454,7 @@ document.addEventListener('keydown', e => {
     case 'p': {
       const entry = activeRel && sessions.find(s => s.key === activeRel);
       const project = entry ? projectOf(entry) : $('ganttProject').value;
-      if (project && project !== '?') showProjectOverview(project);
+      if (project && project !== '?' && project !== SHARED_PROJECTS) showProjectOverview(project);
       break;
     }
     case 'C':
@@ -19572,6 +19628,13 @@ live.onmessage = ev => {
       }
     }
     if (tab === 'conv') render();
+    return;
+  }
+  if (d.type === 'project-sharing') {
+    // A folder was shared or unshared (design/105): labels and the open page follow.
+    sidebarProjectCatalogRequest = null;
+    loadSidebarProjectCatalog().then(() => { refreshFilterOptions(); if (viewKind === 'home' && tab === 'conv') render(); });
+    if (viewKind === 'project' && projectOverviewName === d.project) showProjectOverview(d.project);
     return;
   }
   if (d.type === 'project-title') {

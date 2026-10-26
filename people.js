@@ -1042,7 +1042,7 @@ function accountOf(u) { return accountsState.people.find(p => p.id === u.id) || 
 function accountHint(u) {
   if (!u.account) return '';
   const st = accountOf(u);
-  const models = u.models === 'shared' ? 'your models' : 'their own models';
+  const models = u.models === 'shared' ? (u.modelProviders && u.modelProviders.length ? 'your ' + u.modelProviders.join(', ') : 'your models') : 'their own models';
   const state = !st ? '' : st.status === 'ready' ? '' : st.status === 'preparing' ? ' · getting ready' : ' · <b>not ready</b>';
   return ` · runs as <code>${esc(u.account)}</code> (${models})${state}`;
 }
@@ -1129,10 +1129,19 @@ function bindPanePeople(root) {
     if (act === 'account') {
       const name = prompt(`Computer account ${u.name} runs as (empty: this machine's own account, as before).\nIt must already exist and be in the group ${accountsState.support.group}.`, u.account || '');
       if (name === null) return;
-      let models;
+      let models, providers;
       if (name.trim()) models = confirm(`Should ${u.name}'s agents use YOUR model subscriptions (shared through the key proxy, the keys never reach their account)?\n\nOK: your models.  Cancel: their own logins (they sign in once with pi as ${name.trim()}).`) ? 'shared' : 'own';
+      if (models === 'shared') {
+        const offered = accountsState.providers || [];
+        const pick = prompt(`Which of your AI accounts may ${u.name} use? Comma separated; empty: all of them.\nThis computer can share: ${offered.join(', ') || '(none signed in)'}`, (u.modelProviders || []).join(', '));
+        if (pick === null) return;
+        providers = pick.split(',').map(x => x.trim()).filter(Boolean);
+        const unknown = providers.filter(x => !offered.includes(x));
+        if (unknown.length && !confirm('Not offered by this computer right now: ' + unknown.join(', ') + '. Link anyway?')) return;
+        if (!providers.length) providers = null;
+      }
       toast('linking… (getting the account ready)');
-      out = await call('account', { id, account: name.trim() || null, models });
+      out = await call('account', { id, account: name.trim() || null, models, ...(models === 'shared' ? { providers } : {}) });
       await loadAccountsState();
       if (out && out.account && out.account.linked && out.account.status !== 'ready') errToast(u.name + ': ' + (out.account.problems || []).join(' '));
     }

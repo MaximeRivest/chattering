@@ -15,7 +15,7 @@
     };
     for (const p of catalog || []) {
       const r = get(p.name); if (!r) continue;
-      r.title = p.title || ''; r.cwd = p.cwd || '';
+      r.title = p.title || ''; r.cwd = p.cwd || ''; if (p.sharing) r.sharing = p.sharing;
       if (r.cwd) authoritativePaths.add(r.name);
     }
     for (const p of created || []) {
