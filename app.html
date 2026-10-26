@@ -724,6 +724,11 @@ body:not(.home) #left, body:not(.home) #ganttResize { display: none !important; 
 #tabs button.on { background: var(--accent-strong); color: var(--accent-ink); font-weight: 700; }
 #selShown { height: 28px; padding: 0 8px; border: 0; border-left: 1px solid var(--border); border-radius: 0; }
 #ganttBar { display: flex; align-items: stretch; border-bottom: 1px solid var(--border); flex-shrink: 0; background: var(--surface-1); }
+/* Whose conversations the timeline shows: mine, one person's, everyone's. */
+#ganttWho { display: flex; align-items: center; gap: 2px; padding: 0 6px; border-right: 1px solid var(--border); }
+#ganttWho[hidden] { display: none; }
+#ganttWho button { border: 0; background: none; color: var(--text-dim); font: 11px var(--font); padding: 2px 7px; border-radius: 10px; min-height: 22px; cursor: pointer; }
+#ganttWho button[aria-pressed="true"] { background: var(--surface-3, var(--border)); color: var(--text); }
 #ganttBar button { flex: 0 0 auto; height: 24px; min-width: 26px; padding: 0 6px; border: 0; border-right: 1px solid var(--border); border-radius: 0; background: transparent; color: var(--text-dim); font: 12px var(--font); }
 #ganttBar button:hover { color: var(--text); background: var(--surface-2); }
 #ganttProject { flex: 0 1 180px; min-width: 110px; height: 24px; border: 0; border-left: 1px solid var(--border); border-radius: 0; background: var(--surface-1); color: var(--text-dim); padding: 0 6px; font: 10px var(--font); }
@@ -2472,6 +2477,7 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
       <button id="tabsNew" title="New conversation">+ new</button><button data-tab="conv" class="on">conversations</button><button data-tab="notes">notes</button><button data-tab="epics">epics</button><button data-tab="repos">repos</button><button id="selShown" class="ghost" title="Select all shown conversations">select shown</button>
     </div>
     <div id="ganttBar" role="toolbar" aria-label="Projects and timeline navigation">
+      <div id="ganttWho" role="group" aria-label="Whose conversations the timeline shows" hidden></div>
       <div id="timelineControls" role="group" aria-label="Timeline controls"></div>
       <!-- Legacy collection controls are not part of the camera toolbar. -->
       <div hidden>
@@ -5369,9 +5375,51 @@ function refreshFilterOptions() {
   $('src').innerHTML = '<option value="">all sources</option>' +
     srcs.map(d => `<option>${esc(d)}</option>`).join('');
   $('src').value = keepSrc;
-  if ($('who')) { const keepWho = $('who').value; $('who').innerHTML = whoFilterOptions(); $('who').value = keepWho; if ($('who').value !== keepWho) $('who').value = ''; }
+  if ($('who')) { const keepWho = $('who').value || ganttWhoValue(); $('who').innerHTML = whoFilterOptions(); $('who').value = keepWho; if ($('who').value !== keepWho) $('who').value = ''; renderGanttWho(); }
 }
 
+// ---- whose conversations the timeline shows (2026-10-26) ----
+// "mine", one other person's, or everyone's: the people filter (#who), with
+// a switch on the timeline itself. Remembered on this device as "mine" (it
+// follows whoever signs in), a person's id, or "all". With other people on
+// this machine, a new device starts on "mine".
+const GANTT_WHO_KEY = 'chattering.ganttWho';
+function ganttWhoSaved() { try { return localStorage.getItem(GANTT_WHO_KEY) || ''; } catch { return ''; } }
+function ganttWhoValue() {
+  const me = typeof peopleState !== 'undefined' && peopleState.me;
+  const others = me ? peopleState.users.filter(u => !u.disabled && peopleCanonicalId(u.id) !== peopleCanonicalId(me.id)) : [];
+  const saved = ganttWhoSaved() || (others.length ? 'mine' : 'all');
+  if (saved === 'all' || !me) return '';
+  if (saved === 'mine') return me.id;
+  return others.some(u => u.id === saved) ? saved : me.id;
+}
+function renderGanttWho() {
+  const host = $('ganttWho'), me = typeof peopleState !== 'undefined' && peopleState.me;
+  if (!host) return;
+  const others = me ? peopleState.users.filter(u => !u.disabled && peopleCanonicalId(u.id) !== peopleCanonicalId(me.id)) : [];
+  host.hidden = !me || !others.length;
+  if (host.hidden) return;
+  const cur = $('who') ? $('who').value : '';
+  const btn = (value, label, title) => `<button type="button" data-who="${esc(value)}" aria-pressed="${cur === value}" title="${esc(title)}">${esc(label)}</button>`;
+  host.innerHTML = btn(me.id, 'mine', 'Conversations you wrote in') + others.map(u => btn(u.id, u.name, 'Conversations ' + u.name + ' wrote in, of what is shared with you')).join('') + btn('', 'everyone', 'Every conversation you can see');
+}
+function setGanttWho(value) {
+  const me = peopleState.me;
+  try { localStorage.setItem(GANTT_WHO_KEY, !value ? 'all' : me && value === me.id ? 'mine' : value); } catch {}
+  if ($('who')) $('who').value = value;
+  renderGanttWho();
+  refreshCurrentTab();
+}
+$('ganttWho').addEventListener('click', e => { const b = e.target.closest('[data-who]'); if (b) setGanttWho(b.dataset.who); });
+window.addEventListener('chattering:identity', () => {
+  if (!$('who')) return;
+  $('who').innerHTML = whoFilterOptions();
+  const want = ganttWhoValue();
+  const changed = $('who').value !== want;
+  $('who').value = want;
+  renderGanttWho();
+  if (changed && typeof sessions !== 'undefined' && sessions.length) refreshCurrentTab();
+});
 function applyFilter() {
   const dir = $('dir').value, src = $('src').value, project = $('ganttProject').value, who = $('who') ? $('who').value : '';
   shown = sessions.filter(s =>
@@ -5869,6 +5917,8 @@ function timelineProjectLanes(items) {
   for (const c of (projectFolds.created || [])) {
     if (!c.name || byProject.has(c.name)) continue;
     if (!projectFilterMatch(projectFilter, c.name)) continue;
+    // A project with no conversation yet: its folder's person (design/105).
+    if ($('who') && $('who').value && !ganttWhoOwnsProject($('who').value, c.name)) continue;
     if (projFilterActive() && !projFuzzyMatch(c.name)) continue;
     if (sessions.some(s => projectOf(s) === c.name)) continue; // real lanes exist
     byProject.set(c.name, { project: c.name, latest: c.createdAt || Date.now(), count: 0, items: [], born: c.createdAt || 0 });
@@ -6004,6 +6054,18 @@ function projectSharingBadge(name) {
   return l ? `<span class="share-badge" title="${esc(l.title)}">${esc(l.text)}</span>` : '';
 }
 const SHARED_PROJECTS = '\u0001shared';
+// Whether a project's folder is this person's: theirs when it is shared and
+// they own it; for the owner of this machine, also every folder not shared.
+// (No sharing said: the viewer's own, unshared. A folder of the account this
+// server runs as, which no person is linked to, is the machine owner's.)
+function ganttWhoOwnsProject(userId, name) {
+  const s = projectSharingOf(name);
+  const u = peopleState.users.find(x => peopleCanonicalId(x.id) === peopleCanonicalId(userId));
+  if (!u) return true;
+  if (!s || s.mine) return peopleIsMe(u);
+  const owner = peopleState.users.find(x => x.account === s.owner) || peopleState.users.find(x => x.role === 'owner');
+  return !!owner && peopleCanonicalId(owner.id) === peopleCanonicalId(u.id);
+}
 // The Gantt's project filter: one project, or every shared one.
 function projectFilterMatch(filter, project) { return !filter || (filter === SHARED_PROJECTS ? !!projectSharingOf(project) : project === filter); }
 function mobileConversationCard(s) {

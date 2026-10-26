@@ -670,11 +670,19 @@ function presenceFileSlotHtml(file) { return `<span class="presence-slot" data-p
 /* ---- "who" filter on the home list ---- */
 // Mine: I wrote into it, or nobody is recorded and I am this machine's owner.
 function sessionParticipantsOf(s) { return Array.isArray(s.participants) ? s.participants : []; }
+// Whose a conversation is: who typed in it; when nobody is recorded (typed
+// in a terminal, or before people existed), the person whose own computer
+// account keeps it (design/105), else the owner of this machine.
 function sessionInvolves(s, userId) {
+  const id = peopleCanonicalId(userId);
   const parts = sessionParticipantsOf(s);
-  if (parts.some(p => p.id === userId)) return true;
-  if (!parts.length) { const u = peopleUserById(userId); return !!u && u.role === 'owner'; }
-  return false;
+  if (parts.some(p => peopleCanonicalId(p.id) === id)) return true;
+  if (parts.length) return false;
+  const account = typeof s.source === 'string' && s.source.startsWith('pi@') ? s.source.slice(3) : null;
+  const keeper = account ? peopleState.users.find(u => u.account === account) : null;
+  if (keeper) return keeper.id === id;
+  const u = peopleUserById(id);
+  return !!u && u.role === 'owner';
 }
 function whoFilterOptions() {
   const me = peopleState.me;
