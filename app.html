@@ -19833,13 +19833,20 @@ live.onmessage = ev => {
   }
   if (d.type === 'job') {
     const old = jobs.get(d.job.id);
+    // "Reply ready" and "Agent stopped" are for the person who asked; a run
+    // nobody asked for (a resume, the frog) for whoever has it in their list.
+    const forMe = () => {
+      if (d.job.askedBy && typeof peopleIsMe === 'function' && typeof peopleState !== 'undefined' && peopleState.me) return peopleIsMe(d.job.askedBy);
+      const k = d.job.fanoutRootKey || d.job.key;
+      return !k || !agentReadLoaded || agentIsListed(sessions.find(s => s.key === k) || { key: k });
+    };
     updateJob(d.job);
     // Every tick of a memory job moves the project view's progress line in place.
     if (viewKind === 'project' && projectOverviewName && projectMemoryJobTouches(d.job, projectOverviewName)) refreshProjectMemoryControls(projectOverviewName);
     if (d.job.status === 'done' && (!old || old.status === 'running' || (d.job.type === 'memory-health' && old.status === 'error')) && !d.job.parentId) {
       if (d.job.type === 'epic') relatedCache.clear();
       else if (d.job.key) relatedCache.delete(d.job.key);
-      if (d.job.type === 'agent-run') toast('✓ Reply ready: ' + d.job.title,
+      if (d.job.type === 'agent-run' && forMe()) toast('✓ Reply ready: ' + d.job.title,
         () => openPanelConversation(d.job.fanoutRootKey || d.job.key, 'reply'), 'ok');
       if ((d.job.type === 'project-distill' || d.job.type === 'memory-docs' || d.job.type === 'memory-backfill') && d.job.project && viewKind === 'project' && projectOverviewName === d.job.project) {
         showProjectOverview(d.job.project);
@@ -19850,7 +19857,7 @@ live.onmessage = ev => {
         showEpic(d.job.epicId);
       }
     }
-    if (d.job.type === 'agent-run' && d.job.status === 'error' && (!old || old.status === 'running') && !d.job.parentId) {
+    if (d.job.type === 'agent-run' && d.job.status === 'error' && (!old || old.status === 'running') && !d.job.parentId && forMe()) {
       toast('Agent stopped: ' + (d.job.statusText || d.job.title || 'unknown error'), () => openPanelConversation(d.job.fanoutRootKey || d.job.key, 'bottom'), 'err');
     }
     return;

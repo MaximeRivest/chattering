@@ -11077,6 +11077,8 @@ function jobView(job) {
     notices: job.notices && job.notices.length ? job.notices : undefined,
     customViews: job.customViews && Object.keys(job.customViews).length ? job.customViews : undefined,
     quiet: job.quiet || undefined,
+    // Whose question it answers: only they are told it is ready or stopped.
+    askedBy: job.askedBy || undefined,
   };
 }
 
