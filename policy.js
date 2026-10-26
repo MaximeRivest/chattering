@@ -521,6 +521,13 @@ const ACCOUNT_ROUTES = {
   '/api/doc/setup-guide': 'theirs', '/api/doc/kernel': 'theirs', '/api/doc/variables': 'theirs', '/api/doc/plot': 'theirs',
   '/api/doc/display': 'theirs', '/api/doc/ensure': 'theirs', '/api/doc/notebooks': 'theirs', '/api/doc/play-prerequisites': 'theirs',
   '/api/doc/complete': 'theirs', '/api/doc/plots': 'theirs', '/api/doc/outputs': 'theirs', '/api/doc/follow': 'theirs',
+  // Projects and their folders: made, listed and undone as the requester
+  // (the folder's owner for undo), in their home; the pickers search it.
+  '/api/project/create': 'theirs', '/api/project/undo-setup': 'theirs', '/api/area/folders': 'theirs', '/api/area/create': 'theirs',
+  '/api/fs/folders': 'theirs', '/api/files/readme': 'theirs',
+  // The Files view's "ask about this file" and its event links: the run
+  // starts as the requester (principalFor); the rest is the index and ledger.
+  '/api/files/ask-target': 'theirs', '/api/files/ask-preview': 'theirs', '/api/files/ask': 'theirs', '/api/files/entry': 'index',
   // Documents and notes: written by their host, as them.
   '/api/files/op': 'theirs', '/api/file/preview': 'theirs', '/api/doc/save': 'theirs', '/api/doc/create': 'theirs', '/api/ink/new': 'theirs', '/api/notes/new': 'theirs', '/api/notes/convert': 'theirs', '/api/snippets': 'theirs', '/api/snippets/used': 'index',
   // This server's own records: the index, the notes tree, the file ledger,

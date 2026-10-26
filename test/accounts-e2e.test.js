@@ -520,6 +520,31 @@ chmod +x ~/.local/bin/rat && printf '# A notebook\\n' > ${proj}/nb.md`);
   const notAPlot = await get(remote + `/api/doc/plot?path=${encodeURIComponent(path.join(secretDir, 'plan.md'))}`, tess);
   assert.notEqual(notAPlot.status, 200, 'only her rat\u2019s plot folder');
 
+  // Projects: the folder pickers search her home; a project, an area and a
+  // README are made as her; undoing a setup removes only her empty folder.
+  const typed = await okJson('folders typed', get(remote + `/api/fs/folders?q=${encodeURIComponent('~/Projects/')}&for=add`, tess));
+  assert.ok(typed.results.some(r => r.path === proj), fail('her Projects folder, listed as her: ' + JSON.stringify(typed).slice(0, 400)));
+  const ownedBy = p => asTest(`stat -c %U '${p}'`).stdout.trim();
+  const made = await okJson('create project', post(remote + '/api/project/create', { operation: 'create', name: tag + '-new', parent: '~/Projects' }, tess));
+  assert.equal(made.cwd, `/home/${ACCOUNT}/Projects/${tag}-new`);
+  assert.equal(ownedBy(made.cwd), ACCOUNT);
+  assert.equal(ownedBy(made.cwd + '/.git'), ACCOUNT, 'git init ran as her');
+  await okJson('readme', post(remote + '/api/files/readme', { project: made.project }, tess));
+  assert.equal(ownedBy(made.cwd + '/README.md'), ACCOUNT);
+  const undone = await post(remote + '/api/project/undo-setup', { project: made.project }, tess);
+  assert.equal(undone.status, 200, await undone.clone().text());
+  assert.equal((await undone.json()).folderRemoved, false, 'a folder with a README in it is kept');
+  asTest(`rm -rf '${made.cwd}'`);
+  const empty = await okJson('create empty', post(remote + '/api/project/create', { operation: 'create', name: tag + '-empty', parent: '~/Projects', git: false }, tess));
+  assert.equal((await okJson('undo', post(remote + '/api/project/undo-setup', { project: empty.project }, tess))).folderRemoved, true);
+  assert.equal(asTest(`test -e '${empty.cwd}'`).status, 1);
+  const area = await okJson('area', post(remote + '/api/area/create', { project: tag, rel: 'analysis' }, tess));
+  assert.equal(ownedBy(area.cwd), ACCOUNT);
+  const areas = await okJson('area folders', get(remote + `/api/area/folders?project=${tag}`, tess));
+  assert.ok(areas.folders.some(f => f.rel === 'analysis'), JSON.stringify(areas.folders).slice(0, 300));
+  const outside = await post(remote + '/api/project/create', { operation: 'add', path: secretDir }, tess);
+  assert.notEqual(outside.status, 200, 'a folder her account cannot open is not added for her');
+
   // A file this server can read but her account cannot stays closed.
   const secret = await get(remote + `/api/artifacts/blob?id=${k}&path=${encodeURIComponent(path.join(secretDir, 'plan.md'))}`, tess);
   assert.notEqual(secret.status, 200);

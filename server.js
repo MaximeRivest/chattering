@@ -15158,14 +15158,22 @@ async function filesProjectResponse(project, io = serverIo) {
 
 // Create the README at the project root (the landing page), not in
 // documents/: agents and humans both look for it there.
-async function filesCreateReadmeResponse(body) {
+async function filesCreateReadmeResponse(body, identity = null) {
   const project = String(body.project || '');
   const meta = projectMetaFor(project);
   if (!meta || !meta.cwd) throw new Error('project not found');
   const abs = path.join(path.resolve(meta.cwd), 'README.md');
-  if (fs.existsSync(abs)) throw new Error('README.md already exists');
+  if (identity) assertPathAccess(identity, abs, 'act');
   const text = `# ${project}\n\n`;
-  await writeFileAtomic(abs, text);
+  // Made as the requester, never over an existing one (design/106).
+  const actor = identity ? actorOf(identity) : localActor;
+  if (actor.mine) {
+    try { await actor.mine.host.call('write', abs, text, { exclusive: true }); }
+    catch (e) { throw new Error(e.code === 'EEXIST' ? 'README.md already exists' : e.message); }
+  } else {
+    if (fs.existsSync(abs)) throw new Error('README.md already exists');
+    await writeFileAtomic(abs, text);
+  }
   await recordDocEdit({ ts: Date.now(), path: abs, action: 'create', actor: 'human', input: 'keyboard', added: 2, removed: 0, sha: sha256Hex(text) });
   ledgerRecordEditorSave(abs, { added: 2, removed: 0, chars: text.length, sha: sha256Hex(text), project });
   return { ok: true, path: abs };
@@ -17580,7 +17588,13 @@ async function projectResponse(project) {
 
 // "Create project" is directory-first: the folder IS the project. The
 // registry entry only keeps it visible until the first conversation lands.
-async function createProject(body) {
+// Made as the requester (design/106): their folders, their rights; a person
+// on their own account creates and adds folders of their own account.
+async function createProject(body, identity = null) {
+  const actor = identity ? actorOf(identity) : localActor;
+  const expandFor = p => actor.mine ? accountFiles.expandHome(actor.home, p) : expandHomePath(p);
+  const isDir = async p => { try { return (await actor.io.stat(p)).isDirectory(); } catch { return false; } };
+  const principal = identity ? principalFor(identity) : undefined;
   // Explicit setup is deliberately separate from the legacy birth/agent flow.
   if (Object.prototype.hasOwnProperty.call(body, 'operation')) {
     if (body.operation !== 'create' && body.operation !== 'add') throw new Error('unknown project operation');
@@ -17593,29 +17607,35 @@ async function createProject(body) {
     if (adopted) {
       if (typeof body.path !== 'string' || !body.path.length || body.path.includes('\0')) throw new Error('project path is required');
       // Do not trim or normalize directory names: spaces and Unicode are valid.
-      const expanded = expandHomePath(body.path);
+      const expanded = expandFor(body.path);
       if (!path.isAbsolute(expanded)) throw new Error('Use a full folder path, starting with / or ~/');
       cwd = path.resolve(expanded);
-      if (!fs.statSync(cwd).isDirectory()) throw new Error('project path must be an existing directory');
+      if (!await isDir(cwd)) throw new Error('project path must be an existing directory');
     } else {
       // Letters of any language, digits, and ". _ -" and spaces. NFC, so an
       // "é" typed on a Mac and on Linux names the same folder.
       rawName = String(body.name || '').normalize('NFC').trim();
       if (!/^[\p{L}\p{N}][\p{L}\p{M}\p{N}._ -]{0,80}$/u.test(rawName)) throw new Error('Start the name with a letter or number. Use letters, numbers, spaces, dots, hyphens, or underscores.');
       if (typeof body.parent !== 'string' || !body.parent.length || body.parent.includes('\0')) throw new Error('existing parent directory is required');
-      const expanded = expandHomePath(body.parent);
+      const expanded = expandFor(body.parent);
       if (!path.isAbsolute(expanded)) throw new Error('Use a full parent folder path, starting with / or ~/');
       const parent = path.resolve(expanded);
-      if (!fs.statSync(parent).isDirectory()) throw new Error('parent must be an existing directory');
+      if (!await isDir(parent)) throw new Error('parent must be an existing directory');
       cwd = path.join(parent, rawName.replace(/\s+/g, '-'));
     }
     const raw = foldsLib.rawProjectOf(cwd);
     const project = canonicalProjectName(raw);
     if (!project || project === '?' || project === LOOSE_PROJECT) throw new Error('Choose a project folder, not your home folder, Projects folder, or a temporary folder.');
     if (projectMetaFor(project)) throw new Error(`project "${project}" already exists`);
-    // No await between checking and registering: concurrent adds cannot both win.
-    // Exclusive mkdir also rejects existing files, directories and dangling links.
-    if (!adopted) fs.mkdirSync(cwd);
+    if (identity) assertPathAccess(identity, cwd, 'act');
+    // Exclusive mkdir rejects existing files, directories and dangling links;
+    // made as the requester. Two concurrent adds of one name: the second
+    // finds it registered (checked again below) or its mkdir fails.
+    if (!adopted) {
+      if (actor.mine) await actor.mine.host.call('mkdir', cwd, { recursive: false });
+      else fs.mkdirSync(cwd);
+    }
+    if (projectMetaFor(project)) throw new Error(`project "${project}" already exists`);
     createdProjects[raw] = { cwd, createdAt: Date.now(), ...(adopted ? { adopted: true } : {}) };
     try { saveCreatedProjects(); }
     catch (e) {
@@ -17658,14 +17678,15 @@ async function createProject(body) {
   if (!rawName) throw new Error('project name is required');
   if (!/^[A-Za-z0-9][A-Za-z0-9._ -]{0,80}$/.test(rawName)) throw new Error('project name: letters, digits, ". _ -" and spaces only');
   const dirName = rawName.replace(/\s+/g, '-');
-  const parent = path.resolve(expandHomePath(String(body.parent || '').trim() || '~/Projects'));
+  const parent = path.resolve(expandFor(String(body.parent || '').trim() || '~/Projects'));
   const cwd = path.join(parent, dirName);
   const raw = foldsLib.rawProjectOf(cwd);
   const project = canonicalProjectName(raw);
   if (projectMetaFor(project)) throw new Error(`project "${project}" already exists`);
-  const adopted = fs.existsSync(cwd);
-  await fsp.mkdir(cwd, { recursive: true });
-  if (body.git !== false && !fs.existsSync(path.join(cwd, '.git'))) {
+  if (identity) assertPathAccess(identity, cwd, 'act');
+  const adopted = await isDir(cwd);
+  if (actor.mine) await actor.mine.host.call('mkdir', cwd, { recursive: true }); else await fsp.mkdir(cwd, { recursive: true });
+  if (body.git !== false && !await isDir(path.join(cwd, '.git'))) {
     try { await gitText(cwd, ['init']); } catch {} // git is optional
   }
   createdProjects[raw] = { cwd, createdAt: Date.now(), ...(adopted ? { adopted: true } : {}) };
@@ -17693,7 +17714,7 @@ async function createProject(body) {
       context: intent
         ? `# Project: ${project}\n\n- Project root: ${cwd}\n- Born today \u2014 no conversations, no commits yet.\n\n## Intent (human-written at creation, vouched)\n\n${intent}`
         : null,
-      kickoffText: firstPrompt, name: '',
+      kickoffText: firstPrompt, name: '', principal,
     });
   }
   return { ok: true, project, cwd, adopted, intentPath, started };
@@ -17713,7 +17734,7 @@ function unregisterProject(name) {
 // setup wrote go; the folder goes only when it still holds exactly what
 // setup made (nothing, or a Git repository without a commit). Anything
 // else in it is the person's, so it stays and the answer says where.
-function undoProjectSetup(name) {
+async function undoProjectSetup(name) {
   const target = String(name || '');
   const key = Object.keys(createdProjects).find(k => k === target || canonicalProjectName(k) === target);
   if (!key) throw new Error('This project is no longer in the project list.');
@@ -17723,15 +17744,9 @@ function undoProjectSetup(name) {
   const rec = createdProjects[key];
   let folderRemoved = false, folderKept = '';
   if (!rec.adopted && rec.cwd) {
-    try {
-      const names = fs.readdirSync(rec.cwd);
-      const git = path.join(rec.cwd, '.git');
-      const gitIsSetups = names.length === 1 && names[0] === '.git' && fs.lstatSync(git).isDirectory()
-        && !fs.existsSync(path.join(git, 'packed-refs'))
-        && fs.readdirSync(path.join(git, 'refs', 'heads')).length === 0;
-      if (!names.length || gitIsSetups) { fs.rmSync(rec.cwd, { recursive: true }); folderRemoved = true; }
-      else folderKept = 'it has files in it now';
-    } catch (e) { if (e.code !== 'ENOENT') folderKept = 'it could not be checked (' + e.message + ')'; }
+    // Removed by the folder's owner, only while setup left it as it was.
+    const out = await actorForPath(rec.cwd).op('project.undoSetup', rec.cwd);
+    folderRemoved = !!out.removed; folderKept = out.kept || '';
   }
   delete createdProjects[key];
   saveCreatedProjects();
@@ -17746,18 +17761,22 @@ function undoProjectSetup(name) {
 // "Create area" mirrors the project birth ritual, one level down: a folder
 // inside the project root, an optional vouched intent seed, and an optional
 // first prompt that starts the first conversation in that folder.
-async function createArea(body) {
+async function createArea(body, identity = null) {
+  const actor = identity ? actorOf(identity) : localActor;
   const project = canonicalProjectName(String(body.project || '').trim());
   if (!project || project === '?' || project === LOOSE_PROJECT) throw new Error('areas need a real project');
   const meta = projectMetaFor(project);
   if (!meta) throw new Error('project not found');
-  if (!meta.cwd || !fs.existsSync(meta.cwd)) throw new Error('the project folder is missing: ' + (meta.cwd || '(unknown)'));
+  if (!meta.cwd || !await pathExists(meta.cwd)) throw new Error('the project folder is missing: ' + (meta.cwd || '(unknown)'));
   const rel = areasLib.normalizeAreaRel(body.rel || body.name || '');
   if (!rel) throw new Error('area path: a relative folder — letters, digits, ". _ -", spaces, and "/" only');
   if (rel in declaredAreasFor(project)) throw new Error(`area "${rel}" already exists`);
   const cwd = path.join(meta.cwd, rel);
-  const adopted = fs.existsSync(cwd);
-  await fsp.mkdir(cwd, { recursive: true });
+  if (identity) assertPathAccess(identity, cwd, 'act');
+  // Made as the requester (design/106).
+  let adopted = false;
+  try { adopted = (await actor.io.stat(cwd)).isDirectory(); } catch {}
+  if (actor.mine) await actor.mine.host.call('mkdir', cwd, { recursive: true }); else await fsp.mkdir(cwd, { recursive: true });
   const title = String(body.title || '').replace(/\s+/g, ' ').trim().slice(0, 80);
   if (!areaStore[project]) areaStore[project] = {};
   areaStore[project][rel] = { createdAt: Date.now(), ...(title ? { title } : {}) };
@@ -17789,7 +17808,7 @@ async function createArea(body) {
       mode: body.mode || null, models: Array.isArray(body.models) ? body.models : [],
       surface: body.surface || 'rpc',
       include: { map: true }, context,
-      kickoffText: firstPrompt, name: '',
+      kickoffText: firstPrompt, name: '', principal: identity ? principalFor(identity) : undefined,
     });
   }
   // Reuse the folds channel: the client refetches /api/project-folds (which
@@ -17866,7 +17885,7 @@ async function areaFoldersResponse(rawProject) {
   const meta = projectMetaFor(project);
   if (!meta) throw new Error('project not found');
   const root = meta.cwd;
-  if (!root || !fs.existsSync(root)) throw new Error('the project folder is missing: ' + (root || '(unknown)'));
+  if (!root || !await pathExists(root)) throw new Error('the project folder is missing: ' + (root || '(unknown)'));
   const declared = declaredAreasFor(project);
   // Conversations by the folder they ran in (direct hits, rel to the root).
   const own = new Map(); // rel -> { n, lastMs }
@@ -17879,24 +17898,13 @@ async function areaFoldersResponse(rawProject) {
     rec.lastMs = Math.max(rec.lastMs, Date.parse(entry.lastTs || '') || 0);
     own.set(rel, rec);
   }
-  const found = new Map(); // rel -> { exists, git }
-  const walk = async (dir, rel, depth) => {
-    if (depth > AREA_WALK_DEPTH || found.size >= AREA_WALK_LIMIT) return;
-    let ents = [];
-    try { ents = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
-    ents.sort((a, b) => a.name.localeCompare(b.name));
-    for (const ent of ents) {
-      if (found.size >= AREA_WALK_LIMIT) return;
-      if (!ent.isDirectory() || ent.name.startsWith('.') || AREA_WALK_SKIP.has(ent.name)) continue;
-      const childRel = rel ? rel + '/' + ent.name : ent.name;
-      const full = path.join(dir, ent.name);
-      found.set(childRel, { exists: true, git: fs.existsSync(path.join(full, '.git')) });
-      await walk(full, childRel, depth + 1);
-    }
-  };
-  await walk(root, '', 1);
-  const folders = areasLib.folderRows({ found, own, declared, exists: rel => fs.existsSync(path.join(root, rel)) });
-  const home = os.homedir();
+  // Walked as the folder's owner, in one call (design/106).
+  const owner = actorForPath(root);
+  const walked = await owner.op('project.folders', root, { depth: AREA_WALK_DEPTH, limit: AREA_WALK_LIMIT, skip: [...AREA_WALK_SKIP] });
+  const found = new Map(Object.entries(walked).map(([rel, v]) => [rel, { exists: true, git: v.git }])); // rel -> { exists, git }
+  const declaredThere = await owner.op('fs.statMany', Object.keys(declared).map(rel => path.join(root, rel)));
+  const folders = areasLib.folderRows({ found, own, declared, exists: rel => found.has(rel) || !!declaredThere[path.join(root, rel)] });
+  const home = owner.home;
   return {
     project, cwd: root,
     display: root === home || root.startsWith(home + path.sep) ? '~' + root.slice(home.length) : root,
@@ -18501,13 +18509,13 @@ function folderSearchChanged(abs, removed = false) {
 }
 // What a folder is, for the person choosing it. A project is named by its
 // folder, so a folder whose name a project already uses cannot be added.
-function folderStatusOf(abs, roots) {
+function folderStatusOf(abs, roots, home = os.homedir()) {
   if (foldsLib.isLooseCwd(abs)) return { status: 'general' };
   const name = projectNameOf(abs);
   const root = roots.get(name);
   if (root === abs) return { status: 'project', project: name };
   if (root && abs.startsWith(root + path.sep)) return { status: 'inside', project: name };
-  if (root) return { status: 'taken', project: name, root: folderIndexLib.displayOf(root, os.homedir()) };
+  if (root) return { status: 'taken', project: name, root: folderIndexLib.displayOf(root, home) };
   // Inside another project's folder? Walk up the parents: a few lookups,
   // not one per project (this runs for every folder in a suggestion pass).
   const byRoot = rootsByPath(roots);
@@ -18521,24 +18529,30 @@ function folderRecency(ts, now) {
   const days = (now - (ts || 0)) / 86400000;
   return days < 1 ? 12 : days < 7 ? 8 : days < 30 ? 4 : 0;
 }
-function folderRow(abs, display, hl, facts, extra = {}) {
+function folderRow(abs, display, hl, facts, extra = {}, home = os.homedir()) {
   const c = facts.byCwd.get(abs);
   return {
-    path: abs, display, name: path.basename(abs) || display, parent: folderIndexLib.displayOf(path.dirname(abs), os.homedir()), hl,
+    path: abs, display, name: path.basename(abs) || display, parent: folderIndexLib.displayOf(path.dirname(abs), home), hl,
     conversations: c ? c.n : 0, lastTs: c ? c.last : 0, ...folderStatusOf(abs, facts.roots), ...extra,
   };
 }
 // purpose: 'add' (an existing folder becomes a project), 'parent' (where a
 // new project folder goes), 'run' (where a conversation runs).
-async function searchFolders(rawQuery, purpose = 'add', limit = 40) {
+// The folder pickers search the requester's own home (design/106): for
+// someone on their own account, their host walks it and says what exists.
+async function searchFolders(rawQuery, purpose = 'add', limit = 40, actor = localActor) {
   const q = String(rawQuery || '').slice(0, 300);
-  const home = os.homedir();
+  const home = actor.home;
   const facts = folderSearchFacts();
   const now = Date.now();
-  if (/^(?:~(?:[\\/]|$)|[\\/]|[A-Za-z]:[\\/])/.test(q.trim())) return searchFolderPath(q.trim(), purpose, facts, limit);
-  const fi = folderIndexNow();
-  fi.ensure();
-  const items = fi.items();
+  if (/^(?:~(?:[\\/]|$)|[\\/]|[A-Za-z]:[\\/])/.test(q.trim())) return searchFolderPath(q.trim(), purpose, facts, limit, actor);
+  let fi, items;
+  if (actor.kind === 'local') { fi = folderIndexNow(); fi.ensure(); items = fi.items(); }
+  else { const got = await actor.op('folders.items'); fi = { ready: got.ready, partial: got.partial }; items = got.items; }
+  // What exists, asked of the account that owns it, in one call.
+  const candidates = [...new Set([...facts.byCwd.keys(), ...[...facts.roots.values()].map(r => path.dirname(r)), path.join(home, 'Projects')])];
+  const existing = new Set(Object.entries(await actor.op('fs.statMany', candidates)).filter(([, st]) => st && st.type === 'dir').map(([p]) => p));
+  const exists = p => existing.has(p);
   const byAbs = new Map(items.map(i => [i.abs, i]));
   // Folders conversations ran in count even when the walk does not reach them.
   for (const abs of facts.byCwd.keys()) {
@@ -18555,21 +18569,21 @@ async function searchFolders(rawQuery, purpose = 'add', limit = 40) {
       if (seen.has(abs)) return;
       seen.add(abs);
       const it = byAbs.get(abs) || {};
-      rows.push(folderRow(abs, folderIndexLib.displayOf(abs, home), [], facts, { section, git: !!it.git, mtimeMs: it.mtimeMs || 0, ...extra }));
+      rows.push(folderRow(abs, folderIndexLib.displayOf(abs, home), [], facts, { section, git: !!it.git, mtimeMs: it.mtimeMs || 0, ...extra }, home));
     };
     if (purpose === 'parent') {
       // Where projects already live, most first; then the usual place.
       // Two or more projects make a place; one is an accident.
-      [...childrenCount].filter(([d, n]) => n >= 2 && fs.existsSync(d)).sort((a, b) => b[1] - a[1]).slice(0, 6)
+      [...childrenCount].filter(([d, n]) => n >= 2 && exists(d)).sort((a, b) => b[1] - a[1]).slice(0, 6)
         .forEach(([d, n]) => push(d, 'Where your projects are', { projectsInside: n }));
       const usual = path.join(home, 'Projects');
-      if (fs.existsSync(usual)) push(usual, 'Where your projects are', { projectsInside: childrenCount.get(usual) || 0 });
+      if (exists(usual)) push(usual, 'Where your projects are', { projectsInside: childrenCount.get(usual) || 0 });
       push(home, 'Where your projects are', { projectsInside: childrenCount.get(home) || 0 });
     } else if (purpose === 'run') {
-      [...facts.byCwd].filter(([abs]) => fs.existsSync(abs)).sort((a, b) => b[1].last - a[1].last).slice(0, 10)
+      [...facts.byCwd].filter(([abs]) => exists(abs)).sort((a, b) => b[1].last - a[1].last).slice(0, 10)
         .forEach(([abs]) => push(abs, 'Recent folders'));
     } else {
-      const free = [...byAbs.values()].filter(it => it.depth <= 4 && folderStatusOf(it.abs, facts.roots).status === 'free');
+      const free = [...byAbs.values()].filter(it => it.depth <= 4 && folderStatusOf(it.abs, facts.roots, home).status === 'free');
       free.filter(it => it.git).sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 6).forEach(it => push(it.abs, 'Git repositories not in Chattering yet'));
       free.filter(it => !it.git && it.depth <= 3).sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, 6).forEach(it => push(it.abs, 'Recently changed'));
     }
@@ -18584,7 +18598,7 @@ async function searchFolders(rawQuery, purpose = 'add', limit = 40) {
   }
   scored.sort((a, b) => b.score - a.score);
   const rows = scored.slice(0, 300).map(x => {
-    const row = folderRow(x.it.abs, x.display, x.hl, facts, { git: !!x.it.git, mtimeMs: x.it.mtimeMs || 0 });
+    const row = folderRow(x.it.abs, x.display, x.hl, facts, { git: !!x.it.git, mtimeMs: x.it.mtimeMs || 0 }, home);
     let score = x.score + folderRecency(row.mtimeMs, now) / 2;
     if (row.conversations) score += (purpose === 'run' ? 14 : 5) * Math.log2(1 + row.conversations) + folderRecency(row.lastTs, now);
     if (purpose === 'add') score += row.status === 'free' ? (row.git ? 6 : 0) : row.status === 'project' ? -25 : -60;
@@ -18601,26 +18615,25 @@ async function searchFolders(rawQuery, purpose = 'add', limit = 40) {
 }
 // A typed path: the folders inside it, matched against what follows the
 // last slash. Hidden folders appear once the typed part starts with a dot.
-async function searchFolderPath(q, purpose, facts, limit) {
-  const home = os.homedir();
-  const expanded = expandHomePath(q);
+async function searchFolderPath(q, purpose, facts, limit, actor = localActor) {
+  const home = actor.home;
+  const expanded = q.startsWith('~') ? accountFiles.expandHome(home, q) : q;
   const endsSep = /[\\/]$/.test(q);
   const abs = path.resolve(expanded);
   const dir = endsSep ? abs : path.dirname(abs);
   const partial = endsSep ? '' : path.basename(abs);
-  let ents;
-  try { ents = await fsp.readdir(dir, { withFileTypes: true }); }
+  let listing;
+  try { listing = await actor.op('folders.children', dir); }
   catch { return { mode: 'path', base: folderIndexLib.displayOf(dir, home), error: 'No folder at ' + folderIndexLib.displayOf(dir, home), results: [] }; }
   const rows = [];
-  if (!partial) rows.push(folderRow(dir, folderIndexLib.displayOf(dir, home), [], facts, { self: true, git: fs.existsSync(path.join(dir, '.git')) }));
+  if (!partial) rows.push(folderRow(dir, folderIndexLib.displayOf(dir, home), [], facts, { self: true, git: listing.selfGit }, home));
   const children = [];
-  for (const e of ents) {
-    if (!e.isDirectory() && !(e.isSymbolicLink() && (() => { try { return fs.statSync(path.join(dir, e.name)).isDirectory(); } catch { return false; } })())) continue;
+  for (const e of listing.children) {
     if (e.name.startsWith('.') && !partial.startsWith('.')) continue;
     if (folderIndexLib.SKIP_NAMES.has(e.name) && partial !== e.name) continue;
     const m = partial ? folderIndexLib.scoreText(e.name, partial) : { score: 0, hl: [] };
     if (!m) continue;
-    children.push({ name: e.name, m });
+    children.push({ name: e.name, git: e.git, m });
   }
   if (partial) children.sort((a, b) => b.m.score - a.m.score || a.name.length - b.name.length);
   else children.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
@@ -18628,7 +18641,7 @@ async function searchFolderPath(q, purpose, facts, limit) {
     const child = path.join(dir, c.name);
     const display = folderIndexLib.displayOf(child, home);
     const offset = display.length - c.name.length;
-    rows.push(folderRow(child, display, c.m.hl.map(i => i + offset), facts, { git: fs.existsSync(path.join(child, '.git')) }));
+    rows.push(folderRow(child, display, c.m.hl.map(i => i + offset), facts, { git: c.git }, home));
   }
   return { mode: 'path', base: folderIndexLib.displayOf(dir, home), results: rows };
 }
@@ -22235,7 +22248,7 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/files/readme' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
-      try { json(res, 200, await filesCreateReadmeResponse(JSON.parse(body || '{}'))); }
+      try { json(res, 200, await filesCreateReadmeResponse(JSON.parse(body || '{}'), identity)); }
       catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/git/repos') {
       try {
@@ -22494,7 +22507,7 @@ async function handleRequest(req, res) {
       // folders inside a typed path. Members only (policy.js), like dirs.
       try {
         const purpose = ['add', 'parent', 'run'].includes(u.searchParams.get('for')) ? u.searchParams.get('for') : 'add';
-        json(res, 200, await searchFolders(u.searchParams.get('q') || '', purpose, Math.min(80, Number(u.searchParams.get('limit')) || 40)));
+        json(res, 200, await searchFolders(u.searchParams.get('q') || '', purpose, Math.min(80, Number(u.searchParams.get('limit')) || 40), actorOf(identity)));
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/fs/dirs' && req.method === 'GET') {
       // Folder picker: list subdirectories, so an existing folder can be
@@ -22573,7 +22586,7 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/project/create' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
-      try { json(res, 200, await createProject(JSON.parse(body || '{}'))); }
+      try { json(res, 200, await createProject(JSON.parse(body || '{}'), identity)); }
       catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/area' && req.method === 'GET') {
       try { json(res, 200, await areaResponse(u.searchParams.get('project') || '', u.searchParams.get('rel') || '')); }
@@ -22584,7 +22597,7 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/area/create' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
-      try { json(res, 200, await createArea(JSON.parse(body || '{}'))); }
+      try { json(res, 200, await createArea(JSON.parse(body || '{}'), identity)); }
       catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/area/remove' && req.method === 'POST') {
       let body = '';
@@ -22596,7 +22609,7 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/project/undo-setup' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
-      try { json(res, 200, undoProjectSetup((JSON.parse(body || '{}')).project)); }
+      try { json(res, 200, await undoProjectSetup((JSON.parse(body || '{}')).project)); }
       catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/project/unregister' && req.method === 'POST') {
       let body = '';

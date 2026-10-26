@@ -41,6 +41,7 @@ async function ratOutput(p, ext) {
   return file;
 }
 
+let folderIndex = null;
 const OPS = {
   // ---- files ----
   // Many paths at once (a listing of hundreds of documents is one call).
@@ -52,6 +53,66 @@ const OPS = {
   'fs.readableMany': async paths => (await Promise.all((paths || []).slice(0, 5000).map(async p => {
     try { await fsp.access(abs(p), fs.constants.R_OK); return p; } catch { return null; }
   }))).filter(Boolean),
+  // ---- folders (the pickers) ----
+  // Every folder under this account's home, walked here and kept a while.
+  'folders.items': () => {
+    const lib = require('./folder-index.js'), home = require('os').homedir();
+    folderIndex ||= lib.createFolderIndex({ home, exclude: [path.join(home, '.local', 'share', 'chattering'), path.join(home, '.cache')] });
+    folderIndex.ensure();
+    return { home, ready: !!folderIndex.ready, partial: !!folderIndex.partial, items: folderIndex.items().map(i => ({ abs: i.abs, depth: i.depth, git: !!i.git, mtimeMs: i.mtimeMs || 0 })) };
+  },
+  // The folders inside one folder (a typed path), with which hold a repository.
+  'folders.children': async dir => {
+    const ents = await fsp.readdir(abs(dir), { withFileTypes: true });
+    const out = [];
+    for (const e of ents) {
+      let isDir = e.isDirectory();
+      if (!isDir && e.isSymbolicLink()) { try { isDir = (await fsp.stat(path.join(abs(dir), e.name))).isDirectory(); } catch {} }
+      if (!isDir) continue;
+      let git = false; try { await fsp.stat(path.join(abs(dir), e.name, '.git')); git = true; } catch {}
+      out.push({ name: e.name, git });
+    }
+    let selfGit = false; try { await fsp.stat(path.join(abs(dir), '.git')); selfGit = true; } catch {}
+    return { children: out, selfGit };
+  },
+  // ---- projects ----
+  // The folders inside a project, to a depth (areas): rel → { git }.
+  'project.folders': async (root, { depth = 3, limit = 400, skip = [] } = {}) => {
+    const found = {}, skipping = new Set(skip);
+    let n = 0;
+    const walk = async (dir, rel, d) => {
+      if (d > depth || n >= limit) return;
+      let ents = [];
+      try { ents = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
+      ents.sort((a, b) => a.name.localeCompare(b.name));
+      for (const ent of ents) {
+        if (n >= limit) return;
+        if (!ent.isDirectory() || ent.name.startsWith('.') || skipping.has(ent.name)) continue;
+        const childRel = rel ? rel + '/' + ent.name : ent.name, full = path.join(dir, ent.name);
+        let git = false; try { await fsp.stat(path.join(full, '.git')); git = true; } catch {}
+        found[childRel] = { git }; n++;
+        await walk(full, childRel, d + 1);
+      }
+    };
+    await walk(abs(root), '', 1);
+    return found;
+  },
+  // Undo a project's setup: the folder goes only while it is still as setup
+  // left it (empty, or an empty repository). Answers what happened.
+  'project.undoSetup': async cwd => {
+    const dir = abs(cwd);
+    try {
+      const names = await fsp.readdir(dir);
+      const git = path.join(dir, '.git');
+      let gitIsSetups = false;
+      if (names.length === 1 && names[0] === '.git' && (await fsp.lstat(git)).isDirectory()) {
+        let packed = true; try { await fsp.stat(path.join(git, 'packed-refs')); } catch { packed = false; }
+        gitIsSetups = !packed && (await fsp.readdir(path.join(git, 'refs', 'heads'))).length === 0;
+      }
+      if (!names.length || gitIsSetups) { await fsp.rm(dir, { recursive: true }); return { removed: true }; }
+      return { removed: false, kept: 'it has files in it now' };
+    } catch (e) { return e.code === 'ENOENT' ? { removed: false } : { removed: false, kept: 'it could not be checked (' + e.message + ')' }; }
+  },
   // ---- notebooks (rat) ----
   // A plot or display a kernel of theirs made: only from their rat's plot
   // folder (the kernel writes there; a path elsewhere is refused).
