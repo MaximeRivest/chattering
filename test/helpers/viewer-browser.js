@@ -13,7 +13,8 @@ const { chromiumBinary } = require('./chromium.js');
 // home is made (a temporary folder; under the real home, `work` is a
 // project rather than a loose conversation's folder).
 async function viewerBrowser(t, opts = {}) {
-  const root = path.join(__dirname, '../..'), home = fs.realpathSync.native(fs.mkdtempSync(path.join(opts.homeBase || os.tmpdir(), opts.homeBase ? '.file-viewers-' : 'file-viewers-')));
+  // opts.root: the app to run (a copy, for a test that changes its files).
+  const root = opts.root || path.join(__dirname, '../..'), home = fs.realpathSync.native(fs.mkdtempSync(path.join(opts.homeBase || os.tmpdir(), opts.homeBase ? '.file-viewers-' : 'file-viewers-')));
   const work = path.join(home, 'work'); fs.mkdirSync(work);
   const agent = path.join(home, '.pi/agent'), sessions = path.join(agent, 'sessions/fixture'); fs.mkdirSync(sessions, { recursive: true });
   if (opts.fixture !== false) fs.writeFileSync(path.join(sessions, 'media.jsonl'), [

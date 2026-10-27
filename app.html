@@ -380,6 +380,12 @@ body:not(.side-layout):not(.phone-shell) .ag-files-block { display: none; }
 :root[data-theme-mode="binary"] .ag-scope button.on { background: var(--text); color: var(--bg); box-shadow: none; }
 .ag-empty { padding: 3px 10px 4px; color: var(--text-faint); font-size: 10px; }
 .side-foot { display: flex; align-items: center; gap: 4px; padding: var(--sp-1) var(--sp-2); }
+/* Restart to use what is on disk (app-update-ui.js, design/107). */
+.app-update { margin: 0 var(--sp-2) var(--sp-1); padding: 8px 10px; border: 1px solid var(--border, #ccc); border-radius: var(--r, 8px); font-size: 12.5px; line-height: 1.4; }
+.app-update p { margin: 0 0 6px; }
+.app-update p:last-child { margin-bottom: 0; }
+.app-update button { font-size: 12.5px; min-height: 28px; padding: 0 10px; }
+.app-update p + button + p { margin-top: 8px; }
 #sideFootSlot { display: flex; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; }
 #sideFootSlot > button { flex: none; min-height: 30px; height: 30px; padding: 0 6px; }
 #sideFold { height: 26px; min-height: 26px; padding: 0 6px; border-color: transparent; background: transparent; color: var(--text-faint); font-size: 10px; margin-left: auto; }
@@ -2546,6 +2552,7 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <script src="/ai-connect.js"></script>
 <script src="/welcome.js"></script>
 <script src="/file-completion-ui.js"></script>
+<script src="/app-update-ui.js"></script>
 <script src="/harness/compose-commands.js"></script>
 <script src="/harness-composer-ui.js"></script>
 <script src="/codex-ui.js"></script>
@@ -19690,6 +19697,7 @@ live.onmessage = ev => {
   }
   if (d.type === 'program-live') { if (window.Programs) Programs.live(d); return; }
   if (d.type === 'anywhere') { if (window.AnywhereUI) AnywhereUI.changed(); return; }
+  if (d.type === 'app-update') { if (window.AppUpdateUI) AppUpdateUI.changed(d.update); return; }
   // A new stream is a new connection id: follow the open notebook on it,
   // and the AI programs when their pages are open.
   if (d.type === 'hello' && docState) setTimeout(() => docFollow(docState), 0);
@@ -19908,6 +19916,7 @@ live.onmessage = ev => {
       // A new boot id after a reconnect: the server was replaced. This tab
       // may run an old interface — offer a reload, never navigate by itself.
       if (serverBoot && serverBoot !== d.boot) toast('↻ chattering restarted — tap to reload the interface', () => location.reload(), 'ok');
+      if (serverBoot && serverBoot !== d.boot && window.AppUpdateUI) AppUpdateUI.load();
       serverBoot = d.boot;
     }
     updateLiveBadges();

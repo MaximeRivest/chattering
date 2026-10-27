@@ -102,6 +102,17 @@ test('Windows, WSL and the server: every way between them, as the same person, t
   assert.deepEqual(here.places.map(p => [p.name, p.where]), [['LILLY-PC', 'Windows, on this computer'], ['LILLY-PC (Linux)', 'Linux, on this computer']]);
   const wslKey = fs.readFileSync(path.join(wsl.home, '.config', 'chattering', 'install-key.json'), 'utf8');
   assert.ok(here.keys.every(k => typeof k === 'string') && here.keys.length === 2 && here.keys.some(k => wslKey.includes(k.slice(20, 60))), 'both installs\' keys');
+  // This computer's own Chattering, asked through the link (design/107):
+  // whether it runs the code on disk, and a restart only with its header.
+  const upd = JSON.parse((await get(`http://localhost:${linkBase}/_chattering/update?check=1`, { Cookie: winCookie })).body);
+  assert.equal(upd.name, 'LILLY-PC', 'answered by the Windows app, not by the server');
+  assert.equal(upd.stale, false);
+  assert.equal(upd.how, 'manual', 'started by hand here: restart it where it was started');
+  const post = (headers = {}) => new Promise(resolve => { const r = http.request(`http://localhost:${linkBase}/_chattering/update`, { method: 'POST', headers: { Cookie: winCookie, ...headers } }, res => { let b = ''; res.on('data', c => b += c); res.on('end', () => resolve({ status: res.statusCode, body: b })); }); r.end(); });
+  assert.equal((await post()).status, 403, 'not without the restart button\u2019s header');
+  const refused = await post({ 'X-Chattering-Restart': '1' });
+  assert.equal(refused.status, 409);
+  assert.match(JSON.parse(refused.body).error, /started by hand/);
   const toWin = await get(`http://localhost:${linkBase}/_chattering/go?to=self`, { Cookie: winCookie, ...NAV });
   assert.equal(toWin.headers.location, `http://localhost:${win.port}/`);
   const toWsl = await get(`http://localhost:${linkBase}/_chattering/go?to=${encodeURIComponent(here.places[1].id)}`, { Cookie: winCookie, ...NAV });

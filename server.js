@@ -8785,7 +8785,7 @@ anywhereLinks.start().catch(e => console.error('anywhere links: ' + e.message));
 // reach them another way); /_chattering/go?to=… opens one, as this person
 // (a handoff to another install here). Only by opening a page: the other
 // computer's scripts can list the places but never read a handoff.
-function linkWayBack(req, res, link) {
+async function linkWayBack(req, res, link) {
   const u = new URL(req.url, 'http://localhost');
   const identity = identifyRequest(req);
   if (!identity || !identity.user) return false;
@@ -8802,6 +8802,20 @@ function linkWayBack(req, res, link) {
   if (u.pathname === '/_chattering/here' && req.method === 'GET') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify({ name: MACHINE_NAME, places: places.map(p => ({ id: p.id, name: p.name, where: p.where })), keys: [installKey.publicKey, ...locals.map(m => m.publicKey)] }));
+    return true;
+  }
+  // This install's own code against its disk, for a page shown through one
+  // of its links (design/107): the page cannot ask it any other way.
+  if (u.pathname === '/_chattering/update' && (req.method === 'GET' || req.method === 'POST')) {
+    const may = usersLib.isOwnerTier(identity);
+    const send = (status, body) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
+    if (!may) { send(403, { error: 'Only this computer\u2019s owner restarts its Chattering.' }); return true; }
+    if (req.method === 'GET') { if (u.searchParams.get('check') === '1') await appUpdate.check().catch(() => {}); send(200, { ...appUpdateView(), name: MACHINE_NAME }); return true; }
+    // A restart is asked by a script's fetch from the linked page: only
+    // with this install's own header, which other sites cannot send.
+    if (req.headers['x-chattering-restart'] !== '1') { send(403, { error: 'Ask with the restart button.' }); return true; }
+    try { send(200, await restartChattering({ when: u.searchParams.get('when') === 'now' ? 'now' : 'idle', by: identity.user.name })); }
+    catch (e) { send(e.status || 500, { error: e.message }); }
     return true;
   }
   if (u.pathname === '/_chattering/go' && req.method === 'GET') {
@@ -21108,6 +21122,7 @@ const APP_FILES = {
     '/push-ui.css': { file: 'push-ui.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
     '/context-panel.js': { file: 'context-panel.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/file-completion-ui.js': { file: 'file-completion-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/app-update-ui.js': { file: 'app-update-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/harness-composer-ui.js': { file: 'harness-composer-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/codex-ui.js': { file: 'codex-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/live-terminal-ui.js': { file: 'live-terminal-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
@@ -25291,6 +25306,15 @@ async function handleRequest(req, res) {
         node: process.version, nodePath: process.execPath, pi: runtimeLib.piVersion(), piSource: (runtimeLib.locatePi() || {}).source || null,
         activeRuns: headlessRuns.size, startedAt: BOOT_AT,
         rat: (() => { const r = ratBinary(); return r.path ? { path: r.path, source: r.source, version: r.version || null, outdated: !!r.outdated } : null; })() });
+    } else if (u.pathname === '/api/app/update' && req.method === 'GET') {
+      // Is this process running the code on disk (design/107)? ?check=1 looks now.
+      if (u.searchParams.get('check') === '1') await appUpdate.check().catch(() => {});
+      json(res, 200, appUpdateView());
+    } else if (u.pathname === '/api/app/restart' && req.method === 'POST') {
+      try {
+        const p = await readJsonBody(req, 1024).catch(() => ({}));
+        json(res, 200, { ...(await restartChattering({ when: p.when === 'now' ? 'now' : 'idle', by: identity && identity.user ? identity.user.name : null })), update: appUpdateView() });
+      } catch (e) { json(res, e.status || 500, { error: e.message }); }
     } else if (u.pathname === '/api/app/stop' && req.method === 'POST') {
       // A clean stop asked over HTTP: Windows has no SIGTERM to ask with.
       // Running work is stopped only when asked to (force).
@@ -25381,6 +25405,73 @@ async function shutdownGracefully() {
   process.exit(0);
 }
 process.on('SIGTERM', () => { shutdownGracefully(); });
+
+// ---- restart to use what is on disk (design/107) ----
+// The code this process runs against the code on disk (app-update.js),
+// checked every minute and when asked. The owner tier is told (an event,
+// and a notice in the page); through a link between computers, the page
+// asks this install at /_chattering/update (linkWayBack).
+const appUpdateLib = require('./app-update.js');
+const INSTALL_HOME = path.basename(path.dirname(__dirname)) === 'versions' ? path.dirname(path.dirname(__dirname)) : null;
+const appUpdate = appUpdateLib.createAppUpdate({ loaded: () => require('./module-stamps.js').loaded(), appDir: __dirname, version: APP_VERSION, installHome: INSTALL_HOME,
+  settleMs: Number(process.env.CHATTERING_UPDATE_SETTLE_MS) || 30000 });
+let restartPending = null; // { at, by } while a restart waits for running replies
+// How this process is restarted: asked once (it does not change while it runs).
+let supervisorCache = null;
+function thisSupervisor() {
+  if (supervisorCache) return supervisorCache;
+  // hub-own: this process's own cgroup, to know its supervisor
+  const cgroup = (() => { try { return fs.readFileSync('/proc/self/cgroup', 'utf8'); } catch { return ''; } })();
+  // hub-own: asking this process's own service manager which process is the service
+  const mainPid = (unit, user) => { try { return execFileSync('systemctl', [...(user ? ['--user'] : []), 'show', '-p', 'MainPID', '--value', unit], { encoding: 'utf8', timeout: 3000 }).trim(); } catch { return null; } };
+  return (supervisorCache = appUpdateLib.supervisorOf({ cgroup, installHome: INSTALL_HOME, mainPid }));
+}
+const appUpdateView = () => {
+  const sup = thisSupervisor();
+  return { ...appUpdate.state(), canRestart: sup.kind !== 'manual', how: sup.kind, waiting: restartPending ? headlessRuns.size : 0, pending: !!restartPending, startedAt: BOOT_AT };
+};
+appUpdate.onChange(() => broadcast({ type: 'app-update', update: appUpdateView() }));
+setTimeout(() => appUpdate.check().catch(() => {}), 20000).unref();
+setInterval(() => appUpdate.check().catch(() => {}), Number(process.env.CHATTERING_UPDATE_EVERY_MS) || 60000).unref();
+// Restart this process: by its supervisor, once nothing is being written
+// (when: 'idle', the default), or now (running replies are stopped and
+// show as interrupted). Started by hand (no supervisor): refused, with why.
+async function restartChattering({ when = 'idle', by = null } = {}) {
+  const sup = thisSupervisor();
+  if (sup.kind === 'manual') throw Object.assign(new Error('This Chattering was started by hand: restart it where you started it.'), { status: 409 });
+  if (when !== 'now' && headlessRuns.size) {
+    if (!restartPending) {
+      restartPending = { at: Date.now(), by };
+      const wait = setInterval(() => {
+        if (!restartPending) return clearInterval(wait);
+        if (headlessRuns.size) return;
+        clearInterval(wait);
+        restartChattering({ when: 'now', by }).catch(e => console.error('restart: ' + e.message));
+      }, 3000);
+      wait.unref();
+      broadcast({ type: 'app-update', update: appUpdateView() });
+    }
+    return { restarting: false, waiting: headlessRuns.size };
+  }
+  restartPending = null;
+  console.error(`[restart] by ${by || 'someone'}, through ${sup.kind}${sup.unit ? ' ' + sup.unit : ''}`);
+  if (sup.kind === 'systemd') {
+    // Its manager restarts it, from a unit of its own that outlives this one.
+    if (!SYSTEMD_RUN) throw new Error('systemd-run is not found: restart the service yourself (systemctl' + (sup.user ? ' --user' : '') + ' restart ' + sup.unit + ')');
+    // hub-own: restarting this very service through its own manager
+    const child = spawn(SYSTEMD_RUN, [...(sup.user ? ['--user'] : []), '--collect', '--quiet', '--on-active=2', '--unit', 'chattering-restart-' + Date.now(), 'systemctl', ...(sup.user ? ['--user'] : []), 'restart', sup.unit], { stdio: 'ignore', detached: true });
+    child.unref();
+    return { restarting: true, how: 'systemd' };
+  }
+  // An install: a small helper waits for this process to end, then starts
+  // the current version through the launcher (which reads current.txt).
+  const waiter = appUpdateLib.restartHelperSource(process.pid, sup.command);
+  // hub-own: the helper that starts this install again after it stops
+  spawn(process.execPath, ['-e', waiter], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  setTimeout(() => shutdownGracefully(), 300);
+  return { restarting: true, how: 'launcher' };
+}
+
 process.on('SIGINT', () => { shutdownGracefully(); });
 
 // ---------- speech preview relay ----------
