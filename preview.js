@@ -330,8 +330,12 @@ async function readVersion(io, claims, version, abs) {
   };
   if (version === 'live') return live('live');
   const snap = await store.snapshot(version);
-  if (!inside(snap.root, claims.r) && !inside(claims.r, snap.root)) throw httpError(404, 'That version belongs to another workspace');
-  const rel = path.relative(snap.root, abs).split(path.sep).join('/');
+  // A folder that moved since (claims.o: its root as the versions name it):
+  // the version is looked up under the old name, the disk under the new.
+  const recordedRoot = claims.o || claims.r;
+  const recorded = path.join(recordedRoot, path.relative(claims.r, abs));
+  if (!inside(snap.root, recordedRoot) && !inside(recordedRoot, snap.root)) throw httpError(404, 'That version belongs to another workspace');
+  const rel = path.relative(snap.root, recorded).split(path.sep).join('/');
   const item = snap.manifest.find(f => f.path === rel);
   if (item && item.oid) return { bytes: await store.blob(snap.root, item.oid), mime: mimeOf(abs), immutable: true, source: 'version' };
   return live('live-fallback');

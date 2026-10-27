@@ -541,21 +541,27 @@ function madeSummaries() {
 }
 // What each box of steps changed, shown in the conversation (design/88).
 let stepChangesService = null;
-// A person on their own account reads what their steps changed from their
-// own file history and their own disk (design/105): a service of their own.
-const personStepChanges = new Map();
-function stepChanges(identity = null) {
-  const mine = ownFilesOf(identity);
-  if (mine) {
-    let svc = personStepChanges.get(mine.account);
-    if (!svc || svc.host !== mine.host) {
-      const io = ioOfMine(mine), store = io.store();
-      svc = { host: mine.host, service: require('./step-changes.js').createStepChanges({
+// What a conversation's steps changed comes from the history of the account
+// that keeps it (its agent saved it there); the files as they are now are
+// read as the reader (design/106). One service per pair, the hub's own
+// (both the hub) as before.
+const pairStepChanges = new Map();
+function stepChanges(identity = null, key = '') {
+  const reader = ownFilesOf(identity);
+  const keeper = key ? keeperOf(key) : localActor;
+  if (reader || keeper.kind !== 'local') {
+    const id = (keeper.mine ? keeper.mine.account : '') + '|' + (reader ? reader.account : '');
+    const hosts = [keeper.mine && keeper.mine.host, reader && reader.host];
+    let svc = pairStepChanges.get(id);
+    if (!svc || svc.hosts.some((h, i) => h !== hosts[i])) {
+      const io = reader ? ioOfMine(reader) : serverIo;
+      const store = keeper.kind === 'local' ? checkpoints() : keeper.io.store();
+      svc = { hosts, service: require('./step-changes.js').createStepChanges({
         store: () => store, io, readSession: f => readTranscriptText(f),
-        session: key => { const { sessionPath, entry } = sessionPathsFor(key); return { file: sessionPath, cwd: entry.cwd || '', source: entry.source }; },
-        recorded: key => conversationDiffs(key),
+        session: k => { const { sessionPath, entry } = sessionPathsFor(k); return { file: sessionPath, cwd: entry.cwd || '', source: entry.source }; },
+        recorded: k => conversationDiffs(k),
       }) };
-      personStepChanges.set(mine.account, svc);
+      pairStepChanges.set(id, svc);
     }
     return svc.service;
   }
@@ -1679,12 +1685,13 @@ const previewHandler = previewLib.createPreviewHandler({
   typeViewer: artifactTypeViewer, serveFile: fileMedia.serveFile,
   // A preview of someone on their own account is read as them, from their
   // disk and their file history (design/105); everyone else's as before.
+  // The live files as the reader (the person the capability names), the
+  // versions from the history of the account that keeps the conversation.
   ioFor: claims => {
     const io = viewerIo(identityOfUserId(claims.u));
-    if (!io.mine) return null;
-    const store = io.store();
-    return { store: { snapshot: id => store.snapshot(id), blob: async (root, oid) => Buffer.from(await store.blob(root, oid)) },
-      realpath: io.realpath, stat: io.stat, readFile: io.readFile,
+    const history = claims.k && index[claims.k] ? storeOfConversation(claims.k) : { store: checkpoints(), snapshot: snapshotCached };
+    return { store: { snapshot: id => history.snapshot(id), blob: async (root, oid) => Buffer.from(await history.store.blob(root, oid)) },
+      realpath: io.realpath, stat: io.stat, readFile: async p => Buffer.from(await io.readFile(p)),
       serveFile: (req, res, found, mime, opts) => io.serve(req, res, found.abs, found.stat, mime, opts) };
   },
 });
@@ -1704,14 +1711,39 @@ async function artifactKindOf(abs, isDir, io = serverIo) {
   if (['.mp3', '.wav', '.ogg', '.m4a', '.flac'].includes(ext)) return 'audio';
   return 'text';
 }
-function artifactPathFor(key, value, home = os.homedir()) {
+function artifactPathFor(key, value, home = os.homedir()) { return artifactPlaceFor(key, value, home).abs; }
+// An artifact's two names: `recorded`, the path as the conversation named it
+// (resolved against the folder it ran in; its saved versions are keyed by
+// it), and `abs`, where those files are now: a folder that moved to a
+// person's account (scripts/account-move.js) is followed.
+function artifactPlaceFor(key, value, home = os.homedir()) {
   const entry = index[key];
   if (!entry) throw Object.assign(new Error('not found'), { status: 404 });
   const raw = String(value || '').trim();
   if (!raw) throw new Error('which artifact?');
-  const cwd = entry.cwd || home;
-  const expanded = raw.startsWith('~/') ? path.join(home, raw.slice(2)) : raw;
-  return path.resolve(cwd, expanded);
+  const keeperHome = keeperHomeOf(key) || home;
+  const cwd = entry.cwd || keeperHome;
+  const expanded = raw.startsWith('~/') ? path.join(keeperHome, raw.slice(2)) : raw;
+  const recorded = path.resolve(cwd, expanded);
+  return { recorded, abs: movedFolder(recorded) };
+}
+// The account that keeps a conversation: its agent ran as it and saved the
+// conversation's file history in that account's store. Versions of what a
+// conversation made are read from there, whoever reads the conversation
+// (seeing the conversation is what lets someone see what it showed).
+function keeperOf(key) {
+  const name = index[key] ? accountOfSource(index[key].source) : null;
+  const person = name ? personWithAccount(name) : null;
+  const mine = person ? filesOfPerson(person) : null;
+  return mine ? actorOfMine(mine) : localActor;
+}
+function keeperHomeOf(key) { const k = keeperOf(key); return k.home; }
+// The keeper's store, and its snapshots (the hub's own are cached).
+function storeOfConversation(key) {
+  const keeper = keeperOf(key);
+  if (keeper.kind === 'local') return { store: checkpoints(), snapshot: id => snapshotCached(id), keeper };
+  const store = keeper.io.store();
+  return { store, snapshot: id => store.snapshot(id), keeper };
 }
 // Fingerprint of the artifact in one snapshot: the object ids of its files.
 function snapshotSignature(snap, abs, isDir) {
@@ -1769,8 +1801,10 @@ async function artifactResolve(identity, params) {
   const key = String(params.id || '');
   if (!index[key]) throw Object.assign(new Error('not found'), { status: 404 });
   if (!keyVisible(identity, key)) throw Object.assign(new Error('This is not shared with you.'), { status: 403 });
+  // The files now are read as the reader; the versions come from the
+  // keeper's history, under the name the conversation used.
   const io = viewerIo(identity);
-  const abs = artifactPathFor(key, params.path, io.home);
+  const { abs, recorded } = artifactPlaceFor(key, params.path, io.home);
   assertPathAccess(identity, abs, 'see');
   let stat = null;
   try { stat = await io.stat(abs); } catch {}
@@ -1785,17 +1819,15 @@ async function artifactResolve(identity, params) {
   const calls = [];
   for (const node of onPath) for (const m of conversationTree.rowsOf(T, node)) if (m.role === 'tool' && m.id) { calls.push(m.id); callNode.set(m.id, node); }
   const order = new Map(calls.map((c, i) => [c, i]));
-  // The versions in the reader's own file history (a person on their own
-  // account keeps theirs; this server's holds the rest).
-  const store = io.store();
-  const rows = (await store.boundariesByCalls(calls))
+  const history = storeOfConversation(key);
+  const rows = (await history.store.boundariesByCalls(calls))
     .filter(b => b.snapshot && (b.phase === 'after' || b.phase === 'after-error'))
     .sort((a, b) => (order.get(a.call) - order.get(b.call)) || (a.id - b.id));
   const versions = [];
   for (const b of rows) {
     let snap;
-    try { snap = io.mine ? await store.snapshot(b.snapshot) : await snapshotCached(b.snapshot); } catch { continue; }
-    const sig = snapshotSignature(snap, abs, isDir);
+    try { snap = await history.snapshot(b.snapshot); } catch { continue; }
+    const sig = snapshotSignature(snap, recorded, isDir);
     if (!sig) continue;
     if (versions.length && versions[versions.length - 1].sig === sig.sig) continue;
     versions.push({ id: b.snapshot, call: b.call, node: callNode.get(b.call) || null, at: b.finished, sig: sig.sig, missing: sig.missing, files: sig.files });
@@ -1808,9 +1840,11 @@ async function artifactResolve(identity, params) {
   const atEnd = head === T.leafNode;
   const show = !versions.length || (atEnd && disk && !liveSame) ? 'live' : last.id;
   const root = isDir ? abs : path.dirname(abs);
-  const cap = previewCaps.sign({ u: identity.user.id, k: key, r: root, e: isDir ? '' : path.basename(abs), t: kind === 'slides' ? 'slides' : undefined });
+  const recordedRoot = isDir ? recorded : path.dirname(recorded);
+  // o: the root as the versions name it, when the folder moved since.
+  const cap = previewCaps.sign({ u: identity.user.id, k: key, r: root, ...(recordedRoot !== root ? { o: recordedRoot } : {}), e: isDir ? '' : path.basename(abs), t: kind === 'slides' ? 'slides' : undefined });
   return {
-    path: abs, relPath: path.relative(index[key].cwd || io.home, abs) || path.basename(abs), kind, isDir, exists: !!stat,
+    path: abs, recordedPath: recorded !== abs ? recorded : undefined, relPath: path.relative(movedFolder(index[key].cwd || io.home), abs) || path.basename(abs), kind, isDir, exists: !!stat,
     title: String(params.title || '').slice(0, 120) || path.basename(abs),
     versions: versions.map(({ sig, ...v }) => v), live: { exists: !!stat, same: liveSame, files: disk ? disk.files : 0 },
     show, head, cap, site: previewLib.siteId(key, root), entry: isDir ? '' : path.basename(abs),
@@ -1858,9 +1892,12 @@ async function artifactBlob(identity, params, req, res) {
     return io.serve(req, res, file, stat, safeMime, { maxBytes: 64 * 1024 * 1024, headers });
   }
   if (!/^[a-f0-9]{64}$/.test(version)) throw new Error('bad version');
+  // The version, from the keeper's history, under the name it was saved by.
+  const history = storeOfConversation(String(params.id || ''));
   let snap;
-  try { snap = io.mine ? await io.store().snapshot(version) : await snapshotCached(version); } catch (e) { throw Object.assign(new Error(e.message), { status: 404 }); }
-  const rel = path.relative(snap.root, file).split(path.sep).join('/');
+  try { snap = await history.snapshot(version); } catch (e) { throw Object.assign(new Error(e.message), { status: 404 }); }
+  const recordedFile = r.recordedPath ? path.join(r.recordedPath, path.relative(r.path, file)) : file;
+  const rel = path.relative(snap.root, recordedFile).split(path.sep).join('/');
   const item = snap.manifest.find(f => f.path === rel);
   // A file the version did not keep (the artifact's version holds only its
   // page and what the page names, design/101): the file as it is now.
@@ -1869,7 +1906,7 @@ async function artifactBlob(identity, params, req, res) {
     if (!stat || !stat.isFile()) throw Object.assign(new Error('This file is not in that version.'), { status: 404 });
     return io.serve(req, res, file, stat, safeMime, { maxBytes: 64 * 1024 * 1024, headers: { ...headers, 'X-Chattering-Source': 'live-fallback' } });
   }
-  const body = Buffer.from(await io.store().blob(snap.root, item.oid));
+  const body = Buffer.from(await history.store.blob(snap.root, item.oid));
   res.writeHead(200, { ...headers, 'Content-Type': safeMime, 'Content-Length': body.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
   res.end(req.method === 'HEAD' ? undefined : body);
 }
@@ -1907,7 +1944,7 @@ async function artifactDeclare(identity, body) {
   // Versions keep the artifact with the pictures and fonts it uses: a file
   // with what it names, a folder whole while it is small (design/101).
   let saved = null, scopeError = '';
-  try { saved = await io.store().declareArtifact(cwd, abs); } catch (e) { scopeError = e.message; }
+  try { saved = await storeOfConversation(key).store.declareArtifact(cwd, abs); } catch (e) { scopeError = e.message; }
   const versionNote = saved && saved.folder && !saved.whole
     ? `The folder is too large to version whole (${saved.over}); ` + (saved.entry ? `versions keep ${path.basename(saved.entry)} and the files it names.` : 'versions keep none of it. Show its page (a file) instead.')
     : '';
@@ -22073,7 +22110,7 @@ async function handleRequest(req, res) {
         assertCan(identity, 'see', targetOf(key), 'this conversation');
         const groups = (Array.isArray(input.groups) ? input.groups : []).slice(0, 5000)
           .map(g => (Array.isArray(g) ? g : []).filter(c => typeof c === 'string' && c.length <= 200).slice(0, 2000)).filter(g => g.length);
-        json(res, 200, await stepChanges(identity).changes(key, groups));
+        json(res, 200, await stepChanges(identity, key).changes(key, groups));
       } catch (e) { json(res, e.status || 500, { error: e.message }); }
     } else if ((u.pathname === '/api/conversation/change' || u.pathname === '/api/conversation/change-blob') && req.method === 'GET') {
       try {
@@ -22083,8 +22120,8 @@ async function handleRequest(req, res) {
         if (!calls.length || !path.isAbsolute(abs)) return json(res, 400, { error: 'Name the steps and the file' });
         assertPathAccess(identity, abs, 'see');
         const picture = u.pathname.endsWith('-blob');
-        if (!picture) return json(res, 200, await stepChanges(identity).content(key, calls, abs));
-        const bytes = await stepChanges(identity).blob(key, calls, abs, u.searchParams.get('side') === 'old' ? 'old' : 'next');
+        if (!picture) return json(res, 200, await stepChanges(identity, key).content(key, calls, abs));
+        const bytes = await stepChanges(identity, key).blob(key, calls, abs, u.searchParams.get('side') === 'old' ? 'old' : 'next');
         const mime = imageMimeForPath(abs);
         if (!mime) return json(res, 415, { error: 'Only pictures are shown this way' });
         res.writeHead(200, { 'Content-Type': mime, 'Content-Length': bytes.length, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });

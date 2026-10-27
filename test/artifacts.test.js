@@ -318,3 +318,64 @@ test('a real server: versions follow the head, the preview origin serves them, w
   assert.match(await evaluate(`Artifacts.library.ownerMarkHtml(${JSON.stringify(path.join(site, 'index.html'))})`), /data-art-owner="f\|/);
   assert.deepEqual(exceptions.filter(e => !/ResizeObserver/.test(e)), []);
 });
+
+// A project folder that moved after its conversation made an artifact
+// (scripts/account-move.js: Lilly's projects, 2026-10-26). The conversation
+// still names the old folder, and its versions were saved under the old
+// name. The artifact is found where the folder is now, and its versions
+// still show (2026-10-27: both were lost, "Nothing at /home/maxime/...").
+test('an artifact whose folder moved: found where it is now, its versions still shown', { timeout: 60000 }, async t => {
+  const root = path.join(__dirname, '..'), home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'artifacts-moved-')));
+  const agent = path.join(home, '.pi/agent'), sessions = path.join(agent, 'sessions/fixture');
+  const before = path.join(home, 'old-place', 'proj'), after = path.join(home, 'new-place', 'proj');
+  fs.mkdirSync(sessions, { recursive: true }); fs.mkdirSync(path.join(before, 'site'), { recursive: true }); fs.mkdirSync(path.dirname(after), { recursive: true });
+  spawnSync('git', ['init', '-q'], { cwd: before });
+  let server;
+  t.after(async () => { await require('./helpers/cleanup.js').stopAndRemove(server, home); });
+  const { CheckpointStore } = require('../checkpoint-store.js');
+  const store = new CheckpointStore(path.join(home, 'checkpoints'));
+  await store.addArtifactScope(before, path.join(before, 'site'));
+  fs.writeFileSync(path.join(before, 'site', 'index.html'), '<h1>MADE BEFORE THE MOVE</h1>');
+  const v1 = await store.capture(before, { session: 's', run: 'r', call: 'c1', tool: 'write', phase: 'after' });
+  store.close();
+  assert.ok(v1.snapshot);
+  // The folder moves, and the move is recorded.
+  fs.renameSync(before, after);
+  fs.writeFileSync(path.join(after, 'site', 'index.html'), '<h1>CHANGED AFTER THE MOVE</h1>');
+  fs.mkdirSync(path.join(home, 'notes', 'chattering', 'projects'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'notes', 'chattering', 'projects', 'folder-moves.json'), JSON.stringify({ v: 1, moves: { [before]: { to: after, at: new Date().toISOString() } } }));
+  const ts = n => new Date(Date.UTC(2026, 8, 1, 12, 0, n)).toISOString();
+  fs.writeFileSync(path.join(sessions, 'moved.jsonl'), [
+    { type: 'session', version: 3, id: 'moved', cwd: before },
+    { type: 'message', id: 'q1', parentId: null, timestamp: ts(1), message: { role: 'user', content: [{ type: 'text', text: 'Make a page' }] } },
+    { type: 'message', id: 'a1', parentId: 'q1', timestamp: ts(2), message: { role: 'assistant', model: 'm', provider: 'p', content: [{ type: 'toolCall', id: 'c1', name: 'write', arguments: { path: 'site/index.html', content: '…' } }, { type: 'toolCall', id: 'art', name: 'artifact', arguments: { path: 'site' } }] } },
+    { type: 'message', id: 'r1', parentId: 'a1', timestamp: ts(3), message: { role: 'toolResult', toolCallId: 'c1', toolName: 'write', content: [{ type: 'text', text: 'ok' }], isError: false } },
+    { type: 'message', id: 'r2', parentId: 'r1', timestamp: ts(4), message: { role: 'toolResult', toolCallId: 'art', toolName: 'artifact', content: [{ type: 'text', text: 'ok' }], isError: false } },
+  ].map(JSON.stringify).join('\n') + '\n');
+  const port = await freePort(), previewPort = await freePort(), token = 'moved-test-token', auth = { Authorization: 'Bearer ' + token };
+  require('./helpers/first-run.js').answerFirstRun(home);
+  let log = '';
+  server = spawn(process.execPath, ['server.js'], { cwd: root, env: { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_PREVIEW_PORT: String(previewPort),
+    CHATTERING_TLS_PORT: '0', CHATTERING_HOST: '127.0.0.1', CHATTERING_TOKEN: token, CHATTERING_NO_SYNC: '1', CHATTERING_CACHE_DIR: path.join(home, 'cache'),
+    CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'), CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent }, stdio: ['ignore', 'pipe', 'pipe'] });
+  server.stdout.on('data', b => log += b); server.stderr.on('data', b => log += b);
+  const base = 'http://127.0.0.1:' + port, key = 'pi:fixture/moved.jsonl';
+  let ready = false;
+  for (let i = 0; i < 150 && !ready; i++) {
+    try { ready = (await (await fetch(base + '/api/sessions', { headers: auth })).json()).some(s => s.key === key); } catch {}
+    if (!ready) await new Promise(r => setTimeout(r, 100));
+  }
+  assert.ok(ready, log);
+  const r = await (await fetch(base + '/api/artifacts/resolve?' + new URLSearchParams({ id: key, path: 'site' }), { headers: auth })).json();
+  assert.equal(r.path, path.join(after, 'site'), 'where the folder is now');
+  assert.equal(r.exists, true, JSON.stringify(r));
+  assert.deepEqual(r.versions.map(v => v.id), [v1.snapshot], 'the version saved under the old name');
+  // The same artifact named by its old absolute path (the side panel's list).
+  const byOld = await (await fetch(base + '/api/artifacts/resolve?' + new URLSearchParams({ id: key, path: path.join(before, 'site') }), { headers: auth })).json();
+  assert.equal(byOld.path, path.join(after, 'site'));
+  const pv = v => fetch(`http://127.0.0.1:${previewPort}/a/${r.cap}/${v}/`).then(x => x.text());
+  assert.match(await pv(v1.snapshot), /MADE BEFORE THE MOVE/, 'the version, through the preview address');
+  assert.match(await pv('live'), /CHANGED AFTER THE MOVE/, 'the files now, from the new place');
+  const blob = await fetch(base + '/api/artifacts/blob?' + new URLSearchParams({ id: key, path: 'site', file: 'index.html', version: v1.snapshot }), { headers: auth });
+  assert.match(await blob.text(), /MADE BEFORE THE MOVE/);
+});

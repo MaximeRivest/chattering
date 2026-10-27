@@ -399,6 +399,10 @@ test('a person on their own account: artifacts, pictures, changes, documents and
   assert.equal(art.versions.length, 1, 'the version her agent wrote, from her file history');
   assert.equal(await (await ok('blob', get(remote + `/api/artifacts/blob?id=${k}&path=site&file=index.html`, tess))).text(), '<h1>made by the agent</h1>');
   assert.equal(await (await ok('blob version', get(remote + `/api/artifacts/blob?id=${k}&path=site&file=index.html&version=${art.versions[0].id}`, tess))).text(), '<h1>made by the agent</h1>');
+  // Read by the owner, her conversation's versions come from her history
+  // (2026-10-27: the reader's own history was asked, and the owner saw none).
+  const asOwner = await okJson('resolve as the owner', get(local + `/api/artifacts/resolve?id=${k}&path=site`));
+  assert.deepEqual(asOwner.versions.map(v => v.id), art.versions.map(v => v.id), 'the keeper\u2019s versions, whoever reads');
   for (const v of ['live', art.versions[0].id]) {
     const page = await fetch(`http://127.0.0.1:${previewPort}/a/${art.cap}/${v}/`, { headers: { Host: art.site + '.localhost:' + previewPort } });
     assert.equal(page.status, 200, v);
