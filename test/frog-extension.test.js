@@ -23,6 +23,7 @@ test('the frog extension calls its routes and notes the workspace only in its mo
     hits.push({ method: req.method, url: req.url, auth: req.headers.authorization, body: body ? JSON.parse(body) : null });
     res.setHeader('content-type', 'application/json');
     if (req.url === '/api/frog/workspace') return res.end(JSON.stringify({ text: workspace }));
+    if (req.url.startsWith('/api/frog/is-frog?')) return res.end(JSON.stringify({ frog: new URL(req.url, 'http://x').searchParams.get('session') === '/frog/session.jsonl' }));
     if (req.url === '/api/frog/interrupted') { const text = cut; cut = ''; return res.end(JSON.stringify({ text })); }
     if (req.url === '/api/frog/send') return res.end(JSON.stringify({ sent: true, id: '01a149bb', title: 'bigspin', project: 'bigspin' }));
     res.statusCode = 404; res.end(JSON.stringify({ error: 'No conversation has the id "zz".' }));
@@ -59,11 +60,22 @@ test('the frog extension calls its routes and notes the workspace only in its mo
   assert.match(ws.content[0].text, /^Working \(1\)/, 'the workspace reads as text, not JSON');
 
   const hook = () => ext.handlers.get('before_agent_start')[0]({ type: 'before_agent_start', prompt: 'who is working?' }, ctx);
-  loaded.runtime.getActiveTools = () => ['read', 'bash'];
+  // Another conversation: the frog's tools are taken away when it starts,
+  // even with no modes extension to do it (a fresh install), and it gets no
+  // note, even with the workspace tool active.
+  let active = ['read', 'bash', ...ext.tools.keys()];
+  loaded.runtime.getActiveTools = () => active;
+  loaded.runtime.setActiveTools = names => { active = names; };
+  const start = file => ext.handlers.get('session_start')[0]({ type: 'session_start' }, { ...ctx, sessionManager: { getSessionFile: () => file } });
+  await start('/work/other.jsonl');
+  assert.deepEqual(active, ['read', 'bash'], 'none of the frog\u2019s tools in another conversation');
+  active = mode.tools;
   const before = hits.length;
-  assert.equal(await hook(), undefined, 'another mode gets no note');
+  assert.equal(await hook(), undefined, 'another conversation gets no note');
   assert.equal(hits.length, before, 'and costs no request');
-  loaded.runtime.getActiveTools = () => mode.tools;
+  // The frog's own conversation keeps them, and gets its notes.
+  await start('/frog/session.jsonl');
+  assert.deepEqual(active, mode.tools, 'the frog keeps its tools');
   const note = await hook();
   assert.equal(note.message.customType, 'frog-workspace');
   assert.equal(note.message.display, false);

@@ -6418,6 +6418,13 @@ async function frogApi(op, method, p, identity) {
   switch (op) {
     case 'home': return post ? ensureFrogHome(identity) : { ...theFrog.home(), id: theFrog.key && index[theFrog.key] ? frogLib.refOf(index, theFrog.key) : null };
     case 'workspace': return frogWorkspace(identity);
+    // Is this conversation file the frog's? Its extension asks when a
+    // conversation starts, and keeps its tools only there (extensions/frog.ts).
+    case 'is-frog': {
+      const k = theFrog.key && index[theFrog.key] ? theFrog.key : null;
+      let mine = null; try { mine = k ? path.resolve(sessionPathsFor(k).sessionPath) : null; } catch {}
+      return { frog: !!(mine && p.session && path.resolve(String(p.session)) === mine) };
+    }
     case 'context': return frogContextList(p, identity);
     case 'fresh': if (post) return frogFresh(p, identity); break;
     case 'aside': if (post) return frogAside(p); break;
