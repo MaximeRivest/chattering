@@ -130,6 +130,42 @@ folders through their ACLs, so these work today; under the unprivileged
 hub they must move to the owner's host (a watch operation that pushes
 events back).
 
+## The guard: a ratchet (2026-10-26)
+
+Until the hub runs as an account of its own, nothing in the language stops
+new code from opening a file with the hub's rights: it works for the owner
+and is broken, or unsafe, for everyone else. `scripts/disk-ratchet.js`
+reads the hub's code with a real parser (acorn, vendored) and counts every
+direct use of `fs` and `child_process` (aliases, destructured functions and
+server.js's own wrappers included) in every module the hub loads, except
+the code that runs as the person (`person-ops.js`, `account-host.js`).
+`test/disk-ratchet.test.js` holds each place to its count in
+`test/disk-ratchet-baseline.json`, which may only go down:
+
+- a **place** is a module and its innermost named function, plus the
+  route inside the request handler, so one new touch cannot hide behind
+  one removed elsewhere (a single total would allow that);
+- **more** in a place fails, naming the lines and saying what to do
+  (an actor, a new operation in `person-ops.js`, or a `// hub-own:
+  <reason>` mark for the hub's own records); `--accept` raises it, for a
+  reason the commit must give;
+- **fewer** fails too, until locked in (`--update`): a gain that is not
+  locked in can be spent again unseen;
+- the test checks the guard itself (each way of touching files is seen;
+  comments, strings and constants are not; marks need a reason), and that
+  it looks at the hub's modules and only those.
+
+Baseline at its start: 1,209 touches in 605 places across 158 modules
+(649 in server.js). Many are legitimately the hub's own records; they get
+`hub-own` marks as they are reviewed, which takes them out of the count
+and leaves, in the end, exactly the list the cutover below must move.
+
+Stated gap: a call to an existing library function that itself touches
+the disk (`fileOps.renameEntry`, `inkNotes.create`) counts inside that
+library, not at the new call site. Following calls across modules would
+need a call graph; the cutover closes the gap for good, because then
+Linux refuses what the guard cannot see.
+
 ## The end state: an unprivileged hub
 
 The same code, a second deployment mode (design/46): the hub runs as a
