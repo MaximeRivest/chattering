@@ -96,6 +96,10 @@ let s = ''; process.stdin.on('data', d => s += d).on('end', () => {
     }
     fs.rmdirSync(inHome);
     fs.symlinkSync(f.root, inHome);
+    // Moved files keep the access they had; the people folder's declared
+    // grant (the server may read, design/105) is given to them as well.
+    require('child_process').execFileSync('setfacl', ['-R', '-P', '-m', 'u:' + req.service + ':rX', '--', f.root]);
+    require('child_process').execFileSync('setfacl', ['-R', '-P', '-d', '-m', 'u:' + req.service + ':rX,u:' + os.userInfo().username + ':rwX', '--', f.root]);
     row.state = 'moved';
   }
   process.stdout.write(JSON.stringify(out) + '\n');
@@ -151,7 +155,7 @@ async function main() {
   if (!o.yes) { say('\nNothing changed. Run again with --yes to move ' + todo.map(h => NAMES[h]).join(', ') + '.'); return; }
   const moving = {};
   for (const h of todo) moving[h] = agents[h];
-  const done = asThem(account, WORK, { agents: moving, move: true });
+  const done = asThem(account, WORK, { agents: moving, move: true, service: require('os').userInfo().username });
   for (const [h, row] of Object.entries(done)) say(`  ${NAMES[h]}: ${row.state === 'moved' ? 'moved, and ~/' + agents[h].home + ' is now the link' : row.state}`);
   say('Chattering: ' + await recheck(o.server, account.name));
 }

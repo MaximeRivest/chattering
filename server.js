@@ -121,10 +121,11 @@ function sourceOfPath(absPath) {
 // Antigravity conversation is a SQLite database in write-ahead mode: while
 // its program runs, new steps are in <file>-wal and the file itself does
 // not change, so both count.
+// A person's file is stat'ed as declared (asDeclared, design/108).
 async function statTranscript(source, absPath) {
-  const st = await fsp.stat(absPath);
+  const st = await asDeclared(absPath, () => fsp.stat(absPath));
   if (harnessOfSource(source) !== 'agy') return st;
-  const wal = await fsp.stat(absPath + '-wal').catch(() => null);
+  const wal = await asDeclared(absPath + '-wal', () => fsp.stat(absPath + '-wal')).catch(() => null);
   return wal ? { mtimeMs: Math.max(st.mtimeMs, wal.mtimeMs), size: st.size + wal.size } : st;
 }
 // The name this machine goes by in memory documents and towards peers.
@@ -418,7 +419,7 @@ const searchIdx = openSearchIndex(path.join(CACHE_DIR, 'search.db'));
 const usageIdx = usageLib.openUsageIndex(USAGE_DB_FILE);
 // A person's own conversations are read only when theirs (design/105);
 // null for every other file: usage reads it as before.
-if (usageIdx) usageIdx.openStream = async file => { const owner = ownerOfTranscript(file); return owner ? (await accountsLib.openOwned(file, owner)).fh.createReadStream({ encoding: 'utf8' }) : null; };
+if (usageIdx) usageIdx.openStream = async file => { const owner = ownerOfTranscript(file); return owner ? (await asDeclared(file, () => accountsLib.openOwned(file, owner))).fh.createReadStream({ encoding: 'utf8' }) : null; };
 // The file edit ledger (fileledger.js, design/33): every recorded change
 // to every file, from transcripts, Git, the editor, and the watcher. A
 // derived cache too; the boot backfill rebuilds it when it is missing.
@@ -1149,7 +1150,7 @@ async function parseFile(absPath) {
   // Claude Code: the results of one reply's parallel tool calls are one step, not branches (claude-chain.js)
   const claudeChain = createClaudeChain();
   const owner = ownerOfTranscript(absPath);
-  const stream = owner ? (await accountsLib.openOwned(absPath, owner)).fh.createReadStream({ encoding: 'utf8' }) : fs.createReadStream(absPath, { encoding: 'utf8' });
+  const stream = owner ? (await asDeclared(absPath, () => accountsLib.openOwned(absPath, owner))).fh.createReadStream({ encoding: 'utf8' }) : fs.createReadStream(absPath, { encoding: 'utf8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   for await (const line of rl) {
     if (!line) continue;
@@ -2217,7 +2218,7 @@ function isPersonNoteRel(rel) { return /^(notes|handwritten)[\\/]/.test(rel); }
 
 async function* walk(dir, base) {
   let entries;
-  try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
+  try { entries = await asDeclared(dir, () => fsp.readdir(dir, { withFileTypes: true })); } catch { return; }
   for (const e of entries) {
     const abs = path.join(dir, e.name);
     if (e.isDirectory()) yield* walk(abs, base);
@@ -2387,7 +2388,11 @@ function watchTree(baseDir, onFile, source = null) {
           if (st.isDirectory()) add(abs);
         });
       });
-    } catch (e) { console.error('watch failed:', dir, e.message); return; }
+    } catch (e) {
+      // A person's folder a program made 0700: readable again, then watched.
+      if (e.code === 'EACCES' && peopleRootOf(dir)) { keepReadable([dir]).then(ok => { if (ok) add(dir); }); return; }
+      console.error('watch failed:', dir, e.message); return;
+    }
     w.on('error', () => remove(dir));
     watchers.set(dir, w);
     fs.readdir(dir, { withFileTypes: true }, (err, entries) => {
@@ -7595,11 +7600,49 @@ function accountSourcesReady(name) {
     // hub-own: the owner of a folder this server is declared to read (design/105), as registerAccountSource does
     try { accountSourceUid.set(source, fs.statSync(SOURCES[source]).uid); } catch { accountSourceUid.delete(source); }
     if (typeof startSourceLive !== 'function') continue;
-    // Watched already: scanned again, for what could not be read while
-    // their account was not ready (their host reads some formats).
-    if (typeof treeWatchers !== 'undefined' && treeWatchers.has(source)) scanSource(source, SOURCES[source], new Set()).catch(e => console.error('scan failed:', source, e.message));
-    else startSourceLive(source);
+    // Readable as declared, everything in it (moved folders keep the ACL
+    // they had; programs narrow it), then scanned and watched; watched
+    // already, scanned again for what could not be read before (their host
+    // reads some formats, and was not there yet).
+    keepReadable([SOURCES[source]], { recursive: true }).then(() => {
+      if (treeWatchers.has(source)) return scanSource(source, SOURCES[source], new Set());
+      startSourceLive(source);
+    }).catch(e => console.error('scan failed:', source, e.message));
   }
+}
+// ---- a person's folder, readable here as declared (design/108) ----
+// The people folder grants this server read (an ACL), but a program that
+// creates its files 0600 and its folders 0700 (Claude Code, Codex) leaves
+// the grant's mask empty: Linux then refuses the read. Their host puts the
+// declared grant back, as them (person-ops.js people.keepReadable), and the
+// read is tried once more. Nothing else of theirs becomes readable.
+function peopleRootOf(p) {
+  const rel = path.relative(PEOPLE_DIR, path.resolve(String(p || '')));
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  const account = accountsLib.cleanAccountName(rel.split(path.sep)[0]);
+  return account && account !== SERVICE_USER ? { account, root: path.join(PEOPLE_DIR, account) } : null;
+}
+const keepingReadable = new Map(); // what is being put back → its promise
+function keepReadable(paths, { recursive = false } = {}) {
+  const list = (Array.isArray(paths) ? paths : [paths]).filter(Boolean).map(p => path.resolve(p));
+  const where = list.length ? peopleRootOf(list[0]) : null;
+  const person = where ? personWithAccount(where.account) : null;
+  if (!person || list.some(p => !(peopleRootOf(p) || {}).root || peopleRootOf(p).root !== where.root)) return Promise.resolve(false);
+  const k = where.account + '\n' + recursive + '\n' + list.join('\n');
+  if (keepingReadable.has(k)) return keepingReadable.get(k);
+  const run = (async () => {
+    try { await filesOfPerson(person).host.call('op', 'people.keepReadable', where.root, list, SERVICE_USER, { recursive }); return true; }
+    catch (e) { console.error('[accounts] ' + where.account + '\u2019s folder, readable again: ' + e.message); return false; }
+    finally { keepingReadable.delete(k); }
+  })();
+  keepingReadable.set(k, run);
+  return run;
+}
+// `fn` on a person's file or folder; refused by a narrowed grant: put back
+// once, then again.
+async function asDeclared(absPath, fn) {
+  try { return await fn(); }
+  catch (e) { if (e && e.code === 'EACCES' && peopleRootOf(absPath) && await keepReadable([absPath])) return fn(); throw e; }
 }
 // The folder an agent's conversations go to for this principal: their own
 // (null when that agent's folder is not set up for them, see agentProblem)
@@ -7627,7 +7670,7 @@ function ownerOfTranscript(absPath) {
 async function readTranscriptText(absPath) {
   const owner = ownerOfTranscript(absPath);
   if (!owner) return fsp.readFile(absPath, 'utf8');
-  return accountsLib.readOwned(absPath, owner);
+  return asDeclared(absPath, () => accountsLib.readOwned(absPath, owner));
 }
 try { if (!fs.existsSync(USERS_FILE)) saveRoster(); } catch {}
 const installKey = usersLib.loadInstallKey(INSTALL_KEY_FILE);
@@ -12833,6 +12876,16 @@ function liveChooses(key, choice) {
 // design/108); this server's otherwise.
 async function liveNewFile(pend, programPid) {
   const root = pend.root || SOURCES[pend.harness];
+  // A person's: the folders their program is making, readable as declared
+  // (asDeclared), at most every two seconds.
+  if (peopleRootOf(root) && !(pend.keptAt > Date.now() - 2000)) {
+    pend.keptAt = Date.now();
+    const days = [pend.startedAt, Date.now()].map(t => { const d = new Date(t); return path.join(root, String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')); });
+    const where = pend.harness === 'claude' ? [path.join(root, claudeProjectDirName(pend.cwd))]
+      : pend.harness === 'pi' ? [path.join(root, runtimeLib.piSessionDirName(pend.cwd))]
+      : pend.harness === 'agy' ? [root] : [...new Set(days)];
+    await keepReadable(where, { recursive: true });
+  }
   if (pend.harness === 'claude') {
     const f = path.join(root, claudeProjectDirName(pend.cwd), pend.sessionId + '.jsonl');
     return fs.existsSync(f) ? f : null;

@@ -584,11 +584,11 @@ test('a person on their own account: their own Claude Code and Codex, their fold
   // she had before, in Codex's own folder.
   const proj = path.join('/home', ACCOUNT, 'Projects', tag);
   const fake = fs.readFileSync(path.join(__dirname, 'fixtures', 'fake-terminal-agent.js')).toString('base64');
-  const wrapper = `#!/bin/sh\nid -un > "$HOME/fake-claude.who"\nfor a in "$@"; do printf '%s\\n' "$a"; done > "$HOME/fake-claude.argv"\nFAKE_AGENT_STYLE=claude FAKE_AGENT_DELAY=200 exec ${node} "$HOME/.local/share/chattering-fake-agent.js" "$@"\n`;
+  const wrapper = `#!/bin/sh\nid -un > "$HOME/fake-claude.who"\nfor a in "$@"; do printf '%s\\n' "$a"; done > "$HOME/fake-claude.argv"\nFAKE_AGENT_STYLE=claude FAKE_AGENT_DELAY=200 FAKE_AGENT_PRIVATE=1 exec ${node} "$HOME/.local/share/chattering-fake-agent.js" "$@"\n`;
   assert.equal(asTest(`mkdir -p ${proj} ~/.local/bin ~/.local/share && echo ${fake} | base64 -d > ~/.local/share/chattering-fake-agent.js && echo ${Buffer.from(wrapper).toString('base64')} | base64 -d > ~/.local/bin/claude && chmod 755 ~/.local/bin/claude`).status, 0);
   const rollout = require('./helpers/codex-fixtures.js').currentRollout(proj, '01a0f000-0000-7000-8000-0000000000e2');
   const rolloutRel = '2026/10/30/rollout-2026-10-30T10-00-00-01a0f000-0000-7000-8000-0000000000e2.jsonl';
-  assert.equal(asTest(`mkdir -p ~/.codex/sessions/2026/10/30 && echo ${Buffer.from(rollout).toString('base64')} | base64 -d > ~/.codex/sessions/${rolloutRel}`).status, 0);
+  assert.equal(asTest(`umask 077; mkdir -p ~/.codex/sessions/2026/10/30 && echo ${Buffer.from(rollout).toString('base64')} | base64 -d > ~/.codex/sessions/${rolloutRel}`).status, 0);
 
   const port = await freePort(), tlsPort = await freePort();
   registerConsole(port, 'install-tok');
@@ -643,6 +643,8 @@ test('a person on their own account: their own Claude Code and Codex, their fold
   assert.equal(asTest('cat ~/fake-claude.who').stdout.trim(), ACCOUNT, 'her program, as her');
   assert.ok(!fs.existsSync(path.join(home, 'OWNER-CLAUDE-RAN')), 'the owner\u2019s Claude Code was not started for her');
   const file = path.join(people, 'claude', key.slice(key.indexOf(':') + 1));
+  // Made as Claude Code makes them (0700, 0600, FAKE_AGENT_PRIVATE): read
+  // here all the same, the people folder's grant put back by her host.
   assert.equal(fs.statSync(file).uid, Number(execFileSync('id', ['-u', ACCOUNT], { encoding: 'utf8' })), 'the conversation is her account\u2019s');
   // Chattering's tools for her run: the copy every account may run, her
   // token's file (never the install's), this conversation's file.

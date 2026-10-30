@@ -61,6 +61,31 @@ const OPS = {
   // that follows a reference of the file (a Codex fork's parent) must reach
   // only what this account may.
   'agent.transcript': async (harness, file, opts = {}) => agentReader(harness).parse(abs(file), { mtimeMs: opts && Number.isFinite(opts.mtimeMs) ? opts.mtimeMs : null }),
+  // ---- their people folder, readable here as declared (design/108) ----
+  // The people folder grants the server read (an ACL, design/105), but a
+  // program that creates its files 0600 and folders 0700 (Claude Code,
+  // Codex) leaves the ACL's mask empty, and the grant does nothing. The
+  // declared grant is put back, as them, on paths inside their own people
+  // folder only; never a symlink (setfacl -P), never anything else.
+  'people.keepReadable': async (root, paths, service, { recursive = false } = {}) => {
+    const me = require('os').userInfo().username;
+    const top = abs(root);
+    if (path.basename(top) !== me || !/^[a-z_][a-z0-9_-]{0,31}$/.test(String(service || ''))) throw Object.assign(new Error('not this account\u2019s people folder'), { code: 'EPERM' });
+    const inside = p => p === top || p.startsWith(top + path.sep);
+    const targets = new Set();
+    for (const raw of (paths || []).slice(0, 200)) {
+      const p = abs(raw);
+      if (!inside(p)) continue;
+      // The folders between the root and the path (a program made them 0700).
+      for (let d = p; inside(d); d = path.dirname(d)) { targets.add(d); if (d === top) break; }
+    }
+    const list = [...targets].filter(p => { try { return !fs.lstatSync(p).isSymbolicLink(); } catch { return false; } });
+    if (!list.length) return 0;
+    const dirs = list.filter(p => { try { return fs.lstatSync(p).isDirectory(); } catch { return false; } });
+    await run('setfacl', [...(recursive ? ['-R', '-P'] : []), '-m', `u:${service}:rX`, '--', ...list]);
+    if (dirs.length) await run('setfacl', [...(recursive ? ['-R', '-P'] : []), '-d', '-m', `u:${service}:rX,u:${me}:rwX`, '--', ...dirs]);
+    return list.length;
+  },
   // A new conversation file (a fork, a conversation moving to another
   // agent): complete before it appears, never replacing one.
   'conversation.create': async (file, text) => {

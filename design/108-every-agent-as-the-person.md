@@ -59,12 +59,22 @@ and this server reads only what it was declared to read.**
    "attempt to write a readonly database" from another account), and a
    reader that follows the file's own references (a Codex fork's parent)
    reaches only what they may.
-4. **Their tools' credentials.** Claude Code's Chattering tools run the
+4. **The grant, kept.** The people folder's ACL lets this server read, but
+   a program that makes its files 0600 and folders 0700 explicitly (Claude
+   Code does; Lilly's Codex files are 0600) leaves the ACL's mask empty, and
+   Linux refuses the read (verified). A refused read, stat, listing or
+   watch of a person's folder asks their host to put the declared grant
+   back, as them, on that path and the folders above it inside their
+   people folder (`people.keepReadable`, `setfacl -P`, never a link), then
+   tries once more (`asDeclared`); a new conversation's folder is kept
+   readable while its program starts it; setup does a whole folder once.
+   Nothing outside their people folder becomes readable.
+5. **Their tools' credentials.** Claude Code's Chattering tools run the
    published copy (readable by every account), and are given their token's
    *file* (`~/.local/state/chattering/token`, written by setup, 0600), never
    the install token and never a token on a command line (sudo logs it,
    `ps` shows it).
-5. **Codex in Chattering's box** runs `codex app-server` behind their walls
+6. **Codex in Chattering's box** runs `codex app-server` behind their walls
    (`codexTarget`: their program, their environment, `launch`), one helper
    process per account for menus, its models cached per account, and the
    paths it reports (in their home, through the link) translated to where
@@ -117,6 +127,10 @@ and asks Chattering to set them up again.
 - **Untested end to end on a real account:** Pi, Antigravity and Muse Code
   in their own program as the person (the paths are the ones tested for
   Claude Code and Codex; the programs themselves are not stand-ins here).
+- **The grant is put back after the fact.** Between a program making a
+  private file and the first refused read, this server cannot read it; the
+  retry happens on that read (a few milliseconds through their host). The
+  end state (design/106: every read through their host) needs no grant.
 - **Still the end state of design/106**: the hub runs as the owner's account
   on lambda; reads of a person's agent folders rely on the declared ACL and
   the owner checks above, not yet on the hub having no rights of its own.

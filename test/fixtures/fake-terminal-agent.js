@@ -12,6 +12,8 @@
 //   codex:   (nothing: it picks an id) | resume ID
 //   FAKE_AGENT_TRUST=1   asks "trust this folder?" first
 //   FAKE_AGENT_LOG=FILE  every key it received, one JSON line each
+//   FAKE_AGENT_PRIVATE=1 its folders 0700 and its file 0600, as Claude Code
+//                        makes them (explicit modes, whatever the umask)
 //
 // Like the real ones it ignores keys for its first 400 ms (it is starting),
 // then turns on bracketed paste. Its box: a line editor (←/→, Home/End,
@@ -73,7 +75,8 @@ function findCodex(dir, id) {
 function append(role, text) {
   if (!file) file = locate();
   const fresh = !fs.existsSync(file);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const priv = process.env.FAKE_AGENT_PRIVATE === '1';
+  fs.mkdirSync(path.dirname(file), { recursive: true, ...(priv ? { mode: 0o700 } : {}) });
   const lines = [];
   const id = crypto.randomUUID();
   if (style === 'claude') {
@@ -87,7 +90,7 @@ function append(role, text) {
     lines.push({ timestamp: now(), type: 'response_item', payload: { type: 'message', role, content: [{ type: role === 'user' ? 'input_text' : 'output_text', text }] } });
   }
   lastId = style === 'pi' ? id.slice(0, 8) : id;
-  fs.appendFileSync(file, lines.map(l => JSON.stringify(l)).join('\n') + '\n');
+  fs.appendFileSync(file, lines.map(l => JSON.stringify(l)).join('\n') + '\n', priv ? { mode: 0o600 } : undefined);
 }
 if (sessionId && (opt('--resume') || opt('--session') || argv[0] === 'resume')) {
   file = locate();
