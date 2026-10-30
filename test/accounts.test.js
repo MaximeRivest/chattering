@@ -131,10 +131,12 @@ test('routes for a person on their own account: only what acts for them as them'
     ['GET', '/api/artifacts/resolve'], ['POST', '/api/artifacts/declare'], ['GET', '/api/conversation/media'], ['POST', '/api/conversation/changes'],
     ['GET', '/api/files/complete'], ['GET', '/api/snippets'], ['POST', '/api/doc/save'], ['POST', '/api/notes/new'], ['POST', '/api/files/op'], ['POST', '/api/file/preview'],
     // design/106: git as the repository's owner, notebooks, projects.
-    ['GET', '/api/git/repos'], ['POST', '/api/doc/run-cell'], ['POST', '/api/project/create'], ['GET', '/api/fs/folders']]) {
+    ['GET', '/api/git/repos'], ['POST', '/api/doc/run-cell'], ['POST', '/api/project/create'], ['GET', '/api/fs/folders'],
+    // design/108: every agent's own program, and moving to another agent.
+    ['POST', '/api/conversation/handoff'], ['GET', '/api/codex/menus'], ['POST', '/api/codex/release']]) {
     assert.ok(yes(own, m, p), m + ' ' + p);
   }
-  for (const [m, p] of [['GET', '/api/reviews'], ['POST', '/api/doc/ai'], ['POST', '/api/conversation/handoff'], ['POST', '/api/conversation/send']]) {
+  for (const [m, p] of [['GET', '/api/reviews'], ['POST', '/api/doc/ai'], ['POST', '/api/conversation/send']]) {
     assert.ok(yes(member, m, p), 'a household member still may: ' + p);
     const gate = policy.checkRoute(own, m, p, new URLSearchParams(), () => true);
     assert.equal(gate.ok, false, 'refused on their own account: ' + p);

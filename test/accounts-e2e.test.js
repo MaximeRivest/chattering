@@ -558,3 +558,163 @@ chmod +x ~/.local/bin/rat && printf '# A notebook\\n' > ${proj}/nb.md`);
   const complete = await get(remote + `/api/files/complete?id=${k}&q=${encodeURIComponent(secretDir + '/')}`, tess);
   assert.doesNotMatch(await complete.text(), /plan\.md/);
 });
+
+// Every agent's own program as the person (design/108): their Claude Code
+// (a stand-in drawn and written like it, fixtures/fake-terminal-agent.js) on
+// their own PATH, its conversations in their folder beside their Pi ones,
+// Chattering's tools given their token's file; another account's
+// conversation forked, never driven; a folder of an agent's own moved on
+// purpose (scripts/account-agent-folders.js), then read as them.
+test('a person on their own account: their own Claude Code and Codex, their folders, as them', { skip: skip || (!node && 'no node in the Nix store'), timeout: 240000 }, async t => {
+  const tag = 'e2e-agents-' + process.pid + '-' + Date.now().toString(36);
+  const TMP = path.join(os.homedir(), '.cache', 'chattering-test-homes');
+  fs.mkdirSync(TMP, { recursive: true });
+  const home = fs.mkdtempSync(path.join(TMP, 'accounts-'));
+  const agent = path.join(home, '.pi', 'agent');
+  fs.mkdirSync(path.join(agent, 'extensions'), { recursive: true });
+  fs.writeFileSync(path.join(agent, 'auth.json'), '{}');
+  fs.writeFileSync(path.join(agent, 'settings.json'), '{}');
+  // The owner's own Claude Code: never the one started for her.
+  const ownerClaude = path.join(home, 'owner-claude');
+  fs.writeFileSync(ownerClaude, `#!/bin/sh\ntouch ${JSON.stringify(path.join(home, 'OWNER-CLAUDE-RAN'))}\nexit 3\n`, { mode: 0o755 });
+  const people = path.join(accounts.DEFAULT_PEOPLE_DIR, ACCOUNT);
+  const clean = () => asTest(`for l in ~/.gemini/antigravity-cli/conversations ~/.local/share/muse/sessions; do [ -L "$l" ] && rm "$l"; done; rm -rf ~/.claude ~/.codex ~/.local/bin/claude ~/.local/bin/codex ~/.local/share/chattering-fake-agent.js ~/.local/share/chattering-fake-codex.js ~/.local/state/chattering ~/fake-claude.who ~/fake-claude.argv ${people}/claude ${people}/codex ${people}/agy ${people}/muse`);
+  clean();
+  // Her Claude Code, on her PATH (~/.local/bin), and one Codex conversation
+  // she had before, in Codex's own folder.
+  const proj = path.join('/home', ACCOUNT, 'Projects', tag);
+  const fake = fs.readFileSync(path.join(__dirname, 'fixtures', 'fake-terminal-agent.js')).toString('base64');
+  const wrapper = `#!/bin/sh\nid -un > "$HOME/fake-claude.who"\nfor a in "$@"; do printf '%s\\n' "$a"; done > "$HOME/fake-claude.argv"\nFAKE_AGENT_STYLE=claude FAKE_AGENT_DELAY=200 exec ${node} "$HOME/.local/share/chattering-fake-agent.js" "$@"\n`;
+  assert.equal(asTest(`mkdir -p ${proj} ~/.local/bin ~/.local/share && echo ${fake} | base64 -d > ~/.local/share/chattering-fake-agent.js && echo ${Buffer.from(wrapper).toString('base64')} | base64 -d > ~/.local/bin/claude && chmod 755 ~/.local/bin/claude`).status, 0);
+  const rollout = require('./helpers/codex-fixtures.js').currentRollout(proj, '01a0f000-0000-7000-8000-0000000000e2');
+  const rolloutRel = '2026/10/30/rollout-2026-10-30T10-00-00-01a0f000-0000-7000-8000-0000000000e2.jsonl';
+  assert.equal(asTest(`mkdir -p ~/.codex/sessions/2026/10/30 && echo ${Buffer.from(rollout).toString('base64')} | base64 -d > ~/.codex/sessions/${rolloutRel}`).status, 0);
+
+  const port = await freePort(), tlsPort = await freePort();
+  registerConsole(port, 'install-tok');
+  let log = '';
+  const child = spawn(node, ['server.js'], { cwd: root, env: { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: String(tlsPort),
+    CHATTERING_NO_WATCH: '1', CHATTERING_NO_LEDGER: '1', CHATTERING_NO_SYNC: '1', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'),
+    CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, CHATTERING_CLAUDE: ownerClaude, CHATTERING_LIVE_TERMINAL_IN_PROCESS: '1',
+    CHATTERING_HOST: '', CHATTERING_LAN: '1', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: 'install-tok', CHATTERING_NODE: node, CHATTERING_PREVIEW_PORT: '0', CHATTERING_PREVIEW_TLS_PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b);
+  t.after(async () => {
+    await require('./helpers/cleanup.js').stopAndRemove(child, home);
+    asTest(`rm -rf ${proj}; rmdir /home/${ACCOUNT}/Projects 2>/dev/null`);
+    clean();
+  });
+  const local = 'http://127.0.0.1:' + port, remote = 'http://' + lanIp() + ':' + port;
+  const post = (url, body, cookie) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(body) });
+  const get = (url, cookie) => fetch(url, { headers: cookie ? { Cookie: cookie } : {} });
+  await until(async () => { try { return (await get(local + '/api/sessions')).ok; } catch { return false; } }, 30000, 'the server');
+  const fail = what => what + '\n--- server log ---\n' + log.slice(-4000);
+
+  const added = await (await post(local + '/api/users/add', { name: 'Tess' })).json();
+  const tessIn = await fetch(remote + '/?token=' + encodeURIComponent(new URL(added.inviteLink).searchParams.get('token')), { redirect: 'manual' });
+  const tess = (tessIn.headers.get('set-cookie') || '').split(';')[0];
+  const linked = await (await post(local + '/api/users/account', { id: added.user.id, account: ACCOUNT, models: 'own' })).json();
+  assert.equal(linked.account && linked.account.status, 'ready', fail(JSON.stringify(linked)));
+  // Her Claude Code's folder became the link; Codex's, holding a
+  // conversation, stays hers until moved on purpose.
+  assert.equal(linked.account.agents.claude, 'linked', JSON.stringify(linked.account));
+  assert.equal(linked.account.agents.codex, 'own-folder', JSON.stringify(linked.account));
+  assert.equal(linked.account.programs.claude, `/home/${ACCOUNT}/.local/bin/claude`);
+  assert.equal(asTest('readlink ~/.claude/projects').stdout.trim(), path.join(people, 'claude'));
+  assert.equal(asTest('stat -c %a ~/.local/state/chattering/token').stdout.trim(), '600', 'her token, in a file only she reads');
+  const status = await (await get(remote + '/api/live-terminal/status', tess)).json();
+  assert.equal(status.installed.claude, true, 'her own Claude Code is offered to her');
+
+  // A new Claude Code conversation, as her.
+  const started = await post(remote + '/api/live-terminal/new', { harness: 'claude', folder: proj }, tess);
+  const out = await started.json();
+  assert.equal(started.status, 200, fail(JSON.stringify(out)));
+  const ws = new WebSocket(remote.replace('http', 'ws') + '/api/live-terminal/ws?id=' + encodeURIComponent(out.key), { headers: { Cookie: tess } });
+  const state = {}, answers = new Map();
+  ws.onmessage = ev => { const m = JSON.parse(ev.data); if (m.t === 'patch') Object.assign(state, m.set); else if (answers.has(m.seq)) { answers.get(m.seq)(m); answers.delete(m.seq); } };
+  await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
+  t.after(() => ws.close());
+  ws.send(JSON.stringify({ t: 'hello', clientId: 'tess-' + tag, name: 'laptop' }));
+  await until(() => state.composer && state.mode === 'compose', 20000, 'her Claude Code\u2019s box').catch(e => { throw new Error(fail(e.message + " state=" + JSON.stringify(state))); });
+  const done = await new Promise(r => { answers.set(1, r); ws.send(JSON.stringify({ t: 'submit', text: 'hello ' + tag, seq: 1 })); });
+  assert.equal(done.t, 'done', JSON.stringify(done));
+  const st = await until(async () => { const x = await (await get(remote + '/api/live-terminal/status?id=' + encodeURIComponent(out.key), tess)).json(); return x.resolvedKey && x.indexed && x; }, 30000, 'its file found');
+  const key = st.resolvedKey;
+  assert.ok(key.startsWith('claude@' + ACCOUNT + ':'), key);
+  assert.equal(asTest('cat ~/fake-claude.who').stdout.trim(), ACCOUNT, 'her program, as her');
+  assert.ok(!fs.existsSync(path.join(home, 'OWNER-CLAUDE-RAN')), 'the owner\u2019s Claude Code was not started for her');
+  const file = path.join(people, 'claude', key.slice(key.indexOf(':') + 1));
+  assert.equal(fs.statSync(file).uid, Number(execFileSync('id', ['-u', ACCOUNT], { encoding: 'utf8' })), 'the conversation is her account\u2019s');
+  // Chattering's tools for her run: the copy every account may run, her
+  // token's file (never the install's), this conversation's file.
+  const argv = asTest('cat ~/fake-claude.argv').stdout.split('\n');
+  const mcp = JSON.parse(argv.find(a => a.startsWith('--mcp-config=')).slice('--mcp-config='.length)).mcpServers.chattering;
+  assert.ok(mcp.args[0].startsWith(accounts.DEFAULT_RUNTIME_DIR + '/'), mcp.args[0]);
+  assert.equal(mcp.env.CHATTERING_TOKEN_FILE, `/home/${ACCOUNT}/.local/state/chattering/token`);
+  assert.equal(mcp.env.CHATTERING_SESSION, file);
+  assert.doesNotMatch(argv.join('\n'), /install-tok/);
+  await until(async () => /Done: hello/.test(JSON.stringify((await (await get(remote + '/api/session?id=' + encodeURIComponent(key), tess)).json()).messages || [])), 20000, 'the reply in her view');
+
+  // The owner reads it, and is told whose it is: a fork, never her program.
+  const ownerPage = await (await get(local + '/api/session?id=' + encodeURIComponent(key))).json();
+  assert.deepEqual([ownerPage.otherAccount && ownerPage.otherAccount.account, ownerPage.otherAccount && ownerPage.otherAccount.fork], [ACCOUNT, true]);
+  const drive = await post(local + '/api/live-terminal/send', { id: key, text: 'as the owner' });
+  assert.equal(drive.status, 409, 'the owner does not drive her conversation');
+  // He may watch her program, not type into it.
+  const watch = new WebSocket(local.replace('http', 'ws') + '/api/live-terminal/ws?id=' + encodeURIComponent(key), { headers: { Authorization: 'Bearer install-tok' } });
+  const watched = new Map();
+  watch.onmessage = ev => { const m = JSON.parse(ev.data); if (watched.has(m.seq)) { watched.get(m.seq)(m); watched.delete(m.seq); } };
+  await new Promise((resolve, reject) => { watch.onopen = resolve; watch.onerror = reject; });
+  watch.send(JSON.stringify({ t: 'hello', clientId: 'owner-' + tag, name: 'owner' }));
+  const typed = await new Promise(r => { watched.set(1, r); watch.send(JSON.stringify({ t: 'submit', text: 'typed by the owner', seq: 1 })); });
+  assert.equal(typed.t, 'refused', JSON.stringify(typed));
+  assert.match(typed.error, /Tess|own account/);
+  watch.close();
+  const lastEid = [...ownerPage.messages].reverse().find(m => m.eid).eid;
+  const ownerFork = await (await post(local + '/api/fork', { id: key, node: lastEid })).json();
+  assert.ok(ownerFork.key && ownerFork.key.startsWith('claude:'), fail(JSON.stringify(ownerFork)));
+  assert.ok(ownerFork.path.startsWith(path.join(home, '.claude', 'projects') + '/'), 'the owner\u2019s copy is in his folder');
+  // Her own fork: in her folder, written as her.
+  const herFork = await (await post(remote + '/api/fork', { id: key, node: lastEid }, tess)).json();
+  assert.ok(herFork.key && herFork.key.startsWith('claude@' + ACCOUNT + ':'), fail(JSON.stringify(herFork)));
+  assert.equal(fs.statSync(herFork.path).uid, Number(execFileSync('id', ['-u', ACCOUNT], { encoding: 'utf8' })));
+  // She cannot drive the owner's copy either.
+  assert.equal((await post(remote + '/api/live-terminal/send', { id: ownerFork.key, text: 'as Tess' }, tess)).status, 409);
+  await post(remote + '/api/live-terminal/stop', { id: key }, tess);
+
+  // Codex: its own folder still holds her conversation: not listed, not
+  // started, said why. Moved on purpose, then read as her (her host).
+  const sessions = async () => (await (await get(remote + '/api/sessions', tess)).json()).map(s => s.key);
+  assert.ok(!(await sessions()).some(k => k.startsWith('codex@' + ACCOUNT + ':')));
+  const move = spawnSync(process.execPath, [path.join(root, 'scripts', 'account-agent-folders.js'), ACCOUNT, '--yes', '--server', local], { encoding: 'utf8', env: { ...process.env, CHATTERING_TOKEN: 'install-tok' } });
+  assert.equal(move.status, 0, move.stdout + move.stderr);
+  assert.match(move.stdout, /Codex: moved/);
+  assert.match(move.stdout, /Chattering: ok: .*Codex (linked|already)/);
+  assert.equal(asTest('readlink ~/.codex/sessions').stdout.trim(), path.join(people, 'codex'));
+  await post(local + '/api/rescan', {});
+  const codexKey = 'codex@' + ACCOUNT + ':' + rolloutRel;
+  await until(async () => (await sessions()).includes(codexKey), 20000, 'her Codex conversation listed');
+  const codexPage = await (await get(remote + '/api/session?id=' + encodeURIComponent(codexKey), tess)).json();
+  assert.match(JSON.stringify(codexPage.messages), /it now says squawk/, fail('read as her: ' + JSON.stringify(codexPage).slice(0, 300)));
+  assert.equal(codexPage.otherAccount, null);
+
+  // Her own Codex in Chattering's box (codex app-server, as her): menus,
+  // a new conversation, a follow-up.
+  const fakeCodex = fs.readFileSync(path.join(__dirname, 'fixtures', 'fake-codex.js')).toString('base64');
+  assert.equal(asTest(`echo ${fakeCodex} | base64 -d > ~/.local/share/chattering-fake-codex.js && printf '#!/bin/sh\nexec ${node} "$HOME/.local/share/chattering-fake-codex.js" "$@"\n' > ~/.local/bin/codex && chmod 755 ~/.local/bin/codex`).status, 0);
+  const rechecked = await (await post(local + '/api/users/account-check', { id: added.user.id })).json();
+  assert.equal(rechecked.account.programs.codex, `/home/${ACCOUNT}/.local/bin/codex`, JSON.stringify(rechecked));
+  const menus = await get(remote + '/api/codex/menus?cwd=' + encodeURIComponent(proj), tess);
+  assert.equal(menus.status, 200, fail(await menus.clone().text()));
+  const codexStart = await (await post(remote + '/api/conversation/start-loose', { harness: 'codex', folder: proj, prompt: 'Count the owls ' + tag }, tess)).json();
+  assert.ok(codexStart.key && codexStart.key.startsWith('codex@' + ACCOUNT + ':'), fail(JSON.stringify(codexStart)));
+  const codexFile = path.join(people, 'codex', codexStart.key.slice(codexStart.key.indexOf(':') + 1));
+  assert.equal(fs.statSync(codexFile).uid, Number(execFileSync('id', ['-u', ACCOUNT], { encoding: 'utf8' })), 'written by her Codex');
+  await until(async () => /Fake Codex heard: Count the owls/.test(JSON.stringify((await (await get(remote + '/api/session?id=' + encodeURIComponent(codexStart.key), tess)).json()).messages || [])), 30000, 'her Codex reply');
+  const followUp = await post(remote + '/api/node/send', { id: codexStart.key, prompt: 'And the herons?' }, tess);
+  assert.equal(followUp.status, 202, fail(await followUp.clone().text()));
+  await until(async () => /Fake Codex heard: And the herons/.test(JSON.stringify((await (await get(remote + '/api/session?id=' + encodeURIComponent(codexStart.key), tess)).json()).messages || [])), 30000, 'her follow-up');
+  // The owner reads her Codex conversation; he continues a copy, not hers.
+  const ownerSend = await post(local + '/api/node/send', { id: codexStart.key, prompt: 'as the owner' });
+  assert.equal(ownerSend.status, 409, await ownerSend.clone().text());
+  assert.equal((await (await get(local + '/api/session?id=' + encodeURIComponent(codexStart.key))).json()).otherAccount.fork, false);
+});

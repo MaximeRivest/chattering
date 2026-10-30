@@ -18,6 +18,7 @@ const accountsLib = require('./accounts.js');
 const publishLib = require('./runtime-publish.js');
 
 const SETUP_TIMEOUT_MS = 45000;
+const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex', agy: 'Antigravity', muse: 'Muse Code', pi: 'Pi' };
 
 // Start `file args` behind `walls`, write `input` as JSON, read one JSON
 // line back. Used for the setup run and the host's one-shot jobs.
@@ -94,7 +95,7 @@ function createHost(walls, { appDir, nodePath, log = () => {} }) {
 
 function blockedWalls(name, reason, status = 503) {
   const refuse = () => { throw Object.assign(new Error(reason), { status, account: name }); };
-  return { kind: 'account', id: 'account:' + name + ':blocked', blocked: reason, account: { name }, launch: refuse, env: refuse, sessionDirFor: refuse, mapPath: p => p };
+  return { kind: 'account', id: 'account:' + name + ':blocked', blocked: reason, account: { name }, launch: refuse, env: refuse, sessionDirFor: refuse, agentRoot: refuse, programs: {}, tokenFile: null, mapPath: p => p };
 }
 
 function createAccountManager(deps) {
@@ -146,14 +147,32 @@ function createAccountManager(deps) {
       CHATTERING_PI_PACKAGE_DIR: pub.piDir, CHATTERING_WALLS: 'account', ...(shared ? shared.env : {}),
     } });
     const setupWalls = accountsLib.createAccountWalls({ person: user, account, sudo, mediator, env: baseEnv, sessionsRoot, maps: pub.maps });
+    // Every agent's conversation folder beside their Pi one (design/108).
+    const agentFolders = {};
+    for (const [harness, f] of Object.entries(accountsLib.AGENT_FOLDERS)) if (harness !== 'pi') agentFolders[harness] = { home: f.home, root: accountsLib.agentRootFor(account, harness, peopleDir), name: AGENT_NAMES[harness] || harness };
+    const agyHook = '[ -z "$CHATTERING_MODE_FILE" ] && echo "{}" || ' + JSON.stringify(nodePath()) + ' ' + JSON.stringify(path.join(pub.appDir, 'harness', 'agy-mode-hook.js'));
     const setup = await runJson(setupWalls, nodePath(), [path.join(appDir, 'account-setup.js')], {
-      sessionsRoot, models, personName: user.name,
+      sessionsRoot, models, personName: user.name, agentFolders, agentPrograms: accountsLib.AGENT_PROGRAMS, agyHook,
       shared: shared ? { auth: shared.files.auth, providers: shared.files.models.providers, settingsDefaults: shared.files.settings, proxyChoice: shared.choice } : null,
     });
     if (!setup || !setup.ok) return { status: 'broken', accountName: name, account, problems: ['Setting up the account failed: ' + ((setup && setup.problems || []).join(' ') || 'no answer')] };
     const env = { ...baseEnv, PI_CODING_AGENT_DIR: setup.agentDir, PI_AGENT_DIR: setup.agentDir };
     const scope = await cgroupFor(account);
-    const walls = accountsLib.createAccountWalls({ person: user, account, sudo, mediator, env, sessionsRoot, agentDir: setup.agentDir, maps: pub.maps, scope, models });
+    // An agent's folder counts once it is the link: its program then writes
+    // where this server reads. Not yet (a folder of its own, not set up):
+    // that agent is not started for them, with the reason (agentProblem).
+    const agentRoots = {};
+    for (const [harness, st] of Object.entries(setup.agents || {})) if (st === 'linked' || st === 'already') agentRoots[harness] = agentFolders[harness].root;
+    const walls = accountsLib.createAccountWalls({ person: user, account, sudo, mediator, env, sessionsRoot, agentDir: setup.agentDir, maps: pub.maps, scope, models,
+      agentRoots, programs: setup.programs || {}, tokenFile: setup.tokenFile || null });
+    walls.agentProblem = harness => {
+      const st = (setup.agents || {})[harness];
+      const name = AGENT_NAMES[harness] || harness;
+      if (!(setup.programs || {})[harness]) return `${name} is not installed for ${user.name} (${name}\u2019s program is not on ${account.name}\u2019s PATH).`;
+      if (st === 'own-folder') return `${name} keeps ${user.name}\u2019s conversations in ~/${accountsLib.AGENT_FOLDERS[harness].home}, a folder of its own: Chattering lists and starts ${name} for ${user.name} once they are moved beside their other conversations (scripts/account-agent-folders.js ${account.name}).`;
+      if (!agentRoots[harness]) return `${name}\u2019s conversation folder for ${user.name} could not be set up: ${(setup.problems || []).find(x => x.startsWith(name)) || 'see settings \u2192 people'}.`;
+      return null;
+    };
     return { status: 'ready', accountName: name, account, walls, sessionsRoot, models, setup, warnings: [...(setup.problems || []), ...(shared && shared.problems || [])], probe: { node: probe.node }, caps: !!scope, published: path.basename(pub.appDir),
       proxyPort: shared && typeof proxyPort === 'function' ? proxyPort() : null };
   }
@@ -192,6 +211,7 @@ function createAccountManager(deps) {
       linked: true, account: user.account, models: user.models === 'shared' ? 'shared' : 'own', providers: user.models === 'shared' ? (user.modelProviders || null) : null, status: st.status,
       problems: st.problems || [], warnings: st.warnings || [], uid: st.account ? st.account.uid : null, home: st.account ? st.account.home : null,
       sessionsRoot: st.sessionsRoot || null, agentDir: st.setup ? st.setup.agentDir : null, sessions: st.setup ? st.setup.sessions : null,
+      agents: st.setup ? st.setup.agents || {} : {}, programs: st.setup ? st.setup.programs || {} : {},
       ownProviders: st.setup ? st.setup.ownProviders : [], git: st.setup ? st.setup.git : null, caps: !!st.caps, at: st.at || null,
     };
   }

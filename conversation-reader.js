@@ -326,7 +326,7 @@ function includedAnswersHtml(d, T, answer) {
 }
 function cardHtml(d, T, b, c, ci) {
   const a = c.shown;
-  const pi = d.source !== 'claude';
+  const pi = String(d.source || '').split('@')[0] !== 'claude';
   const names = c.key === 'merge' || c.key === 'both' ? sourceNames(d, T, a.sources) : [];
   const sub = c.key === 'merge' ? (names.length ? 'from ' + names.join(' + ') : 'sources not recorded')
     : c.key === 'both' ? (names.length ? names.join(' + ') : '') : '';
@@ -342,7 +342,7 @@ function cardHtml(d, T, b, c, ci) {
 }
 function answersHtml(d, T, b) {
   const layout = cardLayoutFor(b.columns.length);
-  const pi = d.source !== 'claude' && d.canAct !== false;
+  const pi = String(d.source || '').split('@')[0] !== 'claude' && d.canAct !== false;
   const mergeable = b.columns.filter(c => c.key !== 'both').length >= 2;
   // One at a time: the arrows move between answers (and so choose one).
   const sel = Math.max(0, b.selected), prev = b.columns[sel - 1], next = b.columns[sel + 1];

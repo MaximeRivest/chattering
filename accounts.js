@@ -116,6 +116,43 @@ function sessionsRootFor(account, peopleDir = DEFAULT_PEOPLE_DIR) {
   return path.join(peopleDir, account.name, 'sessions');
 }
 
+// Every agent's conversations, not Pi's alone (design/108): each agent
+// program writes its conversations in a folder of the person's home, which
+// this server must not read. So each such folder is a link to one beside
+// their Pi folder, outside their home, theirs to write and readable here
+// (the people folder's declared ACL, inherited). `home` is where the
+// program writes, relative to the person's home; `folder` its name in the
+// people folder. Pi's is its own (`sessions`, design/105).
+const AGENT_FOLDERS = {
+  pi: { home: '.pi/agent/sessions', folder: 'sessions' },
+  claude: { home: '.claude/projects', folder: 'claude' },
+  codex: { home: '.codex/sessions', folder: 'codex' },
+  agy: { home: '.gemini/antigravity-cli/conversations', folder: 'agy' },
+  muse: { home: '.local/share/muse/sessions', folder: 'muse' },
+};
+const AGENT_PROGRAMS = ['claude', 'codex', 'agy', 'muse'];
+function agentRootFor(account, harness, peopleDir = DEFAULT_PEOPLE_DIR) {
+  const f = AGENT_FOLDERS[harness];
+  return f ? path.join(peopleDir, account.name, f.folder) : null;
+}
+// Where a person's agent says its file is (their home, through the link),
+// as this server reads it (the people folder). Anything else: null.
+function agentPathInRoot(account, harness, p, peopleDir = DEFAULT_PEOPLE_DIR) {
+  const f = AGENT_FOLDERS[harness];
+  if (!f || typeof p !== 'string' || !path.isAbsolute(p)) return null;
+  const root = agentRootFor(account, harness, peopleDir);
+  const resolved = path.resolve(p);
+  if (resolved === root || resolved.startsWith(root + path.sep)) return resolved;
+  const home = path.join(account.home, f.home);
+  if (resolved.startsWith(home + path.sep)) return path.join(root, resolved.slice(home.length + 1));
+  return null;
+}
+// Where Chattering's token for a person's own processes is kept, in their
+// home (written by account-setup.js as them, 0600). Programs that start
+// helpers of their own (Claude Code's tools) are given this path, never the
+// token: a command line is visible to everyone on the computer.
+const TOKEN_FILE_IN_HOME = '.local/state/chattering/token';
+
 // PATH for a person's processes: the node this server runs first (the worker
 // must start with the same one), then what a login shell on this system
 // would have. Their own folders come before the system's, as at a login.
@@ -184,18 +221,26 @@ function pathMapper(maps) {
 // A person's walls: the same interface as a guest's sandbox (sandbox.js
 // createSandbox), so every place that launches for a principal launches
 // through it. kind 'account' tells the two apart where it matters.
-function createAccountWalls({ person, account, sudo, mediator, env, sessionsRoot, agentDir, maps = [], scope = null, models = 'own' }) {
+function createAccountWalls({ person, account, sudo, mediator, env, sessionsRoot, agentDir, maps = [], scope = null, models = 'own', agentRoots = {}, programs = {}, tokenFile = null }) {
   const mapPath = pathMapper(maps);
   const id = 'account:' + account.name;
   const { piSessionDirName } = require('./runtime.js');
+  const roots = { ...agentRoots, pi: sessionsRoot };
   return {
     kind: 'account', id, person, account, sessionsRoot, agentDir, models, slice: scope && scope.slice || null,
     sessionDirFor: cwd => path.join(sessionsRoot, piSessionDirName(cwd || account.home)),
+    // Each agent's conversation folder (null: not set up for them), the
+    // agent programs found on their PATH (name -> path) and their token's file.
+    agentRoot: harness => roots[harness] || null,
+    programs: { ...programs }, tokenFile,
     mapPath,
     launch(file, fileArgs = [], { cwd } = {}) {
       const argv = runAsArgv({ sudo, mediator, account, cwd, file: realProgram(mapPath(file)), args: fileArgs.map(mapPath), scope });
       const bus = scope ? busEnv(scope.hostEnv || process.env) : {};
-      return { file: argv[0], args: argv.slice(1), env: { ...env, ...bus } };
+      // hostCwd: where the process that starts this one may stand. The
+      // working folder is theirs (chattering-as enters it, as them); this
+      // server may not be able to enter it at all.
+      return { file: argv[0], args: argv.slice(1), env: { ...env, ...bus }, hostCwd: '/' };
     },
     env: () => ({ ...env }),
   };
@@ -287,5 +332,6 @@ const secret = () => crypto.randomBytes(18).toString('base64url');
 module.exports = {
   MEDIATOR_PROTOCOL, ACCOUNT_NAME, DEFAULT_GROUP, DEFAULT_PEOPLE_DIR, DEFAULT_RUNTIME_DIR,
   cleanAccountName, lookupAccount, lookupAccountByUid, linkProblems, findSudo, findMediator, sessionsRootFor, accountPath, accountEnv,
+  AGENT_FOLDERS, AGENT_PROGRAMS, agentRootFor, agentPathInRoot, TOKEN_FILE_IN_HOME,
   sudoPrefix, runAsArgv, pathMapper, createAccountWalls, personSliceName, probe, openOwned, readOwned, statOwned, listPlain, secret, run,
 };

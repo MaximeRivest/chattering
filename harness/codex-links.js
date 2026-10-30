@@ -7,19 +7,21 @@
 // Anything weaker stays visible (with its "imported" label): hiding a real
 // conversation on a guess is worse than showing a duplicate.
 const norm = s => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+// The agent of an entry's source (`codex@lilly` is Codex's, design/108).
+const agentOf = e => String(e.source || '').split('@')[0];
 
 // entries: [key, entry] pairs of the whole index. Returns Map copyKey → originalKey.
 function linkImportCopies(entries) {
   const originals = new Map(); // cwd + title → [[key, entry]]
   for (const [key, e] of entries) {
-    if (!e || e.source === 'codex' || e.source === 'mirror' || !e.cwd || !e.title || e.title === '(no user message)') continue;
+    if (!e || agentOf(e) === 'codex' || e.source === 'mirror' || !e.cwd || !e.title || e.title === '(no user message)') continue;
     const k = e.cwd + '\u0000' + norm(e.title);
     if (!originals.has(k)) originals.set(k, []);
     originals.get(k).push([key, e]);
   }
   const links = new Map();
   for (const [key, e] of entries) {
-    if (!e || e.source !== 'codex' || !(e.codex && e.codex.imported) || !e.cwd || !e.title) continue;
+    if (!e || agentOf(e) !== 'codex' || !(e.codex && e.codex.imported) || !e.cwd || !e.title) continue;
     const candidates = (originals.get(e.cwd + '\u0000' + norm(e.title)) || [])
       .filter(([, o]) => !o.firstTs || !e.firstTs || Date.parse(o.firstTs) <= Date.parse(e.firstTs) + 60000);
     if (!candidates.length) continue;

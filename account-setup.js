@@ -8,9 +8,13 @@
 // Request:
 //   { sessionsRoot, models: 'own' | 'shared', personName,
 //     shared: { auth, providers, settingsDefaults, proxyChoice } }   (shared only)
+//   agentFolders: { claude: { home, root, name }, ... }, agentPrograms: [...],
+//   agyHook: the command of Antigravity's prompt-mode hook   (design/108)
 // Answer:
 //   { ok, agentDir, ownAgentDir, sessions: 'linked' | 'own-folder' | 'already',
-//     ownProviders: [...], git: { name, email }, problems: [...] }
+//     ownProviders: [...], git: { name, email },
+//     agents: { claude: 'linked' | 'already' | 'own-folder' | 'not-used' | 'failed', ... },
+//     programs: { claude: path | null, ... }, tokenFile, problems: [...] }
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -103,7 +107,78 @@ function setup(req) {
   git.email = gitConfig(['user.email']);
   if (!git.email) problems.push('git has no email for this account; commits will carry a made-up one until `git config --global user.email` is set.');
 
-  return { ok: true, agentDir, ownAgentDir, sessions, ownProviders, git, problems };
+  // Every other agent's conversations where Chattering reads them
+  // (design/108): the folder each program writes in becomes a link to the
+  // person's folder beside their Pi one, by the same rules as Pi's above.
+  // Only for the agents they have (on their PATH) or used before.
+  const programs = {};
+  for (const name of req.agentPrograms || []) programs[name] = onPath(name);
+  const agents = {};
+  for (const [harness, f] of Object.entries(req.agentFolders || {})) {
+    if (harness === 'pi' || !f || !f.home || !f.root) continue;
+    const inHome = path.join(home, f.home);
+    let used = false;
+    try { fs.lstatSync(inHome); used = true; } catch {}
+    if (!programs[harness] && !used) { agents[harness] = 'not-used'; continue; }
+    try { agents[harness] = linkFolder(inHome, f.root); }
+    catch (e) { agents[harness] = 'failed'; problems.push(`${f.name || harness}: its conversations could not be linked (${e.code || e.message}).`); continue; }
+    if (agents[harness] === 'own-folder') problems.push(`${f.name || harness} keeps conversations in ~/${f.home}, a folder of its own, so Chattering cannot list them or start ${f.name || harness} here yet. Moving them is done on purpose (scripts/account-agent-folders.js).`);
+  }
+
+  // Chattering's token for their own processes, in a file only they read:
+  // tools their agents start find it there (never on a command line).
+  let tokenFile = null;
+  if (process.env.CHATTERING_TOKEN) {
+    tokenFile = path.join(home, '.local', 'state', 'chattering', 'token');
+    fs.mkdirSync(path.dirname(tokenFile), { recursive: true, mode: 0o700 });
+    write(tokenFile, process.env.CHATTERING_TOKEN + '\n');
+  }
+
+  // Antigravity reads Chattering's prompt mode through a hook in its own
+  // settings (server.js ensureAgyModeHook): theirs, written as them.
+  if (req.agyHook && programs.agy) {
+    const file = path.join(home, '.gemini', 'config', 'hooks.json');
+    const hooks = readJson(file);
+    if (hooks === null && fs.existsSync(file)) problems.push('Antigravity: ~/.gemini/config/hooks.json is not readable JSON, so Chattering\u2019s prompt modes do not reach it.');
+    else {
+      const want = { PreInvocation: [{ type: 'command', command: req.agyHook, timeout: 10 }] };
+      const all = hooks || {};
+      if (JSON.stringify(all['chattering-modes']) !== JSON.stringify(want)) {
+        all['chattering-modes'] = want;
+        fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+        write(file, all);
+      }
+    }
+  }
+
+  return { ok: true, agentDir, ownAgentDir, sessions, ownProviders, git, agents, programs, tokenFile, problems };
+}
+
+// A program's file on this account's PATH, or null.
+function onPath(name) {
+  for (const dir of String(process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+    const f = path.join(dir, name);
+    try { fs.accessSync(f, fs.constants.X_OK); if (fs.statSync(f).isFile()) return f; } catch {}
+  }
+  return null;
+}
+
+// The folder a program writes in (`inHome`) made a link to `root`: missing
+// or empty, it becomes the link ('linked'); already the link ('already');
+// a folder with things in it stays as it is ('own-folder': moving them is
+// done on purpose, never here). `root` is made, as this account, inside
+// the people folder (whose inherited ACL lets the server read it).
+function linkFolder(inHome, root) {
+  fs.mkdirSync(root, { recursive: true, mode: 0o750 });
+  let st = null;
+  try { st = fs.lstatSync(inHome); } catch {}
+  if (!st) { fs.mkdirSync(path.dirname(inHome), { recursive: true, mode: 0o700 }); fs.symlinkSync(root, inHome); return 'linked'; }
+  if (st.isSymbolicLink()) {
+    if (fs.readlinkSync(inHome) === root) return 'already';
+    fs.unlinkSync(inHome); fs.symlinkSync(root, inHome); return 'linked';
+  }
+  if (st.isDirectory() && !fs.readdirSync(inHome).length) { fs.rmdirSync(inHome); fs.symlinkSync(root, inHome); return 'linked'; }
+  return 'own-folder';
 }
 
 readStdin().then(raw => {

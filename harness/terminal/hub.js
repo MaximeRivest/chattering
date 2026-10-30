@@ -233,8 +233,10 @@ function createHub({ host, profile, journal = null, events = null, liveOnly = fa
     if (sameText(doc.composer.text, text)) { logEvent({ ev: 'resent-enter', text }); serial(() => submitComposer(host, text, { profile }).catch(() => {})); }
   });
 
-  function attach(ws, { name = 'a page' } = {}) {
-    const c = { ws, clientId: crypto.randomUUID(), name, wantScreen: false, calm: false, sent: {}, lastAt: 0, timer: null, holdTimer: null, acks: [], lastSeq: -1 };
+  // watchOnly: a reason this page may watch the program but not type into
+  // it (it runs as another person's account, design/108).
+  function attach(ws, { name = 'a page', watchOnly = null } = {}) {
+    const c = { ws, clientId: crypto.randomUUID(), name, wantScreen: false, calm: false, sent: {}, lastAt: 0, timer: null, holdTimer: null, acks: [], lastSeq: -1, watchOnly };
     clients.set(ws, c);
     ws.on('close', () => { clearTimeout(c.timer); clearTimeout(c.holdTimer); clients.delete(ws); logEvent({ dev: c.name, id: c.clientId, ev: 'disconnected' }); if (onState) onState(state()); });
     ws.on('message', raw => {
@@ -259,6 +261,7 @@ function createHub({ host, profile, journal = null, events = null, liveOnly = fa
       logEvent({ dev: c.name, id: c.clientId, ev: 'sent', msg: m });
       const id = c.clientId + ':' + m.seq;
       const reply = (t, extra) => { logEvent({ dev: c.name, id: c.clientId, ev: 'answer', seq: m.seq, answer: t, ...extra }); if (isOpen(ws)) ws.send(JSON.stringify({ t, seq: m.seq, ...extra })); };
+      if (c.watchOnly) return reply('refused', { error: c.watchOnly });
       if (host.exited) return reply('error', { error: 'the program has ended' });
       if (typist && typist.clientId !== c.clientId && Date.now() - typist.at < TYPIST_MS) return reply('refused', { error: typist.name + ' is typing' });
       typist = { clientId: c.clientId, name: c.name, at: Date.now() };

@@ -34,9 +34,13 @@ function lockedError(threadId) {
 }
 
 class CodexServer {
-  constructor({ bin, env, spawnFn, requestTimeoutMs, name }) {
+  // launch(argv) → { file, args, env }: walls the program starts behind (a
+  // person's own account, design/108); without it, `bin` as this process.
+  constructor({ bin, env, spawnFn, requestTimeoutMs, name, launch = null, as = null }) {
     this.bin = bin || 'codex';
     this.env = { ...(env || process.env) };
+    this.launch = launch;
+    this.as = as || null;
     this.spawnFn = spawnFn || spawn;
     this.requestTimeoutMs = requestTimeoutMs ?? REQUEST_TIMEOUT_MS;
     this.name = name || 'codex';
@@ -50,7 +54,8 @@ class CodexServer {
   }
 
   start() {
-    const child = this.spawnFn(this.bin, ['app-server'], { env: this.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const l = this.launch ? this.launch([this.bin, 'app-server']) : { file: this.bin, args: ['app-server'], env: this.env };
+    const child = this.spawnFn(l.file, l.args, { env: l.env, stdio: ['pipe', 'pipe', 'pipe'] });
     this.child = child;
     this.alive = true;
     this.stderr = '';
@@ -170,17 +175,21 @@ class CodexServer {
 }
 
 const sameEnv = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// Whether a running process serves this target: the same program, the same
+// environment, as the same account.
+const serves = (srv, target) => srv.bin === (target.bin || 'codex') && sameEnv(srv.env, { ...(target.env || process.env) }) && srv.as === (target.as || null);
 
 function createCodexDriver(hooks = {}) {
   const idleMs = hooks.idleMs ?? IDLE_MS;
   const conversations = new Map(); // threadId → CodexServer holding that thread
   const claims = new Set();        // threadIds with a send in progress
   const uncertain = new Set();     // stop/start not confirmed: never send another turn blindly
-  let utility = null;              // menus and file search: holds no thread
+  const utilities = new Map();     // menus and file search, per account: holds no thread
 
   function newServer(target, name) {
     if (target.walls && typeof target.walls === 'object') throw new Error('Codex does not run inside a guest\'s walls yet.');
-    const srv = new CodexServer({ bin: target.bin, env: target.env, spawnFn: hooks.spawn, requestTimeoutMs: hooks.requestTimeoutMs, name });
+    const srv = new CodexServer({ bin: target.bin, env: target.env, spawnFn: hooks.spawn, requestTimeoutMs: hooks.requestTimeoutMs, name,
+      launch: typeof target.launch === 'function' ? target.launch : null, as: target.as || null });
     srv.start();
     return srv;
   }
@@ -204,7 +213,7 @@ function createCodexDriver(hooks = {}) {
   // or start a new one.
   async function openThread(target) {
     let srv = target.threadId && conversations.get(target.threadId);
-    if (srv && (!srv.alive || srv.stopping || srv.bin !== (target.bin || 'codex') || !sameEnv(srv.env, { ...(target.env || process.env) }))) {
+    if (srv && (!srv.alive || srv.stopping || !serves(srv, target))) {
       conversations.delete(target.threadId); await srv.stop(hooks.shutdownMs); srv = null;
     }
     if (!srv) srv = newServer(target, 'codex:' + (target.threadId || 'new'));
@@ -380,11 +389,13 @@ function createCodexDriver(hooks = {}) {
   }
 
   function utilityServer(target) {
-    if (utility && (!utility.alive || utility.stopping || !sameEnv(utility.env, { ...(target.env || process.env) }) || utility.bin !== (target.bin || 'codex'))) { utility.stop(hooks.shutdownMs); utility = null; }
-    if (!utility) { utility = newServer(target, 'codex:utility'); const u = utility; u.onGone = () => { if (utility === u) utility = null; }; }
+    const slot = target.as || '';
+    let utility = utilities.get(slot);
+    if (utility && (!utility.alive || utility.stopping || !serves(utility, target))) { utility.stop(hooks.shutdownMs); utilities.delete(slot); utility = null; }
+    if (!utility) { utility = newServer(target, 'codex:utility'); const u = utility; utilities.set(slot, u); u.onGone = () => { if (utilities.get(slot) === u) utilities.delete(slot); }; }
     clearTimeout(utility.idleTimer);
     const u = utility;
-    u.idleTimer = setTimeout(() => { if (utility === u) { utility = null; u.stop(hooks.shutdownMs); } }, hooks.utilityIdleMs ?? 5 * 60 * 1000);
+    u.idleTimer = setTimeout(() => { if (utilities.get(slot) === u) { utilities.delete(slot); u.stop(hooks.shutdownMs); } }, hooks.utilityIdleMs ?? 5 * 60 * 1000);
     u.idleTimer.unref?.();
     return u;
   }
@@ -409,7 +420,8 @@ function createCodexDriver(hooks = {}) {
 
   function stopCodex() {
     for (const [threadId, srv] of [...conversations]) { conversations.delete(threadId); srv.stop(hooks.shutdownMs); }
-    if (utility) { utility.stop(hooks.shutdownMs); utility = null; }
+    for (const u of utilities.values()) u.stop(hooks.shutdownMs);
+    utilities.clear();
   }
   function holding() { return [...conversations.entries()].map(([threadId, s]) => ({ threadId, pid: s.child && s.child.pid, busy: s.threads.size > 0 })); }
 

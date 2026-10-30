@@ -42,7 +42,37 @@ async function ratOutput(p, ext) {
 }
 
 let folderIndex = null;
+// The agents whose conversations are read in their own formats (design/108).
+const AGENT_READERS = {
+  codex: () => { const t = require('./harness/codex-transcript.js'); return { parse: t.parseCodexRollout, image: t.codexImageAt }; },
+  agy: () => { const t = require('./harness/agy-transcript.js'); return { parse: t.parseAgyConversation, image: t.agyImageAt }; },
+  muse: () => { const t = require('./harness/muse-transcript.js'); return { parse: t.parseMuseSession, image: null }; },
+};
+const agentReader = harness => {
+  const make = Object.prototype.hasOwnProperty.call(AGENT_READERS, harness) ? AGENT_READERS[harness] : null;
+  if (!make) throw Object.assign(new Error('no reader for ' + harness), { code: 'EINVAL' });
+  return make();
+};
 const OPS = {
+  // ---- agents' own conversation files (design/108) ----
+  // Codex, Antigravity and Muse Code conversations, read in their own
+  // formats as the account that keeps them: an Antigravity database is
+  // readable only by its owner once its program has closed it, and a reader
+  // that follows a reference of the file (a Codex fork's parent) must reach
+  // only what this account may.
+  'agent.transcript': async (harness, file, opts = {}) => agentReader(harness).parse(abs(file), { mtimeMs: opts && Number.isFinite(opts.mtimeMs) ? opts.mtimeMs : null }),
+  // A new conversation file (a fork, a conversation moving to another
+  // agent): complete before it appears, never replacing one.
+  'conversation.create': async (file, text) => {
+    const f = abs(file);
+    await fsp.mkdir(path.dirname(f), { recursive: true });
+    await require('./session-snapshot.js').publishSession(f, String(text));
+    return true;
+  },
+  'agent.image': async (harness, file, entry, at) => {
+    const reader = agentReader(harness);
+    return reader.image ? reader.image(abs(file), entry, at) : null;
+  },
   // ---- files ----
   // Many paths at once (a listing of hundreds of documents is one call).
   'fs.statMany': async paths => Object.fromEntries(await Promise.all((paths || []).slice(0, 5000).map(async p => {

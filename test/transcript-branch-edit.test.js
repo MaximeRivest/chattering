@@ -10,7 +10,7 @@ function fixture(role = 'assistant', active = false) {
   const target = { m: { eid: 'old', role }, raw: 'old', lines: ['original', ''], d: structuredClone(original), apply(text) { this.d.message.content[0].text = text; } };
   let appended;
   const ctx = vm.createContext({
-    sessionPathsFor: () => ({ entry: { source: 'pi' }, sessionPath: '/session' }), isPiSource: s => s === 'pi',
+    sessionPathsFor: () => ({ entry: { source: 'pi' }, sessionPath: '/session' }), isPiSource: s => s === 'pi', harnessOfSource: s => String(s).split('@')[0],
     withSessionOp: async (_, work) => work(), headlessRuns: new Map(active ? [['/session', {}]] : []), agentRunJobs: new Map(),
     findRunningConversation: () => null, stopAnyWarmSession() {}, transcriptTarget: async () => target,
     sha256Hex: x => x, crypto: { randomBytes: () => ({ toString: () => 'new' }) },

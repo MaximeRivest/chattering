@@ -15,7 +15,7 @@
     menuCache.set(scope, { at: Date.now(), promise });
     return promise;
   }
-  const isCodex = () => !!(current && current.source === 'codex');
+  const isCodex = () => !!(current && String(current.source || '').split('@')[0] === 'codex');
   const isDraft = () => !!(current && current.draft);
   const scopeOf = () => isDraft() ? 'cwd:' + ((draftState && draftState.d.folder) || '') : current.key;
 
@@ -193,7 +193,7 @@
   // Notices: a text-only imported copy, and an original that has one.
   function noticeHtml(d) {
     if (d.importCopyOf) return `<div class="codex-notice" id="codexNotice"><b>A text-only copy.</b> The Codex app imported this conversation from another agent, without its tool calls or reasoning. <a href="#${esc(encodeURIComponent(d.importCopyOf))}">Open the original</a> to continue it.</div>`;
-    if (d.source === 'codex' && d.codex && d.codex.imported) return `<div class="codex-notice" id="codexNotice"><b>A text-only copy.</b> The Codex app imported this conversation from another agent. It is kept for reading; the original was not found on this machine.</div>`;
+    if (String(d.source || '').split('@')[0] === 'codex' && d.codex && d.codex.imported) return `<div class="codex-notice" id="codexNotice"><b>A text-only copy.</b> The Codex app imported this conversation from another agent. It is kept for reading; the original was not found on this machine.</div>`;
     return '';
   }
 

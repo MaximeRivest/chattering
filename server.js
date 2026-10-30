@@ -24,7 +24,7 @@ const zlib = require('zlib');
 // the cache elsewhere, as the tests do.
 if (!process.env.CHATTERING_CACHE_DIR) require('./legacy-homes.js').migrateHome(os.homedir(), { log: m => console.error(m) });
 const { claudeForkContent, groupFamilies } = require('./sessionfork.js');
-const { readSessionSnapshot, publishSession } = require('./session-snapshot.js');
+const { readSessionSnapshot, publishSession, completeRecords } = require('./session-snapshot.js');
 const settingsLib = require('./settings.js');
 const watchIgnore = require('./watch-ignore.js');
 const snippetsLib = require('./snippets.js');
@@ -100,8 +100,13 @@ const SOURCES = {
 // their own, `pi@<account>`: /var/lib/chattering/people/<account>/sessions,
 // theirs to write, read here. Everything true of Pi conversations is true
 // of theirs; where they are stored says whose they are.
-const isPiSource = s => s === 'pi' || (typeof s === 'string' && s.startsWith('pi@'));
-const accountOfSource = s => (typeof s === 'string' && s.startsWith('pi@')) ? s.slice(3) : null;
+// Since design/108 every agent's: `claude@lilly` is Claude Code's
+// conversations in Lilly's own folder. The part before the @ is the agent:
+// how a conversation is read, continued and copied; the part after, whose
+// folder it is (null: this server's own account).
+const harnessOfSource = s => typeof s === 'string' ? s.split('@')[0] : null;
+const isPiSource = s => harnessOfSource(s) === 'pi';
+const accountOfSource = s => { if (typeof s !== 'string') return null; const at = s.indexOf('@'); return at > 0 ? s.slice(at + 1) : null; };
 // Conversations that moved between agents: which part continues which.
 const chains = require('./harness/chains.js').createChains({ file: path.join(DATA_DIR, 'chains.json') });
 // Which source a conversation file belongs to, from where it is.
@@ -118,7 +123,7 @@ function sourceOfPath(absPath) {
 // not change, so both count.
 async function statTranscript(source, absPath) {
   const st = await fsp.stat(absPath);
-  if (source !== 'agy') return st;
+  if (harnessOfSource(source) !== 'agy') return st;
   const wal = await fsp.stat(absPath + '-wal').catch(() => null);
   return wal ? { mtimeMs: Math.max(st.mtimeMs, wal.mtimeMs), size: st.size + wal.size } : st;
 }
@@ -1079,12 +1084,12 @@ function keyOfPath(absPath) {
 function withEarlierParts(absPath, parsed) {
   const key = keyOfPath(absPath);
   const src = sourceOfPath(absPath);
-  const ownName = AGENT_NAMES[src] || null;
+  const ownName = AGENT_NAMES[harnessOfSource(src)] || null;
   const link = key && chains.prevOf(key);
   if (!link) return parsed;
   let earlier = null;
   try { earlier = JSON.parse(fs.readFileSync(cachePathFor(link.key), 'utf8')); } catch { return parsed; }
-  const earlierName = AGENT_NAMES[(index[link.key] || {}).source] || 'another agent';
+  const earlierName = AGENT_NAMES[harnessOfSource((index[link.key] || {}).source)] || 'another agent';
   const before = (earlier.messages || []).map(m => ({ ...m, eid: m.eid || m._eid, inherited: true, part: m.part || link.key, agentName: m.agentName || earlierName }));
   const divider = { role: 'event', customType: 'handoff', eid: 'handoff:' + key, ts: link.at || null,
     text: 'continued with ' + (ownName || 'another agent') + ' (from ' + earlierName + ')', from: link.key };
@@ -1101,9 +1106,15 @@ function withEarlierParts(absPath, parsed) {
 }
 async function parseOwnFile(absPath) {
   const source = sourceOfPath(absPath);
-  if (source === 'agy' || source === 'muse') {
+  // A person's Codex, Antigravity or Muse Code conversation (design/108):
+  // read in its format by their host, as them.
+  if (accountOfSource(source) && ['codex', 'agy', 'muse'].includes(harnessOfSource(source))) {
     const st = await statTranscript(source, absPath).catch(() => null);
-    return source === 'agy'
+    return actorOfSource(source).op('agent.transcript', harnessOfSource(source), absPath, { mtimeMs: st ? st.mtimeMs : null });
+  }
+  if (harnessOfSource(source) === 'agy' || harnessOfSource(source) === 'muse') {
+    const st = await statTranscript(source, absPath).catch(() => null);
+    return harnessOfSource(source) === 'agy'
       ? agyTranscript.parseAgyConversation(absPath, { mtimeMs: st ? st.mtimeMs : null })
       : museTranscript.parseMuseSession(absPath, { mtimeMs: st ? st.mtimeMs : null });
   }
@@ -1359,9 +1370,14 @@ function keepClaudeArtifacts(messages) {
 
 async function transcriptImage(key, entry, blockPath) {
   if (!index[key] || !entry || !/^\d+(?:\.\d+)*$/.test(blockPath || '')) throw new Error('bad image reference');
-  if (index[key].source === 'codex') return codexTranscript.codexImageAt(absPathForKey(key), entry, blockPath);
-  if (index[key].source === 'agy' || index[key].source === 'muse') {
-    const media = index[key].source === 'agy' ? agyTranscript.agyImageAt(absPathForKey(key), entry, blockPath) : null;
+  if (accountOfSource(index[key].source) && ['codex', 'agy', 'muse'].includes(harnessOfSource(index[key].source))) {
+    const media = await actorOfSource(index[key].source).op('agent.image', harnessOfSource(index[key].source), absPathForKey(key), entry, blockPath);
+    if (!media) throw Object.assign(new Error('image not found'), { status: 404 });
+    return media;
+  }
+  if (harnessOfSource(index[key].source) === 'codex') return codexTranscript.codexImageAt(absPathForKey(key), entry, blockPath);
+  if (harnessOfSource(index[key].source) === 'agy' || harnessOfSource(index[key].source) === 'muse') {
+    const media = harnessOfSource(index[key].source) === 'agy' ? agyTranscript.agyImageAt(absPathForKey(key), entry, blockPath) : null;
     if (!media) throw Object.assign(new Error('image not found'), { status: 404 });
     return media;
   }
@@ -2115,7 +2131,7 @@ async function indexFile(source, relPath, stat) {
     scheduleProjectFoldRefresh(meta.cwd);
     // Local transcript tools have explicit paths and completion results.
     // Remote-only paths must never be offered as local files.
-    if (isPiSource(source) || source === 'claude' || source === 'codex' || source === 'agy' || source === 'muse') {
+    if (isPiSource(source) || harnessOfSource(source) === 'claude' || harnessOfSource(source) === 'codex' || harnessOfSource(source) === 'agy' || harnessOfSource(source) === 'muse') {
       const activity = recentFilesLib.fromMessages(messages, {
         project: projectOfEntry(entry, key), key,
         resolvePath: p => {
@@ -2132,7 +2148,7 @@ async function indexFile(source, relPath, stat) {
     saveIndexSoon();
     if (!blankAgentRun(entry)) broadcast({ type: 'update', key, ...entry, project: projectNameOf(entry.cwd, key) });
     markLeafDirty(key, prev, entry, stat.mtimeMs);
-    if (entry.source === 'codex' ? entry.codex && entry.codex.imported : true) scheduleCodexImportLinks();
+    if (harnessOfSource(entry.source) === 'codex' ? entry.codex && entry.codex.imported : true) scheduleCodexImportLinks();
     if (searchIdx && !entry.importCopyOf) {
       try {
         searchIdx.putConversation(key, { ...entry, project: projectNameOf(entry.cwd, key) }, messages);
@@ -2181,8 +2197,8 @@ function linkCodexImports() {
 
 // Skip subagent/sidechain transcript files.
 function isMainTranscript(relPath, source) {
-  if (source === 'agy') return agyTranscript.isAgyConversation(relPath);
-  if (source === 'muse') return museTranscript.isMuseSession(relPath);
+  if (harnessOfSource(source) === 'agy') return agyTranscript.isAgyConversation(relPath);
+  if (harnessOfSource(source) === 'muse') return museTranscript.isMuseSession(relPath);
   // Codex's mid-2025 conversations are single JSON documents (rollout-*.json).
   return (relPath.endsWith('.jsonl') && !relPath.includes('subagents')) || codexTranscript.isRollout(relPath);
 }
@@ -2190,7 +2206,7 @@ function isMainTranscript(relPath, source) {
 // for an Antigravity database its write-ahead file (its shared-memory
 // file changes on every read, this app's included: never followed).
 function transcriptOfChange(relPath, source) {
-  if (source === 'agy' && relPath.endsWith('.db-wal')) relPath = relPath.slice(0, -4);
+  if (harnessOfSource(source) === 'agy' && relPath.endsWith('.db-wal')) relPath = relPath.slice(0, -4);
   return isMainTranscript(relPath, source) ? relPath : null;
 }
 
@@ -2926,7 +2942,7 @@ async function familyEntryGraph(key) {
     let raw;
     try { raw = await fsp.readFile(absPathForKey(k), 'utf8'); } catch { continue; }
     // Codex, Antigravity and Muse Code conversations are one line each.
-    const nodes = ['codex', 'agy', 'muse'].includes(e.source) ? codexTreeNodes(await parseConversationFile(absPathForKey(k))) : parseTreeEntries(e.source === 'claude' ? 'claude' : 'pi', raw);
+    const nodes = ['codex', 'agy', 'muse'].includes(harnessOfSource(e.source)) ? codexTreeNodes(await parseConversationFile(absPathForKey(k))) : parseTreeEntries(harnessOfSource(e.source) === 'claude' ? 'claude' : 'pi', raw);
     for (const parsedNode of nodes) {
       let n = byId.get(parsedNode.id);
       if (!n) {
@@ -3072,7 +3088,7 @@ async function sessionTreeFor(key, opts = {}) {
 // sizes pi reports for its models. Context is trace-scoped (siblings do not
 // share a window); Pi cost is a catalog estimate, including subscription routes.
 async function conversationContextResponse(key, leafId) {
-  if (index[key] && index[key].source === 'codex') {
+  if (index[key] && harnessOfSource(index[key].source) === 'codex') {
     // Codex counts its own context (token_count) against its own window.
     // Cost: a ChatGPT plan is not billed per token; the ledger estimates.
     const e = index[key], p = codexRuns().prefsOf(key);
@@ -3308,7 +3324,7 @@ async function forkMirroredSession(key, nodeId) {
   } else {
     const raw = await readSessionSnapshot(sessionPath);
     const newId = crypto.randomUUID();
-    const dir = path.join(SOURCES.claude, cwd.replace(/[\/\\]/g, '-'));
+    const dir = path.join(SOURCES.claude, claudeProjectDirName(cwd));
     await fsp.mkdir(dir, { recursive: true });
     newAbs = path.join(dir, `${newId}.jsonl`);
     await publishSession(newAbs, claudeForkContent(raw, nodeId, newId));
@@ -3330,7 +3346,10 @@ const CANONICAL_TURN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 async function forkCodexSession(key, nodeId, { before = false } = {}) {
   const { entry, cwd } = sessionPathsFor(key);
   const principal = await currentPrincipal(projectNameOf(entry.cwd, key));
-  if (principal.guest || principal.walls) throw Object.assign(new Error('Codex runs from Chattering for this machine\'s own account only.'), { status: 403 });
+  assertCodexRuns(principal);
+  // Codex forks in its own records: only the account that keeps the
+  // conversation can (another account continues a copy with a handoff).
+  assertRunsHere(key, principal, 'fork it');
   if (entry.importCopyOf || (entry.codex && entry.codex.imported)) throw new Error('This is a text-only copy Codex imported from another agent. Fork the original instead.');
   const data = JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8'));
   const msg = data.messages.find(m => m.eid === nodeId);
@@ -3340,7 +3359,8 @@ async function forkCodexSession(key, nodeId, { before = false } = {}) {
   const at = turns.indexOf(msg.turnId);
   const through = before ? turns[at - 1] : msg.turnId;
   if (!through) throw Object.assign(new Error('This is the first question: start a new conversation to ask it differently.'), { status: 409 });
-  const forked = await codexDriver.forkThread({ threadId: entry.sessionId, cwd, env: agentEnv(principal), bin: codexBin() }, through);
+  const made = await codexDriver.forkThread({ threadId: entry.sessionId, cwd, ...codexTarget(principal, cwd) }, through);
+  const forked = { ...made, path: agentPathHere('codex', made.path, principal) };
   if (!forked.path || !fs.existsSync(forked.path)) throw new Error('Codex did not create the forked conversation.');
   const newKey = await indexNewSessionFile(forked.path);
   await markFork(newKey, key, entry);
@@ -3352,23 +3372,34 @@ async function forkCodexSession(key, nodeId, { before = false } = {}) {
 async function forkSession(key, nodeId) {
   if (syncLib.isMirrorKey(key)) return forkMirroredSession(key, nodeId);
   const { entry, sessionPath, cwd } = sessionPathsFor(key);
-  if (entry.source === 'codex') return forkCodexSession(key, nodeId);
-  if (entry.source === 'agy' || entry.source === 'muse') throw Object.assign(new Error(`${agentNameOf(entry)} conversations cannot be copied here: its own program owns its file.`), { status: 409 });
+  if (harnessOfSource(entry.source) === 'codex') return forkCodexSession(key, nodeId);
+  if (harnessOfSource(entry.source) === 'agy' || harnessOfSource(entry.source) === 'muse') throw Object.assign(new Error(`${agentNameOf(entry)} conversations cannot be copied here: its own program owns its file.`), { status: 409 });
   await assertDelegationOwnership(sessionPath);
   // Copying immutable saved history is not a mutation of the source. Never
   // wait behind its live turn or stop its warm runtime. This native utility
   // is file-only even when the chosen agent engine is RPC.
-  if (entry.source !== 'claude') {
+  if (harnessOfSource(entry.source) !== 'claude') {
     const forked = await pisdk.piForkAt({ sessionPath, cwd }, nodeId, forkPlacement(entry.cwd || cwd, key));
     const newKey = await indexNewSessionFile(forked.file);
     await markFork(newKey, key, entry);
     return { key: newKey, path: forked.file, sessionId: forked.sessionId };
   }
-  const raw = await readSessionSnapshot(sessionPath);
+  // Claude Code: a copy in the forker's own folder (design/108), as them.
+  // A person's conversation is read only if theirs (never a link they left).
+  const raw = ownerOfTranscript(sessionPath) ? completeRecords(await readTranscriptText(sessionPath)) : await readSessionSnapshot(sessionPath);
   const newId = crypto.randomUUID();
   const content = claudeForkContent(raw, nodeId, newId);
-  const newAbs = path.join(path.dirname(sessionPath), `${newId}.jsonl`);
-  await publishSession(newAbs, content);
+  const identity = currentIdentity();
+  const principal = identity ? principalFor(identity) : backgroundPrincipalFor(key);
+  let newAbs;
+  if (!principalAccount(principal) && !accountOfSource(entry.source)) {
+    newAbs = path.join(path.dirname(sessionPath), `${newId}.jsonl`);
+    await publishSession(newAbs, content);
+  } else {
+    const root = assertAgentReady('claude', principal);
+    newAbs = path.join(root, claudeProjectDirName(movedFolder(entry.cwd || cwd)), `${newId}.jsonl`);
+    await writeNewConversationFile(principal, newAbs, content);
+  }
   const newKey = await indexNewSessionFile(newAbs);
   await markFork(newKey, key, entry);
   return { key: newKey, path: newAbs, sessionId: newId };
@@ -3378,12 +3409,12 @@ async function forkSession(key, nodeId) {
 // UI opens the new session with the prompt ready to edit and resend.
 async function forkSessionForEdit(key, nodeId) {
   const { entry, sessionPath, cwd } = sessionPathsFor(key);
-  if (entry.source === 'codex') {
+  if (harnessOfSource(entry.source) === 'codex') {
     const m = JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8')).messages.find(x => x.eid === nodeId);
     if (!m || m.role !== 'user') throw new Error('Edit a question you asked.');
     return forkCodexSession(key, nodeId, { before: true });
   }
-  if (entry.source === 'claude') throw new Error('Editing a past message needs pi. Claude conversations can only fork.');
+  if (harnessOfSource(entry.source) === 'claude') throw new Error('Editing a past message needs pi. Claude conversations can only fork.');
   refuseOwnProgramOnly(entry, 'Editing a past message');
   await assertDelegationOwnership(sessionPath);
   const forked = await pisdk.piForkBefore({ sessionPath, cwd }, nodeId, forkPlacement(entry.cwd || cwd, key));
@@ -3409,9 +3440,9 @@ async function branchSession(key, nodeId, expectedLeaf = null, principal = null)
   const entry = index[key];
   if (!entry) throw new Error('not found');
   assertRunsHere(key, principal || backgroundPrincipalFor(key), 'change where it continues');
-  if (entry.source === 'claude')
+  if (harnessOfSource(entry.source) === 'claude')
     throw new Error('Claude cannot branch in place — its CLI always continues at the file end. Use fork instead.');
-  if (entry.source === 'codex')
+  if (harnessOfSource(entry.source) === 'codex')
     throw Object.assign(new Error('A Codex conversation is one line: it continues from its newest message. Fork to continue from an earlier point.'), { status: 409 });
   refuseOwnProgramOnly(entry, 'Continuing from an earlier point');
   const sessionPath = absPathForKey(key);
@@ -4522,7 +4553,7 @@ function markFanoutFork(key, fanout) {
 }
 
 async function startFanOut(key, { node, models, message, images, force, context, principal = null, input = 'keyboard', coauthors = null }) {
-  if (index[key] && index[key].source === 'codex') throw Object.assign(new Error('Side-by-side answers need Pi. A Codex conversation answers with one Codex model.'), { status: 400 });
+  if (index[key] && harnessOfSource(index[key].source) === 'codex') throw Object.assign(new Error('Side-by-side answers need Pi. A Codex conversation answers with one Codex model.'), { status: 400 });
   if (!Array.isArray(models) || models.length < 2) throw new Error('fan-out needs two or more models');
   const runs = [];
   const fanoutId = 'fan:' + crypto.randomUUID().slice(0, 8);
@@ -4865,12 +4896,13 @@ async function compactConversation(key, instructions, force) {
     if (headlessRuns.has(sessionPath)) throw new Error('A reply is being written in this conversation. Wait for it to finish, or stop it, then compact.');
     if (compactingSessions.has(path.resolve(sessionPath))) throw new Error('This conversation is already being compacted.');
     const principal = await currentPrincipal(projectNameOf(entry.cwd, key));
-    if (principal.guest || principal.walls) throw Object.assign(new Error('Codex runs from Chattering for this machine\'s own account only.'), { status: 403 });
+    assertCodexRuns(principal);
+    assertRunsHere(key, principal, 'compact it');
     compactingSessions.add(path.resolve(sessionPath));
     broadcast({ type: 'compaction', key, state: 'running' });
     try {
       const p = codexRuns().prefsOf(key);
-      await codexDriver.compactThread({ threadId: entry.sessionId, cwd, env: agentEnv(principal), bin: codexBin(), ...(codexRuns().ACCESS[p.access] || {}) });
+      await codexDriver.compactThread({ threadId: entry.sessionId, cwd, ...codexTarget(principal, cwd), ...(codexRuns().ACCESS[p.access] || {}) });
       await reindexIfChanged(key);
       broadcast({ type: 'compaction', key, state: 'done', tokensBefore: null, tokensAfter: null });
       return { ok: true, tokensBefore: null, tokensAfter: null, reopened: false, note: instructions && String(instructions).trim() ? 'Codex compacts on its own terms; the focus instructions were not used.' : undefined };
@@ -5599,7 +5631,7 @@ async function frogSend({ id, text }, identity) {
   let out;
   if (liveHeld.has(sessionPath)) {
     out = { via: 'its own program', ...(await liveTerminals().send(key, body)) };
-  } else if (isPiSource(entry.source) || entry.source === 'codex') {
+  } else if (isPiSource(entry.source) || harnessOfSource(entry.source) === 'codex') {
     // The model its menu shows, the one the person's own send would use
     // (not only the file's last one, which may be a run that failed for
     // usage). Queued behind a running turn: that turn's model.
@@ -6121,7 +6153,7 @@ async function frogFresh({ id, message, title }, identity) {
   if (key === theFrog.key) return frogSegmentLater({ message: text, why: 'asked' });
   const data = JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8'));
   const said = (data.messages || []).filter(m => (m.role === 'user' || m.role === 'assistant') && String(m.text || '').trim());
-  const { turns, left } = handoffLib.turnsOf(said.map(m => ({ ...m, agentName: AGENT_NAMES[entry.source] || null })));
+  const { turns, left } = handoffLib.turnsOf(said.map(m => ({ ...m, agentName: AGENT_NAMES[harnessOfSource(entry.source)] || null })));
   const cwd = entry.cwd || os.homedir();
   const sessionId = require('./harness/live-terminal.js').newId('uuidv7');
   const file = piSessionFileFor(cwd, sessionId);
@@ -7534,17 +7566,54 @@ function ownAccountOf(user) {
 }
 // The owner of each account folder: a file read from it must be theirs
 // (accounts.openOwned), whatever a symlink inside says.
+// Every agent's folder of theirs is a source too (design/108):
+// `claude@<account>` is PEOPLE_DIR/<account>/claude, and so on
+// (accounts.js AGENT_FOLDERS). Registered whether or not the folder exists
+// yet: their account's setup makes it, then it is scanned and watched.
 const accountSourceUid = new Map(); // source -> uid
 function registerAccountSource(name) {
   const clean = accountsLib.cleanAccountName(name);
   if (!clean || clean === SERVICE_USER) return null;
-  const source = 'pi@' + clean;
-  const root = path.join(PEOPLE_DIR, clean, 'sessions');
-  const isNew = SOURCES[source] !== root;
-  SOURCES[source] = root;
-  try { accountSourceUid.set(source, fs.statSync(root).uid); } catch { accountSourceUid.delete(source); }
-  if (isNew && typeof startSourceLive === 'function') startSourceLive(source);
-  return source;
+  for (const harness of Object.keys(accountsLib.AGENT_FOLDERS)) {
+    const source = harness + '@' + clean;
+    const root = accountsLib.agentRootFor({ name: clean }, harness, PEOPLE_DIR);
+    const isNew = SOURCES[source] !== root;
+    SOURCES[source] = root;
+    try { accountSourceUid.set(source, fs.statSync(root).uid); } catch { accountSourceUid.delete(source); }
+    if (isNew && typeof startSourceLive === 'function') startSourceLive(source);
+  }
+  return 'pi@' + clean;
+}
+// After a person's account is (again) set up: folders it made are scanned
+// and watched from now on, owned by whom they are now.
+function accountSourcesReady(name) {
+  const clean = accountsLib.cleanAccountName(name);
+  if (!clean) return;
+  for (const harness of Object.keys(accountsLib.AGENT_FOLDERS)) {
+    const source = harness + '@' + clean;
+    if (!SOURCES[source]) continue;
+    // hub-own: the owner of a folder this server is declared to read (design/105), as registerAccountSource does
+    try { accountSourceUid.set(source, fs.statSync(SOURCES[source]).uid); } catch { accountSourceUid.delete(source); }
+    if (typeof startSourceLive !== 'function') continue;
+    // Watched already: scanned again, for what could not be read while
+    // their account was not ready (their host reads some formats).
+    if (typeof treeWatchers !== 'undefined' && treeWatchers.has(source)) scanSource(source, SOURCES[source], new Set()).catch(e => console.error('scan failed:', source, e.message));
+    else startSourceLive(source);
+  }
+}
+// The folder an agent's conversations go to for this principal: their own
+// (null when that agent's folder is not set up for them, see agentProblem)
+// or this server's.
+function agentSourceRoot(harness, principal) {
+  if (principal && principal.walls && principal.walls.kind === 'account') return principal.walls.agentRoot(harness);
+  return SOURCES[harness] || null;
+}
+// A path a person's agent reports (in their home, through the link), as
+// this server reads it. Unchanged for this server's own agents.
+function agentPathHere(harness, p, principal) {
+  const acct = principal && principal.walls && principal.walls.kind === 'account' ? principal.walls.account : null;
+  if (!acct || !p) return p;
+  return accountsLib.agentPathInRoot(acct, harness, p, PEOPLE_DIR) || p;
 }
 for (const u of roster.users) if (ownAccountOf(u)) registerAccountSource(u.account);
 // Who a conversation file must belong to, when it is in a person's folder.
@@ -7693,19 +7762,25 @@ function wallsSessionDir(walls, cwd) {
 // The account a principal's processes run as: theirs, or null for this
 // server's own (owner, household, guests in their sandbox).
 const principalAccount = principal => principal && principal.walls && principal.walls.kind === 'account' ? principal.walls.account.name : null;
-// A Pi conversation runs as the account whose folder holds it: no one
-// drives another account's file (it is theirs; their agent's rights are
-// not anyone else's), the owner included. Forking makes a copy that is
-// the sender's own. The same rule mirrors follow (assertCan).
+// A conversation runs as the account whose folder holds it: no one drives
+// another account's file (it is theirs; their agent's rights are not anyone
+// else's), the owner included. Every agent's (design/108): a person's Claude
+// Code cannot even open another account's conversation. Pi and Claude Code
+// conversations fork into a copy that is the sender's own; Codex,
+// Antigravity and Muse Code ones are continued as a copy with an agent of
+// theirs (a handoff: their own program owns their files).
+const forkableAgent = harness => harness === 'pi' || harness === 'claude';
 function assertRunsHere(key, principal, what = 'continue it') {
   const e = index[key];
-  if (!e || !isPiSource(e.source)) return;
+  if (!e || !accountsLib.AGENT_FOLDERS[harnessOfSource(e.source)]) return;
   const stored = accountOfSource(e.source);
   const runner = principalAccount(principal);
   if (stored === runner) return;
   const whose = stored ? (personWithAccount(stored) || { name: stored }).name + '\u2019s own account (' + stored + ')' : 'this computer\u2019s main account';
-  const err = new Error(`This conversation belongs to ${whose}. To ${what} as ${runner ? (principal.user && principal.user.name || runner) + ' (' + runner + ')' : 'yourself'}, fork it: the copy is yours.`);
-  err.status = 409; err.fork = true; err.account = stored;
+  const as = runner ? (principal.user && principal.user.name || runner) + ' (' + runner + ')' : 'yourself';
+  const fork = forkableAgent(harnessOfSource(e.source));
+  const err = new Error(`This conversation belongs to ${whose}. To ${what} as ${as}, ${fork ? 'fork it: the copy is yours' : 'continue it with an agent of yours: a copy of it goes along'}.`);
+  err.status = 409; err.fork = fork; err.handoff = !fork; err.account = stored;
   throw err;
 }
 // Models through the key proxy: guests, and people on the owner's models.
@@ -7714,14 +7789,14 @@ const usesKeyProxy = principal => !!(principal && (principal.guest || (principal
 // the reader's ({ account, name }), else null.
 function otherAccountFor(key, identity) {
   const e = index[key];
-  if (!e || !isPiSource(e.source)) return null;
+  if (!e || !accountsLib.AGENT_FOLDERS[harnessOfSource(e.source)]) return null;
   const stored = accountOfSource(e.source);
   let runner = null;
   try { runner = principalAccount(principalFor(identity)); } catch {}
   if (stored === runner) return null;
   if (!stored && !runner) return null;
   const person = stored ? personWithAccount(stored) : null;
-  return { account: stored, name: stored ? (person ? person.name : stored) : null };
+  return { account: stored, name: stored ? (person ? person.name : stored) : null, fork: forkableAgent(harnessOfSource(e.source)) };
 }
 const personWithAccount = name => roster.users.find(u => ownAccountOf(u) === name) || null;
 // ---- changing a stored conversation (design/105) ----
@@ -7957,6 +8032,22 @@ function groupByActor(paths) {
     by.get(k).paths.push(p);
   }
   return [...by.values()].map(g => [g.actor, g.paths]);
+}
+// Whom a principal's work on files is done as: their own account's host, or
+// this server (design/106).
+function actorOfPrincipal(principal) {
+  if (!principalAccount(principal)) return localActor;
+  const mine = filesOfPerson(usersLib.findUser(roster, principal.user.id) || principal.user);
+  return mine ? actorOfMine(mine) : localActor;
+}
+// The account that keeps a conversation source: work on its files (reading
+// an agent's own format, design/108) is done as them.
+function actorOfSource(source) {
+  const acct = accountOfSource(source);
+  const person = acct ? personWithAccount(acct) : null;
+  const mine = person ? filesOfPerson(person) : null;
+  if (acct && !mine) throw Object.assign(new Error('the account ' + acct + ' is not linked to anyone here'), { status: 404 });
+  return mine ? actorOfMine(mine) : localActor;
 }
 function actorForPath(p) {
   const person = accountPersonOfPath(p);
@@ -8210,7 +8301,11 @@ const accountManager = require('./account-manager.js').createAccountManager({
   cgroupFor: personCgroupFor,
   proxyPort: () => guestProxyPort,
   log: m => console.error(m),
-  onChange: (userId, st) => { if (st && st.status !== 'preparing') broadcast({ type: 'users', users: publicUsers(), groups: roster.groups }); if (st && st.status === 'broken') console.error('[accounts]', userId, (st.problems || []).join(' ')); },
+  onChange: (userId, st) => {
+    if (st && st.status === 'ready' && st.accountName) accountSourcesReady(st.accountName);
+    if (st && st.status !== 'preparing') broadcast({ type: 'users', users: publicUsers(), groups: roster.groups });
+    if (st && st.status === 'broken') console.error('[accounts]', userId, (st.problems || []).join(' '));
+  },
 });
 const guestUsage = []; // recent proxy usage rows, for the people pane
 function recordGuestUsage(u) {
@@ -11914,6 +12009,39 @@ function agentsInstalled() {
   agentsInstalledAt = Date.now();
   return agentsInstalledWas;
 }
+// The same, for whoever asks: a person on their own account has the
+// programs on their own PATH (found as them by account-setup.js), never
+// this server's (design/108).
+function agentsInstalledFor(identity) {
+  let principal = null;
+  try { principal = identity && identity.user ? principalFor(identity) : null; } catch { return agentsInstalled(); }
+  const walls = principal && principal.walls;
+  if (!walls || walls.kind !== 'account') return agentsInstalled();
+  const out = { pi: true };
+  for (const h of accountsLib.AGENT_PROGRAMS) out[h] = !!(walls.programs || {})[h];
+  return out;
+}
+// The program an agent runs as, for whoever drives it: a person on their
+// own account runs their own (its name, found on their PATH as they start
+// it: chattering-as); this server, the one it found.
+function agentProgramFor(harness, principal) {
+  if (principal && principal.walls && principal.walls.kind === 'account') return harness;
+  return harness === 'claude' ? claudeBin() : harness === 'codex' ? codexBin() : agentProgramBin(harness);
+}
+// Before a person's agent starts: their account is ready, the program is
+// theirs and its conversations are where this server reads them. Returns
+// that folder (this server's own source for everyone else).
+function assertAgentReady(harness, principal) {
+  const walls = principal && principal.walls;
+  if (walls && walls.kind === 'account') {
+    if (walls.blocked) walls.launch(); // says why
+    const problem = harness === 'pi' ? null : walls.agentProblem && walls.agentProblem(harness);
+    if (problem) throw Object.assign(new Error(problem), { status: 409 });
+  }
+  return agentSourceRoot(harness, principal);
+}
+// How Claude Code names a working folder's conversation folder.
+const claudeProjectDirName = cwd => path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, '-');
 // Whether Codex is on this machine (the chosen binary, or `codex` on PATH).
 // Checked at most once a minute: only offered choices depend on it.
 let codexInstalledAt = 0, codexInstalledWas = false;
@@ -11947,7 +12075,9 @@ function codexRuns() {
     },
     sessionPathsFor, jobChanged, runEventForwarder, reindexIfChanged, refreshUsageForKey, endLiveRunTail,
     broadcastRunFinal, speakRunDone, recordAuthorship, indexNewSessionFile,
-    agentEnv: principal => agentEnv(principal), codexBin, withSessionOp, sleep,
+    codexTarget, withSessionOp, sleep,
+    assertReady: principal => { if (principalAccount(principal)) assertAgentReady('codex', principal); },
+    pathHere: (p, principal) => agentPathHere('codex', p, principal),
     repaintRun: job => { const t = liveRunTails.get(job.id); if (t && t.push) t.push(true); },
     modeFor: key => {
       if (!agentModes.pending(key, 'codex')) return null;
@@ -11968,12 +12098,32 @@ function codexRuns() {
 // Codex's menus: models (with the reasoning levels each offers), the plan,
 // usage limits. From Codex itself (no model call, no thread lock). Models
 // are kept five minutes; limits are asked fresh.
-let codexModelCache = { at: 0, models: null };
+// Kept per account: a person's own Codex signs in as them (design/108).
+const codexModelCaches = new Map(); // account ('' for this server's) → { at, models }
+// Codex as whoever drives it: this server's program, or a person's own
+// (their Codex, their sign-in, behind their account's walls, design/108).
+function codexTarget(principal, cwd = null) {
+  if (principalAccount(principal)) {
+    const walls = principal.walls;
+    return { env: walls.env(), bin: 'codex', as: walls.account.name, launch: argv => walls.launch(argv[0], argv.slice(1), { cwd: cwd || walls.account.home }) };
+  }
+  return { env: agentEnv(principal), bin: codexBin(), as: null, launch: null };
+}
+// Codex runs for this machine's account and for people on their own
+// accounts, not inside a guest's walls; a person's once set up for them.
+function assertCodexRuns(principal) {
+  if (codexRefusedFor(principal)) throw Object.assign(new Error('Codex runs from Chattering as this machine\'s account or as a person\'s own account. Guests use Pi conversations.'), { status: 403 });
+  if (principalAccount(principal)) assertAgentReady('codex', principal);
+}
+const codexRefusedFor = p => !!(p && (p.guest || (p.walls && p.walls.kind !== 'account')));
 async function codexMenusFor(cwd, principal) {
-  const target = { cwd: cwd || os.homedir(), env: agentEnv(principal), bin: codexBin() };
+  const home = principalAccount(principal) ? principal.walls.account.home : os.homedir();
+  const target = { cwd: cwd || home, ...codexTarget(principal, cwd || home) };
   const raw = await codexDriver.codexMenus(target);
   const { modelsOfList } = require('./harness/codex-composer.js');
-  if (!raw.models.error) codexModelCache = { at: Date.now(), models: modelsOfList(raw.models) };
+  const slot = principalAccount(principal) || '';
+  if (!raw.models.error) codexModelCaches.set(slot, { at: Date.now(), models: modelsOfList(raw.models) });
+  const codexModelCache = codexModelCaches.get(slot) || { at: 0, models: null };
   const account = raw.account && raw.account.account;
   return {
     models: codexModelCache.models || [], modelsError: raw.models.error || null,
@@ -11984,19 +12134,21 @@ async function codexMenusFor(cwd, principal) {
   };
 }
 async function codexModels(principal) {
-  if (codexModelCache.models && Date.now() - codexModelCache.at < 5 * 60 * 1000) return codexModelCache.models;
-  return (await codexMenusFor(os.homedir(), principal)).models;
+  const cache = codexModelCaches.get(principalAccount(principal) || '');
+  if (cache && cache.models && Date.now() - cache.at < 5 * 60 * 1000) return cache.models;
+  return (await codexMenusFor(null, principal)).models;
 }
-const codexComposers = new Map(); // conversation key → its composer
+const codexComposers = new Map(); // conversation key and account → its composer
 function codexComposerFor(key, principal) {
-  let c = codexComposers.get(key);
+  const slot = key + '\n' + (principalAccount(principal) || '');
+  let c = codexComposers.get(slot);
   if (!c) {
     const { cwd } = sessionPathsFor(key);
     c = require('./harness/codex-composer.js').createCodexComposer({
-      fileSearch: q => codexDriver.codexFileSuggestions({ cwd, env: agentEnv(principal), bin: codexBin() }, q),
+      fileSearch: q => codexDriver.codexFileSuggestions({ cwd, ...codexTarget(principal, cwd) }, q),
       models: () => codexModels(principal),
     });
-    codexComposers.set(key, c);
+    codexComposers.set(slot, c);
     if (codexComposers.size > 64) codexComposers.delete(codexComposers.keys().next().value);
   }
   return c;
@@ -12150,13 +12302,34 @@ function writeAgyModeFile(file, key) {
     fs.writeFileSync(file, JSON.stringify({ id: c.mode.id, text: agentModesLib.switchText(c.mode.def) }), { mode: 0o600 });
   } catch (e) { console.error('[agent modes] ' + e.message); }
 }
+// A person's Antigravity (design/108) reads its mode file in their home and
+// marks beside it what it handed over (agy-mode-hook.js): the file is
+// theirs, written by their host. Everyone else's: agyModeFile's.
+function agyModeFileFor(key, principal) {
+  const noted = agentModes.note(key, 'agyFile');
+  if (noted) return noted;
+  if (!principalAccount(principal)) return agyModeFile(key);
+  return path.join(principal.walls.account.home, '.local', 'state', 'chattering', 'agent-modes', 'agy-' + crypto.createHash('sha256').update(key).digest('hex').slice(0, 20) + '.json');
+}
+async function writeAgyModeFileFor(key, principal) {
+  if (!principalAccount(principal)) return writeAgyModeFile(agyModeFileFor(key, principal), key);
+  const c = agentModes.get(key);
+  if (!c || !c.mode) return;
+  const person = usersLib.findUser(roster, principal.user.id);
+  await accountManager.hostFor(person).call('write', agyModeFileFor(key, principal), JSON.stringify({ id: c.mode.id, text: agentModesLib.switchText(c.mode.def) }), { mkdirs: true, mode: 0o600 });
+}
+// Who drives a conversation's own program: who started it, else whose it is.
+function livePrincipalOf(key) {
+  const identity = liveIdentity.get(key);
+  try { return identity && identity.user ? principalFor(identity) : backgroundPrincipalFor(key); } catch { return principalFor(null); }
+}
 // What the person is told about when a switch applies.
 function deliverAgentMode(key) {
   const entry = index[key], pend = livePending.get(key);
-  const harness = entry ? entry.source : pend ? pend.harness : null;
+  const harness = entry ? harnessOfSource(entry.source) : pend ? pend.harness : null;
   const running = !!(liveTerminalsLib && liveTerminalsLib.status(key).running);
   if (harness === 'agy') {
-    writeAgyModeFile(agyModeFile(key), key);
+    writeAgyModeFileFor(key, livePrincipalOf(key)).catch(e => console.error('[agent modes] ' + e.message));
     return running ? 'at its next step' : 'when it next starts';
   }
   if (harness === 'muse') return 'with your next message';
@@ -12212,9 +12385,12 @@ const liveHandoffs = new Map(); // live key → { from, block } (Antigravity, Mu
 function handoffTargetsFor(key, identity) {
   const entry = index[key];
   if (!entry || syncLib.isMirrorKey(key) || !canDo(identity, 'act', targetOf(key)) || chains.nextOf(key)) return [];
-  const own = conversationKind(entry), inst = agentsInstalled();
+  const own = conversationKind(entry), inst = agentsInstalledFor(identity);
   const ltOk = liveTerminalsLib ? liveTerminalsLib.status('').available !== false : true;
-  return HANDOFF_AGENTS.filter(h => h !== own && inst[h] !== false).filter(h => {
+  // Another account's conversation (design/108): the reader's own agent of
+  // the same kind may continue a copy of it too.
+  const copy = !!otherAccountFor(key, identity);
+  return HANDOFF_AGENTS.filter(h => (h !== own || copy) && inst[h] !== false).filter(h => {
     if (h === 'pi') return true;
     if (liveTerminalRefusal(identity, h)) return false;
     if (h === 'codex') return true;
@@ -12235,18 +12411,37 @@ async function currentModeDef(key) {
 }
 async function handoffTurns(key) {
   const data = JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8'));
-  const ownName = AGENT_NAMES[index[key].source];
+  const ownName = AGENT_NAMES[harnessOfSource(index[key].source)];
   return handoffLib.turnsOf((data.messages || []).map(m => m.agentName ? m : { ...m, agentName: ownName }));
 }
-function piSessionFileFor(cwd, sessionId, now = new Date()) {
-  return path.join(SOURCES.pi, runtimeLib.piSessionDirName(cwd), now.toISOString().replace(/[:.]/g, '-') + '_' + sessionId + '.jsonl');
+// In the principal's own Pi folder (a person's, design/105).
+function piSessionFileFor(cwd, sessionId, now = new Date(), principal = null) {
+  const dir = principalAccount(principal) ? principal.walls.sessionDirFor(cwd) : path.join(SOURCES.pi, runtimeLib.piSessionDirName(cwd));
+  return path.join(dir, now.toISOString().replace(/[:.]/g, '-') + '_' + sessionId + '.jsonl');
+}
+// A new conversation file, written as whoever it belongs to (a person's by
+// their host into their folder), never replacing one (person-ops.js).
+function writeNewConversationFile(principal, file, text) {
+  return actorOfPrincipal(principal).op('conversation.create', file, text);
 }
 // opts, from the draft screen (conversation-draft.js, startHandoffDraft):
 // prompt, images, models, thinking, context, access (Codex), folder (the
 // old conversation's by default), mode (a key; null: none; undefined: the
 // old conversation's), inProgram (Pi or Codex in its own program: the file
 // is written, the page sends the message there).
-async function startHandoff(key, { harness, prompt, identity, input = 'keyboard', images = [], models = [], thinking = null, context = [], access = 'config', folder = null, mode, inProgram = false, account = null }) {
+// Another account's conversation is continued as a copy (design/108): the
+// new conversation is the reader's own, carries the history, and is not
+// linked as the original's continuation (that one stays its owner's to
+// continue).
+async function handoffConversation(key, opts) {
+  const entry = index[key];
+  if (!entry) throw Object.assign(new Error('conversation not found'), { status: 404 });
+  const copy = !!otherAccountFor(key, opts.identity);
+  const out = await startHandoff(key, { ...opts, copy });
+  if (copy && out && out.key) await markFork(out.key, key, entry);
+  return out;
+}
+async function startHandoff(key, { harness, prompt, identity, input = 'keyboard', images = [], models = [], thinking = null, context = [], access = 'config', folder = null, mode, inProgram = false, account = null, copy = false }) {
   const entry = index[key];
   if (!entry) throw Object.assign(new Error('conversation not found'), { status: 404 });
   assertCan(identity, 'act', targetOf(key), 'this conversation');
@@ -12256,16 +12451,18 @@ async function startHandoff(key, { harness, prompt, identity, input = 'keyboard'
   if (!String(prompt || '').trim() && !['agy', 'muse'].includes(harness) && !inProgramHere) throw new Error('write the message to send');
   let cwd = entry.cwd || os.homedir();
   if (folder != null && String(folder).trim()) {
-    const where = describeStartFolder(folder);
+    const where = await describeStartFolderFor(principalFor(identity), folder);
     if (!where.exists) throw new Error('folder not found: ' + where.display);
     assertPathAccess(identity, where.path, 'act');
     cwd = where.path;
   }
   const { turns, left } = await handoffTurns(key);
   const modeDef = mode === undefined ? await currentModeDef(key) : (typeof mode === 'string' && mode ? promptModeDef(mode) : null);
-  const info = { from: key, fromName: AGENT_NAMES[entry.source] || 'another agent', toName: AGENT_NAMES[harness] };
-  const link = newKey => chains.link(newKey, key, { from: entry.source, to: harness });
+  const info = { from: key, fromName: AGENT_NAMES[harnessOfSource(entry.source)] || 'another agent', toName: AGENT_NAMES[harness] };
+  const link = newKey => { if (!copy) chains.link(newKey, key, { from: harnessOfSource(entry.source), to: harness }); };
   const principal = principalFor(identity);
+  // Its folder for them: their account ready, that agent set up for them.
+  assertAgentReady(harness, principal);
   const items = normalizeContextItems(context);
   const picked = normalizePickedModels(models);
   for (const m of picked) assertClaudeAccountAllowed(m.provider, principal);
@@ -12273,9 +12470,8 @@ async function startHandoff(key, { harness, prompt, identity, input = 'keyboard'
   const warnings = [];
   if (harness === 'pi') {
     const sessionId = require('./harness/live-terminal.js').newId('uuidv7');
-    const file = piSessionFileFor(cwd, sessionId);
-    await fsp.mkdir(path.dirname(file), { recursive: true });
-    await writeFileAtomic(file, handoffLib.piSessionLines({ sessionId, cwd, turns, mode: modeDef, from: key }).map(e => JSON.stringify(e)).join('\n') + '\n');
+    const file = piSessionFileFor(cwd, sessionId, new Date(), principal);
+    await writeNewConversationFile(principal, file, handoffLib.piSessionLines({ sessionId, cwd, turns, mode: modeDef, from: key }).map(e => JSON.stringify(e)).join('\n') + '\n');
     link(keyOfPath(file));
     const newKey = await indexNewSessionFile(file);
     if (items.length) saveConversationContext(newKey, items);
@@ -12299,8 +12495,10 @@ async function startHandoff(key, { harness, prompt, identity, input = 'keyboard'
       // Codex's own program answers: the conversation is created with the
       // history (Codex writes its file at once) and the page sends there.
       const model = picked.find(m => m.provider === 'codex');
-      const made = await codexDriver.startInjected({ cwd, env: agentEnv((await liveLauncher(identity, cwd)).principal), bin: codexBin(), model: model ? model.modelId : null,
+      const runAs = (await liveLauncher(identity, cwd, null, 'codex')).principal;
+      const started = await codexDriver.startInjected({ cwd, ...codexTarget(runAs, cwd), model: model ? model.modelId : null,
         developerInstructions: modeDef ? agentModesLib.switchText(modeDef) : null }, handoffLib.codexItems(turns, info));
+      const made = { ...started, path: agentPathHere('codex', started.path, runAs) };
       if (!made.path || !fs.existsSync(made.path)) throw new Error('Codex did not create the conversation file.');
       link(keyOfPath(made.path));
       const newKey = await indexNewSessionFile(made.path);
@@ -12315,9 +12513,8 @@ async function startHandoff(key, { harness, prompt, identity, input = 'keyboard'
   }
   if (harness === 'claude') {
     const sessionId = crypto.randomUUID();
-    const file = path.join(SOURCES.claude, path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, '-'), sessionId + '.jsonl');
-    await fsp.mkdir(path.dirname(file), { recursive: true });
-    await writeFileAtomic(file, handoffLib.claudeSessionLines({ sessionId, cwd, turns, from: key, gitBranch: entry.gitBranch || '' }).map(e => JSON.stringify(e)).join('\n') + '\n');
+    const file = path.join(agentSourceRoot('claude', principal), claudeProjectDirName(cwd), sessionId + '.jsonl');
+    await writeNewConversationFile(principal, file, handoffLib.claudeSessionLines({ sessionId, cwd, turns, from: key, gitBranch: entry.gitBranch || '' }).map(e => JSON.stringify(e)).join('\n') + '\n');
     link(keyOfPath(file));
     const newKey = await indexNewSessionFile(file);
     if (modeDef) agentModes.set(newKey, modeDef);
@@ -12337,7 +12534,7 @@ async function startHandoff(key, { harness, prompt, identity, input = 'keyboard'
 // Pi's own program). Returns what the page shows.
 async function switchAgentMode(key, modeKey, identity) {
   const entry = index[key], pend = livePending.get(key);
-  const harness = entry ? entry.source : pend ? pend.harness : null;
+  const harness = entry ? harnessOfSource(entry.source) : pend ? pend.harness : null;
   if (!harness) throw Object.assign(new Error('conversation not found'), { status: 404 });
   const def = promptModeDef(modeKey);
   if (harness === 'pi') {
@@ -12369,12 +12566,14 @@ function liveTerminals() {
       // profile's: for this run only, never written into the agent's config.
       const own = (liveTerminalConf().args || {})[profile.id] || [];
       const mode = ctx.key ? agentModes.current(ctx.key) : null;
+      // A person on their own account runs their own program (design/108).
+      const program = profile.program === 'pi' ? null : agentProgramFor(profile.program, ctx.principal);
       if (profile.program === 'claude') {
         // Its prompt mode rides in its system prompt. Once a mode was ever
         // chosen here, its prompt is built afresh each request (not kept
         // from the first one), so a switch applies after a restart.
         const snapshotOff = ctx.key && agentModes.has(ctx.key) && claudeTakesSnapshotFlag() ? ['--system-prompt-snapshot', 'off'] : [];
-        const out = [claudeBin(), ...args, ...liveClaudeTools(ctx, mode && mode.def ? agentModesLib.modeText(mode.def) : ''), ...snapshotOff, ...own];
+        const out = [program, ...args, ...liveClaudeTools(ctx, mode && mode.def ? agentModesLib.modeText(mode.def) : '', ctx.principal), ...snapshotOff, ...own];
         if (ctx.key && mode) agentModes.given(ctx.key, 'claude');
         return out;
       }
@@ -12387,18 +12586,24 @@ function liveTerminals() {
         // (TOML string: JSON's quoting is valid there).
         const dev = ctx.isNew && mode && mode.def ? ['-c', 'developer_instructions=' + JSON.stringify(agentModesLib.switchText(mode.def))] : [];
         if (dev.length) agentModes.given(ctx.key, 'codex');
-        return [codexBin(), ...args, ...dev, ...own];
+        return [program, ...args, ...dev, ...own];
       }
-      if (profile.program === 'agy') { ensureAgyModeHook(); return [agentProgramBin('agy'), ...args, ...own]; }
-      if (profile.program === 'muse') return [agentProgramBin('muse'), ...args, ...own];
+      // A person's Antigravity has the hook in its own settings (account-setup.js).
+      if (profile.program === 'agy') { if (!principalAccount(ctx.principal)) ensureAgyModeHook(); return [program, ...args, ...own]; }
+      if (profile.program === 'muse') return [program, ...args, ...own];
       throw new Error(profile.name + ' has no program here');
     },
     envFor: principal => agentEnv(principal),
     // Antigravity reads its prompt mode from this conversation's file.
-    extraEnvFor: (key, profile) => {
-      // Claude Code as the account chosen for this conversation.
-      if (profile.id === 'claude') { const id = claudeAccountOf(key); return id === 'default' ? null : claudeAccounts.envFor(id); }
+    extraEnvFor: (key, profile, principal) => {
+      // Claude Code as the account chosen for this conversation; a person
+      // on their own account, as their own login (the owner's other
+      // subscriptions live in the owner's home, design/108).
+      if (profile.id === 'claude') { const id = claudeAccountOf(key); return id === 'default' || principalAccount(principal) ? null : claudeAccounts.envFor(id); }
       if (profile.id !== 'agy') return null;
+      // A person's mode file is in their home, written by their host before
+      // their program starts (writeAgyModeFileFor).
+      if (principalAccount(principal)) return { CHATTERING_MODE_FILE: agyModeFileFor(key, principal) };
       const file = agyModeFile(key);
       writeAgyModeFile(file, key);
       return { CHATTERING_MODE_FILE: file };
@@ -12424,12 +12629,17 @@ function liveTerminals() {
 // HTML here); with 'chattering', its own claude.ai publishing off for the
 // run. Its file is given to the tools so they name this conversation.
 const LIVE_MCP = path.join(__dirname, 'harness', 'terminal', 'chattering-mcp.js');
-function liveClaudeTools({ sessionId, sessionPath, cwd }, promptMode = '') {
+// A person on their own account (design/108): the tools are the copy every
+// account may run (runtime-publish.js), their own token's file (never the
+// install's), and the conversation's file as this server reads it.
+function liveClaudeTools({ sessionId, sessionPath, cwd }, promptMode = '', principal = null) {
   const mode = liveTerminalConf().artifacts || 'chattering';
   if (mode === 'agent') return promptMode ? ['--append-system-prompt=' + promptMode] : [];
-  const session = sessionPath || (sessionId && cwd ? path.join(SOURCES.claude, path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, '-'), sessionId + '.jsonl') : '');
-  const config = { mcpServers: { chattering: { type: 'stdio', command: process.execPath, args: [LIVE_MCP],
-    env: { CHATTERING_SESSION: session, CHATTERING_PORT: String(PORT), CHATTERING_TOKEN_FILE: LAN_TOKEN_FILE } } } };
+  const root = agentSourceRoot('claude', principal);
+  const session = sessionPath || (sessionId && cwd && root ? path.join(root, claudeProjectDirName(cwd), sessionId + '.jsonl') : '');
+  const walls = principalAccount(principal) ? principal.walls : null;
+  const config = { mcpServers: { chattering: { type: 'stdio', command: walls ? runtimeLib.nodePath() : process.execPath, args: [walls ? walls.mapPath(LIVE_MCP) : LIVE_MCP],
+    env: { CHATTERING_SESSION: session, CHATTERING_PORT: String(PORT), ...(walls ? (walls.tokenFile ? { CHATTERING_TOKEN_FILE: walls.tokenFile } : {}) : { CHATTERING_TOKEN_FILE: LAN_TOKEN_FILE }) } } } };
   const note = 'This session is shown in Chattering, where the user reads it on their laptop, phone or e-ink tablet. '
     + 'To show a page, app, document or slides you made, write the files and call mcp__chattering__artifact: it opens them in the panel beside this conversation. '
     + 'Small visuals that belong in your answer (a chart, a diagram, a tiny interactive) go inline with mcp__chattering__show. '
@@ -12464,43 +12674,59 @@ function startTerminalHolder([node, script, dir]) {
 // plan): not passed to walled people (design/91).
 function liveTerminalRefusal(identity, harness = null) {
   if (!identity || !identity.user) return 'sign in first';
-  if (!usersLib.isWalled(identity.user)) return null;
+  if (!usersLib.isWalled(identity.user)) return ownAccountAgentRefusal(identity, harness);
   const name = (liveTerminalProfiles.PROFILES[harness] || {}).name;
   if (harness && harness !== 'pi') return `${name || 'This agent'} signs in as this computer's owner (their own plan): it is not shared with people working inside a shared project. Pi is.`;
   if (!BWRAP) return 'Programs run inside a shared project need Linux with bubblewrap on this computer.';
   return null;
 }
+// A person on their own account runs their own program of each agent
+// (design/108): refused, with the reason, while that agent's conversations
+// are not where this server reads them. A program they do not have is not
+// a refusal: it is not offered (agentsInstalledFor).
+function ownAccountAgentRefusal(identity, harness) {
+  if (!harness || harness === 'pi') return null;
+  let principal = null;
+  try { principal = principalFor(identity); } catch { return null; }
+  const walls = principal && principal.walls;
+  if (!walls || walls.kind !== 'account' || walls.blocked || !(walls.programs || {})[harness]) return null;
+  return walls.agentProblem ? walls.agentProblem(harness) : null;
+}
 // The program, inside the walls of whoever drives it (as is for the owner
 // and the household).
-async function liveLauncher(identity, cwd, key = null) {
+// `harness`: the agent, whose folder for this principal is returned as
+// `root` (where its conversation file appears, design/108).
+async function liveLauncher(identity, cwd, key = null, harness = null) {
   const principal = await principalInProject(principalFor(identity), projectNameOf(cwd, key));
   assertPrincipalCanRun(principal, 'an agent');
   if (key) assertRunsHere(key, principal);
-  return { principal, launch: argv => agentLaunch(principal, argv[0], argv.slice(1), { cwd }), userId: identity.user.id };
+  const root = harness ? assertAgentReady(harness, principal) : null;
+  if (harness === 'agy' && principalAccount(principal) && key) await writeAgyModeFileFor(key, principal);
+  return { principal, launch: argv => agentLaunch(principal, argv[0], argv.slice(1), { cwd }), userId: identity.user.id, root };
 }
 // What a conversation's page needs to know: whether its program is used
 // here, offered, running, and why not.
 function liveTerminalFor(key, identity) {
   const entry = index[key];
   if (!entry) return null;
-  const profile = liveTerminalProfiles.PROFILES[entry.source];
+  const profile = liveTerminalProfiles.PROFILES[harnessOfSource(entry.source)];
   if (!profile || !profile.program) return null;
   if (entry.importCopyOf || (entry.codex && entry.codex.imported)) return null;
-  const setting = liveTerminalConf().agents[entry.source] || 'off';
+  const setting = liveTerminalConf().agents[profile.id] || 'off';
   const st = liveTerminalsLib ? liveTerminalsLib.status(key) : { running: false };
-  const refusal = liveTerminalRefusal(identity, entry.source);
+  const refusal = liveTerminalRefusal(identity, profile.id);
   const choice = liveChoices.get(key);
   const use = st.running || (setting === 'always' && choice !== 'box') || (setting === 'choose' && choice === 'program');
-  const installed = !!st.running || agentsInstalled()[entry.source] !== false;
+  const installed = !!st.running || agentsInstalledFor(identity)[profile.id] !== false;
   return {
-    harness: entry.source, name: profile.name, setting, running: !!st.running, installed,
+    harness: profile.id, name: profile.name, setting, running: !!st.running, installed,
     use: !refusal && installed && setting !== 'off' && use, offer: !refusal && installed && setting === 'choose' && !use,
     // Pi and Codex have Chattering's own box to go back to; Claude Code,
     // Antigravity and Muse Code have only their own program.
     canLeave: profile.box !== false,
     refusal, state: st.state || null, notice: st.notice || null, keptDraft: !!st.keptDraft,
     // Claude Code: the subscription it answers as, and the others it may.
-    ...(entry.source === 'claude' ? { account: claudeAccountView(key), accounts: claudeAccountChoicesFor(identity) } : {}),
+    ...(harnessOfSource(entry.source) === 'claude' ? { account: claudeAccountView(key), accounts: claudeAccountChoicesFor(identity) } : {}),
   };
 }
 // One writer per conversation (see above).
@@ -12509,7 +12735,7 @@ function assertNotLive(key, what = 'This') {
   let file = null;
   try { file = sessionPathsFor(key).sessionPath; } catch {}
   if (file && liveHeld.has(file)) {
-    const name = (liveTerminalProfiles.PROFILES[entry && entry.source] || {}).name || 'its program';
+    const name = (liveTerminalProfiles.PROFILES[entry && harnessOfSource(entry.source)] || {}).name || 'its program';
     throw Object.assign(new Error(`${what} conversation is open in ${name}'s own program here: use its box below, or go back to Chattering's box first.`), { status: 409 });
   }
 }
@@ -12548,19 +12774,22 @@ function liveStateChanged(key, st) {
 // this app's warm Pi session and its Codex connection let go first.
 async function liveStartExisting(key, identity) {
   const lt = liveTerminals();
-  if (lt.status(key).running) return;
+  // Running already: it runs as the account that keeps the conversation,
+  // and only that account types into it (design/108).
+  if (lt.status(key).running) { assertRunsHere(key, principalFor(identity)); return; }
   const { entry, sessionPath, cwd } = sessionPathsFor(key);
   const other = findRunningConversation(key);
   if (other) throw Object.assign(new Error(`This conversation is open in a terminal on this computer (process ${other.pid}). Close it there first: one program writes a conversation at a time.`), { status: 409 });
   if (headlessRuns.has(sessionPath)) throw Object.assign(new Error('A reply is being written here. Wait for it (or stop it), then continue in the program.'), { status: 409 });
   await assertDelegationOwnership(sessionPath);
-  if (entry.source === 'codex') {
+  if (harnessOfSource(entry.source) === 'codex') {
     if (!entry.sessionId) throw new Error('This Codex conversation has no thread id.');
     // A prompt mode switched since Codex last read one goes in first, as a
     // developer message (Codex keeps the instructions it began with).
     if (agentModes.pending(key, 'codex')) {
       const c = agentModes.get(key);
-      await codexDriver.injectItems({ threadId: entry.sessionId, cwd, env: agentEnv((await liveLauncher(identity, cwd, key)).principal), bin: codexBin() },
+      const runAs = (await liveLauncher(identity, cwd, key, 'codex')).principal;
+      await codexDriver.injectItems({ threadId: entry.sessionId, cwd, ...codexTarget(runAs, cwd) },
         [{ type: 'message', role: 'developer', content: [{ type: 'input_text', text: agentModesLib.switchText(c.mode.def) }] }]);
       agentModes.given(key, 'codex', c.mode.id);
     }
@@ -12573,13 +12802,25 @@ async function liveStartExisting(key, identity) {
   liveHeld.set(sessionPath, key);
   liveIdentity.set(key, identity);
   try {
-    await lt.start(key, { profileId: entry.source, cwd, sessionId: entry.sessionId, sessionPath, ...(await liveLauncher(identity, cwd, key)) });
+    await lt.start(key, { profileId: harnessOfSource(entry.source), cwd, sessionId: entry.sessionId, sessionPath, ...(await liveLauncher(identity, cwd, key, harnessOfSource(entry.source))) });
   } catch (e) { liveHeld.delete(sessionPath); throw e; }
+}
+// A page of someone whose account is not the one a program runs as may
+// watch it, not type into it (design/108): the reason, or null.
+function liveWatchOnly(identity, key, pend) {
+  let runner = null;
+  try { runner = principalAccount(principalFor(identity)); } catch { return 'not yours'; }
+  let runs = null;
+  if (key) runs = accountOfSource(index[key].source);
+  else if (pend && pend.userId) { const who = usersLib.findUser(roster, pend.userId); try { runs = who ? principalAccount(principalFor({ user: who })) : null; } catch {} }
+  if (runs === runner) return null;
+  const person = runs ? personWithAccount(runs) : null;
+  return `It runs as ${runs ? (person ? person.name : runs) + '\u2019s own account' : 'this computer\u2019s main account'}: you may watch it here, not type into it.`;
 }
 // Which box a conversation uses on every device, kept here, not in one
 // browser: 'program' or 'box' (Chattering's own).
 function liveChooses(key, choice) {
-  const setting = liveTerminalConf().agents[index[key] && index[key].source];
+  const setting = liveTerminalConf().agents[index[key] && harnessOfSource(index[key].source)];
   const want = choice === 'box' ? (setting === 'always' ? 'box' : null) : (setting === 'choose' ? 'program' : null);
   if ((liveChoices.get(key) || null) === want) return;
   if (want) liveChoices.set(key, want); else liveChoices.delete(key);
@@ -12588,13 +12829,16 @@ function liveChooses(key, choice) {
 // A new conversation's file, once its program writes it: Claude Code and
 // Pi were given its id; Codex picks one, and its file is the new one in
 // this folder that the program itself holds open.
-function liveNewFile(pend, programPid) {
+// `pend.root`: the agent's folder for whoever started it (a person's own,
+// design/108); this server's otherwise.
+async function liveNewFile(pend, programPid) {
+  const root = pend.root || SOURCES[pend.harness];
   if (pend.harness === 'claude') {
-    const f = path.join(SOURCES.claude, pend.cwd.replace(/[^a-zA-Z0-9]/g, '-'), pend.sessionId + '.jsonl');
+    const f = path.join(root, claudeProjectDirName(pend.cwd), pend.sessionId + '.jsonl');
     return fs.existsSync(f) ? f : null;
   }
   if (pend.harness === 'pi') {
-    const dir = path.join(SOURCES.pi, runtimeLib.piSessionDirName(pend.cwd));
+    const dir = path.join(root, runtimeLib.piSessionDirName(pend.cwd));
     let names = [];
     try { names = fs.readdirSync(dir); } catch { return null; }
     const name = names.find(n => n.endsWith('_' + pend.sessionId + '.jsonl'));
@@ -12606,10 +12850,10 @@ function liveNewFile(pend, programPid) {
     const candidates = [];
     for (const day of days) {
       let names = [];
-      try { names = fs.readdirSync(path.join(SOURCES.codex, day)); } catch { continue; }
+      try { names = fs.readdirSync(path.join(root, day)); } catch { continue; }
       for (const n of names) {
         if (!/^rollout-.*\.jsonl$/.test(n)) continue;
-        const f = path.join(SOURCES.codex, day, n);
+        const f = path.join(root, day, n);
         // Another program's (claimed), or older than this one: not it.
         if (liveHeld.has(f)) continue;
         let st; try { st = fs.statSync(f); } catch { continue; }
@@ -12634,16 +12878,18 @@ function liveNewFile(pend, programPid) {
     // program's; more than one (two new ones here at once): the one this
     // program holds open, else wait.
     let names = [];
-    try { names = fs.readdirSync(SOURCES.agy); } catch { return null; }
+    try { names = fs.readdirSync(root); } catch { return null; }
     const candidates = [];
     for (const n of names) {
       if (!agyTranscript.isAgyConversation(n)) continue;
-      const f = path.join(SOURCES.agy, n);
+      const f = path.join(root, n);
       if (liveHeld.has(f)) continue;
       let st; try { st = fs.statSync(f); } catch { continue; }
       if ((st.birthtimeMs || st.mtimeMs) < pend.startedAt - 5000) continue;
       let cwd = null;
-      try { cwd = agyTranscript.parseAgyConversation(f).meta.cwd; } catch { continue; }
+      // A person's database is read by their host (only its owner may open it).
+      const source = sourceOfPath(f);
+      try { cwd = (accountOfSource(source) ? await actorOfSource(source).op('agent.transcript', 'agy', f) : agyTranscript.parseAgyConversation(f)).meta.cwd; } catch { continue; }
       if (cwd && path.resolve(cwd) === path.resolve(pend.cwd)) candidates.push(f);
     }
     if (candidates.length > 1) {
@@ -12663,9 +12909,9 @@ function liveNewFile(pend, programPid) {
     for (const t of [pend.startedAt, Date.now()]) { const d = new Date(t); days.add(path.join(String(d.getFullYear()), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0'))); }
     for (const day of days) {
       let ids = [];
-      try { ids = fs.readdirSync(path.join(SOURCES.muse, day)); } catch { continue; }
+      try { ids = fs.readdirSync(path.join(root, day)); } catch { continue; }
       for (const id of ids) {
-        const f = path.join(SOURCES.muse, day, id, 'session.jsonl');
+        const f = path.join(root, day, id, 'session.jsonl');
         if (liveHeld.has(f)) continue;
         let head = '';
         try { const fd = fs.openSync(f, 'r'); try { const b = Buffer.alloc(65536); head = b.subarray(0, fs.readSync(fd, b, 0, b.length, 0)).toString('utf8'); } finally { fs.closeSync(fd); } } catch { continue; }
@@ -12697,17 +12943,19 @@ function watchNewLiveConversation(temp, pend) {
     const st = lt && lt.status(temp);
     if (!st || !st.running) { if (!pend.key) livePending.delete(temp); return; }
     const s = lt.sessions.get(temp);
-    const file = liveNewFile(pend, s && s.host.pid);
+    let file = null;
+    try { file = await liveNewFile(pend, s && s.host.pid); } catch (e) { console.error('[live terminal] new conversation: ' + e.message); }
     if (!file) return setTimeout(tick, 400).unref?.();
     try {
       // A continuation of another conversation: linked before it is read.
-      if (pend.handoffFrom) chains.link(keyOfPath(file), pend.handoffFrom, { from: (index[pend.handoffFrom] || {}).source || null, to: pend.harness });
+      if (pend.handoffFrom && !pend.handoffCopy) chains.link(keyOfPath(file), pend.handoffFrom, { from: harnessOfSource((index[pend.handoffFrom] || {}).source) || null, to: pend.harness });
       const key = await indexNewSessionFile(file);
+      if (pend.handoffFrom && pend.handoffCopy && index[pend.handoffFrom]) await markFork(key, pend.handoffFrom, index[pend.handoffFrom]);
       pend.key = key;
       liveHeld.set(file, key);
       if (liveHandoffs.has(temp)) { liveHandoffs.set(key, liveHandoffs.get(temp)); liveHandoffs.delete(temp); }
       // Its prompt mode, and the file Antigravity already reads it from.
-      const agyFile = pend.harness === 'agy' ? agyModeFile(temp) : null;
+      const agyFile = pend.harness === 'agy' ? pend.agyFile || agyModeFile(temp) : null;
       agentModes.rekey(temp, key);
       if (claudeAccountChoices.has(temp)) { setClaudeAccount(key, claudeAccountChoices.get(temp)); claudeAccountChoices.delete(temp); saveClaudeAccountChoices(); }
       if (agyFile) agentModes.note(key, 'agyFile', agyFile);
@@ -12731,7 +12979,7 @@ async function recoverLiveTerminals() {
   for (const key of keys) {
     const s = liveTerminalsLib.sessions.get(key);
     if (key.startsWith('live:')) {
-      const pend = { harness: s.profile.id, cwd: s.cwd, sessionId: s.sessionId, startedAt: s.startedAt, key: null, userId: null };
+      const pend = { harness: s.profile.id, cwd: s.cwd, sessionId: s.sessionId, startedAt: s.startedAt, key: null, userId: null, root: s.root || null };
       livePending.set(key, pend);
       watchNewLiveConversation(key, pend);
       continue;
@@ -12786,9 +13034,9 @@ function agentLaunch(principal, file, args = [], { cwd } = {}) {
   return { file, args, env: agentEnv(principal) };
 }
 function conversationKind(entry) {
-  if (entry.source === 'claude') return 'claude';
-  if (entry.source === 'codex') return 'codex';
-  if (entry.source === 'agy' || entry.source === 'muse') return entry.source;
+  if (harnessOfSource(entry.source) === 'claude') return 'claude';
+  if (harnessOfSource(entry.source) === 'codex') return 'codex';
+  if (harnessOfSource(entry.source) === 'agy' || harnessOfSource(entry.source) === 'muse') return harnessOfSource(entry.source);
   if (isPiSource(entry.source) || entry.source === 'pi-remote') return 'pi';
   return null;
 }
@@ -12800,7 +13048,7 @@ function conversationKind(entry) {
 const OWN_PROGRAM_ONLY = new Set(['claude', 'agy', 'muse']);
 function ownProgramOnly(entry) { return !!entry && OWN_PROGRAM_ONLY.has(conversationKind(entry)); }
 function agentNameOf(entry) {
-  return (liveTerminalProfiles.PROFILES[entry && entry.source] || {}).name || 'This agent';
+  return (liveTerminalProfiles.PROFILES[entry && harnessOfSource(entry.source)] || {}).name || 'This agent';
 }
 function refuseOwnProgramOnly(entry, what) {
   if (!ownProgramOnly(entry)) return;
@@ -12810,7 +13058,7 @@ function refuseOwnProgramOnly(entry, what) {
 // message still leaves a conversation file (Muse Code makes its folder as
 // it starts): nothing to read, so not listed until it holds a message.
 function blankAgentRun(entry) {
-  return !!entry && (entry.source === 'agy' || entry.source === 'muse') && !entry.userCount && !entry.assistantCount;
+  return !!entry && (harnessOfSource(entry.source) === 'agy' || harnessOfSource(entry.source) === 'muse') && !entry.userCount && !entry.assistantCount;
 }
 
 function windowTitleFor(key) {
@@ -13034,7 +13282,7 @@ function liveConflicts() {
   try { others = listRunningAgents(); } catch { return; }
   for (const key of liveTerminalsLib.sessions.keys()) {
     const other = others.find(r => r.key === key);
-    const name = (liveTerminalProfiles.PROFILES[index[key] && index[key].source] || {}).name || 'The agent';
+    const name = (liveTerminalProfiles.PROFILES[index[key] && harnessOfSource(index[key].source)] || {}).name || 'The agent';
     liveTerminalsLib.setNotice(key, other ? `${name} is also open in a terminal on this computer (process ${other.pid}). Two programs writing one conversation can lose messages: close one of them.` : null);
   }
 }
@@ -13492,7 +13740,7 @@ async function sendFileFeedback(body, identity = null) {
   const key = body.key || '';
   const entry = index[key];
   if (!entry) throw new Error('conversation not found');
-  if (entry.source === 'codex' && identity && codexRefused(identity)) throw Object.assign(new Error('Codex runs from Chattering for this machine\'s own account only.'), { status: 403 });
+  if (harnessOfSource(entry.source) === 'codex' && identity && codexRefused(identity)) throw Object.assign(new Error('Codex runs from Chattering as this machine\'s account or as a person\'s own account, once set up for them.'), { status: 403 });
   await assertDelegationOwnership(absPathForKey(key));
   const image = String(body.image || '');
   const match = image.match(/^data:image\/png;base64,(.+)$/);
@@ -13557,7 +13805,7 @@ const DIFF_CACHE_VERSION = 'v7-locations:';
 // Codex edits (harness/codex-diffs.js) came later: their own version, so
 // adding them re-reads Codex conversations only, not every Pi and Claude one.
 const CODEX_DIFF_VERSION = 'cx1:';
-const diffVersionOf = entry => DIFF_CACHE_VERSION + (entry && entry.source === 'codex' ? CODEX_DIFF_VERSION : '');
+const diffVersionOf = entry => DIFF_CACHE_VERSION + (entry && harnessOfSource(entry.source) === 'codex' ? CODEX_DIFF_VERSION : '');
 let diffCache = {};
 const diffCacheDiskChecked = new Set();
 
@@ -13631,7 +13879,7 @@ function makeDiffEvent(key, entry, pathValue, kind, oldText, newText, ts, editIn
     id, key, source: entry.source || 'claude', project: projectOfEntry(entry, key),
     path: String(pathValue), relativePath, ts: ts || null, kind,
     conversationTitle: entry.timelineTitle || entry.title || key,
-    agent: entry.source === 'claude' ? 'claude' : entry.source === 'codex' ? 'codex' : 'pi', branch: entry.gitBranch || null,
+    agent: harnessOfSource(entry.source) === 'claude' ? 'claude' : harnessOfSource(entry.source) === 'codex' ? 'codex' : 'pi', branch: entry.gitBranch || null,
     oldText: oldText || null, newText: newText || null, editIndex, callId,
     outcome: 'unknown', resultSummary: null,
     stats: {
@@ -13770,12 +14018,12 @@ async function conversationDiffs(key) {
   if (cached && cached.cacheKey === cacheKey) return cached.events;
   const raw = await readTranscriptText(absPathForKey(key));
   const records = [];
-  if (entry.source === 'codex' && /\.json$/.test(absPathForKey(key))) { try { records.push(JSON.parse(raw)); } catch {} }
+  if (harnessOfSource(entry.source) === 'codex' && /\.json$/.test(absPathForKey(key))) { try { records.push(JSON.parse(raw)); } catch {} }
   else for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
     try { records.push(JSON.parse(line)); } catch {}
   }
-  if (entry.source === 'codex') {
+  if (harnessOfSource(entry.source) === 'codex') {
     // Codex's apply_patch edits, one per hunk (harness/codex-diffs.js).
     const events = [];
     for (const op of codexDiffs.codexEditOps(records, { cwd: entry.cwd || null })) {
@@ -13795,7 +14043,7 @@ async function conversationDiffs(key) {
   }
   const results = new Map();
   for (const d of records) {
-    if (entry.source === 'claude') {
+    if (harnessOfSource(entry.source) === 'claude') {
       for (const block of (d.message && d.message.content) || []) {
         if (!block || block.type !== 'tool_result' || !block.tool_use_id) continue;
         const text = toolResultText(block.content);
@@ -13808,7 +14056,7 @@ async function conversationDiffs(key) {
   }
   const events = [];
   for (const d of records) {
-    if (entry.source === 'claude') {
+    if (harnessOfSource(entry.source) === 'claude') {
       if (d.type !== 'assistant' || d.isSidechain || d.isMeta) continue;
       for (const b of (d.message && d.message.content) || []) {
         if (!b || b.type !== 'tool_use') continue;
@@ -15296,7 +15544,14 @@ function askIncludeOf(raw) {
   return { edits: o.edits !== false, asks: o.asks !== false, memory: o.memory === true };
 }
 
-const codexRefused = identity => { const p = principalFor(identity); return !!(p.guest || p.walls); };
+// Not for guests (their walls); a person on their own account runs their
+// own Codex once it is set up for them (design/108).
+const codexRefused = identity => {
+  const p = principalFor(identity);
+  if (codexRefusedFor(p)) return true;
+  if (!principalAccount(p)) return false;
+  return !!(p.walls.blocked || (p.walls.agentProblem && p.walls.agentProblem('codex')));
+};
 // A Codex conversation's own model, as the ask box shows it.
 function codexOwnModel(key) {
   const m = codexRuns().prefsOf(key).model;
@@ -15315,7 +15570,7 @@ async function filesAskTargetResponse(pathValue, projectValue, identity) {
     for (const sn of touched.sessions) {
       if (!sn.convKey || !index[sn.convKey]) continue;
       const entry = index[sn.convKey];
-      const codex = entry.source === 'codex';
+      const codex = harnessOfSource(entry.source) === 'codex';
       if ((!isPiSource(entry.source) && !codex) || isDelegatedKey(sn.convKey)) continue;
       // Codex runs on the owner's account: not a target for guests, nor a
       // text-only copy the Codex app imported.
@@ -15336,7 +15591,7 @@ async function filesAskTargetResponse(pathValue, projectValue, identity) {
   const inherited = newConversationModels(identity).models[0] || null;
   return {
     path: abs, project, area, continue: candidates[0] || null, candidates: candidates.slice(0, 5), newAllowed: !!(meta && meta.cwd),
-    codexAllowed: !!(meta && meta.cwd) && !codexRefused(identity) && codexInstalled(),
+    codexAllowed: !!(meta && meta.cwd) && !codexRefused(identity) && agentsInstalledFor(identity).codex !== false,
     defaultModel: inherited,
     // For the box to show where things stand: the recent edits it would
     // send, and the earlier asks (with their conversation, so the box can
@@ -15534,7 +15789,7 @@ async function filesAskResponse(body, identity) {
 // instructions for this request.
 const CODEX_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 async function filesAskCodex({ abs, body, pick, key, prompt, item, include, brief, images, principal, identity }) {
-  if (codexRefused(identity)) throw Object.assign(new Error('Codex runs from Chattering for this machine\'s own account only.'), { status: 403 });
+  if (codexRefused(identity)) throw Object.assign(new Error('Codex runs from Chattering as this machine\'s account or as a person\'s own account, once set up for them.'), { status: 403 });
   // The box's Codex choices; its Pi model and level are for Pi answers.
   const model = typeof body.codexModel === 'string' && /^[\w.:-]{1,80}$/.test(body.codexModel) ? { provider: 'codex', modelId: body.codexModel }
     : normalizePickedModels(body.models).find(m => m.provider === 'codex') || null;
@@ -17261,7 +17516,7 @@ function editedTextContent(content, newText) {
 async function transcriptTarget(key, i) {
   const entry = index[key];
   if (!entry) throw new Error('conversation not found');
-  if (entry.source === 'agy' || entry.source === 'muse') throw Object.assign(new Error(`${agentNameOf(entry)}'s own program owns this conversation's file: it is read here, not edited.`), { status: 409 });
+  if (harnessOfSource(entry.source) === 'agy' || harnessOfSource(entry.source) === 'muse') throw Object.assign(new Error(`${agentNameOf(entry)}'s own program owns this conversation's file: it is read here, not edited.`), { status: 409 });
   const abs = absPathForKey(key);
   if (!abs) throw new Error('no session file for this conversation');
   // In a person's folder: only a file their account owns, never a link.
@@ -17353,7 +17608,7 @@ async function transcriptEditResponse(body, principal = null) {
   // someone else's); its file helper writes the change (conversationFile).
   assertRunsHere(key, principal || backgroundPrincipalFor(key), 'edit it');
   // Codex owns its files: Chattering reads them and never rewrites one.
-  if (sessionPathsFor(key).entry.source === 'codex') throw Object.assign(new Error('Codex keeps its own conversation file; Chattering does not edit it. Edit the question to ask it on a new path (a fork).'), { status: 409 });
+  if (harnessOfSource(sessionPathsFor(key).entry.source) === 'codex') throw Object.assign(new Error('Codex keeps its own conversation file; Chattering does not edit it. Edit the question to ask it on a new path (a fork).'), { status: 409 });
   if (body.branch) {
     const { entry, sessionPath } = sessionPathsFor(key);
     if (!isPiSource(entry.source) && entry.source !== 'pi-remote') throw new Error('Branch edits need a Pi conversation.');
@@ -18725,6 +18980,12 @@ async function describeStartFolderAs(mine, raw) {
   const parentExists = exists ? false : await isDir(path.dirname(abs));
   return { path: abs, display, exists, loose, parentExists, project: loose ? null : project, known: !!meta, area: area || null, purpose, contextFiles };
 }
+// A folder named for an agent to start in, described for whom it starts as:
+// a person on their own account, as them (their home, their rights).
+function describeStartFolderFor(principal, raw) {
+  const mine = principalAccount(principal) ? filesOfPerson(usersLib.findUser(roster, principal.user.id) || principal.user) : null;
+  return mine ? describeStartFolderAs(mine, raw) : describeStartFolder(raw);
+}
 function describeStartFolder(raw) {
   const text = String(raw == null ? '' : raw).trim();
   const home = os.homedir();
@@ -18811,7 +19072,7 @@ async function startCodexConversation({ folder, prompt, images = [], principal, 
     model: model ? model.modelId : null, effort: effort || null, access,
     developerInstructions: [modeDef ? agentModesLib.switchText(modeDef) : '', bundle ? bundle.text : ''].filter(Boolean).join('\n\n') || null,
     author: { id: principal.user.id, name: principal.user.name, input: input || 'keyboard' },
-    input, describeStartFolder, injectItems, beforeIndex,
+    input, describeStartFolder: raw => describeStartFolderFor(principal, raw), injectItems, beforeIndex,
   });
   if (items.length) {
     saveConversationContext(started.key, items);
@@ -19583,7 +19844,7 @@ async function notebookRootFor(key) {
 const derivingNotebooks = new Set();
 async function deriveNotebookFromAnswer(key, entryId) {
   const { entry, sessionPath, cwd } = sessionPathsFor(key);
-  if (entry.source === 'claude' || entry.source === 'codex') throw new Error('Deriving a notebook needs Pi. ' + (entry.source === 'codex' ? 'Codex' : 'Claude') + ' conversations cannot be replayed here.');
+  if (harnessOfSource(entry.source) === 'claude' || harnessOfSource(entry.source) === 'codex') throw new Error('Deriving a notebook needs Pi. ' + (harnessOfSource(entry.source) === 'codex' ? 'Codex' : 'Claude') + ' conversations cannot be replayed here.');
   const lockKey = key + '#' + entryId;
   if (derivingNotebooks.has(lockKey)) throw new Error('A notebook is already being written from this answer.');
   derivingNotebooks.add(lockKey);
@@ -21767,7 +22028,7 @@ async function handleRequest(req, res) {
       data.project = projectNameOf(index[key].cwd, key);
       // Facts linked across the index after this file was parsed.
       data.importCopyOf = index[key].importCopyOf || null;
-      if (index[key].source === 'codex') data.codexPrefs = codexRuns().prefsOf(key);
+      if (harnessOfSource(index[key].source) === 'codex') data.codexPrefs = codexRuns().prefsOf(key);
       data.codexCopies = index[key].codexCopies || null;
       // Its agent's own program (design/91): used here, offered, running.
       data.liveTerminal = liveTerminalFor(key, identity);
@@ -21777,7 +22038,7 @@ async function handleRequest(req, res) {
       // A conversation that moved between agents: where it went on, and
       // where it came from.
       const later = chains.nextOf(key);
-      data.continuedIn = later && index[later] ? { key: chains.newest(key), agent: AGENT_NAMES[index[chains.newest(key)] ? index[chains.newest(key)].source : ''] || null } : null;
+      data.continuedIn = later && index[later] ? { key: chains.newest(key), agent: AGENT_NAMES[index[chains.newest(key)] ? harnessOfSource(index[chains.newest(key)].source) : ''] || null } : null;
       data.continues = chains.prevOf(key) ? { key: chains.prevOf(key).key } : null;
       data.handoffTargets = handoffTargetsFor(key, identity);
       data.selectedModels = await inferredConversationModels(key, data);
@@ -22693,7 +22954,7 @@ async function handleRequest(req, res) {
         let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 48 * 1024 * 1024) throw Object.assign(new Error('request too large'), { status: 413 }); }
         const p = JSON.parse(raw || '{}');
         if (!index[p.id]) return json(res, 404, { error: 'conversation not found' });
-        json(res, 200, await startHandoff(String(p.id), { harness: String(p.harness || ''), prompt: String(p.prompt || ''), identity, input: p.input === 'voice' ? 'voice' : 'keyboard',
+        json(res, 200, await handoffConversation(String(p.id), { harness: String(p.harness || ''), prompt: String(p.prompt || ''), identity, input: p.input === 'voice' ? 'voice' : 'keyboard',
           images: p.images, models: p.models, thinking: p.thinking, context: p.context, access: p.access, folder: p.folder, mode: 'mode' in p ? p.mode : undefined, inProgram: p.inProgram === true,
           account: typeof p.account === 'string' ? p.account : null }));
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
@@ -22745,7 +23006,7 @@ async function handleRequest(req, res) {
         const p = JSON.parse(raw || '{}');
         const key = String(p.id || ''), account = String(p.account || 'default');
         const pend = livePending.get(key);
-        const harness = index[key] ? index[key].source : pend ? pend.harness : null;
+        const harness = index[key] ? harnessOfSource(index[key].source) : pend ? pend.harness : null;
         if (!harness) return json(res, 404, { error: 'conversation not found' });
         if (harness !== 'claude') return json(res, 400, { error: 'Only a Claude Code conversation answers as a Claude account. In Pi, pick the model of that account.' });
         if (index[key]) assertCan(identity, 'act', targetOf(key), 'this conversation');
@@ -22772,7 +23033,7 @@ async function handleRequest(req, res) {
         if (index[key]) assertCan(identity, 'act', targetOf(key), 'this conversation');
         else if (!pend) return json(res, 404, { error: 'conversation not found' });
         else if (pend.userId !== (identity.user && identity.user.id) && !policy.isOwnerTier(identity)) return json(res, 403, { error: 'This is not yours.' });
-        const harness = index[key] ? index[key].source : pend.harness;
+        const harness = index[key] ? harnessOfSource(index[key].source) : pend.harness;
         if (harness !== 'pi') {
           const refusal = liveTerminalRefusal(identity, harness);
           if (refusal) return json(res, 403, { error: refusal });
@@ -24197,7 +24458,7 @@ async function handleRequest(req, res) {
             names: Object.fromEntries(Object.values(liveTerminalProfiles.PROFILES).filter(x => x.program).map(x => [x.id, x.name])),
             // Agents whose program is on this machine; agents only their own
             // program continues (no "let me choose" for those).
-            installed: agentsInstalled(),
+            installed: agentsInstalledFor(identity),
             claudeAccounts: claudeAccountChoicesFor(identity),
             boxes: Object.fromEntries(Object.values(liveTerminalProfiles.PROFILES).filter(x => x.program).map(x => [x.id, x.box !== false])) });
           const pend = livePending.get(key), real = pend ? pend.key : key;
@@ -24243,11 +24504,11 @@ async function handleRequest(req, res) {
           const harness = String(p.harness || 'claude');
           const profile = liveTerminalProfiles.PROFILES[harness];
           if (!profile || !profile.program || !profile.start) return json(res, 400, { error: 'no such agent' });
-          if (agentsInstalled()[harness] === false) return json(res, 409, { error: profile.name + ' is not installed on this computer.' });
+          if (agentsInstalledFor(identity)[harness] === false) return json(res, 409, { error: profile.name + ' is not installed ' + (principalAccount(principalFor(identity)) ? 'for you (it is not on your account\u2019s PATH).' : 'on this computer.') });
           if ((liveTerminalConf().agents[harness] || 'off') === 'off') return json(res, 409, { error: profile.name + '\'s own program is turned off here (settings → agents).' });
           const refusal = liveTerminalRefusal(identity, harness);
           if (refusal) return json(res, 403, { error: refusal });
-          const where = describeStartFolder(p.folder || '');
+          const where = await describeStartFolderFor(principalFor(identity), p.folder || '');
           if (!where.exists) return json(res, 404, { error: 'folder not found: ' + where.display });
           assertPathAccess(identity, where.path, 'act');
           const temp = 'live:' + crypto.randomUUID();
@@ -24270,11 +24531,16 @@ async function handleRequest(req, res) {
             if (chains.nextOf(from)) return json(res, 409, { error: 'That conversation already continued with another agent.' });
             const { turns } = await handoffTurns(from);
             pend.handoffFrom = from;
-            liveHandoffs.set(temp, { from, block: handoffLib.promptBlock(turns, { from, fromName: AGENT_NAMES[index[from].source], toName: AGENT_NAMES[harness] }) });
+            // Another account's: a copy of theirs, not its continuation (design/108).
+            pend.handoffCopy = !!otherAccountFor(from, identity);
+            liveHandoffs.set(temp, { from, block: handoffLib.promptBlock(turns, { from, fromName: AGENT_NAMES[harnessOfSource(index[from].source)], toName: AGENT_NAMES[harness] }) });
           }
+          const launcher = await liveLauncher(identity, where.path, null, harness);
+          pend.root = launcher.root;
+          if (harness === 'agy' && principalAccount(launcher.principal)) { pend.agyFile = agyModeFileFor(temp, launcher.principal); await writeAgyModeFileFor(temp, launcher.principal); }
           livePending.set(temp, pend);
           liveIdentity.set(temp, identity);
-          try { await lt.start(temp, { profileId: harness, cwd: where.path, sessionId: pend.sessionId, isNew: true, mode: modeDef && harness === 'pi' ? modeDef.key : null, ...(await liveLauncher(identity, where.path)) }); }
+          try { await lt.start(temp, { profileId: harness, cwd: where.path, sessionId: pend.sessionId, isNew: true, mode: modeDef && harness === 'pi' ? modeDef.key : null, ...launcher }); }
           catch (e) { livePending.delete(temp); throw e; }
           watchNewLiveConversation(temp, pend);
           return json(res, 200, { ok: true, key: temp, harness });
@@ -24285,7 +24551,7 @@ async function handleRequest(req, res) {
           const key = String(p.id || '');
           const pend = livePending.get(key), real = pend ? pend.key || key : key;
           // Stopping a program is using it: the same per-agent rule.
-          const refusal = liveTerminalRefusal(identity, index[real] ? index[real].source : pend ? pend.harness : null);
+          const refusal = liveTerminalRefusal(identity, index[real] ? harnessOfSource(index[real].source) : pend ? pend.harness : null);
           if (refusal) return json(res, 403, { error: refusal });
           if (index[real]) assertCan(identity, 'act', targetOf(real), 'this conversation');
           else if (pend && pend.userId !== identity.user.id && !policy.isOwnerTier(identity)) return json(res, 403, { error: 'This is not yours.' });
@@ -24301,9 +24567,9 @@ async function handleRequest(req, res) {
         const key = u.searchParams.get('id');
         if (key && !index[key]) return json(res, 404, { error: 'conversation not found' });
         if (key) assertCan(identity, 'see', targetOf(key), 'this conversation');
-        const cwd = key ? sessionPathsFor(key).cwd : (u.searchParams.get('cwd') ? describeStartFolder(u.searchParams.get('cwd')).path : os.homedir());
         const principal = principalFor(identity);
-        if (principal.guest || principal.walls) return json(res, 403, { error: 'Codex runs from Chattering for this machine\'s own account only.' });
+        const cwd = key ? sessionPathsFor(key).cwd : u.searchParams.get('cwd') ? (await describeStartFolderFor(principal, u.searchParams.get('cwd'))).path : null;
+        assertCodexRuns(principal);
         const menus = await codexMenusFor(cwd, principal);
         if (key) menus.prefs = codexRuns().prefsOf(key);
         json(res, 200, menus);
@@ -24313,7 +24579,7 @@ async function handleRequest(req, res) {
       try {
         let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 16384) throw Object.assign(new Error('request too large'), { status: 413 }); }
         const p = JSON.parse(raw || '{}');
-        if (!index[p.id] || index[p.id].source !== 'codex') return json(res, 404, { error: 'Codex conversation not found' });
+        if (!index[p.id] || harnessOfSource(index[p.id].source) !== 'codex') return json(res, 404, { error: 'Codex conversation not found' });
         assertCan(identity, 'act', targetOf(p.id), 'this conversation');
         const patch = {};
         if (p.access !== undefined) { if (!(p.access in require('./harness/codex-runs.js').ACCESS)) throw new Error('unknown access level'); patch.access = p.access; }
@@ -24332,7 +24598,7 @@ async function handleRequest(req, res) {
       try {
         let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 4096) throw Object.assign(new Error('request too large'), { status: 413 }); }
         const p = JSON.parse(raw || '{}');
-        if (!index[p.id] || index[p.id].source !== 'codex') return json(res, 404, { error: 'Codex conversation not found' });
+        if (!index[p.id] || harnessOfSource(index[p.id].source) !== 'codex') return json(res, 404, { error: 'Codex conversation not found' });
         assertCan(identity, 'act', targetOf(p.id), 'this conversation');
         json(res, 200, await openConversationInTerminal(p.id, { focus: true }));
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
@@ -24342,7 +24608,7 @@ async function handleRequest(req, res) {
       try {
         let raw = ''; for await (const chunk of req) { raw += chunk; if (raw.length > 4096) throw Object.assign(new Error('request too large'), { status: 413 }); }
         const p = JSON.parse(raw || '{}');
-        if (!index[p.id] || index[p.id].source !== 'codex') return json(res, 404, { error: 'Codex conversation not found' });
+        if (!index[p.id] || harnessOfSource(index[p.id].source) !== 'codex') return json(res, 404, { error: 'Codex conversation not found' });
         assertCan(identity, 'act', targetOf(p.id), 'this conversation');
         json(res, 200, { ok: true, released: await codexDriver.release(index[p.id].sessionId) });
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
@@ -26304,11 +26570,11 @@ function upgradeRequestInner(req, socket, head) {
     // A new conversation is in its hub before its file exists: under a
     // temporary key, for the person who started it.
     const pend = livePending.get(key), real = pend && pend.key ? pend.key : key;
-    if (liveTerminalRefusal(identity, index[real] ? index[real].source : pend ? pend.harness : null)) return refuseUpgrade(socket, 403, 'Forbidden');
+    if (liveTerminalRefusal(identity, index[real] ? harnessOfSource(index[real].source) : pend ? pend.harness : null)) return refuseUpgrade(socket, 403, 'Forbidden');
     if (index[real]) { if (!canDo(identity, 'act', targetOf(real))) return refuseUpgrade(socket, 403, 'Forbidden'); }
     else if (!pend || (pend.userId && pend.userId !== identity.user.id && !policy.isOwnerTier(identity))) return refuseUpgrade(socket, 404, 'Not Found');
     const conn = acceptWebSocket(req, socket, head);
-    if (conn) lt.attach(lt.sessions.has(key) ? key : real, conn, { name: identity.user.name || 'a page' });
+    if (conn) lt.attach(lt.sessions.has(key) ? key : real, conn, { name: identity.user.name || 'a page', watchOnly: liveWatchOnly(identity, index[real] ? real : null, pend) });
     return;
   }
   return speechStreamUpgrade(req, socket, head);

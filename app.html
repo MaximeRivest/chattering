@@ -5384,7 +5384,7 @@ function refreshFilterOptions() {
   $('ganttProject').innerHTML = '<option value="">all projects</option>' + (anyShared ? `<option value="${SHARED_PROJECTS}">shared projects</option>` : '') +
     projects.map(p => `<option value="${esc(p)}">${esc(p)}</option>`).join('');
   $('ganttProject').value = projects.includes(keepProject) || (anyShared && keepProject === SHARED_PROJECTS) ? keepProject : '';
-  const srcs = [...new Set(sessions.map(s => s.source || 'claude'))].sort();
+  const srcs = [...new Set(sessions.map(s => agentOf(s.source || 'claude')))].sort();
   $('src').innerHTML = '<option value="">all sources</option>' +
     srcs.map(d => `<option>${esc(d)}</option>`).join('');
   $('src').value = keepSrc;
@@ -5437,7 +5437,7 @@ function applyFilter() {
   const dir = $('dir').value, src = $('src').value, project = $('ganttProject').value, who = $('who') ? $('who').value : '';
   shown = sessions.filter(s =>
     (!dir || shortDir(s.cwd) === dir) &&
-    (!src || (s.source || 'claude') === src) &&
+    (!src || agentOf(s.source || 'claude') === src) &&
     (!who || sessionInvolves(s, who)) &&
     projectFilterMatch(project, projectOf(s)));
   render();
@@ -6011,7 +6011,7 @@ function collapseShortRows(rows) {
     if (group.members.length < CLUSTER_MIN) { out.push(...group.members); continue; }
     const id = group.project + ':' + group.start;
     const count = group.members.length;
-    const sources = [...new Set(group.members.map(r => r.s.source || 'claude'))];
+    const sources = [...new Set(group.members.map(r => agentOf(r.s.source || 'claude')))];
     const s = {
       key: null, source: sources.length === 1 ? sources[0] : 'mixed', cwd: group.members[0].s.cwd,
       title: `${count} short conversations in ${group.project}`,
@@ -6047,7 +6047,10 @@ function mobileDate(value) {
 
 // A Pi conversation: this server's own (`pi`) or a person's on their own
 // computer account (`pi@<account>`, design/105).
-function isPiSource(s) { return s === 'pi' || (typeof s === 'string' && s.startsWith('pi@')); }
+// The agent of a conversation source: `claude@lilly` is Claude Code's, kept
+// in Lilly's own folder (design/108).
+function agentOf(s) { return typeof s === 'string' ? s.split('@')[0] : s; }
+function isPiSource(s) { return agentOf(s) === 'pi'; }
 function isPiLike(s) { return isPiSource(s) || s === 'pi-remote'; }
 // Whose a project's folder is and who shares it (design/105), from the
 // project catalog: { text, title } for a label, or null for one's own
@@ -6085,7 +6088,7 @@ function mobileConversationCard(s) {
   const project = projectOf(s);
   const live = isActive(s) || (s._famMembers || []).some(isActive);
   const work = isWorking(s) || (s._famMembers || []).some(isWorking);
-  const source = s.source === 'pi-remote' ? 'R' : isPiSource(s.source) ? 'P' : s.source === 'codex' ? 'X' : s.source === 'agy' ? 'A' : s.source === 'muse' ? 'M' : 'C';
+  const source = s.source === 'pi-remote' ? 'R' : isPiSource(s.source) ? 'P' : agentOf(s.source) === 'codex' ? 'X' : agentOf(s.source) === 'agy' ? 'A' : agentOf(s.source) === 'muse' ? 'M' : 'C';
   return `<div class="item mobile-work${live || work ? ' live' : ''}" data-rel="${esc(s._openKey || s.key)}">
     <div class="mobile-work-mark">${work ? '●' : live ? '○' : source}</div>
     <div class="mobile-work-body"><div class="title">${esc(s.title || s.timelineTitle || '(untitled)')}</div>
@@ -10554,10 +10557,10 @@ function messageMenuItemsHtml(m, copyIndex, messageKey) {
   const source = (messageKey === current?.key ? current : readerSessions.get(messageKey))?.source;
   const ownProgram = source === 'agy' || source === 'muse' || !!m.part; // m.part: an earlier part, with another agent
   return (
-      (copyIndex >= 0 && !ownProgram && !ConversationFlow.transport(m) && !(((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) === 'codex' && m.role !== 'user') ? `<button type="button" class="msg-edit" data-msg-index="${copyIndex}" title="${isPiLike((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) ? 'Edit this message on a new path' : 'Edit the original message'}">edit</button>` : '') +
-      (copyIndex >= 0 && !ownProgram && !ConversationFlow.transport(m) && m.role === 'assistant' && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) !== 'codex' ? `<button type="button" class="msg-regenerate" data-msg-index="${copyIndex}" title="Create another answer from the node before this reply">regenerate</button>` : '') +
-      (copyIndex >= 0 && !ownProgram && !ConversationFlow.transport(m) && m.eid && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) === 'codex' ? `<button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="A new Codex conversation through this turn">fork</button>` : '') +
-      (copyIndex >= 0 && !ownProgram && !ConversationFlow.transport(m) && m.eid && ((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) !== 'codex' ? `<button type="button" data-reader-continue-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Use this conversation context. Files on disk are not rewound.">continue here</button><button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Copy the conversation through this message into a separate conversation">fork</button>` : '') +
+      (copyIndex >= 0 && !ownProgram && !ConversationFlow.transport(m) && !(agentOf((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) === 'codex' && m.role !== 'user') ? `<button type="button" class="msg-edit" data-msg-index="${copyIndex}" title="${isPiLike((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) ? 'Edit this message on a new path' : 'Edit the original message'}">edit</button>` : '') +
+      (copyIndex >= 0 && !ownProgram && !ConversationFlow.transport(m) && m.role === 'assistant' && agentOf((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) !== 'codex' ? `<button type="button" class="msg-regenerate" data-msg-index="${copyIndex}" title="Create another answer from the node before this reply">regenerate</button>` : '') +
+      (copyIndex >= 0 && !ownProgram && !ConversationFlow.transport(m) && m.eid && agentOf((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) === 'codex' ? `<button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="A new Codex conversation through this turn">fork</button>` : '') +
+      (copyIndex >= 0 && !ownProgram && !ConversationFlow.transport(m) && m.eid && agentOf((messageKey === current?.key ? current : readerSessions.get(messageKey))?.source) !== 'codex' ? `<button type="button" data-reader-continue-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Use this conversation context. Files on disk are not rewound.">continue here</button><button type="button" data-reader-fork-at="${esc(JSON.stringify({ key: messageKey, id: m.eid }))}" title="Copy the conversation through this message into a separate conversation">fork</button>` : '') +
       (copyIndex >= 0 && m.role === 'user' ? `<button type="button" class="msg-snippet" data-msg-index="${copyIndex}" title="Save this message as a snippet you can insert later">snippet</button>` : ''));
 }
 function fillMessageMenu(menu) {
@@ -11271,7 +11274,7 @@ async function openTranscriptEditor(btn) {
   const i = Number(btn.dataset.msgIndex);
   const key = current && current.key;
   if (!key || !current.messages[i]) return;
-  if (current.source === 'codex') {
+  if (agentOf(current.source) === 'codex') {
     // Codex keeps its own file: ask the question differently on a fork
     // through the turn before it, with the words back in the compose box.
     const m = current.messages[i];
@@ -11877,7 +11880,7 @@ function openHandoffDialog(preset = null) {
   const d = current;
   if (!d || d.draft || !(d.handoffTargets || []).length) return errToast('No other agent can continue this conversation here.');
   const text = ($('agentText') && $('agentText').value) || ($('ltDraft') && $('ltDraft').value) || '';
-  const fromName = (d.liveTerminal && d.liveTerminal.name) || ({ pi: 'Pi', 'pi-remote': 'Pi', codex: 'Codex', claude: 'Claude Code', agy: 'Antigravity', muse: 'Muse Code' })[d.source] || 'this agent';
+  const fromName = (d.liveTerminal && d.liveTerminal.name) || ({ pi: 'Pi', 'pi-remote': 'Pi', codex: 'Codex', claude: 'Claude Code', agy: 'Antigravity', muse: 'Muse Code' })[agentOf(d.source)] || 'this agent';
   const mode = convModes.get(d.key);
   const title = d.title || ($('chTitle') && $('chTitle').textContent) || '';
   startHandoffDraft({ key: d.key, title, source: d.source, name: fromName, cwd: d.cwd || '', targets: d.handoffTargets }, {
@@ -12320,11 +12323,17 @@ function agentComposerHtml(d) {
     <button type="button" class="ghost" id="mirrorFork">fork here</button></div></div>`;
   // Kept by another computer account (design/105): it runs as that account,
   // so this reader continues a copy of their own.
+  // Codex, Antigravity and Muse Code conversations cannot be copied as
+  // they are (their own program owns their files): an agent of the
+  // reader's continues a copy of the conversation instead (design/108).
   if (d.otherAccount) return `<div class="composer-dock mirror-dock" id="composerDock" data-conversation-key="${esc(d.key)}">
     <div class="mirror-notice"><b>This conversation belongs to ${d.otherAccount.account ? esc(d.otherAccount.name) + '\u2019s own computer account' : 'this computer\u2019s main account'}.</b> It runs as that account, so you read it here.
-    <span class="hint">Fork it to continue: the copy is yours and runs as you.</span>
-    <button type="button" class="ghost" id="mirrorFork">fork to continue</button></div></div>`;
-  if (!['claude', 'pi', 'pi-remote', 'codex', 'agy', 'muse'].includes(d.source) && !isPiSource(d.source)) return '';
+    ${d.otherAccount.fork === false
+      ? `<span class="hint">Continue it with an agent of yours: a copy of the conversation goes along, and runs as you.</span>
+    <button type="button" class="ghost" id="otherAccountHandoff"${(d.handoffTargets || []).length ? '' : ' disabled title="No agent of yours can continue it here"'}>continue as you\u2026</button>`
+      : `<span class="hint">Fork it to continue: the copy is yours and runs as you.</span>
+    <button type="button" class="ghost" id="mirrorFork">fork to continue</button>`}</div></div>`;
+  if (!['claude', 'pi', 'pi-remote', 'codex', 'agy', 'muse'].includes(agentOf(d.source))) return '';
   // This part of the conversation was continued with another agent: the
   // conversation goes on there (one line of history, no twin).
   if (d.continuedIn) return `<div class="composer-dock mirror-dock" id="composerDock" data-conversation-key="${esc(d.key)}"><div class="mirror-notice"><b>This conversation continued with ${esc(d.continuedIn.agent || 'another agent')}.</b> This is its earlier part. <button type="button" class="ghost" data-open-key="${esc(d.continuedIn.key)}">open where it continues</button></div></div>`;
@@ -12332,9 +12341,9 @@ function agentComposerHtml(d) {
   if (window.LiveTerminal && LiveTerminal.useFor(d)) return LiveTerminal.dockHtml(d);
   // Antigravity and Muse Code have no Chattering box: only their own
   // program writes their conversations. When it cannot run here, say why.
-  if (d.source === 'agy' || d.source === 'muse') {
+  if (agentOf(d.source) === 'agy' || agentOf(d.source) === 'muse') {
     const lt = d.liveTerminal || {};
-    const name = lt.name || (d.source === 'agy' ? 'Antigravity' : 'Muse Code');
+    const name = lt.name || (agentOf(d.source) === 'agy' ? 'Antigravity' : 'Muse Code');
     const why = lt.refusal ? lt.refusal
       : lt.installed === false ? `${name} is not installed on this computer.`
       : lt.setting === 'off' ? `${name}'s own program is turned off here (settings → agents).`
@@ -12344,7 +12353,7 @@ function agentComposerHtml(d) {
   // A text-only copy the Codex app imported is read here, never continued.
   const codexNotice = window.CodexUI ? CodexUI.noticeHtml(d) : '';
   if (codexNotice && (d.importCopyOf || (d.codex && d.codex.imported))) return `<div class="composer-dock mirror-dock" id="composerDock" data-conversation-key="${esc(d.key)}">${codexNotice}</div>`;
-  const codex = d.source === 'codex';
+  const codex = agentOf(d.source) === 'codex';
   return `<div class="composer-dock" id="composerDock" data-conversation-key="${esc(d.key)}">
     <div class="live-strip" id="liveStrip" hidden>
       <div class="ls-full" id="lsFull" hidden><div class="ls-blocks ls-flow" id="lsBlocks"></div><button type="button" class="ls-livechip" id="lsChip" hidden>⤓ live</button></div>
@@ -12363,13 +12372,13 @@ function agentComposerHtml(d) {
       <details class="compose-tools" id="composeTools">
       <summary aria-label="Attachments and conversation options" title="Attachments and conversation options">+</summary>
       <div class="compose-tools-menu">
-      ${d.source !== 'claude' ? '<button id="agentMode" class="model-pick mode-pick" type="button" hidden></button>' : ''}
-      ${d.source !== 'claude' ? `<button id="agentSlash" type="button" title="${codex ? 'Commands: model, reasoning, compaction. Or type /.' : 'Slash commands (extensions, skills, prompts). Or type /.'}">Commands /</button>` : ''}
+      ${agentOf(d.source) !== 'claude' ? '<button id="agentMode" class="model-pick mode-pick" type="button" hidden></button>' : ''}
+      ${agentOf(d.source) !== 'claude' ? `<button id="agentSlash" type="button" title="${codex ? 'Commands: model, reasoning, compaction. Or type /.' : 'Slash commands (extensions, skills, prompts). Or type /.'}">Commands /</button>` : ''}
       <button id="agentAt" type="button" title="Inspect and attach background knowledge to this conversation">Context</button>
       <button id="agentSnip" type="button" title="Insert a snippet at the cursor (alt+;). Or type the trigger while writing.">Snippets ;;</button>
       <button id="agentTree" type="button" title="Open the conversation tree (shift+T): branches, forks, parallel replies">Conversation tree</button>
       ${!d.draft && (d.handoffTargets || []).length ? '<button id="agentHandoff" type="button" title="Continue this conversation with another agent: it gets the conversation so far">Switch agent…</button>' : ''}
-      ${d.source !== 'claude' && !d.draft ? '<button id="agentCompact" type="button" title="Summarize the older messages so the model reads less (or type /compact)">Compact conversation…</button>' : ''}
+      ${agentOf(d.source) !== 'claude' && !d.draft ? '<button id="agentCompact" type="button" title="Summarize the older messages so the model reads less (or type /compact)">Compact conversation…</button>' : ''}
       ${codex ? '<button id="codexAccess" type="button" hidden></button>' : ''}
       ${codex && !d.draft ? '<button id="codexTerminal" type="button" title="Continue in Codex\'s own terminal. Chattering lets go of the conversation first (Codex allows one writer).">Open in Codex (terminal)</button>' : ''}
       ${window.LiveTerminal && LiveTerminal.offerFor(d) ? `<button id="ltUseHere" type="button" title="${esc(`Continue in ${d.liveTerminal.name}'s own program, shown here: its own box, commands and questions. Chattering's box comes back when you choose.`)}">Continue in ${esc(d.liveTerminal.name)}'s own program</button>` : ''}
@@ -12382,10 +12391,10 @@ function agentComposerHtml(d) {
       </div>
       <button id="ctxMeter" class="ctxmeter" type="button" hidden></button>
       <div class="compose-right">
-      ${d.source !== 'claude' ? '<button id="agentThink" class="model-pick think-pick" type="button" hidden></button>' : ''}
-      ${d.source !== 'claude' ? '<div class="model-strip" id="modelStrip"></div>' : ''}
-      ${d.source !== 'claude' ? `<button class="primary" id="agentRun" type="button" title="Send from the web (ctrl+enter): a headless pi run on this session. The terminal stays your escape hatch.">${agentRunLabel()}</button>` : ''}
-      ${d.source === 'claude' ? (capabilityOn('terminal') || !settingsState
+      ${agentOf(d.source) !== 'claude' ? '<button id="agentThink" class="model-pick think-pick" type="button" hidden></button>' : ''}
+      ${agentOf(d.source) !== 'claude' ? '<div class="model-strip" id="modelStrip"></div>' : ''}
+      ${agentOf(d.source) !== 'claude' ? `<button class="primary" id="agentRun" type="button" title="Send from the web (ctrl+enter): a headless pi run on this session. The terminal stays your escape hatch.">${agentRunLabel()}</button>` : ''}
+      ${agentOf(d.source) === 'claude' ? (capabilityOn('terminal') || !settingsState
         ? '<button class="primary" id="agentSend" type="button" title="Open the terminal and send (ctrl+enter)">open &amp; send</button>'
         : `<button class="primary" id="agentSend" type="button" disabled title="${esc('Claude Code conversations continue in a terminal window. ' + capabilityReason('terminal') + '. Fork it to continue with Pi here.')}">open &amp; send</button>`) : ''}
       </div>
@@ -14564,6 +14573,8 @@ async function renderConv(scroll) {
   hintReadKey();
   wireHead();
   wireAgentComposer();
+  const otherAccountHandoff = $('otherAccountHandoff');
+  if (otherAccountHandoff) otherAccountHandoff.onclick = () => openHandoffDialog();
   const mirrorFork = $('mirrorFork');
   if (mirrorFork) mirrorFork.onclick = async () => {
     const last = [...d.messages].reverse().find(m => m.eid && !m.off);
@@ -16543,7 +16554,7 @@ function renderNotesTab() {
     const conv = sessions.find(s => s.notePath && s.notePath.endsWith('/' + n.file));
     if (!conv) return false;
     if (dir && shortDir(conv.cwd) !== dir) return false;
-    if (src && (conv.source || 'claude') !== src) return false;
+    if (src && agentOf(conv.source || 'claude') !== src) return false;
     if (!projectFilterMatch(project, projectOf(conv))) return false;
     return true;
   });
@@ -18557,7 +18568,7 @@ $('phoneMore').onclick = e => {
     !current?.draft ? ['Conversation tree', () => $('agentTree')?.click()] : null,
     !current?.draft && (current?.messages || []).some(m => m.role === 'tool') && window.Made ? ['What it made', () => Made.open()] : null,
     !current?.draft && (current?.messages || []).some(m => m.role === 'tool') ? ['Review all changes', () => openConversationReview(current.key)] : null,
-    !current?.draft && current?.source !== 'claude' ? ['Compact conversation…', () => openCompactDialog(activeRel)] : null,
+    !current?.draft && agentOf(current?.source) !== 'claude' ? ['Compact conversation…', () => openCompactDialog(activeRel)] : null,
     inProject ? ['Browse project files', () => $('conversationFiles').click()] : null,
     !$('machineBtn').hidden ? ['Switch machine', () => $('machineBtn').click()] : null,
   ].filter(Boolean);
@@ -18631,7 +18642,7 @@ function modalSearchGroups(data) {
   return (data.groups || []).map(g => {
     const n = `${g.semantic ? '≈ ' : ''}${g.matchCount} match${g.matchCount === 1 ? '' : 'es'}`;
     const headAttrs = g.kind === 'conversation' ? `data-rel="${esc(g.key)}"` : `data-md="${esc(g.file)}" data-md-kind="${esc(g.kind)}"`;
-    const head = `<div class="item sr-head" ${headAttrs}><span class="sr-kind">${g.kind === 'conversation' ? (isPiSource(g.source) ? 'P' : g.source === 'pi-remote' ? 'R' : g.source === 'codex' ? 'X' : g.source === 'agy' ? 'A' : g.source === 'muse' ? 'M' : 'C') : (SR_KIND[g.kind] || '✓')}</span><span class="sr-title">${esc(g.title || g.file || '(untitled)')}</span><span class="sr-meta">${esc(g.project || g.kind || '')} · ${n}</span></div>`;
+    const head = `<div class="item sr-head" ${headAttrs}><span class="sr-kind">${g.kind === 'conversation' ? (isPiSource(g.source) ? 'P' : g.source === 'pi-remote' ? 'R' : agentOf(g.source) === 'codex' ? 'X' : agentOf(g.source) === 'agy' ? 'A' : agentOf(g.source) === 'muse' ? 'M' : 'C') : (SR_KIND[g.kind] || '✓')}</span><span class="sr-title">${esc(g.title || g.file || '(untitled)')}</span><span class="sr-meta">${esc(g.project || g.kind || '')} · ${n}</span></div>`;
     const hits = (g.matches || []).map(m => {
       const attrs = g.kind === 'conversation'
         ? `data-rel="${esc(g.key)}"${m.i != null ? ` data-i="${m.i}" data-role="${esc(m.role || '')}"` : ''}`

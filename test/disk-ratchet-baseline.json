@@ -1,6 +1,6 @@
 {
  "about": "design/106: places in the hub that touch files or start programs directly. May only go down. Update: node scripts/disk-ratchet.js --update",
- "total": 1209,
+ "total": 1205,
  "places": {
   "access.js › loadRules": 1,
   "access.js › saveRules": 2,
@@ -516,7 +516,7 @@
   "server.js › startAgentRun": 2,
   "server.js › startDistillJob": 2,
   "server.js › startEvidenceJob": 1,
-  "server.js › startHandoff": 5,
+  "server.js › startHandoff": 1,
   "server.js › startMerge": 1,
   "server.js › startProjectConversation": 5,
   "server.js › startRegenerate": 1,

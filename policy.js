@@ -483,6 +483,11 @@ const ACCOUNT_ROUTES = {
   '/api/node/commands': 'theirs', 'POST /api/node/compose': 'theirs', '/api/conversation/thinking': 'theirs', '/api/conversation/compact': 'theirs',
   '/api/conversation/agent-mode': 'theirs', '/api/conversation/start-loose': 'theirs', '/api/project/start': 'theirs',
   '/api/exec': 'theirs', '/api/live-terminal/*': 'theirs', '/api/fork': 'theirs', '/api/fork-edit': 'theirs',
+  // Every agent's own program, as them (design/108): their Claude Code,
+  // Codex, Antigravity and Muse Code, their sign-ins, their folders; a
+  // conversation moving to another agent is written into their folder by
+  // their host (another account's is continued as their own copy).
+  '/api/conversation/handoff': 'theirs', 'GET /api/codex/menus': 'theirs', 'POST /api/codex/release': 'theirs',
   // Changing a stored conversation (an edited message, where it continues,
   // parallel answers kept together): written by the file helper of the
   // account that keeps it (server.js conversationFile); reading one

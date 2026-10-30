@@ -19,14 +19,18 @@ async function readSessionSnapshot(file) {
       if (!bytesRead) throw new Error('The source conversation changed while being copied. Try forking again.');
       offset += bytesRead;
     }
-    let text = bytes.toString('utf8');
-    if (text && !text.endsWith('\n')) {
-      const end = text.lastIndexOf('\n') + 1;
-      try { JSON.parse(text.slice(end)); text += '\n'; }
-      catch { text = text.slice(0, end); }
-    }
-    return text;
+    return completeRecords(bytes.toString('utf8'));
   } finally { await handle.close(); }
+}
+// The saved records of a conversation's text: a final line that is not
+// whole JSON is a record still being written, never part of a copy.
+function completeRecords(text) {
+  if (text && !text.endsWith('\n')) {
+    const end = text.lastIndexOf('\n') + 1;
+    try { JSON.parse(text.slice(end)); text += '\n'; }
+    catch { text = text.slice(0, end); }
+  }
+  return text;
 }
 
 // Publish a complete file in the source's session directory. Link rather than
@@ -99,4 +103,4 @@ async function forkPiSnapshot(SessionManager, target, nodeId, { before = false, 
   } finally { await fs.rm(stage, { recursive: true, force: true }); }
 }
 
-module.exports = { readSessionSnapshot, publishSession, forkPiSnapshot };
+module.exports = { readSessionSnapshot, publishSession, forkPiSnapshot, completeRecords };

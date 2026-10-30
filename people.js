@@ -678,7 +678,7 @@ function sessionInvolves(s, userId) {
   const parts = sessionParticipantsOf(s);
   if (parts.some(p => peopleCanonicalId(p.id) === id)) return true;
   if (parts.length) return false;
-  const account = typeof s.source === 'string' && s.source.startsWith('pi@') ? s.source.slice(3) : null;
+  const account = typeof s.source === 'string' && s.source.indexOf('@') > 0 ? s.source.slice(s.source.indexOf('@') + 1) : null;
   const keeper = account ? peopleState.users.find(u => u.account === account) : null;
   if (keeper) return keeper.id === id;
   const u = peopleUserById(id);

@@ -32,14 +32,21 @@ function createCodexRuns(deps) {
     index, headlessRuns, agentRunJobs, driver, prefs,
     sessionPathsFor, jobChanged, runEventForwarder, reindexIfChanged, refreshUsageForKey,
     endLiveRunTail, broadcastRunFinal, speakRunDone, recordAuthorship, indexNewSessionFile,
-    agentEnv, codexBin, withSessionOp = (_p, f) => f(), sleep = ms => new Promise(r => setTimeout(r, ms)),
+    codexTarget, withSessionOp = (_p, f) => f(), sleep = ms => new Promise(r => setTimeout(r, ms)),
+    // A person on their own account runs their own Codex (design/108):
+    // assertReady(principal) refuses, with the reason, until it is set up
+    // for them; pathHere(path, principal) is where its file is as read here.
+    assertReady = () => {}, pathHere = p => p,
   } = deps;
   const followUps = new Map(); // sessionPath → [{ message, images, principal, ... }] queued behind a running reply
 
+  // Codex runs as this machine's account, or as a person's own account
+  // (their own Codex and its sign-in). Not inside a guest's walls.
   function assertOwner(principal) {
-    if (principal && (principal.guest || principal.walls)) {
-      throw Object.assign(new Error('Codex runs from Chattering for this machine\'s own account only. Guests use Pi conversations.'), { status: 403 });
+    if (principal && (principal.guest || (principal.walls && principal.walls.kind !== 'account'))) {
+      throw Object.assign(new Error('Codex runs from Chattering as this machine\'s account or as a person\'s own account. Guests use Pi conversations.'), { status: 403 });
     }
+    assertReady(principal);
   }
   function prefsOf(key) {
     const p = (key && prefs.get(key)) || {};
@@ -51,7 +58,7 @@ function createCodexRuns(deps) {
     };
   }
   function targetFor({ threadId = null, cwd, principal, model, effort, access, developerInstructions }) {
-    return { threadId, cwd, env: agentEnv(principal), bin: codexBin(), model: model || null, effort: effort || null,
+    return { threadId, cwd, ...codexTarget(principal, cwd), model: model || null, effort: effort || null,
       ...(ACCESS[access] || {}), ...(developerInstructions ? { developerInstructions } : {}) };
   }
   function newJob({ key, model, message, images }) {
@@ -166,7 +173,7 @@ function createCodexRuns(deps) {
   async function start({ folder, message, images = [], principal, model, effort, access = 'config', developerInstructions = null, author = null, input = 'keyboard', coauthors = null, describeStartFolder, injectItems = null, beforeIndex = null }) {
     assertOwner(principal);
     if (!String(message || '').trim()) throw new Error('write the first message');
-    const where = describeStartFolder(folder || '');
+    const where = await describeStartFolder(folder || '');
     if (!where.exists) throw new Error('folder not found: ' + where.display);
     const target = targetFor({ cwd: where.path, principal, model, effort, access, developerInstructions });
     if (injectItems && injectItems.length) target.injectItems = injectItems;
@@ -180,8 +187,9 @@ function createCodexRuns(deps) {
     const run = drive({ job, record, sessionPath: pendingPath, key: null, target, message, images, author: null, principal, input, coauthors,
       onThread: t => resolveThread(t) });
     run.catch(e => rejectThread(e));
-    const thread = await threadKnown;
-    if (!thread.path) throw new Error('Codex did not say where it keeps this conversation.');
+    const known = await threadKnown;
+    if (!known.path) throw new Error('Codex did not say where it keeps this conversation.');
+    const thread = { ...known, path: pathHere(known.path, principal) };
     // The file appears when the reply begins.
     for (let t0 = Date.now(); Date.now() - t0 < 30000;) {
       if (fs.existsSync(thread.path)) break;

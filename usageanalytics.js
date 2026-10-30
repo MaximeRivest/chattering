@@ -274,7 +274,8 @@ function normalizeSpeedSample(raw, fallback = {}) {
 async function parseCodexUsageFile(file, context, catalog) {
   const facts = [];
   let model = null, previous = null, ordinal = 0, provider = 'openai-codex';
-  const lines = readline.createInterface({ input: fs.createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
+  const stream = (context.openStream && await context.openStream(file)) || fs.createReadStream(file, { encoding: 'utf8' });
+  const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
   for await (const line of lines) {
     ordinal++;
     if (!line) continue;
@@ -708,7 +709,7 @@ class UsageIndex {
 
   async _updateFile(key, entry, absPath, catalog) {
     let facts = [], speed = [], error = null;
-    try { ({ facts, speed } = await parseUsageFile(absPath, { source: entry.source, mtimeMs: entry.mtimeMs, sessionId: entry.sessionId, openStream: this.openStream || null }, catalog)); }
+    try { ({ facts, speed } = await parseUsageFile(absPath, { source: String(entry.source || '').split('@')[0], mtimeMs: entry.mtimeMs, sessionId: entry.sessionId, openStream: this.openStream || null }, catalog)); }
     catch (e) { error = String(e.message || e).slice(0, 500); }
     this.db.exec('BEGIN IMMEDIATE');
     try {
