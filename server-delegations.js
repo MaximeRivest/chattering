@@ -26,10 +26,12 @@ async function atomicJson(file, data) {
 const CALLBACK_TYPES = new Set(['delegation-complete', 'delegation-attention']);
 
 // Inspect only parents with pending deliveries, not the full session corpus.
-async function inspectDeliverySession(file) {
+// open(file) → a text stream: how a file this process may only read with
+// care is opened (a person's own conversation, design/108).
+async function inspectDeliverySession(file, { open = null } = {}) {
   const parents = new Map(), deliveries = new Set();
   let leaf = null;
-  const stream = createReadStream(file, { encoding: 'utf8' });
+  const stream = open ? await open(file) : createReadStream(file, { encoding: 'utf8' });
   const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
   try {
     for await (const line of lines) {

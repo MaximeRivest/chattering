@@ -110,7 +110,7 @@ async function crRepairSuggestions(s) {
     dialog.querySelector('[data-run]').onclick = async e => {
       e.currentTarget.disabled = true; dialog.querySelector('[role="status"]').textContent = 'Requesting suggestions…';
       try {
-        const result = await crRequest('/api/reviews/suggest', { token: preview.token });
+        const result = await crRequest('/api/reviews/suggest', { id: s.id, token: preview.token });
         if (!dialog.isConnected) return;
         dialog.querySelector('[role="status"]').textContent = result.status === 'complete' ? `${result.proposals.length} proposals. Nothing has been applied.` : result.error || result.status;
         for (const [index, p] of (result.proposals || []).entries()) {

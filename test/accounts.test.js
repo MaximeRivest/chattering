@@ -133,14 +133,21 @@ test('routes for a person on their own account: only what acts for them as them'
     // design/106: git as the repository's owner, notebooks, projects.
     ['GET', '/api/git/repos'], ['POST', '/api/doc/run-cell'], ['POST', '/api/project/create'], ['GET', '/api/fs/folders'],
     // design/108: every agent's own program, and moving to another agent.
-    ['POST', '/api/conversation/handoff'], ['GET', '/api/codex/menus'], ['POST', '/api/codex/release']]) {
+    ['POST', '/api/conversation/handoff'], ['GET', '/api/codex/menus'], ['POST', '/api/codex/release'],
+    // design/108, the rest: reviews, the editor's AI, shares and shared
+    // editing, delegated work, vouching, file feedback, AI programs.
+    ['GET', '/api/reviews'], ['POST', '/api/reviews/comment'], ['POST', '/api/doc/ai'], ['POST', '/api/doc/notebook-from-answer'],
+    ['POST', '/api/shares'], ['GET', '/api/collab/file:/x'], ['GET', '/api/delegations/detail'], ['POST', '/api/agents/kill'],
+    ['POST', '/api/vouch'], ['POST', '/api/file-feedback'], ['GET', '/api/programs'], ['POST', '/api/programs/try']]) {
     assert.ok(yes(own, m, p), m + ' ' + p);
   }
-  for (const [m, p] of [['GET', '/api/reviews'], ['POST', '/api/doc/ai'], ['POST', '/api/conversation/send']]) {
+  // What acts on the screen of the computer this server runs on stays
+  // refused, and says so.
+  for (const [m, p] of [['POST', '/api/conversation/send'], ['POST', '/api/conversation/act'], ['POST', '/api/path/action']]) {
     assert.ok(yes(member, m, p), 'a household member still may: ' + p);
     const gate = policy.checkRoute(own, m, p, new URLSearchParams(), () => true);
     assert.equal(gate.ok, false, 'refused on their own account: ' + p);
-    assert.match(gate.error, /your own computer account/);
+    assert.match(gate.error, /screen of the computer Chattering runs on/);
   }
   assert.ok(yes(admin, 'GET', '/api/file/read'), 'the owner tier keeps this server\u2019s rights');
   for (const k of Object.keys(policy.ACCOUNT_ROUTES)) assert.ok(policy.ROUTES[k], 'ACCOUNT_ROUTES names a real route: ' + k);

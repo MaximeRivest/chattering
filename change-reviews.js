@@ -313,6 +313,20 @@ class ChangeReviews {
     return this.db.prepare('SELECT * FROM change_deliveries WHERE id=?').get(token);
   }
   finish(token, status, result) { this.db.prepare('UPDATE change_deliveries SET status=?,result=? WHERE id=?').run(status, JSON.stringify(result), token); }
+  // What the server asks of a review store it does not hold (a person's,
+  // kept by their own process, design/108): plain data in, plain data out.
+  boundaries(session, calls) { return this.cp.boundaries(session, calls); }
+  scopes(root) { return this.cp.scopes(root); }
+  approveScope(root, folder) { return this.cp.approveScope(root, folder); }
+  revokeScope(root, folder) { return this.cp.revokeScope(root, folder); }
+  repairPreview(review, tools, model) { return require('./review-repair').preview(this, review, tools, model); }
+  repairAccepted(review, token, index) { return require('./review-repair').accepted(this, review, token, index); }
+  repairBegin(token, model) { return require('./review-repair').begin(this, token, model); }
+  repairFinish(token, raw) { return require('./review-repair').finish(this, token, raw); }
+  repairFail(token, message) { return require('./review-repair').fail(this, token, new Error(message)); }
+  // The reviewed marks and saved bodies, for what a conversation made (made.js).
+  reviewedMarks() { return this.db.prepare('SELECT review, path FROM change_reviewed WHERE checked=1').all(); }
+  reviewBody(id) { const row = this.db.prepare('SELECT body FROM change_reviews WHERE id=?').get(id); return row ? row.body : null; }
   async deliver(token, send) {
     const delivery = this.claim(token);
     try {
@@ -324,4 +338,8 @@ class ChangeReviews {
     }
   }
 }
-module.exports = { ChangeReviews };
+// The methods a review store answers across a process boundary.
+const REMOTE_METHODS = ['createTask', 'createConversation', 'get', 'pair', 'file', 'localFile', 'combine', 'comment', 'resolve', 'mark', 'prepare', 'claim', 'finish',
+  'agentSignature', 'cachedAgent', 'rememberAgent', 'boundaries', 'scopes', 'approveScope', 'revokeScope',
+  'repairPreview', 'repairAccepted', 'repairBegin', 'repairFinish', 'repairFail', 'reviewedMarks', 'reviewBody'];
+module.exports = { ChangeReviews, REMOTE_METHODS };

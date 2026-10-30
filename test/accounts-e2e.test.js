@@ -169,10 +169,10 @@ test('a person runs as their own account: commands, conversations, forks, the st
   asTest(`ln -sf ${path.join(secretDir, 'plan.md')} ${proj}/link.md`);
   const viaLink = await (await get(remote + '/api/file/read?path=' + encodeURIComponent(path.join(proj, 'link.md')), tess)).json();
   assert.doesNotMatch(JSON.stringify(viaLink), /THE OWNER SECRET PLAN/);
-  // Routes that would use this server's rights are refused, with the reason.
-  const reviews = await get(remote + '/api/reviews', tess);
-  assert.equal(reviews.status, 403);
-  assert.match((await reviews.json()).error, /your own computer account/);
+  // What acts on this computer's own screen is refused, with the reason.
+  const desk = await post(remote + '/api/path/action', { path: path.join(proj, 'notes.md'), action: 'open' }, tess);
+  assert.equal(desk.status, 403);
+  assert.match((await desk.json()).error, /screen of the computer Chattering runs on/);
 
   // A conversation as her: in her folder, written by her account, answered
   // through the key proxy (her Pi holds a placeholder, never a key).
@@ -719,4 +719,161 @@ test('a person on their own account: their own Claude Code and Codex, their fold
   const ownerSend = await post(local + '/api/node/send', { id: codexStart.key, prompt: 'as the owner' });
   assert.equal(ownerSend.status, 409, await ownerSend.clone().text());
   assert.equal((await (await get(local + '/api/session?id=' + encodeURIComponent(codexStart.key))).json()).otherAccount.fork, false);
+});
+
+// The rest of design/108 as the person: the editor's AI commands on their
+// own Pi and models; reviews kept by their own process beside their file
+// history; a document shared by link, read as them; their delegated work,
+// from their own records; vouching a file read as them; ink feedback sent to
+// their conversation; the program log narrowed to their own calls.
+test('a person on their own account: the editor\u2019s AI, reviews, links, delegated work, vouching, feedback and programs, as them', { skip: skip || (!node && 'no node in the Nix store'), timeout: 240000 }, async t => {
+  const tag = 'e2e-rest-' + process.pid + '-' + Date.now().toString(36);
+  const TMP = path.join(os.homedir(), '.cache', 'chattering-test-homes');
+  fs.mkdirSync(TMP, { recursive: true });
+  const home = fs.mkdtempSync(path.join(TMP, 'accounts-'));
+  const agent = path.join(home, '.pi', 'agent');
+  fs.mkdirSync(path.join(agent, 'extensions'), { recursive: true });
+  fs.writeFileSync(path.join(agent, 'auth.json'), '{}');
+  fs.writeFileSync(path.join(agent, 'settings.json'), '{}');
+  const secretDir = path.join(home, 'Projects', 'secret');
+  fs.mkdirSync(secretDir, { recursive: true });
+  fs.writeFileSync(path.join(secretDir, 'plan.md'), 'THE OWNER SECRET PLAN\n');
+  // The owner's conversation and delegated work: never hers to see or review.
+  const ownerSess = path.join(agent, 'sessions', require('../runtime.js').piSessionDirName(secretDir));
+  fs.mkdirSync(ownerSess, { recursive: true });
+  const ownerId = '01a0owner' + '1'.repeat(27);
+  fs.writeFileSync(path.join(ownerSess, `2026-10-24T10-00-00-000Z_${ownerId}.jsonl`), line({ type: 'session', version: 3, id: ownerId, timestamp: '2026-10-24T10:00:00.000Z', cwd: secretDir })
+    + line({ type: 'message', id: 'm1', parentId: null, timestamp: '2026-10-24T10:00:01.000Z', message: { role: 'user', content: 'the owner asks' } }));
+  const ownerTask = require('node:crypto').randomUUID();
+  fs.mkdirSync(path.join(home, 'delegations', ownerTask), { recursive: true });
+  fs.writeFileSync(path.join(home, 'delegations', ownerTask, 'request.json'), JSON.stringify({ id: ownerTask, sessionPath: path.join(ownerSess, 'x_' + ownerTask + '.jsonl'), status: 'succeeded', title: 'the owner\u2019s worker', createdAt: Date.now(), parentTaskId: null }));
+  const proj = path.join('/home', ACCOUNT, 'Projects', tag);
+  const TEXT = '# Essay\n\nTheir going to the store.\n';
+  assert.equal(asTest(`mkdir -p ${proj} && echo ${Buffer.from(TEXT).toString('base64')} | base64 -d > ${proj}/notes.md`).status, 0);
+  const herTask = require('node:crypto').randomUUID();
+  const herRoot = `/home/${ACCOUNT}/.local/share/chattering/delegations`;
+
+  const model = await fakeOpenAI({ reply: 'They are going to the store.' });
+  const port = await freePort(), tlsPort = await freePort();
+  registerConsole(port, 'install-tok');
+  let log = '';
+  const child = spawn(node, ['server.js'], { cwd: root, env: { ...process.env, ...require('./helpers/home-env.js').homeEnv(home), PORT: String(port), CHATTERING_TLS_PORT: String(tlsPort),
+    CHATTERING_NO_WATCH: '1', CHATTERING_NO_LEDGER: '1', CHATTERING_NO_SYNC: '1', CHATTERING_CACHE_DIR: path.join(home, 'cache'), CHATTERING_CHECKPOINT_DIR: path.join(home, 'checkpoints'),
+    CHATTERING_DELEGATION_ROOT: path.join(home, 'delegations'), PI_CODING_AGENT_DIR: agent, PI_AGENT_DIR: agent, CHATTERING_DISABLE_DELEGATION_CALLBACKS: '1',
+    CHATTERING_HOST: '', CHATTERING_LAN: '1', CHATTERING_PUBLIC_URL: '', CHATTERING_TOKEN: 'install-tok', CHATTERING_NODE: node, CHATTERING_PREVIEW_PORT: '0', CHATTERING_PREVIEW_TLS_PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.on('data', b => log += b); child.stderr.on('data', b => log += b);
+  t.after(async () => {
+    await require('./helpers/cleanup.js').stopAndRemove(child, home);
+    await model.close();
+    asTest(`rm -rf ${proj} ${herRoot}/${herTask} ~/.cache/chattering/feedback; rmdir /home/${ACCOUNT}/Projects 2>/dev/null; for d in ${sessionsRoot}/*; do grep -l '${tag}' "$d"/*.jsonl 2>/dev/null; done | xargs -r rm -f; find ${sessionsRoot} -mindepth 1 -type d -empty -delete`);
+  });
+  const local = 'http://127.0.0.1:' + port, remote = 'http://' + lanIp() + ':' + port;
+  const post = (url, body, cookie) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(body) });
+  const get = (url, cookie) => fetch(url, { headers: cookie ? { Cookie: cookie } : {} });
+  await until(async () => { try { return (await get(local + '/api/sessions')).ok; } catch { return false; } }, 30000, 'the server');
+  const fail = what => what + '\n--- server log ---\n' + log.slice(-4000);
+  const okJson = async (what, p) => { const r = await p; const text = await r.text(); assert.equal(r.status, 200, fail(what + ': ' + text.slice(0, 600))); return JSON.parse(text); };
+  const uid = Number(execFileSync('id', ['-u', ACCOUNT], { encoding: 'utf8' }));
+
+  const ai = await (await post(local + '/api/ai/server', { baseUrl: model.baseUrl })).json();
+  const added = await (await post(local + '/api/users/add', { name: 'Tess' })).json();
+  const tessIn = await fetch(remote + '/?token=' + encodeURIComponent(new URL(added.inviteLink).searchParams.get('token')), { redirect: 'manual' });
+  const tess = (tessIn.headers.get('set-cookie') || '').split(';')[0];
+  const linked = await (await post(local + '/api/users/account', { id: added.user.id, account: ACCOUNT, models: 'shared' })).json();
+  assert.equal(linked.account && linked.account.status, 'ready', fail(JSON.stringify(linked)));
+  // Her conversation in her project (it makes the project known here).
+  const started = await okJson('start', post(remote + '/api/conversation/start-loose', { folder: proj, prompt: 'hello ' + tag, models: [{ provider: ai.name, modelId: 'fixture-chat' }] }, tess));
+  const key = started.key;
+  await until(async () => { const jobs = await (await get(local + '/api/jobs')).json(); const j = jobs.find(x => x.key === key); return j && j.status !== 'running' && j; }, 90000, 'her first run');
+  const doc = path.join(proj, 'notes.md');
+
+  // 1. The editor's AI command: her own Pi, her model, as her.
+  const asked = model.requests.length;
+  const res = await post(remote + '/api/doc/ai', { doc, command: 'grammar', request: { command: 'grammar', scope: 'prose', instruction: '', target: { from: 9, to: 34, text: 'Their going to the store.' }, block: { type: 'prose', text: 'Their going to the store.' }, document: TEXT } }, tess);
+  assert.equal(res.status, 200, fail(await res.clone().text()));
+  const events = (await res.text()).split('\n').filter(Boolean).map(l => JSON.parse(l));
+  const done = events.find(e => e.type === 'done');
+  assert.ok(done && /going to the store/.test(done.text), fail('doc ai: ' + JSON.stringify(events).slice(0, 600)));
+  assert.ok(model.requests.length > asked, 'answered through her models (the key proxy)');
+  assert.equal(asTest('ls -A ~/.cache/chattering/tmp 2>/dev/null').stdout.trim(), '', 'its system prompt file is gone');
+
+  // 2. Reviews: kept by her own process; the owner's work is not hers to review.
+  const review = await okJson('review', post(remote + '/api/reviews/conversation', { key }, tess));
+  assert.ok(review.id, JSON.stringify(review));
+  const opened = await okJson('open review', get(remote + '/api/reviews?id=' + encodeURIComponent(review.id), tess));
+  assert.equal(opened.key, key);
+  await okJson('comment', post(remote + '/api/reviews/comment', { id: review.id, text: 'looks right' }, tess));
+  // Kept in her own store (her saved file history's database), read as her.
+  const inStore = asTest(`${node} -e "const {DatabaseSync}=require('node:sqlite');const d=new DatabaseSync(require('os').homedir()+'/.local/share/chattering/checkpoints/metadata.sqlite',{readOnly:true});process.stdout.write(String(!!d.prepare('SELECT 1 FROM change_reviews WHERE id=?').get('${review.id}')))" 2>/dev/null`);
+  assert.equal(inStore.stdout.trim(), 'true', 'her review is in her own store: ' + inStore.stderr);
+  const ownerKey = (await (await get(local + '/api/sessions')).json()).find(s => s.key.includes(ownerId)).key;
+  const theirs = await post(remote + '/api/reviews/conversation', { key: ownerKey }, tess);
+  assert.notEqual(theirs.status, 200, 'the owner\u2019s conversation is not reviewed by her');
+  assert.equal((await get(local + '/api/reviews?id=' + encodeURIComponent(review.id))).status, 200, 'the owner tier opens it from her store');
+
+  // 3. A document shared by link: found as her; the owner's file is not hers to share.
+  const share = await okJson('share', post(remote + '/api/shares', { path: doc, role: 'view' }, tess));
+  assert.equal(share.share.path, doc);
+  assert.notEqual((await post(remote + '/api/shares', { path: path.join(secretDir, 'plan.md'), role: 'view' }, tess)).status, 200);
+
+  // 4. Delegated work: her own records, read by her process; not the owner's.
+  assert.equal(asTest(`mkdir -p ${herRoot}/${herTask} && printf '%s' '${JSON.stringify({ id: herTask, sessionPath: '/nowhere/x_' + herTask + '.jsonl', status: 'succeeded', title: 'her worker', createdAt: Date.now(), parentTaskId: null })}' > ${herRoot}/${herTask}/request.json`).status, 0);
+  const hers = await okJson('delegations', get(remote + '/api/delegations', tess));
+  assert.ok(hers.tasks.some(x => x.id === herTask), fail(JSON.stringify(hers).slice(0, 400)));
+  assert.ok(!hers.tasks.some(x => x.id === ownerTask), 'not the owner\u2019s workers');
+  const ownerView = await okJson('owner delegations', get(local + '/api/delegations'));
+  assert.ok(ownerView.tasks.some(x => x.id === ownerTask) && !ownerView.tasks.some(x => x.id === herTask));
+  const detail = await okJson('detail', get(remote + '/api/delegations/detail?id=' + herTask, tess));
+  assert.equal(detail.title, 'her worker');
+  assert.notEqual((await get(remote + '/api/delegations/detail?id=' + ownerTask, tess)).status, 200);
+
+  // 5. Vouching: the file read as her; the owner's file stays closed.
+  const vouched = await okJson('vouch', post(remote + '/api/vouch', { path: doc, action: 'vouch' }, tess));
+  assert.equal(vouched.text, TEXT);
+  const status = await okJson('vouch status', post(remote + '/api/vouch/status', { path: doc }, tess));
+  assert.ok(status.summary.vouched > 0, JSON.stringify(status).slice(0, 300));
+  assert.notEqual((await post(remote + '/api/vouch', { path: path.join(secretDir, 'plan.md'), action: 'vouch' }, tess)).status, 200);
+  const all = await okJson('vouch all', get(remote + '/api/vouch/all', tess));
+  assert.ok(all.paths[doc], JSON.stringify(all));
+
+  // 6. Ink feedback: kept in her home, sent to her conversation as a message.
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0V8AAAAASUVORK5CYII=';
+  const fed = await okJson('feedback', post(remote + '/api/file-feedback', { key, image: 'data:image/png;base64,' + png, path: doc, fromLine: 1, toLine: 3, page: 1, pages: 1 }, tess));
+  assert.equal(fed.via, 'run', JSON.stringify(fed));
+  assert.equal(asTest(`stat -c %U '${fed.pngPath}'`).stdout.trim(), ACCOUNT);
+
+  // 8. Shared editing of her file: joined as her (read by her process), and
+  // what she types is saved by her process, as her.
+  {
+    const { Y, syncProtocol, encoding, decoding } = require('../vendor/yjs-server/13.6.29/yjs-server.cjs');
+    const ydoc = new Y.Doc();
+    const ws = new WebSocket(remote.replace('http', 'ws') + '/api/collab/' + encodeURIComponent('file:' + doc), { headers: { Cookie: tess } });
+    ws.binaryType = 'arraybuffer';
+    let synced = false;
+    const send = enc => { if (ws.readyState === 1) ws.send(encoding.toUint8Array(enc)); };
+    ws.onmessage = ev => {
+      const dec = decoding.createDecoder(new Uint8Array(ev.data));
+      if (decoding.readVarUint(dec) !== 0) return;
+      const enc = encoding.createEncoder(); encoding.writeVarUint(enc, 0);
+      if (syncProtocol.readSyncMessage(dec, enc, ydoc, ws) === syncProtocol.messageYjsSyncStep2) synced = true;
+      if (encoding.length(enc) > 1) send(enc);
+    };
+    ydoc.on('update', (update, origin) => { if (origin === ws) return; const enc = encoding.createEncoder(); encoding.writeVarUint(enc, 0); syncProtocol.writeUpdate(enc, update); send(enc); });
+    await new Promise((resolve, reject) => { ws.onopen = () => { const enc = encoding.createEncoder(); encoding.writeVarUint(enc, 0); syncProtocol.writeSyncStep1(enc, ydoc); send(enc); resolve(); }; ws.onerror = () => reject(new Error('collab socket refused')); });
+    await until(() => synced && ydoc.getText('content').toString() === TEXT, 15000, 'her file in the shared copy');
+    ydoc.getText('content').insert(TEXT.length, 'Typed together.\n');
+    await until(() => asTest(`cat ${doc}`).stdout.includes('Typed together.'), 20000, 'the shared copy saved');
+    assert.equal(asTest(`stat -c %U ${doc}`).stdout.trim(), ACCOUNT, 'saved by her process: still her file');
+    ws.close();
+    // The owner's file is not opened for her.
+    const refused = new WebSocket(remote.replace('http', 'ws') + '/api/collab/' + encodeURIComponent('file:' + path.join(secretDir, 'plan.md')), { headers: { Cookie: tess } });
+    const outcome = await new Promise(r => { refused.onopen = () => r('open'); refused.onerror = () => r('refused'); });
+    assert.equal(outcome, 'refused');
+  }
+
+  // 7. Programs: her own calls of the log.
+  const programs = await okJson('programs', get(remote + '/api/programs', tess));
+  assert.ok(programs.programs.some(p => p.name === 'doc_grammar'), fail(JSON.stringify(programs).slice(0, 400)));
+  const runs = await okJson('runs', get(remote + '/api/programs/runs?name=doc_grammar&module=chattering&purpose=all', tess));
+  assert.ok(runs.total >= 1 && runs.runs.every(r => r.person === 'Tess'), JSON.stringify(runs).slice(0, 400));
 });

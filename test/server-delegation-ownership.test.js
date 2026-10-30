@@ -21,7 +21,11 @@ function setup(t) {
   const dir = S.taskDir(root, id); fs.mkdirSync(dir, { recursive: true });
   S.atomic(path.join(dir, 'request.json'), { id, sessionPath: file, status: 'succeeded', createdAt: Date.now(), parentTaskId: null });
   fs.writeFileSync(file, '');
-  const box = vm.createContext({ assertRunsHere() {}, harnessOfSource: s => String(s).split('@')[0], usesKeyProxy: () => false, backgroundPrincipalFor: () => ({ user: { id: 'owner', name: 'Owner' }, spawnAs: null, env: {} }), refuseOwnProgramOnly() {}, ownProgramOnly: () => false, principalIsOwner: () => true, assertClaudeAccountAllowed() {}, path, crypto, console, delegationLib: D, DELEGATION_ROOT: root,
+  const box = vm.createContext({ assertRunsHere() {}, harnessOfSource: s => String(s).split('@')[0],
+    // This server's own delegated work (design/108: delegationRecords(null)).
+    delegationRecords: () => ({ account: null, get: id => D.getDelegation(id, { root: box.DELEGATION_ROOT }), list: (o = {}) => D.listDelegations({ ...o, root: box.DELEGATION_ROOT }),
+      takeover: (id, d) => D.markDelegationTakeover(id, d, { root: box.DELEGATION_ROOT }), control: (id, a) => D.controlDelegation(id, a, { root: box.DELEGATION_ROOT }) }),
+    delegationAccountOfFile: () => null, delegationCoordinatorOf: () => box.delegationCoordinator, openTranscriptStream: f => fs.createReadStream(f, { encoding: 'utf8' }), usesKeyProxy: () => false, backgroundPrincipalFor: () => ({ user: { id: 'owner', name: 'Owner' }, spawnAs: null, env: {} }), refuseOwnProgramOnly() {}, ownProgramOnly: () => false, principalIsOwner: () => true, assertClaudeAccountAllowed() {}, path, crypto, console, delegationLib: D, DELEGATION_ROOT: root,
     DELEGATION_TERMINAL: S.TERMINAL, sessionFileOps: new Map(), headlessRuns: new Map(), liveHeld: new Map(), compactingSessions: new Set(), delegationCoordinator: { refresh: async () => {} },
     stopAnyWarmSession() {}, sleep: async () => {}, index: { child: {} },
     conversationKind: () => 'pi', windowTitleFor: () => 'test', absPathForKey: () => file,
@@ -59,7 +63,11 @@ const message = ids => ({ customType: 'delegation-complete', details: { taskIds:
 
 test('a failed delegation guard is a run error, not an ordinary informational extension notice', () => {
   const dirname = path.resolve(__dirname, '..');
-  const box = vm.createContext({ assertRunsHere() {}, harnessOfSource: s => String(s).split('@')[0], usesKeyProxy: () => false, backgroundPrincipalFor: () => ({ user: { id: 'owner', name: 'Owner' }, spawnAs: null, env: {} }), refuseOwnProgramOnly() {}, ownProgramOnly: () => false, principalIsOwner: () => true, assertClaudeAccountAllowed() {}, path, performance, responseSpeed: require('../responsespeed.js'), activityWatch: require('../activity-watch.js'), __dirname: dirname, liveRunTails: new Map(), broadcast() {},
+  const box = vm.createContext({ assertRunsHere() {}, harnessOfSource: s => String(s).split('@')[0],
+    // This server's own delegated work (design/108: delegationRecords(null)).
+    delegationRecords: () => ({ account: null, get: id => D.getDelegation(id, { root: box.DELEGATION_ROOT }), list: (o = {}) => D.listDelegations({ ...o, root: box.DELEGATION_ROOT }),
+      takeover: (id, d) => D.markDelegationTakeover(id, d, { root: box.DELEGATION_ROOT }), control: (id, a) => D.controlDelegation(id, a, { root: box.DELEGATION_ROOT }) }),
+    delegationAccountOfFile: () => null, delegationCoordinatorOf: () => box.delegationCoordinator, openTranscriptStream: f => fs.createReadStream(f, { encoding: 'utf8' }), usesKeyProxy: () => false, backgroundPrincipalFor: () => ({ user: { id: 'owner', name: 'Owner' }, spawnAs: null, env: {} }), refuseOwnProgramOnly() {}, ownProgramOnly: () => false, principalIsOwner: () => true, assertClaudeAccountAllowed() {}, path, performance, responseSpeed: require('../responsespeed.js'), activityWatch: require('../activity-watch.js'), __dirname: dirname, liveRunTails: new Map(), broadcast() {},
     setTimeout, clearTimeout, addRunNotice(job, text) { job.notices = [...(job.notices || []), text]; } });
   load(box, 'function runEventForwarder(', '// Start one headless run');
   const ordinary = { id: 'one' }, guarded = { id: 'two' };

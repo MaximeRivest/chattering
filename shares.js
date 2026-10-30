@@ -484,13 +484,16 @@ function createShareGate(deps) {
     if (!raw || /^[a-z][a-z0-9+.-]*:/i.test(raw) || raw.startsWith('/') || raw.includes('\0') || raw.includes('\\')) throw httpError(404, 'Not found');
     let rel;
     try { rel = decodeURIComponent(raw); } catch { throw httpError(400, 'Bad path'); }
-    const dir = await fs.promises.realpath(path.dirname(r.abs));
+    // A document of someone on their own account is read by their process,
+    // as them (r.io, design/108); else this computer's.
+    const io = r.io || null;
+    const dir = io ? await io.realpath(path.dirname(r.abs)) : await fs.promises.realpath(path.dirname(r.abs));
     const want = path.resolve(dir, rel);
     const ext = path.extname(want).toLowerCase();
     const display = DISPLAY_EXT.has(ext);
     if (!IMAGE_EXT.has(ext) && !display) throw httpError(404, 'Only pictures and saved results are shared with a document.');
     let real, stat;
-    try { real = await fs.promises.realpath(want); stat = await fs.promises.stat(real); } catch { throw httpError(404, 'Not found'); }
+    try { real = io ? await io.realpath(want) : await fs.promises.realpath(want); stat = io ? await io.stat(real) : await fs.promises.stat(real); } catch { throw httpError(404, 'Not found'); }
     if (!(real === dir || real.startsWith(dir + path.sep)) || !stat.isFile()) throw httpError(404, 'Not found');
     if (display && !path.relative(dir, real).split(path.sep).slice(0, -1).join('/').match(/(^|\/)_assets\/generated$/)) throw httpError(404, 'Not found');
     if (stat.size > ASSET_MAX) throw httpError(413, 'This picture is too large to share.');
@@ -505,6 +508,7 @@ function createShareGate(deps) {
       headers['Content-Security-Policy'] = "sandbox allow-scripts; frame-ancestors 'self'";
       delete headers['X-Frame-Options'];
     }
+    if (io) return io.serve(req, res, real, stat, deps.mimeOf(real), { maxBytes: ASSET_MAX, headers });
     return deps.serveFile(req, res, { abs: real, stat }, deps.mimeOf(real), { maxBytes: ASSET_MAX, headers });
   }
 
@@ -530,13 +534,13 @@ function createShareGate(deps) {
     let initialText = '';
     const name = 'file:' + r.abs;
     if (!deps.collab.has(name)) {
-      try { initialText = await fs.promises.readFile(r.abs, 'utf8'); } catch { return refuse(404, 'Not Found'); }
+      try { initialText = r.io ? (await r.io.readFile(r.abs)).toString('utf8') : await fs.promises.readFile(r.abs, 'utf8'); } catch { return refuse(404, 'Not Found'); }
       if (initialText.includes('\0')) return refuse(415, 'Unsupported Media Type');
     }
     const conn = deps.acceptWebSocket(req, socket, head, { maxPayload: MESSAGE_MAX });
     if (!conn) return true;
     set.add(conn); live.set(id, set); liveTotal++;
-    const unwatch = watchFile(r.abs);
+    const unwatch = watchFile(r.abs, r.io || null);
     conn.on('close', () => { if (set.delete(conn)) liveTotal--; if (!set.size) live.delete(id); unwatch(); });
     const visitor = sess.visitorId || 'anon';
     const user = { id: 'link:' + id + ':' + visitor, name: cleanVisitorName(u.searchParams.get('name')) + ' (via link)', glyph: cleanVisitorName(u.searchParams.get('name')).slice(0, 1).toUpperCase(), color: visitorColor(visitor), via: 'link' };
@@ -548,14 +552,24 @@ function createShareGate(deps) {
   // disk (an agent, git, another editor) reaches them as one minimal edit,
   // whether or not the rest of Chattering watches that folder. The folder is
   // watched, not the file, because editors replace files by renaming.
+  // A document read through someone's own process (io, design/108) cannot
+  // be watched from here: it is looked at every two seconds instead.
   const watchers = new Map(); // abs → { watcher, refs, timer }
-  function watchFile(abs) {
+  function watchFile(abs, io = null) {
     let w = watchers.get(abs);
     if (!w) {
       w = { refs: 0, timer: null, watcher: null };
       const name = path.basename(abs);
-      const read = () => fs.promises.readFile(abs, 'utf8').then(text => { if (!text.includes('\0')) deps.collab.fromDisk('file:' + abs, text); }).catch(() => {});
-      try {
+      const read = () => (io ? io.readFile(abs).then(b => b.toString('utf8')) : fs.promises.readFile(abs, 'utf8')).then(text => { if (!text.includes('\0')) deps.collab.fromDisk('file:' + abs, text); }).catch(() => {});
+      if (io) {
+        let seen = null;
+        const look = () => io.stat(abs).then(st => { const sig = st.mtimeMs + ':' + st.size; if (seen !== null && sig !== seen) read(); seen = sig; }).catch(() => {});
+        look();
+        const poll = setInterval(look, 2000);
+        if (poll.unref) poll.unref();
+        w.watcher = { close: () => clearInterval(poll) };
+        watchers.set(abs, w);
+      } else try {
         w.watcher = fs.watch(path.dirname(abs), { persistent: false }, (ev, file) => {
           if (file && String(file) !== name) return;
           clearTimeout(w.timer);

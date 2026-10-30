@@ -447,6 +447,44 @@ function reviewServices() {
   if (!changeReviews) changeReviews = new (require('./change-reviews.js').ChangeReviews)(checkpointStore, { archive: fileArchive, baseURL: 'http://127.0.0.1:' + PORT });
   return changeReviews;
 }
+// ---- whose review store (design/108) ----
+// A review is built from the saved file history of the account that ran the
+// agent: this server's store, or a person's, kept by their own process in
+// their home. Every operation is asked of the right store, the same way
+// (plain data in and out). Which store holds a review id is remembered here
+// (the hub's own record; ids of this server's store are not listed).
+const REVIEW_ACCOUNTS_FILE = path.join(DATA_DIR, 'review-accounts.json');
+// hub-own: which store holds each person's review (ids and account names only)
+const reviewAccounts = new Map((() => { try { return Object.entries(JSON.parse(fs.readFileSync(REVIEW_ACCOUNTS_FILE, 'utf8'))); } catch { return []; } })());
+function noteReviewAccount(account, ...ids) {
+  let changed = false;
+  for (const id of ids.flat()) if (account && typeof id === 'string' && id && reviewAccounts.get(id) !== account) { reviewAccounts.set(id, account); changed = true; }
+  if (!changed) return;
+  // hub-own: the record above, written atomically
+  try { writeFileAtomic(REVIEW_ACCOUNTS_FILE, JSON.stringify(Object.fromEntries(reviewAccounts))).catch(e => console.error('[reviews] ' + e.message)); } catch {}
+}
+function reviewStore(account = null) {
+  const person = account ? personWithAccount(account) : null;
+  const mine = person ? filesOfPerson(person) : null;
+  if (account && !mine) throw Object.assign(new Error('That review belongs to an account nobody here is linked to.'), { status: 404 });
+  const methods = require('./change-reviews.js').REMOTE_METHODS;
+  const out = { account: mine ? mine.account : null, mine };
+  for (const m of methods) out[m] = mine ? (...a) => mine.host.call('reviews', m, ...a) : async (...a) => reviewServices()[m](...a);
+  return out;
+}
+// The store that keeps a conversation's file history: its keeper's.
+const reviewStoreForKey = key => reviewStore(index[key] ? accountOfSource(index[key].source) : null);
+const reviewStoreForId = id => reviewStore(reviewAccounts.get(String(id || '')) || null);
+const reviewDeliveries = new Map(); // a prepared delivery's token → the account whose store holds it
+// A person on their own account reviews the conversations their account
+// keeps (the history is theirs); the owner tier, any. Everyone may only
+// review what they may see.
+function assertReviewAccess(identity, store, key, right = 'see') {
+  if (key && index[key]) assertCan(identity, right, targetOf(key), 'this conversation');
+  if (policy.isOwnerTier(identity)) return;
+  const mine = ownFilesOf(identity);
+  if ((mine ? mine.account : null) !== store.account) throw Object.assign(new Error(store.account ? 'This review is of work done on another person\u2019s account.' : 'Reviews are built from the file history of the account that ran the agent: review the conversations your account keeps (fork one to make it yours).'), { status: 403 });
+}
 // The tool steps a review covers, read from the conversation's own file.
 // `all`: every step that could change a file (the built-in readers are left
 // out), for a whole-conversation review (design/79); no 1000-step cap, since
@@ -456,7 +494,8 @@ async function reviewInput(key, requested, { all = false, family = null, toolsOn
   if (!all && (!Array.isArray(requested) || !requested.length || requested.length > 1000 || requested.some(c => typeof c !== 'string'))) throw Error('Choose between 1 and 1000 tool steps');
   const wanted = new Set(all ? [] : requested), found = [], contextTools = [], results = new Map();
   const readOnly = require('./checkpoint-store.js').READ_ONLY;
-  const raw = await fsp.readFile(sessionPath, 'utf8');
+  // A person's conversation is read only if theirs (never a link they left).
+  const raw = await readTranscriptText(sessionPath);
   for (const line of raw.split('\n')) {
     let row; try { row = JSON.parse(line); } catch { continue; }
     const m = row.message || {}, ts = row.timestamp || (m.timestamp ? new Date(m.timestamp).toISOString() : '');
@@ -473,7 +512,7 @@ async function reviewInput(key, requested, { all = false, family = null, toolsOn
   }
   if (all && !wanted.size) return null; // nothing here could have changed a file
   if (new Set(found.map(c => c.id)).size !== wanted.size) throw Error('Some selected tools are not in this conversation');
-  const rows = checkpointStore.boundaries(sessionPath, [...wanted]), captured = new Set(rows.map(r => r.call));
+  const rows = await reviewStoreForKey(key).boundaries(sessionPath, [...wanted]), captured = new Set(rows.map(r => r.call));
   const tools = [...new Map(found.filter(t => captured.has(t.id) || !require('./checkpoint-store.js').READ_ONLY.has(t.name)).map(t => [t.id, { ...t, ...results.get(t.id) }])).values()];
   const project = projectNameOf(entry.cwd, key), otherEvents = [];
   if (toolsOnly) return { key, session: sessionPath, cwd: entry.cwd, project, tools };
@@ -493,7 +532,7 @@ async function reviewInput(key, requested, { all = false, family = null, toolsOn
 // own sub-agents in the order they started.
 async function conversationFamily(key) {
   const { sessionPath, entry } = sessionPathsFor(key);
-  const tasks = await delegationLib.listDelegations({ root: DELEGATION_ROOT, all: true });
+  const tasks = await delegationRecords(accountOfSource(entry.source)).list({ all: true });
   const byId = new Map(tasks.map(t => [t.id, t])), children = new Map();
   for (const t of tasks) {
     const parent = path.resolve(t.parentTaskId ? byId.get(t.parentTaskId)?.sessionPath || t.parentSessionPath : t.parentSessionPath);
@@ -545,6 +584,20 @@ function madeSummaries() {
   });
   return madeService;
 }
+// A person's conversation (design/108): computed by their own process,
+// from their file history and their disk; this server hands over the
+// agents and each one's steps.
+async function madeSummaryOf(key) {
+  const store = reviewStoreForKey(key);
+  if (!store.mine) return madeSummaries().summary(key);
+  const family = await conversationFamily(key);
+  const keys = new Set(family.agents.map(a => a.key)), inputs = {};
+  for (const agent of family.agents) {
+    try { inputs[agent.key] = await reviewInput(agent.key, null, { all: true, family: keys }); }
+    catch (e) { family.warnings.push(`${agent.title}: ${e.message}`); }
+  }
+  return store.mine.host.call('made', key, { family, inputs, loaded: [...require('./module-stamps.js').loaded()], appRoot: __dirname, boot: BOOT_AT });
+}
 // What each box of steps changed, shown in the conversation (design/88).
 let stepChangesService = null;
 // What a conversation's steps changed comes from the history of the account
@@ -594,20 +647,22 @@ function conversationReview(key) {
   // One build per conversation at a time: a second click waits for the first.
   if (conversationReviewsRunning.has(key)) return conversationReviewsRunning.get(key);
   const work = (async () => {
-    const service = reviewServices();
+    const service = reviewStoreForKey(key);
     const { agents, warnings, project } = await conversationFamily(key);
     const family = new Set(agents.map(a => a.key)), sources = [];
     let next = 0;
     const one = async agent => {
-      const stat = await fsp.stat(agent.session);
-      const signature = service.agentSignature(agent.session, stat);
-      const cached = service.cachedAgent(agent.session, signature);
+      const st = await statTranscript(sourceOfPath(agent.session), agent.session);
+      const stat = { size: st.size, mtimeMs: st.mtimeMs };
+      const signature = await service.agentSignature(agent.session, stat);
+      const cached = await service.cachedAgent(agent.session, signature);
       // A reused review still needs the steps: commits are read afresh.
       const input = await reviewInput(agent.key, null, { all: true, family, toolsOnly: cached !== undefined });
       if (input) sources.push({ agent: agents.indexOf(agent), cwd: input.cwd, tools: input.tools });
       if (cached !== undefined) { agent.review = cached; return; }
       agent.review = input ? (await service.createTask({ ...input, title: agent.title })).id : null;
-      service.rememberAgent(agent.session, signature, agent.review);
+      if (agent.review) noteReviewAccount(service.account, agent.review);
+      await service.rememberAgent(agent.session, signature, agent.review);
     };
     // A few agents at a time: each review reads saved versions through git.
     await Promise.all(Array.from({ length: Math.min(4, agents.length) }, async () => {
@@ -618,7 +673,9 @@ function conversationReview(key) {
     }));
     const branches = await require('./branch-work.js').branchWork(sources, { warn: w => warnings.push(w) });
     const title = agents.length > 1 ? `Whole conversation · ${agents.length - 1} ${agents.length === 2 ? 'sub-agent' : 'sub-agents'}` : 'Whole conversation';
-    return service.createConversation({ key, project, title, agents: agents.map(({ key, title, depth, parent, review }) => ({ key, title, depth, parent, review })), branches, warnings });
+    const made = await service.createConversation({ key, project, title, agents: agents.map(({ key, title, depth, parent, review }) => ({ key, title, depth, parent, review })), branches, warnings });
+    noteReviewAccount(service.account, made && made.id);
+    return made;
   })();
   conversationReviewsRunning.set(key, work);
   work.finally(() => conversationReviewsRunning.delete(key)).catch(() => {});
@@ -2040,7 +2097,8 @@ async function indexFile(source, relPath, stat) {
     let delegated = null;
     if (isPiSource(source) && relPath.startsWith('--delegated--' + path.sep) && meta.sessionId) {
       try {
-        const task = await delegationLib.getDelegation(meta.sessionId, { root: DELEGATION_ROOT });
+        // A person's worker is in their records, asked of their process.
+        const task = await delegationRecords(accountOfSource(source)).get(meta.sessionId);
         if (path.resolve(task.sessionPath) === path.resolve(absPath)) delegated = task;
       } catch {}
     }
@@ -3794,9 +3852,11 @@ function toolResultTail(result) {
 }
 
 // Bounded list of extension notices on a run card (errors, notify, ...).
+// A notice may carry a link to open (a plug-in's sign-in page, design/108):
+// long enough to keep it whole.
 function addRunNotice(job, text) {
   job.notices = job.notices || [];
-  job.notices.push(String(text).slice(0, 400));
+  job.notices.push(String(text).slice(0, 4000));
   if (job.notices.length > 20) job.notices.splice(0, job.notices.length - 20);
 }
 
@@ -3988,7 +4048,7 @@ function runEventForwarder(job) {
           if (!(Number(event.timeout) > 0 && Number(event.timeout) <= 60000)) pushQuestion(job.fanoutRootKey || job.key, String(event.title || event.message || '').slice(0, 300), job.askedBy);
         } else if (event.method === 'notify') {
           const mark = event.notifyType === 'error' ? '✗ ' : event.notifyType === 'warning' ? '⚠ ' : 'ℹ ';
-          addRunNotice(job, mark + String(event.message || '').slice(0, 300));
+          addRunNotice(job, mark + String(event.message || '').slice(0, 4000));
         } else if (event.method === 'setStatus') {
           job.extStatus = job.extStatus || {};
           if (event.statusText) job.extStatus[event.statusKey || ''] = String(event.statusText).slice(0, 120);
@@ -4077,8 +4137,8 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
   // A person now drives a stopped worker's conversation. Record it: the parent
   // sees it, and no worker restarts on this session afterwards.
   if (delegatedOwner && !customMessage) {
-    await delegationLib.markDelegationTakeover(delegatedOwner.id, { model: provider && modelId ? provider + '/' + modelId : null }, { root: DELEGATION_ROOT });
-    delegationCoordinator.refresh().catch(() => {});
+    await delegationRecords(delegatedOwner.account || null).takeover(delegatedOwner.id, { model: provider && modelId ? provider + '/' + modelId : null });
+    delegationCoordinatorOf(delegatedOwner.account || null).refresh().catch(() => {});
   }
   const contextItems = context !== undefined ? normalizeContextItems(context) : conversationContextOf(key);
   if (context !== undefined) saveConversationContext(key, contextItems);
@@ -4174,7 +4234,7 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
       if (['delegation-complete', 'delegation-attention'].includes(customMessage?.customType)) {
         // Recheck under the mutation lock: the branch can change between
         // the coordinator's inspection and this queued operation.
-        const state = await inspectDeliverySession(sessionPath);
+        const state = await inspectDeliverySession(sessionPath, { open: openTranscriptStream });
         if (state.deliveries.has(customMessage.details.deliveryId)) return await finish('done', 'callback already delivered');
         if (customMessage.details.parentEntryIds.some(id => id && !state.branch.has(id))) {
           throw new Error('The callback launch point is no longer on the active branch.');
@@ -4220,7 +4280,8 @@ async function startAgentRun(key, { node, provider, modelId, message, images, fo
       if (findRunningConversation(key)) throw new Error('A terminal now owns this conversation.');
       if (record.yielded) return await finish('done', 'stopped — ' + record.yielded);
       // Identity belongs to this session, not to the returned child or host process.
-      const sessionEnv = owner ? { PI_DELEGATION_ID: owner.id, PI_DELEGATION_ROOT: DELEGATION_ROOT } : {};
+      // A person's worker: their records are their Pi's own default folder.
+      const sessionEnv = owner ? { PI_DELEGATION_ID: owner.id, ...(owner.account ? {} : { PI_DELEGATION_ROOT: DELEGATION_ROOT }) } : {};
       // Existing warm sessions may have been opened without delegation identity.
       if (owner) pisdk.stopWarmSession(sessionPath);
       record.launchStarted = true;
@@ -4290,18 +4351,92 @@ if (typeof pisdk.setAutonomousRunHandler === 'function') pisdk.setAutonomousRunH
   return forward;
 });
 
+// ---- whose delegated work (design/108) ----
+// This server's agents record delegated workers in DELEGATION_ROOT. A person
+// on their own account: their own Pi records them in their own folder, and
+// their workers run as them; everything about them is asked of their
+// process. account null: this server's.
+function delegationRecords(account = null) {
+  if (!account) return {
+    account: null,
+    list: (opts = {}) => delegationLib.listDelegations({ ...opts, root: DELEGATION_ROOT }),
+    get: id => delegationLib.getDelegation(id, { root: DELEGATION_ROOT }),
+    control: (id, action) => delegationLib.controlDelegation(id, action, { root: DELEGATION_ROOT }),
+    takeover: (id, details) => delegationLib.markDelegationTakeover(id, details, { root: DELEGATION_ROOT }),
+    resume: (id, spec) => delegationLib.resumeDelegation(id, spec, { root: DELEGATION_ROOT, env: { ...agentEnv(), ...agentCallerEnv(null) } }),
+    readPart: async (file, limit, tail = false) => {
+      const root = await fsp.realpath(DELEGATION_ROOT);
+      const resolved = await fsp.realpath(file);
+      const rel = path.relative(root, resolved);
+      if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) throw new Error('Delegation detail is outside its record directory.');
+      const handle = await fsp.open(resolved, 'r');
+      try {
+        const size = (await handle.stat()).size, length = Math.min(size, limit), buf = Buffer.alloc(length);
+        const { bytesRead } = await handle.read(buf, 0, length, tail ? Math.max(0, size - length) : 0);
+        return { text: buf.subarray(0, bytesRead).toString('utf8'), truncated: size > limit };
+      } finally { await handle.close(); }
+    },
+    lastActivity: async files => Math.max(0, ...await Promise.all(files.map(f => fileMtimeMs(f)))),
+    logTail: file => activityWatch.readTail(file),
+    here: p => p,
+  };
+  const person = personWithAccount(account);
+  if (!person) throw Object.assign(new Error('no one here is linked to the account ' + account), { status: 404 });
+  const op = (name, ...args) => filesOfPerson(person).host.call('op', name, ...args);
+  // Their records name paths as their Pi sees them (their home); this
+  // server reads the same files in their people folder.
+  const here = p => personPathHere(account, p);
+  const fix = t => t && ({ ...t, sessionPath: here(t.sessionPath), parentSessionPath: here(t.parentSessionPath), account });
+  return {
+    account,
+    list: async (opts = {}) => (await op('delegation.list', opts)).map(fix),
+    get: async id => fix(await op('delegation.get', id)),
+    control: (id, action) => op('delegation.control', id, action),
+    takeover: (id, details) => op('delegation.takeover', id, details),
+    resume: async (id, spec) => fix(await op('delegation.resume', id, spec)),
+    readPart: (file, limit, tail = false) => op('delegation.readPart', file, limit, tail),
+    lastActivity: files => op('delegation.lastActivity', files),
+    logTail: file => op('delegation.logTail', file),
+    here,
+  };
+}
+// A path a person's Pi recorded (in their home: their Pi folder's sessions,
+// which is a link to their people folder), as this server reads it.
+function personPathHere(account, p) {
+  if (typeof p !== 'string' || !p) return p;
+  const person = personWithAccount(account);
+  let home = null;
+  try { home = person ? accountManager.wallsFor(person).account.home : null; } catch {}
+  home = home || path.join('/home', account);
+  const root = path.join(PEOPLE_DIR, account, 'sessions');
+  for (const via of [path.join(home, '.pi', 'agent', 'sessions'), path.join(home, '.local', 'state', 'chattering', 'pi-agent', 'sessions')]) {
+    if (p === via || p.startsWith(via + path.sep)) return root + p.slice(via.length);
+  }
+  return accountsLib.agentPathInRoot({ name: account, home }, 'pi', p, PEOPLE_DIR) || p;
+}
+// The account whose delegated work a conversation file can be part of.
+const delegationAccountOfFile = file => { const src = sourceOfPath(path.resolve(String(file || ''))); return src && isPiSource(src) ? accountOfSource(src) : null; };
+// Whose delegated work a requester sees and controls: their own account's,
+// else this server's (the owner, the household).
+function delegationAccountOf(identity) {
+  if (!identity || policy.isOwnerTier(identity)) return null;
+  const mine = ownFilesOf(identity);
+  return mine ? mine.account : null;
+}
 // Continue a stopped worker on its own session. The host checks that nothing
 // else drives that conversation right now; the library checks the record.
-async function resumeDelegationFromHost(id, spec) {
-  const stored = await delegationLib.getDelegation(id, { root: DELEGATION_ROOT });
+async function resumeDelegationFromHost(id, spec, account = null) {
+  const records = delegationRecords(account);
+  const stored = await records.get(id);
   const file = path.resolve(stored.sessionPath);
   if (headlessRuns.has(file) || headlessOwner(file)) throw new Error('This conversation is working right now. Wait for it to stop.');
   const key = delegationSessionKey(file);
   if (key && findRunningConversation(key)) throw new Error('A terminal owns this conversation. Close it before the worker continues.');
   assertNotGuest(currentIdentity(), 'Resuming a delegated worker');
-  const task = await delegationLib.resumeDelegation(id, spec, { root: DELEGATION_ROOT, env: { ...agentEnv(), ...agentCallerEnv(null) } });
-  await delegationCoordinator.forget(id);
-  await delegationCoordinator.refresh();
+  const task = await records.resume(id, spec);
+  const coordinator = delegationCoordinatorOf(account);
+  await coordinator.forget(id);
+  await coordinator.refresh();
   return task;
 }
 async function assertDelegationOwnership(file) {
@@ -4314,8 +4449,9 @@ async function assertDelegationOwnership(file) {
 
 async function assertDelegationLaunch(file, message) {
   if (['delegation-complete', 'delegation-attention'].includes(message?.customType)) {
+    const records = delegationRecords(delegationAccountOfFile(file));
     for (const id of message.details.taskIds) {
-      const task = await delegationLib.getDelegation(id, { root: DELEGATION_ROOT });
+      const task = await records.get(id);
       if (task.cancelRequested || task.status === 'cancelled' || task.paused) {
         throw new Error('Delegation callback was cancelled or paused.');
       }
@@ -4335,7 +4471,7 @@ async function abortCancelledDelegationRuns() {
     let cancelled = owner && (owner.cancelRequested || owner.status === 'cancelled');
     if (!record.launchStarted) {
       for (const id of record.callbackTaskIds || []) {
-        const task = await delegationLib.getDelegation(id, { root: DELEGATION_ROOT });
+        const task = await delegationRecords(delegationAccountOfFile(file)).get(id);
         cancelled ||= task.cancelRequested || task.status === 'cancelled';
       }
     }
@@ -4353,9 +4489,9 @@ async function delegationOwnerForFile(file) {
   const match = path.basename(file).match(/_([0-9a-f-]{36})\.jsonl$/);
   if (!match) return null;
   try {
-    const task = await delegationLib.getDelegation(match[1], { root: DELEGATION_ROOT });
+    const task = await delegationRecords(delegationAccountOfFile(file)).get(match[1]);
     return path.resolve(task.sessionPath) === path.resolve(file) ? task : null;
-  } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+  } catch (e) { if (e.code === 'ENOENT' || /ENOENT|no such file/i.test(e.message)) return null; throw e; }
 }
 function delegationSessionKey(file) {
   if (!file) return null;
@@ -4440,6 +4576,55 @@ async function delegationParentReach(parent) {
   if (headlessRuns.has(parent)) return 'busy';
   return 'ready';
 }
+// One coordinator per account whose agents delegate (design/108): a
+// person's workers report back to their own conversations, as them. Its
+// bookkeeping (what was delivered, what went quiet) is this server's own,
+// kept apart per account; the work itself is asked of their process.
+const delegationCoordinators = new Map(); // account → coordinator
+function delegationCoordinatorOf(account = null) {
+  if (!account) return delegationCoordinator;
+  let c = delegationCoordinators.get(account);
+  if (c) return c;
+  const records = delegationRecords(account);
+  c = createDelegationCoordinator({
+    // hub-own: the coordinator's records of what it delivered for this account
+    root: path.join(DATA_DIR, 'people-delegations', account),
+    list: () => records.list(),
+    listAll: () => records.list({ all: true }),
+    decorate: delegationView,
+    reach: delegationParentReach,
+    inspectSession: file => inspectDeliverySession(file, { open: openTranscriptStream }),
+    deliver: async (parent, customMessage) => {
+      const key = delegationSessionKey(parent);
+      if (!key) throw new Error('Parent conversation is not indexed.');
+      const job = await startAgentRun(key, { message: customMessage.customType === 'delegation-attention' ? 'Look at quiet delegated work' : 'Review returned delegated work', customMessage });
+      await headlessRuns.get(parent)?.completion;
+      if (job.status === 'error') throw new Error(job.error || job.statusText);
+    },
+    activityOf: async task => { const last = await records.lastActivity([task.logPath, task.sessionPath].filter(Boolean)); return last > 0 ? { lastActivityAt: last } : null; },
+    reportOf: async (task, facts) => {
+      const tail = await records.logTail(task.logPath).catch(() => []);
+      return activityWatch.describeQuiet({ title: task.title, id: task.id, quietMs: facts.quietMs, openTools: activityWatch.openToolsFromEvents(tail),
+        processes: task.workerAlive ? quietProcesses(task.pid) : null, log: task.logPath, session: task.sessionPath });
+    },
+    quietMs: quietThresholdMs,
+    onQuiet: ({ task, level, quietMs, report }) => { const view = delegationView(task); announceQuiet({ key: view.key || view.parentKey, title: task.title, text: report, quietMs, level }); },
+    onChange: snapshot => broadcast({ type: 'delegation-update', revision: snapshot.revision, account }),
+  });
+  delegationCoordinators.set(account, c);
+  return c;
+}
+// A conversation file as a text stream: a person's, opened only if theirs.
+async function openTranscriptStream(file) {
+  const owner = ownerOfTranscript(file);
+  return owner ? (await asDeclared(file, () => accountsLib.openOwned(file, owner))).fh.createReadStream({ encoding: 'utf8' }) : fs.createReadStream(file, { encoding: 'utf8' });
+}
+// The accounts whose workers are watched: every person ready on their own.
+function delegatingAccounts() {
+  const out = [];
+  for (const u of roster.users) { const acct = ownAccountOf(u); if (acct && accountManager.publicState(u).status === 'ready') out.push(acct); }
+  return out;
+}
 const delegationCoordinator = createDelegationCoordinator({
   root: DELEGATION_ROOT,
   list: () => delegationLib.listDelegations({ root: DELEGATION_ROOT, includeSessionPaths: [...headlessRuns.keys()] }),
@@ -4507,32 +4692,26 @@ function watchQuietRuns() {
     announceQuiet({ key, title, quietMs: Date.now() - since, level, text });
   }
 }
-let delegationTimer = null, quietRunsAt = 0;
+let delegationTimer = null, quietRunsAt = 0, peopleDelegationsAt = 0;
 function startDelegationMonitor() {
   if (delegationTimer) return;
   const tick = () => abortCancelledDelegationRuns().then(() => {
     // Minutes-scale thresholds: every 15 s is precise enough, and cheap.
     if (Date.now() - quietRunsAt >= 15000) { quietRunsAt = Date.now(); watchQuietRuns(); }
-    if (process.env.CHATTERING_DISABLE_DELEGATION_CALLBACKS !== '1') return delegationCoordinator.processPending();
+    if (process.env.CHATTERING_DISABLE_DELEGATION_CALLBACKS !== '1') return delegationCoordinator.processPending().then(() => {
+      // People's workers (their process answers): every ten seconds.
+      if (Date.now() - peopleDelegationsAt < 10000) return;
+      peopleDelegationsAt = Date.now();
+      return Promise.all(delegatingAccounts().map(a => delegationCoordinatorOf(a).processPending().catch(e => console.error('[delegation] ' + a + ': ' + e.message))));
+    });
   }).catch(e => console.error('[delegation]', e.message));
   tick(); delegationTimer = setInterval(tick, 2000); delegationTimer.unref();
 }
-async function delegationDetail(id) {
-  const stored = await delegationLib.getDelegation(id, { root: DELEGATION_ROOT });
-  const task = (await delegationCoordinator.refresh()).tasks.find(t => t.id === id) || delegationView(stored);
-  const root = await fsp.realpath(DELEGATION_ROOT);
-  const readPart = async (file, limit, tail = false) => {
-    if (!file) return { text: '', truncated: false };
-    const resolved = await fsp.realpath(file);
-    const rel = path.relative(root, resolved);
-    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) throw new Error('Delegation detail is outside its record directory.');
-    const handle = await fsp.open(resolved, 'r');
-    try {
-      const size = (await handle.stat()).size, length = Math.min(size, limit), buf = Buffer.alloc(length);
-      const { bytesRead } = await handle.read(buf, 0, length, tail ? Math.max(0, size - length) : 0);
-      return { text: buf.subarray(0, bytesRead).toString('utf8'), truncated: size > limit };
-    } finally { await handle.close(); }
-  };
+async function delegationDetail(id, account = null) {
+  const records = delegationRecords(account);
+  const stored = await records.get(id);
+  const task = (await delegationCoordinatorOf(account).refresh()).tasks.find(t => t.id === id) || delegationView(stored);
+  const readPart = async (file, limit, tail = false) => file ? records.readPart(file, limit, tail) : { text: '', truncated: false };
   const log = await readPart(task.logPath, 24000, true).catch(e => ({ text: e.message, truncated: false }));
   const prompt = await readPart(task.promptPath, 128000);
   const mode = await readPart(task.modePath, 128000);
@@ -4609,7 +4788,7 @@ async function reintegrateFanout(rootKey, fanoutId) {
   // orphan callbacks and parent links. Comparison/merge views still use the
   // existing indexed fork family. These files are no longer disposable.
   const forkPaths = new Set(forks.map(([k]) => path.resolve(absPathForKey(k))));
-  const assignments = await delegationLib.listDelegations({ root: DELEGATION_ROOT, all: true });
+  const assignments = await delegationRecords(delegationAccountOfFile(rootPath)).list({ all: true });
   if (assignments.some(t => forkPaths.has(path.resolve(t.parentSessionPath)))) {
     broadcast({ type: 'fanout-retained', key: rootKey, fanoutId });
     return false;
@@ -9121,6 +9300,19 @@ function programLog() {
   if (!programIndex) programIndex = programsLib.createProgramIndex({ folder: platform.functaiCallsDir(), dbFile: PROGRAMS_DB_FILE, projectOfPath, host: HOST_NAME });
   return programIndex;
 }
+// What a requester reads of the log: a person on their own account, only
+// the calls made for them (design/108); everyone else, the whole log.
+function programLogFor(identity) {
+  const log = programLog();
+  return identity && !policy.isOwnerTier(identity) && ownFilesOf(identity) ? log.scoped(programRater(identity)) : log;
+}
+// The made programs a requester sees: on their own account, the ones they
+// made or may work on (their project's).
+function madeProgramVisible(identity, entry) {
+  if (!identity || policy.isOwnerTier(identity) || !ownFilesOf(identity)) return true;
+  if (entry.by === identity.user.id) return true;
+  return !!entry.project && canDo(identity, 'act', { project: entry.project, creator: projectCreatorOf(entry.project) });
+}
 // Who a rating is by: a person, not an account (the contract). The owner is
 // this account's own person and is named as FunctAI names them in their own
 // notebooks and scripts (the system user), so their ratings from Python,
@@ -9150,13 +9342,13 @@ function rowsCsv(rows) {
   return [cols.map(cell).join(','), ...rows.map(r => cols.map(c => cell(r[c])).join(','))].join('\r\n') + '\r\n';
 }
 function programRoute(u, req, res, identity) {
-  const log = programLog(), at = u.pathname;
+  const log = programLogFor(identity), at = u.pathname;
   const q = Object.fromEntries(u.searchParams);
   log.refresh();
   const name = String(q.name || ''), module = String(q.module ?? '');
   if (at === '/api/programs') {
     return json(res, 200, { folder: log.folder, exists: fs.existsSync(log.folder), seq: log.seq, recordAgents: appSettings.programsRecordAgents === true,
-      you: programRater(identity), programs: withMadePrograms(log.programs()) });
+      you: programRater(identity), programs: withMadePrograms(log.programs(), identity) });
   }
   if (at === '/api/programs/program') {
     const made = module === MADE_MODULE && madePrograms.get(name);
@@ -9212,8 +9404,8 @@ function madeSummary(entry, fromLog) {
       choices: answer.shape.enum || null } : {}),
   };
 }
-function withMadePrograms(list) {
-  const made = new Map(madePrograms.list().map(e => [e.name, e]));
+function withMadePrograms(list, identity = null) {
+  const made = new Map(madePrograms.list().filter(e => madeProgramVisible(identity, e)).map(e => [e.name, e]));
   const out = list.map(p => (p.module === MADE_MODULE && made.has(p.name) ? madeSummary(made.get(p.name), p) : p));
   for (const e of made.values()) if (!list.some(p => p.module === MADE_MODULE && p.name === e.name)) out.push(madeSummary(e, null));
   return out.sort((a, b) => String(b.last).localeCompare(String(a.last)));
@@ -9340,7 +9532,19 @@ const madeKeyLimiter = programsDeploy.createLimiter({ perMinute: 60, atOnce: 4 }
 const MADE_MODULE = require('./ai-programs.js').MADE_MODULE;
 // Where a new program's folder goes: its project's programs/ folder, or this
 // install's own when it belongs to no project.
-function madeFolderFor(project, name) {
+// A call made for a person (a program of theirs, its endpoint, a hotkey, an
+// AI command) is made by their own Pi on their own account (design/108).
+// person: a user or a user id. Null: this server's.
+function ownPrincipalOfPerson(person) {
+  const user = typeof person === 'string' ? usersLib.findUser(roster, person) : person && person.id ? usersLib.findUser(roster, person.id) || person : null;
+  if (!user || !ownAccountOf(user) || policy.isOwnerTier({ tier: user.role, user })) return null;
+  try { const p = principalFor({ user }); return principalAccount(p) ? p : null; } catch { return null; }
+}
+// identity: who makes it. A person on their own account keeps the program in
+// Chattering's own folder, not their project's: this server writes it, and
+// must not write into their home (design/108).
+function madeFolderFor(project, name, identity = null) {
+  if (identity && !policy.isOwnerTier(identity) && ownFilesOf(identity)) return path.join(MADE_DIR, 'made', name);
   const meta = project && project !== LOOSE_PROJECT ? projectMetaFor(project) : null;
   if (project && project !== LOOSE_PROJECT && !(meta && meta.cwd)) throw Object.assign(new Error('The project ' + project + ' has no folder here.'), { status: 400 });
   return meta ? path.join(meta.cwd, 'programs', name) : path.join(MADE_DIR, 'made', name);
@@ -9379,6 +9583,7 @@ const madeUrl = name => (PUBLIC_URL ? PUBLIC_URL.replace(/\/+$/, '') : '') + '/p
 function assertMadeAccess(identity, name) {
   const entry = madePrograms.get(name);
   if (!entry) throw Object.assign(new Error('No program named ' + name + ' was made here.'), { status: 404 });
+  if (!madeProgramVisible(identity, entry)) throw Object.assign(new Error('No program named ' + name + ' was made here.'), { status: 404 });
   if (entry.project) assertCan(identity, 'act', { project: entry.project, creator: projectCreatorOf(entry.project) }, 'project ' + entry.project);
   return entry;
 }
@@ -9404,8 +9609,9 @@ async function madeView(name, identity) {
 // model of settings → model, the person the call is for (usage and budget),
 // a time limit, a stop signal.
 // A hotkey (design/93) may name its own model, thinking level and circuit.
-function madeCall(definition, inputs, { person, caller = {}, signal = null, onEvent = null, timeoutMs = 3 * 60 * 1000, purpose, model, thinking, health }) {
-  const ctx = { automatic: false, timeoutMs, signal, purpose: purpose || 'program:' + definition.name, person: person ? person.id : null };
+function madeCall(definition, inputs, { person, caller = {}, signal = null, onEvent = null, timeoutMs = 3 * 60 * 1000, purpose, model, thinking, health, principal = null }) {
+  principal = principal || ownPrincipalOfPerson(person);
+  const ctx = { automatic: false, timeoutMs, signal, purpose: purpose || 'program:' + definition.name, person: person ? person.id : null, ...(principal ? { principal } : {}) };
   if (model && model.provider && model.model) ctx.model = { provider: model.provider, model: model.model };
   if (thinking) ctx.thinking = thinking;
   if (health) ctx.health = health;
@@ -9843,22 +10049,32 @@ async function piExec({ system, input, signal: ownSignal = null, onDelta = null,
   // A call may go to another model than the settings one (ctx.model:
   // { provider, model }), with its own health (ctx.health): that model
   // failing must not pause notes and memory, nor the other way round.
-  const health = ctx.health || memoryModelHealth;
-  const own = ctx.model && ctx.model.provider && ctx.model.model ? ctx.model : null;
-  const tmp = path.join(os.tmpdir(), 'chattering-system-' + process.pid + '-' + Math.random().toString(36).slice(2) + '.md');
-  fs.writeFileSync(tmp, String(system || ''), { mode: 0o600 });
+  // A person on their own account (design/108): the call is theirs, made by
+  // their own Pi, as them, with their models (their last pick, else their Pi
+  // default), never this server's settings model; on a circuit of their own.
+  const runAs = principalAccount(ctx.principal) ? ctx.principal : null;
+  const health = ctx.health || (runAs ? personModelHealth(runAs.walls.account.name) : memoryModelHealth);
+  const own = ctx.model && ctx.model.provider && ctx.model.model ? ctx.model : runAs ? personModelPick(runAs) : null;
+  // The system prompt as a file only the caller reads (a command line is
+  // seen by everyone, and sudo logs it): theirs is written by their host.
+  const tmp = runAs ? path.join(runAs.walls.account.home, '.cache', 'chattering', 'tmp', 'system-' + crypto.randomBytes(8).toString('hex') + '.md')
+    : path.join(os.tmpdir(), 'chattering-system-' + process.pid + '-' + Math.random().toString(36).slice(2) + '.md');
+  const host = runAs ? accountManager.hostFor(usersLib.findUser(roster, runAs.user.id) || runAs.user) : null;
+  if (host) await host.call('write', tmp, String(system || ''), { mkdirs: true, mode: 0o600 });
+  else fs.writeFileSync(tmp, String(system || ''), { mode: 0o600 });
   let permit = null;
   let carry = '';
   try {
-    health.setIdentity(own ? own.provider + '/' + own.model : currentModelLabel());
+    health.setIdentity(own ? own.provider + '/' + own.model : runAs ? 'pi default (' + runAs.walls.account.name + ')' : currentModelLabel());
     permit = health.begin({ automatic });
-    const overrides = { ...(ctx.thinking ? { thinking: ctx.thinking } : {}), ...(own ? { usePiDefault: false, provider: own.provider, model: own.model } : {}) };
+    const overrides = { ...(ctx.thinking ? { thinking: ctx.thinking } : {}), ...(own ? { usePiDefault: false, provider: own.provider, model: own.model } : runAs ? { usePiDefault: true } : {}) };
     const pi = runtimeLib.piCommand([...piArgs(Object.keys(overrides).length ? overrides : null), '--mode', 'json', '--system-prompt', tmp]);
+    const launched = runAs ? runAs.walls.launch(pi.file, pi.args, { cwd: runAs.walls.account.home }) : null;
     const result = await execFileWithActivityTimeout(
       execFile,
-      pi.file,
-      pi.args,
-      { maxBuffer: 64 * 1024 * 1024, timeout: ctx.timeoutMs || 1800000, ...(signal ? { signal } : {}) },
+      launched ? launched.file : pi.file,
+      launched ? launched.args : pi.args,
+      { maxBuffer: 64 * 1024 * 1024, timeout: ctx.timeoutMs || 1800000, ...(signal ? { signal } : {}), ...(launched ? { env: launched.env, cwd: '/' } : {}) },
       {
         activityTimeoutMs: MODEL_ACTIVITY_TIMEOUT_MS,
         onChild: child => child.stdin.end(String(input || '')), // the user message
@@ -9895,7 +10111,7 @@ async function piExec({ system, input, signal: ownSignal = null, onDelta = null,
         ...(ctx.purpose ? { chatteringPurpose: String(ctx.purpose) } : {}),
         // The person the call is for, when one is (a made program's endpoint):
         // their usage, and their budget, rather than background work.
-        ...(ctx.person ? { chatteringPerson: String(ctx.person) } : {}),
+        ...(ctx.person || runAs ? { chatteringPerson: String(ctx.person || runAs.user.id) } : {}),
         message: { ...finalMessage, content: [] },
       };
       try { fs.appendFileSync(INTERNAL_USAGE_FILE, JSON.stringify(record) + '\n', { mode: 0o600 }); } catch {}
@@ -9917,8 +10133,36 @@ async function piExec({ system, input, signal: ownSignal = null, onDelta = null,
     wrapped.modelCallFailure = true;
     throw wrapped;
   } finally {
-    fsp.unlink(tmp).catch(() => {});
+    if (host) host.call('rm', tmp).catch(() => {});
+    else fsp.unlink(tmp).catch(() => {});
   }
+}
+// The model a person's own calls use: their last pick (a model of theirs,
+// not a Claude subscription of the owner's), else null for their Pi default.
+function personModelPick(principal) {
+  const pick = normalizePickedModels(modelPrefs.last[modelPickUserId(principal)]?.models)[0];
+  if (!pick || claudeAccountsLib.accountOfProvider(pick.provider) && claudeAccountsLib.accountOfProvider(pick.provider) !== 'default') return null;
+  return { provider: pick.provider, model: pick.modelId };
+}
+// What a person's calls are said to answer with.
+function modelLabelFor(identity) {
+  let principal = null;
+  try { principal = identity && identity.user ? principalFor(identity) : null; } catch {}
+  if (!principalAccount(principal)) return currentModelLabel();
+  const pick = personModelPick(principal);
+  return pick ? pick.provider + '/' + pick.model : 'your Pi default';
+}
+// The principal one-off model calls run as for this requester: theirs on
+// their own account, else this server's (null).
+function callPrincipalFor(identity) {
+  let principal = null;
+  try { principal = identity && identity.user ? principalFor(identity) : null; } catch { return null; }
+  return principalAccount(principal) ? principal : null;
+}
+const personModelHealths = new Map(); // account → its circuit
+function personModelHealth(account) {
+  if (!personModelHealths.has(account)) personModelHealths.set(account, createModelHealth({ baseCooldownMs: 60 * 1000 }));
+  return personModelHealths.get(account);
 }
 
 // Chattering's own AI programs (ai-programs.js, design/74): FunctAI
@@ -9945,12 +10189,14 @@ const aiPrograms = require('./ai-programs.js').createAiPrograms({
 // Run one of them within this call's context. `caller` goes to the log
 // (a conversation key, a project, the person); the rest is the context
 // piExec reads. Resolves with { outputs, callId, response }.
-function aiProgram(name, inputs, { automatic, background, purpose, thinking, timeoutMs, signal, person, model, health, caller = {}, onText = null, onEvent = null } = {}) {
+function aiProgram(name, inputs, { automatic, background, purpose, thinking, timeoutMs, signal, person, model, health, principal, caller = {}, onText = null, onEvent = null } = {}) {
   const inherited = modelCallContext.getStore() || {};
   const ctx = { ...inherited };
   // person: the id of whoever the call is for (usage and budget), when a person asked for it.
   // model, health: another model than the settings one, and its own circuit (piExec).
-  for (const [k, v] of Object.entries({ automatic, background, thinking, timeoutMs, signal, person, model, health })) if (v !== undefined) ctx[k] = v;
+  // principal: a person on their own account, whose Pi makes the call (piExec).
+  if (principal === undefined && person) principal = ownPrincipalOfPerson(person) || undefined;
+  for (const [k, v] of Object.entries({ automatic, background, thinking, timeoutMs, signal, person, model, health, principal })) if (v !== undefined) ctx[k] = v;
   ctx.purpose = purpose || name;
   const who = { ...caller };
   for (const [k, v] of Object.entries(who)) if (v === undefined || v === null || v === '') delete who[k];
@@ -13789,6 +14035,36 @@ async function sendToConversation(key, payload, principal = null) {
   return { ok: true, sent: true, via: 'xdotool', images: files.length, files, chars: text.length, ...opened };
 }
 
+// A person on their own account (design/108): their marked page is kept in
+// their home (by their process) and goes to their conversation as a message
+// with the picture: no terminal opens on this computer's screen.
+async function sendFileFeedbackAs(principal, key, entry, body, b64, identity) {
+  assertCan(identity, 'act', targetOf(key), 'this conversation');
+  assertRunsHere(key, principal, 'send feedback to it');
+  const mine = filesOfPerson(usersLib.findUser(roster, principal.user.id) || principal.user);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const dir = path.join(mine.home, '.cache', 'chattering', 'feedback');
+  const pngPath = path.join(dir, stamp + '.png'), mdPath = path.join(dir, stamp + '.md');
+  const rel = body.relativePath || body.path || 'file';
+  await mine.host.call('write', pngPath, Buffer.from(b64, 'base64'), { mkdirs: true, mode: 0o600 });
+  await mine.host.call('write', mdPath, ['# Inked file feedback', '', `- File: ${body.path || rel}`, `- Lines: ${body.fromLine || '?'}–${body.toLine || '?'}`, `- Page: ${body.page || 1}/${body.pages || 1}`, `- Image: ${pngPath}`, `- Conversation: ${key}`, '', 'The red ink is the user\'s requested edit. Apply those marks to the file.', ''].join('\n'), { mode: 0o600 });
+  const prompt = `The attached picture (also at ${pngPath}) is requested file feedback for ${rel} lines ${body.fromLine}–${body.toLine} (page ${body.page}/${body.pages}): the red ink is the edit to make. Apply those edits.`;
+  const kind = conversationKind(entry);
+  if (kind === 'codex' && (entry.importCopyOf || (entry.codex && entry.codex.imported))) throw new Error('This is a text-only copy Codex imported from another agent. Send the feedback to the original.');
+  if (kind === 'pi' || kind === 'codex') {
+    const job = await startAgentRun(key, { message: prompt, images: rpcImagesOf([{ data: b64, mimeType: 'image/png' }]), principal, allowQueue: true });
+    return { ok: true, launched: true, via: 'run', pngPath, mdPath, job: job && job.id ? jobView(job) : null };
+  }
+  if (kind === 'claude') {
+    // Claude Code continues only in its own program: the message goes there,
+    // naming the picture in their home.
+    await liveStartExisting(key, identity);
+    liveChooses(key, 'program');
+    await liveTerminals().send(key, `Read the picture ${pngPath}. ` + prompt);
+    return { ok: true, launched: true, via: 'program', pngPath, mdPath };
+  }
+  throw new Error('This conversation cannot take file feedback.');
+}
 async function sendFileFeedback(body, identity = null) {
   const key = body.key || '';
   const entry = index[key];
@@ -13798,6 +14074,8 @@ async function sendFileFeedback(body, identity = null) {
   const image = String(body.image || '');
   const match = image.match(/^data:image\/png;base64,(.+)$/);
   if (!match) throw new Error('image must be a PNG data URL');
+  const principal = callPrincipalFor(identity);
+  if (principal) return sendFileFeedbackAs(principal, key, entry, body, match[1], identity);
   const dir = path.join(CACHE_DIR, 'feedback');
   await fsp.mkdir(dir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -16629,6 +16907,17 @@ function transcriptPathCandidates(key, pathValue) {
   return bases.map(base => path.resolve(path.join(base, expanded)));
 }
 
+// A reviewed file a person on their own account opens or saves from their
+// review (design/108): the exact file their review verified, found by their
+// own store; null for a review that names none (look the path up instead).
+async function reviewFileAs(mine, reviewId, pathValue) {
+  const store = reviewStoreForId(reviewId);
+  if (store.account !== mine.account) throw Object.assign(new Error('This review is of work done on another account.'), { status: 403 });
+  if ((await store.get(reviewId)).schema !== 2) return null;
+  const file = await store.localFile(reviewId, path.resolve(accountFiles.expandHome(mine.home, String(pathValue || ''))));
+  if (file.size > FILE_EDIT_MAX || file.mediaType) throw Error('This artifact cannot be edited as text');
+  return file.path;
+}
 async function editableReviewFile(pathValue, reviewId) {
   if (reviewId && reviewServices().get(reviewId).schema === 2) {
     // A verified file identity is exact; do not reinterpret a literal ':123'
@@ -17066,7 +17355,7 @@ async function fileSaveAs(mine, abs, body, user) {
 async function docSaveAs(mine, abs, body, user) {
   if (typeof body.text !== 'string') throw new Error('missing text');
   if (!DOCUMENT_EXT.test(abs)) throw new Error('only Markdown-family documents (including .mdx) save here');
-  if (body.reviewId) throw Object.assign(new Error('Change reviews are not available yet when you run as your own computer account.'), { status: 403 });
+  // A reviewed file was resolved by the caller (reviewFileAs).
   const text = body.text;
   const saved = await accountFiles.saveText(mine.host, abs, text, { baseSha: body.baseSha || null });
   let historyWarning = '';
@@ -17480,17 +17769,23 @@ loadVouches();
 const activeVouches = () => trustLib.activeRecords(vouchRecords);
 const vouchStatusFor = (absPath, content) => trustLib.statusFor(vouchRecords, absPath, content);
 
-async function vouchApply(body, user = null) {
+// identity: whose disk a path is read from (a person on their own account
+// reads as themselves, design/108); a record is retracted by whoever made
+// it, or the owner tier.
+async function vouchApply(body, user = null, identity = null) {
   const action = body.action === 'dispute' ? 'dispute' : body.action === 'retract' ? 'retract' : 'vouch';
+  const io = viewerIo(identity);
   let record;
   if (action === 'retract') {
     if (!body.ref) throw new Error('retract needs the record id in "ref"');
+    const target = vouchRecords.find(r => r.id === String(body.ref));
+    if (identity && !policy.isOwnerTier(identity) && target && target.user && target.user.id !== (user && user.id)) throw Object.assign(new Error('Only the person who vouched can take it back.'), { status: 403 });
     record = { id: crypto.randomUUID(), ts: new Date().toISOString(), action, ref: String(body.ref) };
   } else {
-    const abs = path.resolve(expandHomePath(String(body.path || '')));
+    const abs = path.resolve(io.mine ? accountFiles.expandHome(io.home, String(body.path || '')) : expandHomePath(String(body.path || '')));
     if (!path.isAbsolute(abs)) throw new Error('missing path');
     // The client sends the exact text it displayed; without it, vouch the disk file.
-    let text = typeof body.text === 'string' ? body.text : await fsp.readFile(abs, 'utf8');
+    let text = typeof body.text === 'string' ? body.text : (await io.readFile(abs)).toString('utf8');
     if (text.length > 500000) throw new Error('this block is too large to vouch in one record');
     const range = Array.isArray(body.range) && body.range.length === 2 ? [Number(body.range[0]), Number(body.range[1])] : null;
     record = {
@@ -17510,11 +17805,20 @@ async function vouchApply(body, user = null) {
 }
 
 // One disk-state summary per vouched path: for tree badges and review lists.
-function vouchAllResponse() {
+// A person on their own account (design/108): the vouched files their
+// account can read, read as them.
+async function vouchAllResponse(identity = null) {
   const paths = {};
-  for (const p of new Set(activeVouches().map(r => r.path))) {
+  const mine = identity && !policy.isOwnerTier(identity) ? ownFilesOf(identity) : null;
+  let list = [...new Set(activeVouches().map(r => r.path))];
+  if (mine) {
+    const readable = new Set(await mine.host.call('op', 'fs.readableMany', list));
+    list = list.filter(p => readable.has(p) && canDo(identity, 'see', { project: projectOfPath(p), creator: projectCreatorOf(projectOfPath(p)) }));
+  }
+  for (const p of list) {
     let content = null;
-    try { content = fs.readFileSync(p, 'utf8'); } catch {}
+    if (mine) { try { content = Buffer.from((await mine.host.call('read', p, { start: 0 })).data).toString('utf8'); } catch {} }
+    else try { content = fs.readFileSync(p, 'utf8'); } catch {}
     if (content === null) { paths[p] = { state: 'missing', disputed: false, ts: null }; continue; }
     const st = vouchStatusFor(p, content);
     const v = st.records.filter(r => r.action === 'vouch');
@@ -19895,7 +20199,14 @@ async function notebookRootFor(key) {
 // Returns { path, project, title, dropped } — `dropped` names `after`
 // entries the model invented and were removed.
 const derivingNotebooks = new Set();
-async function deriveNotebookFromAnswer(key, entryId) {
+// A person on their own account (design/108): the fork, the derivation and
+// the notebook are theirs: the fork is staged in their home and read by
+// their own Pi worker, the model is theirs, and the notebook is written by
+// their host, as them.
+async function deriveNotebookFromAnswer(key, entryId, identity = null) {
+  const principal = callPrincipalFor(identity);
+  if (principal) assertRunsHere(key, principal, 'make a notebook from it');
+  const mine = principal ? filesOfPerson(usersLib.findUser(roster, principal.user.id) || principal.user) : null;
   const { entry, sessionPath, cwd } = sessionPathsFor(key);
   if (harnessOfSource(entry.source) === 'claude' || harnessOfSource(entry.source) === 'codex') throw new Error('Deriving a notebook needs Pi. ' + (harnessOfSource(entry.source) === 'codex' ? 'Codex' : 'Claude') + ' conversations cannot be replayed here.');
   const lockKey = key + '#' + entryId;
@@ -19905,29 +20216,34 @@ async function deriveNotebookFromAnswer(key, entryId) {
     await assertDelegationOwnership(sessionPath);
     const { project, root } = await notebookRootFor(key);
     const notebooksDir = path.join(root, notebookDerive.NOTEBOOKS_DIR);
-    const existing = notebookDerive.listNotebooks(root, { conversation: key });
+    const existing = mine ? await mine.host.call('op', 'notebook.list', root, { conversation: key }) : notebookDerive.listNotebooks(root, { conversation: key });
     // What the project's environment says about its own packages (rat's
     // doctor on a throwaway probe notebook pinned to this project).
-    const env = await probeProjectPython(root, notebooksDir);
+    const env = await probeProjectPython(root, notebooksDir, mine);
     const prompt = notebookDerive.buildPrompt({ projectRoot: root, notebooksDir, existing, editable: env.editable, projectPackage: env.projectPackage });
     // The same attached context and provider flags as a send from this
     // conversation, so the prepared request matches the real one.
     const contextItems = conversationContextOf(key);
     const ctxBundle = contextItems.length ? await writeAttachedContextFile(contextItems) : null;
-    const extraArgs = [...piProviderExtraArgs(), ...(ctxBundle ? ['--append-system-prompt', ctxBundle.file] : [])];
-    const stage = await fsp.mkdtemp(path.join(os.tmpdir(), 'chattering-derive-'));
+    const extraArgs = [...piProviderExtraArgs(), ...(ctxBundle ? ['--append-system-prompt', principal ? ctxBundle.text : ctxBundle.file] : [])];
+    const stage = mine ? path.join(mine.home, '.cache', 'chattering', 'derive-' + crypto.randomBytes(6).toString('hex'))
+      : await fsp.mkdtemp(path.join(os.tmpdir(), 'chattering-derive-'));
     let result;
     try {
-      const forked = await pisdk.piForkAt({ sessionPath, cwd }, entryId, { dir: stage });
+      const forked = await pisdk.piForkAt({ sessionPath, cwd }, entryId, { dir: stage,
+        ...(mine ? { read: f => readTranscriptText(f), publish: (file, text) => mine.host.call('write', file, text, { exclusive: true, mkdirs: true, mode: 0o600 }) } : {}) });
       assertNotGuest(currentIdentity(), 'Deriving a notebook');
-      result = await pisdk.piDeriveAt({ sessionPath: forked.file, cwd, env: agentEnv(), extraArgs }, { prompt });
+      result = await pisdk.piDeriveAt(principal
+        ? { sessionPath: forked.file, cwd, env: { ...agentEnv(principal), ...agentCallerEnv(principal) }, extraArgs, walls: principal.walls, sessionDir: stage }
+        : { sessionPath: forked.file, cwd, env: agentEnv(), extraArgs }, { prompt });
     } finally {
-      await fsp.rm(stage, { recursive: true, force: true }).catch(() => {});
+      if (mine) await mine.host.call('rm', stage, { recursive: true }).catch(() => {});
+      else await fsp.rm(stage, { recursive: true, force: true }).catch(() => {});
     }
     if (result.usage) {
       // Same ledger as the other no-session model calls, so cost reports see it.
       const record = { type: 'message', id: crypto.randomUUID(), parentId: null, timestamp: new Date(result.timestamp || Date.now()).toISOString(),
-        chatteringCategory: 'internal', chatteringPurpose: 'notebook', message: { role: 'assistant', content: [], usage: result.usage, model: result.model.split('/').slice(1).join('/'), provider: result.model.split('/')[0] } };
+        chatteringCategory: 'internal', chatteringPurpose: 'notebook', ...(principal ? { chatteringPerson: principal.user.id } : {}), message: { role: 'assistant', content: [], usage: result.usage, model: result.model.split('/').slice(1).join('/'), provider: result.model.split('/')[0] } };
       try { fs.appendFileSync(INTERNAL_USAGE_FILE, JSON.stringify(record) + '\n', { mode: 0o600 }); } catch {}
     }
     let text = notebookDerive.shapeReply(result.text);
@@ -19940,22 +20256,23 @@ async function deriveNotebookFromAnswer(key, entryId) {
       // exist would break the chain later, quietly.
       text = text.replace(/^( *after:)[^\n]*\n(?:(?: +- [^\n]*| *)\n)*/m, kept.length ? '$1\n' + kept.map(k => '    - ' + k).join('\n') + '\n' : '');
     }
-    await fsp.mkdir(notebooksDir, { recursive: true });
+    const disk = notebookDisk(mine);
+    await disk.mkdir(notebooksDir);
     const relProject = path.relative(notebooksDir, root) || '.';
     text = notebookDerive.stamp(text, { project: relProject.split(path.sep).join('/'), source: { conversation: key, entry: entryId, model: result.model, created: new Date().toISOString() } });
-    const abs = notebookDerive.freshPath(notebooksDir, notebookDerive.slugFor(title));
     // rat is the authority on the header: validate before publishing.
     const draft = path.join(notebooksDir, '.draft-' + crypto.randomUUID() + '.md');
-    await fsp.writeFile(draft, text, { mode: 0o644 });
+    await disk.write(draft, text);
+    let abs;
     try {
       const rat = ratBinary();
       if (rat.path) {
         const check = await ratExec(['doctor', draft, '--json'], { cwd: notebooksDir, timeoutMs: 60000 });
         if (!check.missing && !ratJson(check.out)) throw new Error('The model wrote a header rat cannot read: ' + check.out.trim().split('\n').at(-1));
       }
-      await platform.renameRetry(draft, abs);
+      abs = await disk.publish(draft, notebooksDir, notebookDerive.slugFor(title));
     } finally {
-      await fsp.rm(draft, { force: true }).catch(() => {});
+      await disk.rm(draft).catch(() => {});
     }
     await recordDocEdit({ ts: Date.now(), path: abs, action: 'create', actor: 'model', input: 'notebook-from-answer', source: { conversation: key, entry: entryId }, added: text.split('\n').length, removed: 0, sha: sha256Hex(text) });
     return { path: abs, project, root, title, dropped, fixed: repaired.fixed, model: result.model };
@@ -19964,16 +20281,42 @@ async function deriveNotebookFromAnswer(key, entryId) {
   }
 }
 
+// Where a derived notebook is written: this server's disk, or a person's
+// through their host, as them. publish: a fresh name (base.md, base-2.md…),
+// never replacing a notebook.
+function notebookDisk(mine) {
+  if (!mine) return {
+    mkdir: dir => fsp.mkdir(dir, { recursive: true }),
+    write: (file, text) => fsp.writeFile(file, text, { mode: 0o644 }),
+    rm: file => fsp.rm(file, { force: true }),
+    publish: async (draft, dir, base) => { const abs = notebookDerive.freshPath(dir, base); await platform.renameRetry(draft, abs); return abs; },
+  };
+  return {
+    mkdir: dir => mine.host.call('mkdir', dir, { recursive: true }),
+    write: (file, text) => mine.host.call('write', file, text, { mode: 0o644 }),
+    rm: file => mine.host.call('rm', file),
+    publish: async (draft, dir, base) => {
+      const text = Buffer.from((await mine.host.call('read', draft)).data).toString('utf8');
+      for (let n = 1; n < 1000; n++) {
+        const abs = path.join(dir, base + (n === 1 ? '' : '-' + n) + '.md');
+        try { await mine.host.call('write', abs, text, { exclusive: true, mode: 0o644 }); return abs; }
+        catch (e) { if (e.code !== 'EEXIST') throw e; }
+      }
+      throw new Error('no free name for the notebook');
+    },
+  };
+}
 // rat doctor on a probe notebook pinned to root: the editable local
 // packages of the project's venv (as "-e" lines) and the root package name.
-async function probeProjectPython(root, notebooksDir) {
+async function probeProjectPython(root, notebooksDir, mine = null) {
   const out = { editable: [], projectPackage: null };
   if (!ratBinary().path) return out;
-  await fsp.mkdir(notebooksDir, { recursive: true });
+  const disk = notebookDisk(mine);
+  await disk.mkdir(notebooksDir);
   const rel = (path.relative(notebooksDir, root) || '.').split(path.sep).join('/');
   const probe = path.join(notebooksDir, '.probe-' + crypto.randomUUID() + '.md');
   try {
-    await fsp.writeFile(probe, '---\nrat:\n  project: ' + rel + '\n---\n```python\npass\n```\n', { mode: 0o600 });
+    await disk.write(probe, '---\nrat:\n  project: ' + rel + '\n---\n```python\npass\n```\n');
     const r = await ratExec(['doctor', probe, '--json'], { cwd: notebooksDir, timeoutMs: 60000 });
     const report = ratJson(r.out);
     if (report) {
@@ -19981,7 +20324,7 @@ async function probeProjectPython(root, notebooksDir) {
       out.projectPackage = report.project_package || null;
     }
   } catch {}
-  finally { await fsp.rm(probe, { force: true }).catch(() => {}); }
+  finally { await disk.rm(probe).catch(() => {}); }
   return out;
 }
 // Voice services, set up in settings → sound (settings.js). The
@@ -22466,87 +22809,155 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/made' && req.method === 'GET') {
       const key = u.searchParams.get('key') || '';
       if (!index[key]) return json(res, 404, { error: 'conversation not found' });
-      try { json(res, 200, await madeSummaries().summary(key)); }
+      try { json(res, 200, await madeSummaryOf(key)); }
       catch (e) { json(res, 500, { error: e.message }); }
     } else if (u.pathname === '/api/reviews' || u.pathname.startsWith('/api/reviews/')) {
+      // Reviews (design/79), kept by the store of the account that ran the
+      // agent (design/108): this server's, or a person's own process.
       try {
-        const service = reviewServices();
         let body = {};
         if (req.method === 'POST') {
           let raw = ''; for await (const chunk of req) { raw += chunk; if (Buffer.byteLength(raw) > 256 * 1024) throw Error('Review request is too large'); }
           body = JSON.parse(raw || '{}');
         }
         const id = body.id || u.searchParams.get('id');
+        // An existing review: its store, and whether this person may open it.
+        const opened = async (reviewId = id, right = 'see') => {
+          const store = reviewStoreForId(reviewId);
+          const review = await store.get(reviewId);
+          assertReviewAccess(identity, store, review.key, right);
+          return { store, review };
+        };
+        // A new review of a conversation: built by its keeper's store.
+        const forKey = (key, right = 'act') => {
+          if (!index[key]) throw Object.assign(new Error('conversation not found'), { status: 404 });
+          const store = reviewStoreForKey(key);
+          assertReviewAccess(identity, store, key, right);
+          return store;
+        };
         if (u.pathname === '/api/reviews' && req.method === 'POST') {
-          json(res, 200, await service.createTask(await reviewInput(String(body.key || ''), body.calls)));
+          const key = String(body.key || ''), store = forKey(key);
+          const made = await store.createTask(await reviewInput(key, body.calls));
+          noteReviewAccount(store.account, made && made.id);
+          json(res, 200, made);
         } else if (u.pathname === '/api/reviews/conversation' && req.method === 'POST') {
-          const review = await conversationReview(String(body.key || ''));
+          const key = String(body.key || '');
+          forKey(key);
+          const review = await conversationReview(key);
           json(res, 200, { id: review.id, title: review.title, files: review.files.length, agents: review.agents.length });
         } else if (u.pathname === '/api/reviews' && req.method === 'GET') {
-          const review = service.get(id);
-          // Where a review can be sent: Pi conversations, and Codex ones for
-          // this machine's own account (not the Codex app's imported copies).
+          const { store, review } = await opened();
+          // Where a review can be sent: Pi conversations, and Codex ones,
+          // that the person may act in and that run as them (not the Codex
+          // app's imported copies).
           const codexOk = !codexRefused(identity);
-          const targets = Object.entries(index).filter(([key, e]) => (conversationKind(e) === 'pi' || (codexOk && conversationKind(e) === 'codex' && !e.importCopyOf && !(e.codex && e.codex.imported))) && projectNameOf(e.cwd, key) === review.project).map(([key, e]) => ({ key, title: e.title || key, harness: conversationKind(e) }));
+          let runner = null; try { runner = principalAccount(principalFor(identity)); } catch {}
+          const targets = Object.entries(index).filter(([key, e]) => (conversationKind(e) === 'pi' || (codexOk && conversationKind(e) === 'codex' && !e.importCopyOf && !(e.codex && e.codex.imported))) && projectNameOf(e.cwd, key) === review.project
+            && accountOfSource(e.source) === runner && canDo(identity, 'act', targetOf(key))).map(([key, e]) => ({ key, title: e.title || key, harness: conversationKind(e) }));
           const step = u.searchParams.get('step'), scope = ['other', 'branch'].includes(u.searchParams.get('scope')) ? u.searchParams.get('scope') : 'task';
-          if (review.kind === 'conversation') { json(res, 200, { ...await conversationReviewView(service, review, step, scope, u.searchParams.get('agent')), targets }); return; }
-          const paired = review.schema !== 2 && !step ? null : await service.pair(review, step, scope);
-          json(res, 200, { ...review, targets, shownFiles: paired ? paired.files : review.files, stepFiles: step ? paired.files : undefined, captureScopes: review.root ? checkpointStore.scopes(review.root) : [] });
+          if (review.kind === 'conversation') { json(res, 200, { ...await conversationReviewView(store, review, step, scope, u.searchParams.get('agent')), targets }); return; }
+          const paired = review.schema !== 2 && !step ? null : await store.pair(review, step, scope);
+          json(res, 200, { ...review, targets, shownFiles: paired ? paired.files : review.files, stepFiles: step ? paired.files : undefined, captureScopes: review.root ? await store.scopes(review.root) : [] });
         } else if (u.pathname === '/api/reviews/asset' && req.method === 'GET') {
-          const file = await service.localFile(id, u.searchParams.get('path'));
+          const { store } = await opened();
+          const file = await store.localFile(id, u.searchParams.get('path'));
           if (file.size > 20 * 1024 * 1024) throw Error('Preview is limited to 20 MiB');
-          const handle = await fsp.open(file.path, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
           let data;
-          try {
-            const stat = await handle.stat(); if (!stat.isFile() || stat.size > 20 * 1024 * 1024) throw Error('File is too large to preview');
-            const bytes = Buffer.alloc(stat.size + 1); let n = 0;
-            while (n < bytes.length) { const r = await handle.read(bytes, n, bytes.length - n, n); if (!r.bytesRead) break; n += r.bytesRead; }
-            if (n !== stat.size) throw Error('File changed during preview'); data = bytes.subarray(0, n);
-          } finally { await handle.close(); }
+          if (store.mine) {
+            // Read by their own process, as them.
+            const got = await store.mine.host.call('read', file.path, { start: 0, length: 20 * 1024 * 1024 + 1 });
+            if (got.size > 20 * 1024 * 1024) throw Error('File is too large to preview');
+            data = Buffer.from(got.data);
+          } else {
+            const handle = await fsp.open(file.path, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+            try {
+              const stat = await handle.stat(); if (!stat.isFile() || stat.size > 20 * 1024 * 1024) throw Error('File is too large to preview');
+              const bytes = Buffer.alloc(stat.size + 1); let n = 0;
+              while (n < bytes.length) { const r = await handle.read(bytes, n, bytes.length - n, n); if (!r.bytesRead) break; n += r.bytesRead; }
+              if (n !== stat.size) throw Error('File changed during preview'); data = bytes.subarray(0, n);
+            } finally { await handle.close(); }
+          }
           res.writeHead(200, { 'Content-Type': file.mediaType || (data.includes(0) ? 'application/octet-stream' : 'text/plain; charset=utf-8'), 'Content-Length': data.length, 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox", 'Cache-Control': 'no-store' }); res.end(data);
         } else if (u.pathname === '/api/reviews/file' && req.method === 'GET') {
-          json(res, 200, await service.file(id, u.searchParams.get('path'), u.searchParams.get('step'), false, u.searchParams.get('scope')));
+          const { store } = await opened();
+          json(res, 200, await store.file(id, u.searchParams.get('path'), u.searchParams.get('step'), false, u.searchParams.get('scope')));
         } else if (u.pathname === '/api/reviews/repair' && req.method === 'POST') {
-          const original = service.get(id);
+          const { store, review: original } = await opened(id, 'act');
           if (original.original && original.followup) throw Error('Rebuild the original and follow-up reviews separately, then combine them again.');
           if (original.kind === 'conversation') { json(res, 200, await conversationReview(original.key)); return; }
           let overrides = original.overrides || {};
-          if (body.proposal) overrides = require('./review-repair').accepted(service, original, body.proposal.token, Number(body.proposal.index));
-          json(res, 200, await service.createTask({ ...await reviewInput(original.key, original.sourceCalls || original.calls), repairOf: original.id, overrides }));
+          if (body.proposal) overrides = await store.repairAccepted(original, body.proposal.token, Number(body.proposal.index));
+          const made = await store.createTask({ ...await reviewInput(original.key, original.sourceCalls || original.calls), repairOf: original.id, overrides });
+          noteReviewAccount(store.account, made && made.id);
+          json(res, 200, made);
         } else if (u.pathname === '/api/reviews/capture-scope' && req.method === 'POST') {
-          const review = service.get(id), folder = path.resolve(String(body.path || ''));
-          if (body.remove && review.root && checkpointStore.scopes(review.root).includes(folder)) { json(res, 200, { scopes: checkpointStore.revokeScope(review.root, folder) }); return; }
+          const { store, review } = await opened(id, 'act');
+          const folder = path.resolve(String(body.path || ''));
+          if (body.remove && review.root && (await store.scopes(review.root)).includes(folder)) { json(res, 200, { scopes: await store.revokeScope(review.root, folder) }); return; }
           if (!review.root || ![...review.files, ...(review.artifacts || [])].some(f => f.location?.host === 'local' && f.location.path && (f.location.path === folder || f.location.path.startsWith(folder + path.sep)))) throw Error('Choose a folder containing a recorded local task target');
-          json(res, 200, { scopes: await checkpointStore.approveScope(review.root, folder) });
+          json(res, 200, { scopes: await store.approveScope(review.root, folder) });
         } else if (u.pathname === '/api/reviews/suggest-preview' && req.method === 'POST') {
-          const review = service.get(id);
+          const { store, review } = await opened(id, 'act');
           if (review.schema !== 2) throw Error('Rebuild this legacy review first');
           if (review.kind === 'conversation') throw Error('Open one agent\u2019s own review to look for its unresolved locations');
           const input = await reviewInput(review.key, review.sourceCalls || review.calls);
-          json(res, 200, require('./review-repair').preview(service, review, input.tools, currentModelLabel()));
+          json(res, 200, await store.repairPreview(review, input.tools, modelLabelFor(identity)));
         } else if (u.pathname === '/api/reviews/suggest' && req.method === 'POST') {
-          json(res, 200, await require('./review-repair').suggest(service, String(body.token || ''), currentModelLabel(), input => aiProgram('review_repair', { evidence: input }, { automatic: false, timeoutMs: 60000 }).then(r => r.outputs.proposals)));
+          // The store keeps the request and checks the answer (as the
+          // account whose files it names); the model call is the person's.
+          const store = reviewStoreForId(body.id || id);
+          if (body.id || id) await opened(body.id || id, 'act');
+          else if (!policy.isOwnerTier(identity) && ownFilesOf(identity)) throw Object.assign(new Error('Name the review (id) this suggestion is for.'), { status: 400 });
+          const token = String(body.token || '');
+          const started = await store.repairBegin(token, modelLabelFor(identity));
+          if (started.done) { json(res, 200, started.done); return; }
+          let raw;
+          try { raw = (await aiProgram('review_repair', { evidence: started.input }, { automatic: false, timeoutMs: 60000, principal: callPrincipalFor(identity) || undefined })).outputs.proposals; }
+          catch (e) { await store.repairFail(token, e.message).catch(() => {}); throw e; }
+          json(res, 200, await store.repairFinish(token, raw));
         } else if (u.pathname === '/api/reviews/combine' && req.method === 'POST') {
-          json(res, 200, await service.combine(body.original, body.followup));
+          const a = await opened(body.original), b = await opened(body.followup);
+          if (a.store.account !== b.store.account) throw Error('These reviews are kept by different accounts; they cannot be combined.');
+          const made = await a.store.combine(body.original, body.followup);
+          noteReviewAccount(a.store.account, made && made.id);
+          json(res, 200, made);
         } else if (u.pathname === '/api/reviews/comment' && req.method === 'POST') {
-          json(res, 200, await service.comment(id, body));
+          const { store } = await opened(id, 'see');
+          json(res, 200, await store.comment(id, body));
         } else if (u.pathname === '/api/reviews/resolve' && req.method === 'POST') {
-          json(res, 200, service.resolve(id, body.comment, body.resolved));
+          const { store } = await opened(id, 'see');
+          json(res, 200, await store.resolve(id, body.comment, body.resolved));
         } else if (u.pathname === '/api/reviews/mark' && req.method === 'POST') {
-          service.mark(id, body.path, body.checked); json(res, 200, { ok: true });
+          const { store } = await opened(id, 'see');
+          await store.mark(id, body.path, body.checked); json(res, 200, { ok: true });
         } else if (u.pathname === '/api/reviews/prepare' && req.method === 'POST') {
-          const review = service.get(id), target = String(body.target || review.key);
+          const { store, review } = await opened(id, 'see');
+          const target = String(body.target || review.key);
           const tk = index[target] && conversationKind(index[target]);
           if (!index[target] || !(tk === 'pi' || (tk === 'codex' && !codexRefused(identity) && !index[target].importCopyOf)) || projectNameOf(index[target].cwd, target) !== review.project) throw Error('Select a Pi or Codex conversation in this project');
-          json(res, 200, await service.prepare(id, target, String(body.note || '')));
+          assertCan(identity, 'act', targetOf(target), 'that conversation');
+          const prepared = await store.prepare(id, target, String(body.note || ''));
+          reviewDeliveries.set(prepared.token, store.account);
+          json(res, 200, prepared);
         } else if (u.pathname === '/api/reviews/send' && req.method === 'POST') {
-          const result = await service.deliver(String(body.token || ''), async delivery => {
-            const out = await startAgentRun(delivery.target, { message: delivery.message, images: [], force: false, allowQueue: true });
-            return { key: delivery.target, queued: !!out.queued };
-          });
+          const token = String(body.token || '');
+          const store = reviewStore(reviewDeliveries.has(token) ? reviewDeliveries.get(token) : (ownFilesOf(identity) || {}).account || null);
+          const delivery = await store.claim(token);
+          let result;
+          try {
+            assertCan(identity, 'act', targetOf(delivery.target), 'that conversation');
+            // The review's message goes in as the person who sends it.
+            const out = await startAgentRun(delivery.target, { message: delivery.message, images: [], force: false, allowQueue: true, principal: principalFor(identity) });
+            result = { key: delivery.target, queued: !!out.queued };
+          } catch (e) {
+            await store.finish(token, 'uncertain', { error: e.message }).catch(() => {});
+            throw Error('Delivery could not be confirmed. Check the target conversation before sending again: ' + e.message);
+          }
+          await store.finish(token, 'sent', result);
+          reviewDeliveries.delete(token);
           json(res, 200, result);
         } else json(res, 405, { error: 'Unsupported review operation' });
-      } catch (e) { json(res, 400, { error: e.message }); }
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/files/op' && req.method === 'POST') {
       try { json(res, 200, await filesOpResponse(identity, await readJsonBody(req, 64 * 1024))); }
       catch (e) { json(res, e.status || 400, { error: e.message }); }
@@ -22679,8 +23090,8 @@ async function handleRequest(req, res) {
       try {
         const mine = ownFilesOf(identity);
         if (mine) {
-          if (u.searchParams.get('reviewId')) throw Object.assign(new Error('Change reviews are not available yet when you run as your own computer account.'), { status: 403 });
-          const { abs } = await accountFiles.locate(mine.host, ownCandidates(mine, u.searchParams.get('id') || '', u.searchParams.get('path') || ''));
+          const reviewed = u.searchParams.get('reviewId') ? await reviewFileAs(mine, u.searchParams.get('reviewId'), u.searchParams.get('path') || '') : null;
+          const { abs } = reviewed ? { abs: reviewed } : await accountFiles.locate(mine.host, ownCandidates(mine, u.searchParams.get('id') || '', u.searchParams.get('path') || ''));
           assertPathAccess(identity, abs, 'see');
           const out = await accountFiles.readText(mine.host, abs, { max: FILE_EDIT_MAX });
           out.historyWarning = observeFileHistory(abs, { text: out.text, source: 'opened file' });
@@ -22700,9 +23111,8 @@ async function handleRequest(req, res) {
         const p = JSON.parse(body || '{}');
         const mine = ownFilesOf(identity);
         if (mine) {
-          if (p.reviewId) throw Object.assign(new Error('Change reviews are not available yet when you run as your own computer account.'), { status: 403 });
-          const abs = path.resolve(accountFiles.expandHome(mine.home, String(p.path || '')));
           if (!path.isAbsolute(String(p.path || '')) && !String(p.path || '').startsWith('~')) throw new Error('an absolute path is needed');
+          const abs = (p.reviewId ? await reviewFileAs(mine, p.reviewId, p.path) : null) || path.resolve(accountFiles.expandHome(mine.home, String(p.path || '')));
           assertPathAccess(identity, abs, 'act');
           return json(res, 200, await fileSaveAs(mine, abs, p, identity.user));
         }
@@ -22717,9 +23127,9 @@ async function handleRequest(req, res) {
         const mine = ownFilesOf(identity);
         if (mine) {
           if (!path.isAbsolute(String(p.path || '')) && !String(p.path || '').startsWith('~')) throw new Error('an absolute path is needed');
-          const abs = path.resolve(accountFiles.expandHome(mine.home, String(p.path || '')));
+          const abs = (p.reviewId ? await reviewFileAs(mine, p.reviewId, p.path) : null) || path.resolve(accountFiles.expandHome(mine.home, String(p.path || '')));
           assertPathAccess(identity, abs, 'act');
-          return json(res, 200, await docSaveAs(mine, abs, p, identity.user));
+          return json(res, 200, await docSaveAs(mine, abs, { ...p, reviewId: undefined }, identity.user));
         }
         assertPathAccess(identity, path.resolve(expandHomePath(String(p.path || ''))), 'act'); json(res, 200, await docSaveResponse(p, identity.user));
       }
@@ -22762,19 +23172,26 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/vouch' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
-      try { const p = JSON.parse(body || '{}'); if (p.path) assertPathAccess(identity, path.resolve(expandHomePath(String(p.path))), 'act'); json(res, 200, await vouchApply(p, identity.user)); }
+      try {
+        const p = JSON.parse(body || '{}'); const io = viewerIo(identity);
+        if (p.path) assertPathAccess(identity, path.resolve(io.mine ? accountFiles.expandHome(io.home, String(p.path)) : expandHomePath(String(p.path))), 'act');
+        json(res, 200, await vouchApply(p, identity.user, identity));
+      }
       catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/vouch/status' && req.method === 'POST') {
       let body = '';
       for await (const chunk of req) body += chunk;
       try {
         const parsed = JSON.parse(body || '{}');
-        const abs = path.resolve(expandHomePath(String(parsed.path || '')));
-        const content = typeof parsed.content === 'string' ? parsed.content : await fsp.readFile(abs, 'utf8');
+        const io = viewerIo(identity);
+        const abs = path.resolve(io.mine ? accountFiles.expandHome(io.home, String(parsed.path || '')) : expandHomePath(String(parsed.path || '')));
+        if (io.mine) assertPathAccess(identity, abs, 'see');
+        const content = typeof parsed.content === 'string' ? parsed.content : (await io.readFile(abs)).toString('utf8');
         json(res, 200, vouchStatusFor(abs, content));
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/vouch/all' && req.method === 'GET') {
-      json(res, 200, vouchAllResponse());
+      try { json(res, 200, await vouchAllResponse(identity)); }
+      catch (e) { json(res, e.status || 500, { error: e.message }); }
     } else if (u.pathname === '/api/transcript/raw' && req.method === 'GET') {
       try { assertCan(identity, 'see', targetOf(u.searchParams.get('id') || ''), 'this conversation'); json(res, 200, await transcriptRawResponse(u.searchParams.get('id') || '', Number(u.searchParams.get('i')))); }
       catch (e) { json(res, e.status || 400, { error: e.message }); }
@@ -22917,6 +23334,25 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/project/setup' && req.method === 'GET') {
       // 2: purpose and title at setup, names in any alphabet, undo-setup.
       json(res, 200, { version: 2 });
+    } else if (u.pathname === '/api/project/trust' && req.method === 'POST') {
+      // Pi's /trust for a conversation's folder (design/108): whether the
+      // Pi of whoever runs it loads the folder's own settings and plug-ins
+      // (.pi/). Saved in their Pi folder, as them; the conversation's warm
+      // session lets go so its next reply reads them.
+      try {
+        const p = await readJsonBody(req, 4096);
+        const key = String(p.id || '');
+        if (!index[key]) return json(res, 404, { error: 'conversation not found' });
+        assertCan(identity, 'act', targetOf(key), 'this conversation');
+        const principal = principalFor(identity);
+        assertRunsHere(key, principal, 'change what its Pi loads');
+        const cwd = sessionPathsFor(key).cwd;
+        if (!cwd) throw new Error('this conversation has no folder');
+        const decision = p.trust === false ? false : p.trust === true ? true : undefined;
+        const out = await actorOfPrincipal(principal).op('pi.trust', cwd, decision);
+        if (decision !== undefined) stopAnyWarmSession(sessionPathsFor(key).sessionPath);
+        json(res, 200, { ...out, folder: cwd });
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/project/purpose' && (req.method === 'GET' || req.method === 'POST')) {
       try {
         let body = {};
@@ -23527,13 +23963,13 @@ async function handleRequest(req, res) {
       try { programRoute(u, req, res, identity); } catch (e) { json(res, e.status || 500, { error: e.message }); }
     } else if (u.pathname === '/api/programs/sample' && req.method === 'POST') {
       try {
-        const p = await programBody(req, 16384), log = programLog();
+        const p = await programBody(req, 16384), log = programLogFor(identity);
         log.refresh();
         json(res, 200, log.sample(String(p.name || ''), String(p.module ?? ''), { n: p.n, version: p.version || null, unrated: p.unrated !== false }));
       } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/programs/rate' && req.method === 'POST') {
       try {
-        const p = await programBody(req), log = programLog();
+        const p = await programBody(req), log = programLogFor(identity);
         // A call that ended a moment ago (a try, a live call) is judged at
         // once: read the log first, not at most every so often.
         log.refresh({ force: true });
@@ -23577,7 +24013,7 @@ async function handleRequest(req, res) {
         if (Array.isArray(p.examples) && p.examples.length) assertWithinBudget(identity.user || usersLib.ownerOf(roster));
         const project = p.project ? canonicalProjectName(String(p.project)) : null;
         if (project) assertCan(identity, 'act', { project, creator: projectCreatorOf(project) }, 'project ' + project);
-        const folder = madeFolderFor(project, def.name);
+        const folder = madeFolderFor(project, def.name, identity);
         if (fs.existsSync(path.join(folder, programsDeploy.SOURCE))) return json(res, 409, { error: `${folder} already holds a program.` });
         let made;
         try { made = await aiPrograms.madeManifest(def); } catch (e) { return json(res, 400, { error: 'FunctAI cannot lay this program out: ' + e.message }); }
@@ -23640,7 +24076,7 @@ async function handleRequest(req, res) {
         d = await madeDraft(String(p.name || ''));
         if (d.error) return json(res, 400, { error: d.error });
         assertWithinBudget(identity.user || usersLib.ownerOf(roster));
-        const log = programLog(); log.refresh({ force: true });
+        const log = programLogFor(identity); log.refresh({ force: true });
         rows = log.rated(d.entry.name, MADE_MODULE, { signature: d.signature }).rows.slice(0, 200);
       } catch (e) { return json(res, e.status || 400, { error: e.message }); }
       const stop = new AbortController();
@@ -24386,9 +24822,13 @@ async function handleRequest(req, res) {
         speed: usersLib.canManageUsers(identity) ? speedCatalog() : null,
       });
     } else if (u.pathname === '/api/delegations' && req.method === 'GET') {
-      json(res, 200, await delegationCoordinator.refresh());
+      // Each person's own delegated work (design/108): a person on their
+      // own account sees their workers; the owner and the household, this
+      // server's.
+      try { json(res, 200, await delegationCoordinatorOf(delegationAccountOf(identity)).refresh()); }
+      catch (e) { json(res, e.status || 500, { error: e.message }); }
     } else if (u.pathname === '/api/delegations/detail' && req.method === 'GET') {
-      try { json(res, 200, await delegationDetail(u.searchParams.get('id'))); }
+      try { json(res, 200, await delegationDetail(u.searchParams.get('id'), delegationAccountOf(identity))); }
       catch (e) { json(res, 404, { error: e.message }); }
     } else if (u.pathname === '/api/delegations/control' && req.method === 'POST') {
       let body = '';
@@ -24396,9 +24836,10 @@ async function handleRequest(req, res) {
       try {
         const p = JSON.parse(body || '{}');
         if (!['pause', 'resume', 'cancel'].includes(p.action)) throw new Error('Unknown delegation action.');
-        await delegationLib.controlDelegation(p.id, p.action, { root: DELEGATION_ROOT });
+        const account = delegationAccountOf(identity);
+        await delegationRecords(account).control(p.id, p.action);
         if (p.action === 'cancel') await abortCancelledDelegationRuns();
-        await delegationCoordinator.refresh();
+        await delegationCoordinatorOf(account).refresh();
         json(res, 200, { ok: true });
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/delegations/resume' && req.method === 'POST') {
@@ -24406,7 +24847,7 @@ async function handleRequest(req, res) {
       for await (const chunk of req) { body += chunk; if (body.length > 128 * 1024) return json(res, 413, { error: 'Request too large.' }); }
       try {
         const p = JSON.parse(body || '{}');
-        const task = await resumeDelegationFromHost(p.id, { model: p.model, thinking: p.thinking, instructions: p.instructions, by: 'user' });
+        const task = await resumeDelegationFromHost(p.id, { model: p.model, thinking: p.thinking, instructions: p.instructions, by: 'user' }, delegationAccountOf(identity));
         json(res, 200, { ok: true, task: delegationView(task) });
       } catch (e) { json(res, 400, { error: e.message }); }
     } else if (u.pathname === '/api/agents/recovery' && req.method === 'GET') {
@@ -24714,24 +25155,34 @@ async function handleRequest(req, res) {
         const p = JSON.parse(body || '{}');
         const pid = Number(p.pid);
         if (!Number.isInteger(pid) || pid <= 1) return json(res, 400, { error: 'bad pid' });
+        // A person on their own account (design/108) stops only what runs as
+        // them: their conversations' runs here, and their own processes,
+        // signalled by their process (Linux refuses anyone else's).
+        const mine = policy.isOwnerTier(identity) ? null : ownFilesOf(identity);
+        const theirs = file => !mine || delegationAccountOfFile(file) === mine.account;
         if (pid === process.pid) {
           // An in-process (sdk) session: the conversation key names it.
           const key = String(p.key || '');
           if (!key || !index[key]) return json(res, 400, { error: 'this in-process session needs a conversation key to kill' });
           const { sessionPath } = sessionPathsFor(key);
+          if (!theirs(sessionPath)) return json(res, 403, { error: 'That run is not yours.' });
           await releaseHeadless(path.resolve(sessionPath), 'killed from the agents view');
           stopAnyWarmSession(sessionPath);
           return json(res, 200, { ok: true, pid, kind: 'pi', owner: 'web', engine: 'sdk' });
         }
-        const tasks = await delegationLib.listDelegations({ root: DELEGATION_ROOT });
+        const tasks = await delegationRecords(mine ? mine.account : null).list();
         const delegated = tasks.find(t => t.pid === pid && (t.workerAlive || !DELEGATION_TERMINAL.has(t.status)));
         if (delegated) return json(res, 409, { error: 'Use Stop delegated work. It cancels owned descendants and preserves their records.' });
         const warm = [...pirpc.listWarmSessions(), ...pisdk.listWarmSessions()].find(w => w.pid === pid);
         const proc = scanAgentProcs().find(x => x.pid === pid) || (warm && { kind: 'pi' });
         if (!proc) return json(res, 404, { error: 'pid ' + pid + ' is not a pi/claude/bridge process (already gone?)' });
         if (warm) {
+          if (!theirs(warm.sessionPath)) return json(res, 403, { error: 'That run is not yours.' });
           await releaseHeadless(path.resolve(warm.sessionPath), 'killed from the agents view');
           stopAnyWarmSession(warm.sessionPath);
+        } else if (mine) {
+          try { await mine.host.call('op', 'process.signal', pid, p.force ? 'SIGKILL' : 'SIGTERM'); }
+          catch (e) { return json(res, e.code === 'EPERM' ? 403 : 400, { error: e.code === 'EPERM' ? 'That process is not yours.' : e.message }); }
         } else {
           process.kill(pid, p.force ? 'SIGKILL' : 'SIGTERM');
         }
@@ -25039,7 +25490,7 @@ async function handleRequest(req, res) {
     } else if (u.pathname === '/api/doc/ai' && req.method === 'GET') {
       // What the command box needs: which model answers, and whether AI
       // commands are open to this person.
-      json(res, 200, { available: aiCommandsRefusal(identity) || true, model: currentModelLabel() });
+      json(res, 200, { available: aiCommandsRefusal(identity) || true, model: modelLabelFor(identity) });
     } else if (u.pathname === '/api/doc/ai' && req.method === 'POST') {
       // Run one AI command (ai-commands.js) on a text file's text (a
       // document, a source file, plain text — the file's surface decides
@@ -25069,12 +25520,13 @@ async function handleRequest(req, res) {
       const send = ev => { if (!res.writableEnded && !res.destroyed) res.write(JSON.stringify(ev) + '\n'); };
       try {
         // The reply as written is the new text (a leading space or line break included).
+        // On their own account, their own Pi and models (design/108).
         const { response } = await aiProgram(program, inputs, {
-          automatic: false, thinking: checked.command.thinking, signal: stop.signal, timeoutMs: 5 * 60 * 1000,
+          automatic: false, thinking: checked.command.thinking, signal: stop.signal, timeoutMs: 5 * 60 * 1000, principal: callPrincipalFor(identity) || undefined,
           onText: delta => send({ type: 'delta', text: delta }), caller: { user: programRater(identity), file: abs },
         });
         const text = aiPrograms.replyText(response);
-        send({ type: 'done', text, model: currentModelLabel() });
+        send({ type: 'done', text, model: modelLabelFor(identity) });
       } catch (e) {
         if (e.code !== 'ABORTED') send({ type: 'error', message: e.code === 'MODEL_CALLS_PAUSED' ? 'the model is paused after repeated failures; try again in a moment' : e.message });
       } finally {
@@ -25415,7 +25867,7 @@ async function handleRequest(req, res) {
       try { parsed = JSON.parse(body || '{}'); } catch { return json(res, 400, { error: 'bad json' }); }
       const key = String(parsed.key || ''), entryId = String(parsed.entryId || '');
       if (!index[key] || !entryId) return json(res, 400, { error: 'key and entryId are required' });
-      try { json(res, 200, await deriveNotebookFromAnswer(key, entryId)); }
+      try { json(res, 200, await deriveNotebookFromAnswer(key, entryId, identity)); }
       catch (e) { json(res, 200, { error: e.message }); }
     } else if (u.pathname === '/api/doc/notebooks' && req.method === 'GET') {
       // The notebooks a conversation produced: read from the files' own
@@ -25874,18 +26326,25 @@ async function collabUpgrade(req, socket, head) {
     } else if (m[1] === 'draft') {
       if (!/^[A-Za-z0-9_-]{6,64}$/.test(m[2])) return refuseUpgrade(socket, 400, 'Bad Request');
     } else {
-      // A person on their own account (design/105) edits files as themselves
-      // (the editor's own open and save, done by their host). A shared copy
-      // here would read and save with this server's rights: a file their
-      // account may not read, or one that would stop being theirs.
-      if (ownFilesOf(identity)) return refuseUpgrade(socket, 403, 'Forbidden');
-      const abs = path.resolve(expandHomePath(m[2]));
+      // A person on their own account (design/108) joins as themselves: their
+      // process says whether they may read and write the file, reads it for
+      // them, and their edits are saved as them (collab 'change' below).
+      const actor = actorOf(identity);
+      if (actor.kind === 'account' && !path.isAbsolute(m[2])) return refuseUpgrade(socket, 400, 'Bad Request');
+      const abs = path.resolve(actor.kind === 'account' ? m[2] : expandHomePath(m[2]));
       const project = projectOfPath(abs);
       const target = { project, creator: projectCreatorOf(project) };
       if (!canDo(identity, 'see', target)) return refuseUpgrade(socket, 403, 'Forbidden');
       canWrite = canDo(identity, 'act', target);
+      let real;
+      try { real = await editableFilePath(abs, '', actor); }
+      catch (e) { return refuseUpgrade(socket, 404, 'Not Found'); }
+      if (actor.kind === 'account') {
+        if (!await actor.mine.host.call('access', real, fs.constants.R_OK).then(() => true, () => false)) return refuseUpgrade(socket, 404, 'Not Found');
+        if (canWrite) canWrite = await actor.mine.host.call('access', real, fs.constants.W_OK).then(() => true, () => false);
+      }
       if (!collab.has(name)) {
-        try { initialText = await fsp.readFile(await editableFilePath(abs), 'utf8'); }
+        try { initialText = (await actor.io.readFile(real)).toString('utf8'); }
         catch (e) { return refuseUpgrade(socket, 404, 'Not Found'); }
       }
     }
@@ -25907,13 +26366,29 @@ collab.on('change', ev => {
   const last = (ev.contributors || []).sort((a, b) => (b.at || 0) - (a.at || 0))[0] || null;
   const who = last ? { id: last.id, name: last.name } : null;
   const body = { path: abs, text: ev.text, actor: 'human', input: 'keyboard', fromCollab: true };
-  const saving = (DOCUMENT_EXT.test(abs) ? docSaveResponse(body, who) : fileSaveResponse(body, who))
+  // Saved with the rights of whoever typed last (design/108): a person on
+  // their own account by their process, as them; someone typing through a
+  // link, as the person who shared it; everyone else, as this server.
+  const mine = collabWriterOf(last && last.id);
+  const saving = (mine ? (DOCUMENT_EXT.test(abs) ? docSaveAs(mine, abs, body, who) : fileSaveAs(mine, abs, body, who))
+    : (DOCUMENT_EXT.test(abs) ? docSaveResponse(body, who) : fileSaveResponse(body, who)))
     .catch(e => console.error('[collab] save ' + abs + ': ' + e.message))
     .finally(() => collabSaving.delete(saving));
   collabSaving.add(saving);
 });
 // Saves of shared files in flight: a stop waits for them (shutdownGracefully).
 const collabSaving = new Set();
+// Whose rights a shared file's save uses: the files of the person who typed
+// (on their own account), or of the person whose link they typed through;
+// null for this server's.
+function collabWriterOf(contributorId) {
+  let userId = String(contributorId || '');
+  const link = /^link:([a-z2-7]{16}):/.exec(userId);
+  if (link) { const share = typeof shareStore !== 'undefined' ? shareStore.get(link[1]) : null; userId = share ? share.createdBy : ''; }
+  const person = userId ? usersLib.findUser(roster, usersLib.resolveId(roster, userId)) : null;
+  if (!person || !ownAccountOf(person) || policy.isOwnerTier({ tier: person.role, user: person })) return null;
+  try { return filesOfPerson(person); } catch (e) { console.error('[collab] ' + person.name + ': ' + e.message); return null; }
+}
 // ---------- shared links (design/92, shares.js) ----------
 // "Anyone with the link can view / edit" one document, served from this
 // computer on the preview address (never the app's), through one gate.
@@ -25937,12 +26412,18 @@ async function resolveShare(share) {
     if (index[share.key] && !canDo(owner, 'see', targetOf(share.key))) throw Object.assign(new Error('The person who shared this can no longer share it.'), { status: 410 });
     return { key: share.key, owner: { name: owner.user.name || 'Someone' } };
   }
+  // A document shared by someone on their own account is read and written
+  // as them (design/108): whatever their account can no longer reach, the
+  // link cannot either.
+  const actor = actorOf(owner);
   let abs;
-  try { abs = await editableFilePath(share.path); } catch { throw Object.assign(new Error('This document was moved or deleted.'), { status: 410 }); }
+  try { abs = await editableFilePath(share.path, '', actor); } catch { throw Object.assign(new Error('This document was moved or deleted.'), { status: 410 }); }
   if (!DOCUMENT_EXT.test(abs)) throw Object.assign(new Error('This document can no longer be shared.'), { status: 410 });
   try { assertPathAccess(owner, abs, share.role === 'edit' ? 'act' : 'see'); }
   catch { throw Object.assign(new Error('The person who shared this can no longer share it.'), { status: 410 }); }
-  return { abs, owner: { name: owner.user.name || 'Someone' } };
+  if (actor.kind === 'account' && share.role === 'edit' && !await actor.mine.host.call('access', abs, fs.constants.W_OK).then(() => true, () => false))
+    throw Object.assign(new Error('The person who shared this can no longer change it.'), { status: 410 });
+  return { abs, owner: { name: owner.user.name || 'Someone' }, ...(actor.kind === 'account' ? { io: actor.io } : {}) };
 }
 const SHARE_STATIC = {
   'page.html': { file: 'share-page/page.html', type: 'text/html; charset=utf-8' },
@@ -26128,9 +26609,27 @@ async function signPublication(root) {
 // checkpoint) or the disk. Left out, and said so: names starting with a dot
 // (.env, .git), dependency and build folders, links leading outside, and
 // files over the limits. Text that looks like a secret is pointed out.
+// A whole file through an io (viewerIo): a person's host reads at most
+// 16 MB at a time, so a larger file is read in parts.
+async function ioReadAll(io, file, size) {
+  if (!io.mine) return io.readFile(file);
+  const parts = [];
+  for (let start = 0; start < Math.max(size, 1);) {
+    const got = await io.mine.host.call('read', file, { start });
+    const b = Buffer.from(got.data);
+    parts.push(b);
+    if (!b.length) break;
+    start += b.length;
+    if (start >= got.size) break;
+  }
+  return Buffer.concat(parts);
+}
 async function artifactFilesForPublishing(identity, { path: p, key, version }) {
   if (key && (!index[key] || !canDo(identity, 'see', targetOf(key)))) throw Object.assign(new Error('No such conversation.'), { status: 404 });
-  const abs = key ? artifactPathFor(key, p) : path.resolve(expandHomePath(String(p || '')));
+  // Read as the person publishing (design/108): their disk and their saved
+  // history on their own account, else this server's.
+  const io = viewerIo(identity);
+  const abs = key ? artifactPathFor(key, p, io.home) : path.resolve(io.mine ? accountFiles.expandHome(io.home, String(p || '')) : expandHomePath(String(p || '')));
   assertPathAccess(identity, abs, 'see');
   const files = [], excluded = [], warnings = [];
   const leave = (rel, why) => { if (excluded.length < 200) excluded.push({ path: rel, why }); };
@@ -26146,7 +26645,7 @@ async function artifactFilesForPublishing(identity, { path: p, key, version }) {
   const skipName = name => name.startsWith('.') || ARTIFACT_SKIP.has(name);
   let fromVersion = false;
   if (/^[0-9a-f]{64}$/.test(String(version || ''))) {
-    const snap = await checkpoints().snapshot(version);
+    const snap = await io.store().snapshot(version);
     const rel = path.relative(snap.root, abs).split(path.sep).join('/');
     if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
       const single = snap.manifest.find(f => f.path === rel);
@@ -26156,30 +26655,30 @@ async function artifactFilesForPublishing(identity, { path: p, key, version }) {
         for (const f of items) {
           const name = single ? path.posix.basename(f.path) : f.path.slice(rel ? rel.length + 1 : 0);
           if (name.split('/').some(skipName)) { leave(name, 'hidden or a dependency folder'); continue; }
-          add(name, await checkpoints().blob(snap.root, f.oid));
+          add(name, Buffer.from(await io.store().blob(snap.root, f.oid)));
         }
       }
     }
   }
   if (!fromVersion) {
     let st;
-    try { st = await fsp.stat(abs); } catch { throw Object.assign(new Error('Nothing at ' + abs + ' to publish.'), { status: 404 }); }
-    if (st.isFile()) add(path.basename(abs), await fsp.readFile(abs));
+    try { st = await io.stat(abs); } catch { throw Object.assign(new Error('Nothing at ' + abs + ' to publish.'), { status: 404 }); }
+    if (st.isFile()) add(path.basename(abs), await ioReadAll(io, abs, st.size));
     else {
-      const real = await fsp.realpath(abs);
+      const real = await io.realpath(abs);
       const walk = async (dir, rel) => {
-        for (const e of await fsp.readdir(dir, { withFileTypes: true })) {
+        for (const e of await io.readdir(dir)) {
           const r = rel ? rel + '/' + e.name : e.name, full = path.join(dir, e.name);
           if (skipName(e.name)) { leave(r, e.name.startsWith('.') ? 'hidden (starts with a dot)' : 'a dependency or build folder'); continue; }
           if (files.length >= publicationsLib.LIMITS.files) { leave(r, 'over ' + publicationsLib.LIMITS.files + ' files'); continue; }
           let target;
-          try { target = await fsp.realpath(full); } catch { leave(r, 'unreadable'); continue; }
+          try { target = await io.realpath(full); } catch { leave(r, 'unreadable'); continue; }
           if (!(target === real || target.startsWith(real + path.sep))) { leave(r, 'a link leading outside the folder'); continue; }
-          const ts = await fsp.stat(target);
+          const ts = await io.stat(target);
           if (ts.isDirectory()) await walk(target, r);
           else if (ts.isFile()) {
             if (ts.size > publicationsLib.LIMITS.fileBytes) { leave(r, 'over 64 MB'); continue; }
-            add(r, await fsp.readFile(target));
+            add(r, await ioReadAll(io, target, ts.size));
           }
         }
       };
@@ -26498,7 +26997,7 @@ async function sharesApi(identity, req, u) {
     return { share: shareView(share) };
   }
   if (at === '/api/shares') {
-    const abs = await editableFilePath(String(body.path || ''));
+    const abs = await editableFilePath(String(body.path || ''), '', actorOf(identity));
     if (!DOCUMENT_EXT.test(abs)) throw Object.assign(new Error('Only Markdown documents can be shared by link for now.'), { status: 400 });
     assertPathAccess(identity, abs, body.role === 'edit' ? 'act' : 'see');
     const share = shareStore.create({ path: abs, title: String(body.title || '').trim().slice(0, 200) || path.basename(abs), role: body.role, createdBy: identity.user.id, expiresAt: body.expiresAt ?? null });

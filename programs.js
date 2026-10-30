@@ -300,10 +300,28 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
   // Chattering's own file in the log: one per process, never shared.
   const writerName = `chattering-${String(host).replace(/[^\w.-]+/g, '-')}-${process.pid}-${crypto.randomBytes(3).toString('hex')}.jsonl`;
 
+  // What the questions below read through: the whole index, or one person's
+  // calls only (scoped: a view of their rows, design/108). Every question is
+  // synchronous, so the swap holds for exactly one question.
+  let qdb = db;
+  const scopes = new Map();
+  function scoped(person) {
+    const who = String(person || '');
+    if (scopes.has(who)) return scopes.get(who);
+    const view = 'calls_of_' + crypto.createHash('sha256').update(who).digest('hex').slice(0, 16);
+    db.exec(`CREATE TEMP VIEW IF NOT EXISTS ${view} AS SELECT * FROM main.calls WHERE person = '${who.replace(/'/g, "''")}'`);
+    const sdb = { prepare: sql => db.prepare(String(sql).replace(/\b(FROM|JOIN)\s+calls\b/g, `$1 ${view}`)) };
+    const within = fn => (...args) => { const was = qdb; qdb = sdb; try { return fn(...args); } finally { qdb = was; } };
+    const api = { folder, refresh, programs: within(programs), program: within(program), versions: within(versions), runs: within(runs), run: within(run),
+      compare: within(compare), rated: within(rated), sample: within(sample), rate: within(rate), person: who, get seq() { return seq; } };
+    scopes.set(who, api);
+    return api;
+  }
+
   const txn = fn => { db.exec('BEGIN'); try { const out = fn(); db.exec('COMMIT'); return out; } catch (e) { db.exec('ROLLBACK'); throw e; } };
 
   function summaryCall(id) {
-    const row = db.prepare('SELECT src, src_offset, src_length FROM calls WHERE id = ?').get(id);
+    const row = qdb.prepare('SELECT src, src_offset, src_length FROM calls WHERE id = ?').get(id);
     if (!row) return null;
     try { return JSON.parse(readSlice(path.join(folder, row.src), row.src_offset, row.src_length)); } catch { return null; }
   }
@@ -392,22 +410,22 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
   // ---- questions -------------------------------------------------------------
 
   function programs() {
-    const rows = db.prepare(`SELECT name, module, COUNT(*) AS calls, SUM(purpose IS NULL) AS use_calls,
+    const rows = qdb.prepare(`SELECT name, module, COUNT(*) AS calls, SUM(purpose IS NULL) AS use_calls,
       SUM(purpose IS NULL AND error_type IS NOT NULL) AS errors, MIN(started) AS first, MAX(started) AS last,
       COUNT(DISTINCT version) AS versions, SUM(tokens_in) AS tokens_in, SUM(tokens_out) AS tokens_out
       FROM calls GROUP BY name, module`).all();
-    const latest = db.prepare(`SELECT kind, version, signature, answer, file, line, language, caller, in_fields, out_fields FROM calls
+    const latest = qdb.prepare(`SELECT kind, version, signature, answer, file, line, language, caller, in_fields, out_fields FROM calls
       WHERE name = ? AND module = ? ORDER BY started DESC, id DESC LIMIT 1`);
-    const answered = db.prepare(`SELECT COUNT(*) AS n FROM calls c LEFT JOIN rating_state s ON s.call = c.id
+    const answered = qdb.prepare(`SELECT COUNT(*) AS n FROM calls c LEFT JOIN rating_state s ON s.call = c.id
       WHERE c.name = ? AND c.module = ? AND c.purpose IS NULL AND c.error_type IS NULL AND s.state IS NULL`);
     const since = iso(now() - 7 * 86400000);
-    const recent = db.prepare('SELECT COUNT(*) AS n FROM calls WHERE name = ? AND module = ? AND purpose IS NULL AND started >= ?');
-    const states = db.prepare(`SELECT s.state, SUM(s.open) AS open, COUNT(*) AS n FROM rating_state s JOIN calls c ON c.id = s.call
+    const recent = qdb.prepare('SELECT COUNT(*) AS n FROM calls WHERE name = ? AND module = ? AND purpose IS NULL AND started >= ?');
+    const states = qdb.prepare(`SELECT s.state, SUM(s.open) AS open, COUNT(*) AS n FROM rating_state s JOIN calls c ON c.id = s.call
       WHERE c.name = ? AND c.module = ? GROUP BY s.state`);
-    const langs = db.prepare('SELECT DISTINCT language FROM calls WHERE name = ? AND module = ? AND language IS NOT NULL');
+    const langs = qdb.prepare('SELECT DISTINCT language FROM calls WHERE name = ? AND module = ? AND language IS NOT NULL');
     // The instruction and allowed answers, read once per version from the
     // newest call that recorded its messages.
-    const newestText = db.prepare(`SELECT id, version FROM calls WHERE name = ? AND module = ? AND content = 1 AND exchanges > 0 ORDER BY started DESC LIMIT 1`);
+    const newestText = qdb.prepare(`SELECT id, version FROM calls WHERE name = ? AND module = ? AND content = 1 AND exchanges > 0 ORDER BY started DESC LIMIT 1`);
     const described = key => {
       const row = newestText.get(...key);
       if (!row) return { instruction: null, choices: null };
@@ -442,7 +460,7 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
   // A share of right answers from random draws only: ratings that carry a
   // sample id. Ratings people chose to make are not a fair sample.
   function sampleScore(name, module, version = null) {
-    const rows = db.prepare(`SELECT r.raw FROM ratings r JOIN calls c ON c.id = r.call
+    const rows = qdb.prepare(`SELECT r.raw FROM ratings r JOIN calls c ON c.id = r.call
       WHERE c.name = ? AND c.module = ? AND r.sample IS NOT NULL ${version ? 'AND c.version = ?' : ''}`)
       .all(...(version ? [name, module, version] : [name, module])).map(r => JSON.parse(r.raw));
     const byCall = currentRatings(rows);
@@ -452,10 +470,10 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
   }
 
   function program(name, module) {
-    const all = db.prepare('SELECT COUNT(*) AS n FROM calls WHERE name = ? AND module = ?').get(name, module).n;
+    const all = qdb.prepare('SELECT COUNT(*) AS n FROM calls WHERE name = ? AND module = ?').get(name, module).n;
     if (!all) return null;
     const summary = programs().find(p => p.name === name && p.module === module);
-    const use = db.prepare(`SELECT seconds, started, model, language, caller_kind, person, error_type, tokens_in, tokens_out
+    const use = qdb.prepare(`SELECT seconds, started, model, language, caller_kind, person, error_type, tokens_in, tokens_out
       FROM calls WHERE name = ? AND module = ? AND purpose IS NULL`).all(name, module);
     const secs = use.map(c => c.seconds).sort((a, b) => a - b);
     const count = (list, f) => { const m = new Map(); for (const x of list) { const k = f(x); if (k) m.set(k, (m.get(k) || 0) + 1); } return [...m].sort((a, b) => b[1] - a[1]).map(([k, n]) => ({ name: k, n })); };
@@ -464,13 +482,13 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
     for (let i = 29; i >= 0; i--) days.push({ day: iso(today - i * 86400000).slice(0, 10), n: 0, errors: 0 });
     const dayAt = new Map(days.map(d => [d.day, d]));
     for (const c of use) { const d = dayAt.get(String(c.started).slice(0, 10)); if (d) { d.n++; if (c.error_type) d.errors++; } }
-    const purposes = db.prepare('SELECT purpose, COUNT(*) AS n FROM calls WHERE name = ? AND module = ? AND purpose IS NOT NULL GROUP BY purpose').all(name, module);
-    const answers = db.prepare(`SELECT answer_json, COUNT(*) AS n FROM calls WHERE name = ? AND module = ? AND answer_json IS NOT NULL
+    const purposes = qdb.prepare('SELECT purpose, COUNT(*) AS n FROM calls WHERE name = ? AND module = ? AND purpose IS NOT NULL GROUP BY purpose').all(name, module);
+    const answers = qdb.prepare(`SELECT answer_json, COUNT(*) AS n FROM calls WHERE name = ? AND module = ? AND answer_json IS NOT NULL
       AND length(answer_json) <= 200 GROUP BY answer_json ORDER BY n DESC LIMIT 40`).all(name, module)
       .map(a => ({ value: JSON.parse(a.answer_json), n: a.n }));
-    const sources = db.prepare(`SELECT caller_ref AS ref, COUNT(*) AS n, MAX(started) AS last FROM calls WHERE name = ? AND module = ?
+    const sources = qdb.prepare(`SELECT caller_ref AS ref, COUNT(*) AS n, MAX(started) AS last FROM calls WHERE name = ? AND module = ?
       AND caller_ref IS NOT NULL GROUP BY caller_ref ORDER BY last DESC LIMIT 12`).all(name, module);
-    const files = db.prepare('SELECT file, line, language, COUNT(*) AS n FROM calls WHERE name = ? AND module = ? AND file IS NOT NULL GROUP BY file, line, language ORDER BY MAX(started) DESC LIMIT 10').all(name, module);
+    const files = qdb.prepare('SELECT file, line, language, COUNT(*) AS n FROM calls WHERE name = ? AND module = ? AND file IS NOT NULL GROUP BY file, line, language ORDER BY MAX(started) DESC LIMIT 10').all(name, module);
     return {
       ...summary,
       stats: {
@@ -488,12 +506,12 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
   }
 
   function versions(name, module) {
-    const rows = db.prepare(`SELECT version, MIN(started) AS first, MAX(started) AS last, SUM(purpose IS NULL) AS use_calls,
+    const rows = qdb.prepare(`SELECT version, MIN(started) AS first, MAX(started) AS last, SUM(purpose IS NULL) AS use_calls,
       SUM(purpose IS NOT NULL) AS other_calls, SUM(purpose IS NULL AND error_type IS NOT NULL) AS errors,
       AVG(CASE WHEN purpose IS NULL THEN tokens_in + tokens_out END) AS tokens, GROUP_CONCAT(DISTINCT language) AS languages,
       MAX(saved) AS saved FROM calls WHERE name = ? AND module = ? GROUP BY version ORDER BY last DESC`).all(name, module);
-    const secsOf = db.prepare('SELECT seconds FROM calls WHERE name = ? AND module = ? AND version IS ? AND purpose IS NULL ORDER BY seconds');
-    const states = db.prepare(`SELECT s.state, COUNT(*) AS n FROM rating_state s JOIN calls c ON c.id = s.call
+    const secsOf = qdb.prepare('SELECT seconds FROM calls WHERE name = ? AND module = ? AND version IS ? AND purpose IS NULL ORDER BY seconds');
+    const states = qdb.prepare(`SELECT s.state, COUNT(*) AS n FROM rating_state s JOIN calls c ON c.id = s.call
       WHERE c.name = ? AND c.module = ? AND c.version IS ? GROUP BY s.state`);
     // Versions are named by when they first appeared: v1, v2, …
     const order = [...rows].sort((a, b) => String(a.first).localeCompare(String(b.first))).map(v => v.version);
@@ -534,11 +552,11 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
     // What the page counts and slices by, before its own filters: how many
     // calls are judged each way, and which answers the program gives.
     const base = `FROM calls c LEFT JOIN rating_state s ON s.call = c.id WHERE ${where.join(' AND ')}`, baseArgs = [...args];
-    const counts = db.prepare(`SELECT SUM(c.error_type IS NOT NULL) AS failed, SUM(c.error_type IS NULL AND s.state IS NULL) AS unjudged,
+    const counts = qdb.prepare(`SELECT SUM(c.error_type IS NOT NULL) AS failed, SUM(c.error_type IS NULL AND s.state IS NULL) AS unjudged,
       SUM(s.state = 'right') AS right, SUM(s.state = 'wrong') AS wrong, SUM(s.state = 'disputed') AS disputed, SUM(s.open = 1) AS open,
       COUNT(*) AS total ${base}`).get(...baseArgs);
     for (const k of Object.keys(counts)) counts[k] = counts[k] || 0;
-    const answers = db.prepare(`SELECT c.answer_json AS a, COUNT(*) AS n ${base} AND c.answer_json IS NOT NULL AND length(c.answer_json) <= 120
+    const answers = qdb.prepare(`SELECT c.answer_json AS a, COUNT(*) AS n ${base} AND c.answer_json IS NOT NULL AND length(c.answer_json) <= 120
       GROUP BY c.answer_json ORDER BY n DESC LIMIT 12`).all(...baseArgs).map(r => ({ value: JSON.parse(r.a), n: r.n }));
     if (o.judged === 'failed') where.push('c.error_type IS NOT NULL');
     else if (o.judged === 'unjudged') where.push('c.error_type IS NULL AND s.state IS NULL');
@@ -561,17 +579,17 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
     const order = o.sort === 'old' ? 'c.started ASC, c.id ASC' : o.sort === 'slow' ? 'c.seconds DESC'
       : o.sort === 'unsure' ? 'c.confidence IS NULL, c.confidence ASC, c.started DESC' : 'c.started DESC, c.id DESC';
     const limit = Math.max(1, Math.min(500, Number(o.limit) || 50)), offset = Math.max(0, Number(o.offset) || 0);
-    const total = db.prepare('SELECT COUNT(*) AS n ' + sql).get(...args).n;
-    const list = db.prepare(`SELECT ${RUN_FIELDS} ${sql} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...args, limit, offset).map(runView);
+    const total = qdb.prepare('SELECT COUNT(*) AS n ' + sql).get(...args).n;
+    const list = qdb.prepare(`SELECT ${RUN_FIELDS} ${sql} ORDER BY ${order} LIMIT ? OFFSET ?`).all(...args, limit, offset).map(runView);
     return { total, runs: list, seq, counts, answers };
   }
 
   function run(id) {
-    const r = db.prepare(`SELECT ${RUN_FIELDS} FROM calls c LEFT JOIN rating_state s ON s.call = c.id WHERE c.id = ?`).get(id);
+    const r = qdb.prepare(`SELECT ${RUN_FIELDS} FROM calls c LEFT JOIN rating_state s ON s.call = c.id WHERE c.id = ?`).get(id);
     if (!r) return null;
     const record = summaryCall(id);
-    const children = db.prepare(`SELECT ${RUN_FIELDS} FROM calls c LEFT JOIN rating_state s ON s.call = c.id WHERE c.parent = ? ORDER BY c.started`).all(id).map(runView);
-    const parentRow = r.parent ? db.prepare(`SELECT ${RUN_FIELDS} FROM calls c LEFT JOIN rating_state s ON s.call = c.id WHERE c.id = ?`).get(r.parent) : null;
+    const children = qdb.prepare(`SELECT ${RUN_FIELDS} FROM calls c LEFT JOIN rating_state s ON s.call = c.id WHERE c.parent = ? ORDER BY c.started`).all(id).map(runView);
+    const parentRow = r.parent ? qdb.prepare(`SELECT ${RUN_FIELDS} FROM calls c LEFT JOIN rating_state s ON s.call = c.id WHERE c.id = ?`).get(r.parent) : null;
     const ratings = ratingsOf(id).sort((a, b) => (later(a, b, 'at') ? 1 : -1));
     const counting = currentRatings(ratings).get(id) || [];
     return { run: runView(r), record, children, parent: parentRow ? runView(parentRow) : null, ratings, counting };
@@ -579,7 +597,7 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
 
   // The same inputs answered by two versions: what a change did.
   function compare(name, module, a, b) {
-    const pick = v => db.prepare(`SELECT ${RUN_FIELDS}, c.input_key FROM calls c LEFT JOIN rating_state s ON s.call = c.id
+    const pick = v => qdb.prepare(`SELECT ${RUN_FIELDS}, c.input_key FROM calls c LEFT JOIN rating_state s ON s.call = c.id
       WHERE c.name = ? AND c.module = ? AND c.version = ? AND c.input_key IS NOT NULL ORDER BY c.started`).all(name, module, v);
     const latestBy = rows => { const m = new Map(); for (const r of rows) m.set(r.input_key, r); return m; };
     const A = latestBy(pick(a)), B = latestBy(pick(b));
@@ -597,7 +615,7 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
 
   // The rows with known answers (contract/calls.md), for evaluate and .opt.
   function rated(name, module, { signature = null, by = null } = {}) {
-    const ids = db.prepare(`SELECT DISTINCT r.call FROM ratings r JOIN calls c ON c.id = r.call WHERE c.name = ? AND c.module = ?`).all(name, module).map(r => r.call);
+    const ids = qdb.prepare(`SELECT DISTINCT r.call FROM ratings r JOIN calls c ON c.id = r.call WHERE c.name = ? AND c.module = ?`).all(name, module).map(r => r.call);
     const calls = ids.map(summaryCall).filter(Boolean);
     const ratings = ids.flatMap(ratingsOf);
     return ratedRows(calls, ratings, { name, module, signature, by });
@@ -612,7 +630,7 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
     if (version) { where.push('c.version = ?'); args.push(version); }
     if (unrated) where.push('s.state IS NULL');
     const size = Math.max(1, Math.min(200, Number(n) || 20));
-    const ids = db.prepare(`SELECT c.id FROM calls c LEFT JOIN rating_state s ON s.call = c.id WHERE ${where.join(' AND ')} ORDER BY random() LIMIT ?`)
+    const ids = qdb.prepare(`SELECT c.id FROM calls c LEFT JOIN rating_state s ON s.call = c.id WHERE ${where.join(' AND ')} ORDER BY random() LIMIT ?`)
       .all(...args, size).map(r => r.id);
     return { sample: newId(now()), ids, version };
   }
@@ -620,7 +638,7 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
   // Chattering's rating, appended to the log like any writer's
   // (contract/calls.md, "A rating record"), then read back through the index.
   function rate({ call, verdict, answer, outputs, reasons, note, origin = 'review', sample: sampleId, by }) {
-    if (typeof call !== 'string' || !db.prepare('SELECT 1 FROM calls WHERE id = ?').get(call)) throw Object.assign(new Error('No such call in the log.'), { status: 404 });
+    if (typeof call !== 'string' || !qdb.prepare('SELECT 1 FROM calls WHERE id = ?').get(call)) throw Object.assign(new Error('No such call in the log.'), { status: 404 });
     if (!['right', 'wrong', null].includes(verdict)) throw Object.assign(new Error('verdict is "right", "wrong", or null to withdraw'), { status: 400 });
     const hasAnswer = answer !== undefined;
     const hasOutputs = outputs && typeof outputs === 'object' && !Array.isArray(outputs) && Object.keys(outputs).length > 0;
@@ -640,7 +658,7 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
     fs.mkdirSync(dayDir, { recursive: true, mode: 0o700 });
     fs.appendFileSync(path.join(dayDir, writerName), line, { mode: 0o600 });
     refresh({ force: true });
-    const st = db.prepare('SELECT state, people, open FROM rating_state WHERE call = ?').get(call);
+    const st = qdb.prepare('SELECT state, people, open FROM rating_state WHERE call = ?').get(call);
     return { rating: rec, state: st ? { state: st.state, people: st.people, open: !!st.open } : null };
   }
 
@@ -660,7 +678,7 @@ function createProgramIndex({ folder, dbFile, projectOfPath = () => null, host =
   }
 
   return {
-    folder, refresh, programs, program, versions, runs, run, compare, rated, sample, rate, appendCall,
+    folder, refresh, programs, program, versions, runs, run, compare, rated, sample, rate, appendCall, scoped,
     /** The programs changed since the last call, as [name, module] pairs; null when any may have. */
     takeChanged() {
       const all = changedPrograms;

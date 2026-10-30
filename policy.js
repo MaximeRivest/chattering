@@ -194,6 +194,7 @@ const ROUTES = {
   '/api/memory/backfill': 'member',
   '/api/project/setup': 'member',
   '/api/project/purpose': 'member',
+  'POST /api/project/trust': 'member', // Pi's /trust for a conversation's folder
   '/api/project/create': 'member',
   '/api/project/unregister': 'member',
   '/api/project/undo-setup': 'member',
@@ -488,6 +489,36 @@ const ACCOUNT_ROUTES = {
   // conversation moving to another agent is written into their folder by
   // their host (another account's is continued as their own copy).
   '/api/conversation/handoff': 'theirs', 'GET /api/codex/menus': 'theirs', 'POST /api/codex/release': 'theirs',
+  // One-off model calls as them (their own Pi, their models): the editor's
+  // AI commands; a notebook from an answer, written by their host.
+  '/api/doc/ai': 'theirs', '/api/doc/ai-accept': 'theirs', '/api/doc/notebook-from-answer': 'theirs',
+  // Change reviews, kept beside their saved file history by their own
+  // process; a person reviews what their account ran.
+  '/api/reviews': 'theirs', '/api/reviews/*': 'theirs',
+  // Shared links and publications: a shared document is read and written as
+  // the person who shared it (and its shared editing as whoever types); a
+  // publication is copied from their disk as them; a shared conversation is
+  // the index's.
+  'GET /api/shares': 'theirs', 'POST /api/shares': 'theirs', 'POST /api/shares/change': 'theirs', 'POST /api/shares/revoke': 'theirs',
+  '/api/shares/scan': 'index', 'POST /api/publications/preview': 'theirs', '/api/publications/price': 'index',
+  '/api/collab/*': 'theirs',
+  // Delegated work: their workers' records are their own Pi's, read and
+  // controlled by their process; a process is stopped only if it is theirs.
+  '/api/delegations/detail': 'theirs', '/api/delegations/control': 'theirs', '/api/delegations/resume': 'theirs', '/api/agents/kill': 'theirs',
+  // Vouching and file feedback: the file read as them; the feedback goes to
+  // their conversation as a message (no terminal on this computer's screen).
+  'POST /api/vouch': 'theirs', '/api/vouch/status': 'theirs', '/api/file-feedback': 'theirs',
+  // AI programs: their own calls of the log; programs they make are kept by
+  // Chattering and answer with their models.
+  'GET /api/programs': 'index', 'GET /api/programs/program': 'index', 'GET /api/programs/runs': 'index', 'GET /api/programs/run': 'index',
+  'GET /api/programs/compare': 'index', 'GET /api/programs/rated': 'index', 'POST /api/programs/sample': 'index', 'POST /api/programs/rate': 'index',
+  'POST /api/programs/live': 'index', 'POST /api/programs/draft': 'theirs', 'POST /api/programs/create': 'theirs', 'GET /api/programs/made': 'index',
+  'PUT /api/programs/made': 'theirs', 'POST /api/programs/try': 'theirs', 'POST /api/programs/test': 'theirs', 'POST /api/programs/publish': 'index',
+  'POST /api/programs/rollback': 'index', 'POST /api/programs/unpublish': 'index', 'POST /api/programs/keys': 'index', 'POST /api/programs/keys/revoke': 'index',
+  // Pi's /trust: saved in their own Pi folder, by their process.
+  'POST /api/project/trust': 'theirs',
+  // The frog's settings and the machine switcher's question: records only.
+  'PUT /api/hotkeys/frog': 'index', '/api/machines/probe': 'index',
   // Changing a stored conversation (an edited message, where it continues,
   // parallel answers kept together): written by the file helper of the
   // account that keeps it (server.js conversationFile); reading one
@@ -559,6 +590,16 @@ const ACCOUNT_ROUTES = {
   '/api/voice/state': 'index', '/api/voice/pause': 'index', '/api/voice/preview': 'index', '/api/voice/mute': 'index', '/api/voice/status': 'index',
   '/api/voice/decide': 'index', '/api/voice/delegate': 'index', '/api/voice/history': 'index', '/api/voice/note': 'index', '/api/voice/history/clear': 'index', '/api/voice/outcome': 'index', '/api/voice/listen': 'index',
 };
+// Refused to people on their own account for good, with why: they act on
+// the desktop of the computer this server runs on (its owner's screen: a
+// terminal window there, a file opened there), not on anything of theirs.
+// Their own program in Chattering (the live terminal) is how they type into
+// an agent's program.
+const ACCOUNT_DESKTOP = {
+  '/api/conversation/send': 'This types into a terminal window on the screen of the computer Chattering runs on, which is not yours. Continue the conversation here, or in its own program in Chattering.',
+  '/api/conversation/act': 'This acts on a terminal window on the screen of the computer Chattering runs on, which is not yours. Continue the conversation here, or in its own program in Chattering.',
+  '/api/path/action': 'This opens the file on the screen of the computer Chattering runs on, which is not yours. Open it here in Chattering instead.',
+};
 const ACCOUNT_TABLE = new Map(Object.entries(ACCOUNT_ROUTES));
 function accountRouteEntry(method, pathname) {
   const m = String(method || 'GET').toUpperCase();
@@ -601,7 +642,8 @@ function checkRoute(identity, method, pathname, searchParams, canSeeConversation
   // Below the owner tier, a person on their own account reaches only the
   // routes that act for them as them (ACCOUNT_ROUTES).
   if (onOwnAccount(identity) && !isOwnerTier(identity) && !accountRouteEntry(method, pathname)) {
-    return { ok: false, entry, status: 403, error: 'This is not available yet when you run as your own computer account: it would touch files with this server\u2019s rights instead of yours.' };
+    const desk = ACCOUNT_DESKTOP[pathname];
+    return { ok: false, entry, status: 403, error: desk || 'This is not available yet when you run as your own computer account: it would touch files with this server\u2019s rights instead of yours.' };
   }
   if (entry.conversation && !isOwnerTier(identity)) {
     const key = searchParams && searchParams.get(entry.conversation);

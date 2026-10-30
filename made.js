@@ -170,15 +170,15 @@ function createMade(deps) {
   function reviewedVersions(service, keys) {
     const out = new Map();
     let marks;
-    try { marks = service.db.prepare('SELECT review, path FROM change_reviewed WHERE checked=1').all(); } catch { return out; }
+    try { marks = service.reviewedMarks(); } catch { return out; }
     for (const { review, path: shown } of marks) {
       let entry = reviewCache.get(review);
       if (entry === undefined) {
         entry = null;
         try {
-          const row = service.db.prepare('SELECT body FROM change_reviews WHERE id=?').get(review);
-          if (row) {
-            const body = JSON.parse(row.body), files = new Map();
+          const text = service.reviewBody(review);
+          if (text) {
+            const body = JSON.parse(text), files = new Map();
             for (const f of [...(body.files || []), ...(body.otherFiles || [])]) {
               const abs = f.location?.host === 'local' && f.location.path ? f.location.path : f.livePath || (body.root && !path.isAbsolute(f.path) ? path.join(body.root, f.path) : null);
               if (abs) files.set(f.path, { abs, oid: f.next ? f.next.oid || null : null });

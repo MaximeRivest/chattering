@@ -86,6 +86,53 @@ const OPS = {
     if (dirs.length) await run('setfacl', [...(recursive ? ['-R', '-P'] : []), '-d', '-m', `u:${service}:rX,u:${me}:rwX`, '--', ...dirs]);
     return list.length;
   },
+  // ---- their delegated work (design/108) ----
+  // Their agents' delegated workers are recorded in their own folder (their
+  // Pi's default: the app data folder of their home), and run as them. Read,
+  // controlled and continued here, as them; reads stay inside that folder.
+  'delegation.list': (opts = {}) => require('./delegation.js').listDelegations({ ...opts, root: undefined }),
+  'delegation.get': id => require('./delegation.js').getDelegation(String(id)),
+  'delegation.control': (id, action) => require('./delegation.js').controlDelegation(String(id), String(action)),
+  'delegation.takeover': (id, details) => require('./delegation.js').markDelegationTakeover(String(id), details || {}),
+  'delegation.resume': (id, spec) => require('./delegation.js').resumeDelegation(String(id), spec || {}, { env: { ...process.env } }),
+  'delegation.root': () => require('./delegation-store.js').rootPath({}),
+  'delegation.readPart': async (file, limit, tail = false) => {
+    const root = await fsp.realpath(require('./delegation-store.js').rootPath({}));
+    const resolved = await fsp.realpath(abs(file));
+    const rel = path.relative(root, resolved);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) throw new Error('Delegation detail is outside its record directory.');
+    const handle = await fsp.open(resolved, 'r');
+    try {
+      const size = (await handle.stat()).size, length = Math.min(size, Math.max(0, Number(limit) || 0)), buf = Buffer.alloc(length);
+      const { bytesRead } = await handle.read(buf, 0, length, tail ? Math.max(0, size - length) : 0);
+      return { text: buf.subarray(0, bytesRead).toString('utf8'), truncated: size > length };
+    } finally { await handle.close(); }
+  },
+  'delegation.lastActivity': async files => {
+    let last = 0;
+    for (const f of (files || []).slice(0, 4)) { try { last = Math.max(last, (await fsp.stat(abs(f))).mtimeMs); } catch {} }
+    return last;
+  },
+  'delegation.logTail': file => require('./activity-watch.js').readTail(abs(file)),
+  // ---- their Pi's project trust (design/108) ----
+  // Whether this account's Pi loads a folder's own settings and plug-ins
+  // (.pi/): the decision Pi's /trust saves, in their Pi folder's trust file.
+  // decision: true, false, or undefined to only ask.
+  'pi.trust': async (cwd, decision) => {
+    const { SDK } = await require('./pisdk-runtime.js').loadSdk();
+    const agentDir = require('./runtime.js').piAgentDir();
+    const store = new SDK.ProjectTrustStore(agentDir);
+    if (decision === true || decision === false) store.set(abs(cwd), decision);
+    return { needed: SDK.hasTrustRequiringProjectResources(abs(cwd)), trusted: store.get(abs(cwd)) };
+  },
+  // ---- their processes ----
+  // A signal to one of their processes: Linux allows only their own.
+  'process.signal': (pid, signal = 'SIGTERM') => {
+    if (!Number.isInteger(pid) || pid <= 1) throw new Error('bad pid');
+    if (!['SIGTERM', 'SIGKILL', 'SIGINT'].includes(signal)) throw new Error('bad signal');
+    process.kill(pid, signal);
+    return true;
+  },
   // A new conversation file (a fork, a conversation moving to another
   // agent): complete before it appears, never replacing one.
   'conversation.create': async (file, text) => {

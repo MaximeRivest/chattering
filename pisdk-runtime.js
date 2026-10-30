@@ -25,6 +25,21 @@ const DIALOG_MAX_MS = 30 * 60 * 1000;
 // Which Pi: one answer for the whole app (runtime.js).
 function piPackageDir() { return require('./runtime.js').piPackageDir(); }
 
+// Pi's built-in extensions, as Pi's own program loads them: MCP servers
+// (plug-ins such as Interlatent, from ~/.pi/agent/mcp.json and a trusted
+// project's .pi/mcp.json), codemode and tool search, which MCP tools are
+// reached through. Built-in: enabled unless the person's Pi settings turn
+// them off ("-builtin:mcp"), replaced by an extension that registers the
+// same. A sign-in link is shown in Chattering (a notice), never opened in a
+// browser on this computer: the person is at another screen.
+function builtinExtensions(SDK) {
+  const out = [];
+  if (typeof SDK.createCodemodeExtension === 'function') out.push({ name: 'codemode', factory: SDK.createCodemodeExtension(), replaceable: true, builtin: true });
+  if (typeof SDK.createToolSearchExtension === 'function') out.push({ name: 'tool-search', factory: SDK.createToolSearchExtension(), replaceable: true, builtin: true });
+  if (typeof SDK.createMcpExtension === 'function') out.push({ name: 'mcp', factory: SDK.createMcpExtension({ openUrl: () => {} }), replaceable: true, builtin: true });
+  return out;
+}
+
 let sdkPromise = null;
 function loadSdk() {
   if (!sdkPromise) {
@@ -441,7 +456,7 @@ async function createS(target) {
       modelRuntimeSignal: AbortSignal.timeout(15000),
       extensionFlagValues: parsed.flags.size ? parsed.flags : undefined,
       resourceLoaderOptions: {
-        extensionFactories: [{ name: 'workspace-checkpoints', factory: require('./checkpoint-extension.js').checkpointExtension }],
+        extensionFactories: [...builtinExtensions(SDK), { name: 'workspace-checkpoints', factory: require('./checkpoint-extension.js').checkpointExtension }],
         additionalExtensionPaths: parsed.extensionPaths.length ? parsed.extensionPaths : undefined,
         // pi's resource loader treats appendSystemPromptSource as an array of
         // paths/texts (each resolved through resolvePromptInput).

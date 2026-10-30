@@ -12,6 +12,8 @@
     { name: 'tree', description: 'Open this conversation’s branches', action: 'tree' },
     { name: 'compact', description: 'Summarize older context with Pi', action: 'compact', argumentHint: '[instructions]' },
     { name: 'reload', description: 'Reload Pi extensions, skills and prompts', action: 'runtime' },
+    // Pi asks in its own terminal; here it is a command, as Pi's /trust.
+    { name: 'trust', description: 'Trust this folder’s own Pi settings (its .pi/ plug-ins, extensions, skills)', action: 'trust', argumentHint: '[off]' },
   ];
   function parse(text) {
     const m = /^\/([^\s]+)(?:\s+([\s\S]*))?$/.exec(String(text || '').trim());

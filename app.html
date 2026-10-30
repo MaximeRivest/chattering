@@ -12509,7 +12509,7 @@ async function headlessSendFromComposer(btn, promptOverride) {
   const control = window.ComposeCommands?.parse(prompt);
   if (control && control.action !== 'runtime' && control.action !== 'compact') {
     const key = activeRel;
-    if (control.args && !['model', 'thinking'].includes(control.action)) return errToast('/' + control.name + ' does not take arguments here');
+    if (control.args && !['model', 'thinking'].includes(control.action) && !(control.action === 'trust' && control.args.trim() === 'off')) return errToast('/' + control.name + ' does not take arguments here');
     let picked;
     if (control.action === 'model' && control.args && window.CodexUI && CodexUI.isCodex()) {
       const menus = await CodexUI.menusFor(current.draft ? 'cwd:' + ((draftState && draftState.d.folder) || '') : key).catch(() => null);
@@ -12529,6 +12529,15 @@ async function headlessSendFromComposer(btn, promptOverride) {
     else if (control.action === 'thinking') { if (control.args) await cycleThinking(control.args); else pickThinking(); }
     else if (control.action === 'settings') await showSettings();
     else if (control.action === 'tree') await showTree(key);
+    else if (control.action === 'trust') {
+      if (current?.draft) return errToast('Send the first message, then /trust: the folder is the conversation’s.');
+      try {
+        const out = await postJson('/api/project/trust', { id: key, trust: control.args.trim() !== 'off' });
+        if (out.error) throw new Error(out.error);
+        toast(!out.needed ? 'This folder has no Pi settings of its own (.pi/) to trust.'
+          : out.trusted ? 'Trusted: Pi loads this folder’s own settings and plug-ins from the next reply.' : 'Not trusted: Pi leaves this folder’s own settings and plug-ins out.');
+      } catch (e) { errToast(e.message); }
+    }
     return true;
   }
   if (control?.name === 'reload' && control.args) return errToast('/reload does not take arguments');
@@ -15000,7 +15009,17 @@ function updateRunUi(card, r) {
   for (const t of notices) {
     const div = document.createElement('div');
     div.className = 'rc-notice';
-    div.textContent = t;
+    // Web addresses open in a new tab (a plug-in's sign-in page): text
+    // nodes and links only, never markup from the notice.
+    for (const part of String(t).split(/(https?:\/\/[^\s<>"']+)/)) {
+      if (/^https?:\/\//.test(part)) {
+        const a = document.createElement('a');
+        a.href = part; a.target = '_blank'; a.rel = 'noopener noreferrer';
+        a.textContent = part.length > 90 ? part.slice(0, 60) + '…' + part.slice(-20) : part;
+        a.title = part;
+        div.appendChild(a);
+      } else div.appendChild(document.createTextNode(part));
+    }
     host.appendChild(div);
   }
   for (const q of reqs) host.appendChild(buildUiRequest(r.jobId, q));

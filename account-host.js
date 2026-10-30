@@ -71,6 +71,35 @@ const OPS = {
     return checkpointStore[method](...args);
   },
 };
+// Their change reviews (design/108): kept beside their saved file history
+// (the same database, in their home), built and read as them.
+OPS.reviews = async (method, ...args) => {
+  const { ChangeReviews, REMOTE_METHODS } = require('./change-reviews.js');
+  if (!REMOTE_METHODS.includes(method)) throw Object.assign(new Error('not a review operation: ' + method), { code: 'ENOSYS' });
+  checkpointStore ||= new (require('./checkpoint-store.js').CheckpointStore)();
+  changeReviews ||= new ChangeReviews(checkpointStore, { baseURL: process.env.CHATTERING_PORT ? 'http://127.0.0.1:' + process.env.CHATTERING_PORT : '' });
+  return changeReviews[method](...args);
+};
+let changeReviews = null;
+// What a conversation of theirs made (made.js, design/82): computed here, as
+// them, from their saved file history and their disk. The server gives
+// what only it knows: the conversation's agents and each one's steps.
+const madeFamilies = new Map(), madeInputs = new Map();
+let madeServer = { loaded: [], appRoot: null, boot: null };
+OPS.made = async (key, given) => {
+  await OPS.reviews('scopes', '/'); // opens their store
+  madeFamilies.set(key, given.family);
+  for (const [k, input] of Object.entries(given.inputs || {})) madeInputs.set(k, input);
+  madeServer = { loaded: given.loaded || [], appRoot: given.appRoot || null, boot: given.boot || null };
+  made ||= require('./made.js').createMade({
+    service: () => changeReviews, family: async k => madeFamilies.get(k), input: async agent => madeInputs.get(agent.key) || null,
+    loaded: () => new Map(madeServer.loaded), get appRoot() { return madeServer.appRoot; }, get boot() { return madeServer.boot; },
+    delegationRoot: path.join(require('./platform.js').appDirs().data, 'delegations'),
+  });
+  try { return await made.summary(key); }
+  finally { madeFamilies.delete(key); for (const a of given.family.agents || []) madeInputs.delete(a.key); }
+};
+let made = null;
 // Every named operation (person-ops.js): the same code the hub runs for
 // its own account, run here as them.
 OPS.op = (name, ...args) => require('./person-ops.js').call(name, ...args);

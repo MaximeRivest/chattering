@@ -81,7 +81,10 @@ function setup(req) {
     }
     settings.quietStartup = true;
     write(path.join(agentDir, 'settings.json'), settings);
-    for (const name of ['extensions', 'skills', 'prompts', 'themes', 'modes', 'AGENTS.md', 'APPEND_SYSTEM.md', 'SYSTEM.md']) {
+    // Their plug-ins (MCP servers), their sign-ins to them and their trust
+    // decisions too (design/108): one set, whether Pi runs in their terminal
+    // or in Chattering.
+    for (const name of ['extensions', 'skills', 'prompts', 'themes', 'modes', 'AGENTS.md', 'APPEND_SYSTEM.md', 'SYSTEM.md', 'mcp.json', 'mcp-auth.json', 'trust.json']) {
       const link = path.join(agentDir, name), target = path.join(ownAgentDir, name);
       let cur = null;
       try { cur = fs.lstatSync(link); } catch {}

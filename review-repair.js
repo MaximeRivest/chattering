@@ -20,18 +20,38 @@ function preview(service, review, tools, model) {
   service.db.prepare('INSERT INTO review_repair_proposals VALUES (?,?,?,NULL)').run(token, review.id, text);
   return { token, model, input: text, notice: 'One tool-free model invocation using only this displayed metadata and command excerpts. No additional project files or .env files are read for the request. Excerpts can contain sensitive text; inspect them before continuing. No SSH connection is made.' };
 }
-async function suggest(service, token, model, run) {
+// suggest = begin, the model call, finish. Split so the model call can be
+// made elsewhere than the store: a person's reviews are kept by their own
+// process, the model call is Chattering's (design/108).
+function begin(service, token, model) {
   const request = service.db.prepare('SELECT * FROM review_repair_proposals WHERE id=?').get(token);
   if (!request) throw Error('Repair request not found');
   const input = JSON.parse(request.input);
   if (input.model !== model) throw Error('The configured model changed; preview the request again');
   if (!service.db.prepare("UPDATE review_repair_proposals SET output=? WHERE id=? AND output IS NULL").run(JSON.stringify({ status: 'running' }), token).changes) {
-    return JSON.parse(service.db.prepare('SELECT output FROM review_repair_proposals WHERE id=?').get(token).output);
+    return { done: JSON.parse(service.db.prepare('SELECT output FROM review_repair_proposals WHERE id=?').get(token).output) };
   }
+  return { input: request.input, prompt: PROMPT };
+}
+async function suggest(service, token, model, run) {
+  const started = begin(service, token, model);
+  if (started.done) return started.done;
+  let raw;
   try {
     // run: the review_repair AI program (ai-programs.js), which answers with
     // its proposals; a caller may still hand back the reply's JSON text.
-    const raw = await run(request.input, PROMPT);
+    raw = await run(started.input, PROMPT);
+  } catch (e) { fail(service, token, e); throw e; }
+  return finish(service, token, raw);
+}
+function fail(service, token, e) {
+  service.db.prepare('UPDATE review_repair_proposals SET output=? WHERE id=?').run(JSON.stringify({ status: 'failed', error: e.message }), token);
+}
+async function finish(service, token, raw) {
+  const request = service.db.prepare('SELECT * FROM review_repair_proposals WHERE id=?').get(token);
+  if (!request) throw Error('Repair request not found');
+  const input = JSON.parse(request.input);
+  try {
     const values = Array.isArray(raw) ? raw : JSON.parse(String(raw).trim().replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, ''));
     if (!Array.isArray(values) || values.length > 10) throw Error('The model did not return a bounded candidate list');
     const proposals = [];
@@ -65,4 +85,4 @@ function accepted(service, review, token, index) {
   if (!proposal?.verifiedLocal || !proposal.localPath) throw Error('Only a verified local candidate can be accepted');
   return { ...(review.overrides || {}), [proposal.locationId]: proposal.localPath };
 }
-module.exports = { preview, suggest, accepted, redact, PROMPT };
+module.exports = { preview, suggest, begin, finish, fail, accepted, redact, PROMPT };

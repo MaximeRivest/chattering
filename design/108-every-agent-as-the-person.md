@@ -107,6 +107,62 @@ listed. `scripts/account-agent-folders.js ACCOUNT [--yes]` moves them as the
 person (refusing while that agent runs for them), puts the link in place
 and asks Chattering to set them up again.
 
+## Everything else, as the person (2026-10-30, second part)
+
+After the agents, every route still refused to people on their own account
+was made theirs, the same way: the work is done by their own process (their
+host) or their own Pi, and Linux decides.
+
+- **One-off model calls** (the editor's AI commands, a notebook from an
+  answer, review suggestions, AI programs, their endpoints and hotkeys): made
+  by their own Pi through their walls (`piExec` with `ctx.principal`;
+  `callPrincipalFor`, `ownPrincipalOfPerson`), with their last pick or their
+  Pi default, never this server's settings model, on a circuit of their own.
+  The system prompt goes in a file their process writes in their home (a
+  command line is visible to everyone and sudo logs it), removed after.
+- **Change reviews** live beside their saved file history, in their own
+  store: the review service runs in their host (`OPS.reviews`, the methods
+  in `change-reviews.js` `REMOTE_METHODS`), so do "what a conversation
+  made" (`OPS.made`) and a reviewed file opened in the editor
+  (`reviewFileAs`). Which store holds a review id is the hub's record
+  (`review-accounts.json`). A person reviews what their account ran; the
+  owner tier any; everyone only what they may see (`assertReviewAccess`).
+  A review's message is sent as the person sending it.
+- **Shared links and shared editing**: a shared document is resolved as the
+  person who shared it (their `io`: read, assets, a two-second look for
+  changes instead of a watch); a shared file's live copy is joined as the
+  person (their process reads it and says whether they may write), and each
+  save is done with the rights of whoever typed last (a link's visitor: the
+  person who shared it) (`collabWriterOf`). Publications copy the
+  artifact from their disk and their history, as them.
+- **Delegated work**: their Pi records its workers in its own folder in their
+  home, and the workers run as them. Every view and control asks their
+  process (`delegationRecords(account)`); each account has a coordinator of
+  its own that delivers their workers' results to their conversations
+  (`delegationCoordinatorOf`; its bookkeeping is the hub's, per account).
+  Stopping a process from the agents view goes through their process: Linux
+  refuses anyone else's.
+- **Vouching** reads the file as them; a vouch is taken back only by whoever
+  made it (or the owner tier). **Ink feedback** is kept in their home and
+  sent to their conversation as a message with the picture (no terminal
+  window opens on this computer's screen).
+- **AI programs**: the call log shows a person only the calls made for them
+  (a per-person view of the index: `programs.js scoped`); the programs they
+  make are kept in Chattering's own folder (never written into their home
+  by this server) and answer with their models.
+- **Plug-ins (MCP servers)** in Chattering's own box, for everyone: Pi's
+  built-in MCP, codemode and tool-search extensions are loaded as Pi's own
+  program loads them (a person's settings may turn them off). A folder's own
+  servers (`.pi/mcp.json`) load once the folder is trusted: `/trust` in
+  the box saves Pi's own decision in the runner's Pi folder, as them. A
+  sign-in (`/mcp login <server>`) shows its link as a notice (tappable, kept
+  whole) and asks for the address the browser was sent to; no browser opens
+  on this computer.
+
+Still refused, on purpose: what acts on the desktop of the computer the
+server runs on (typing into a terminal window there, opening a file there).
+They say so (`ACCOUNT_DESKTOP` in policy.js).
+
 ## Trade-offs, stated
 
 - **A link in their home.** The program writes through a link to a folder
@@ -126,11 +182,24 @@ and asks Chattering to set them up again.
   records, which another account cannot read).
 - **Untested end to end on a real account:** Pi, Antigravity and Muse Code
   in their own program as the person (the paths are the ones tested for
-  Claude Code and Codex; the programs themselves are not stand-ins here).
+  Claude Code and Codex; the programs themselves are not stand-ins here);
+  a notebook from an answer, AI programs made and tried, and a plug-in as
+  the person (the same code as for the owner, tested there).
 - **The grant is put back after the fact.** Between a program making a
   private file and the first refused read, this server cannot read it; the
   retry happens on that read (a few milliseconds through their host). The
   end state (design/106: every read through their host) needs no grant.
+- **A person's programs are kept by Chattering**, not in their project
+  folder: their agents and git do not see them there.
+- **Reviews of another account's work** are refused to a person on their
+  own account (the history is that account's); the owner tier opens any.
+- **A person's delegated work is asked of their process every ten seconds**
+  while they are set up: their process keeps running.
+- **A document shared by someone on their own account** is looked at every
+  two seconds for outside changes while visitors are connected, instead of
+  being watched.
+- **A plug-in sign-in** needs the address pasted back (the browser cannot
+  reach the computer's own callback); the link is long and shown whole.
 - **Still the end state of design/106**: the hub runs as the owner's account
   on lambda; reads of a person's agent folders rely on the declared ACL and
   the owner checks above, not yet on the hub having no rights of its own.

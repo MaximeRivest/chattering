@@ -98,29 +98,17 @@ Done as the person, each tested end to end as a real second account
 - "ask about this file".
 
 Every agent's own program (Claude Code, Codex in its program and in
-Chattering's box, Antigravity, Muse Code), Codex's menus, and moving a
-conversation to another agent run as the person since design/108.
+Chattering's box, Antigravity, Muse Code), Codex's menus, moving a
+conversation to another agent, and since the same day everything that was
+still refused (reviews, links and shared editing, publications, delegated
+work, the editor's AI commands, notebooks from answers, vouching, file
+feedback, AI programs) run as the person: design/108.
 
-Still refused to people on their own account, with the reason (the gate
-fails closed until each is made theirs):
-
-- change reviews (`/api/reviews/*`): reviews read checkpoints and files
-  across conversations; needs the review service per actor, like
-  `stepChanges(identity)`;
-- shares and publications: a share link serves a file to anyone, read
-  at serving time; must be read as the person who shared it
-  (`actorForPath` of the file, authorised by the share);
-- delegations' views and control, `agents/kill`: their workers' records
-  live in the hub's delegation root; their processes need the person's
-  slice (`cgroup.kill`), not signals;
-- AI commands in the editor (`/api/doc/ai*`) and "notebook from an
-  answer": the model call runs as the hub's Pi; needs the person's Pi
-  (their models, their usage), as `startAgentRun` already does;
-- vouching (`/api/vouch*`), file feedback, AI programs (`/api/programs*`),
-  the frog's hotkey, machine probes.
-- the terminal bridge (`/api/conversation/send`, `act`): types into a
-  terminal on the hub's screen. Stays refused: a person's terminal is
-  their own (the live terminal does this, as them).
+Still refused to people on their own account, on purpose: what acts on the
+desktop of the computer the server runs on (`/api/conversation/send` and
+`act`, which type into a terminal window there; `/api/path/action`, which
+opens a file there). Their own program in Chattering is how they type into
+an agent.
 
 Known remaining reads with the hub's rights, outside routes: the project
 file watchers and the file ledger's backfill (`updateWatchedProjectFile`,
