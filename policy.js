@@ -54,6 +54,12 @@ const ROUTES = {
   '/api/themes.css': 'guest',
   '/api/models': 'guest',
   '/api/models/last': 'member',
+  // Plan limits (design/109): each person sees their own plans; someone on
+  // another's plans (a guest, the owner's models) only whether a model answers.
+  'GET /api/plan-limits': 'guest',
+  'GET /api/plan-limits/history': 'guest', // the handler: only plans the person sees in full
+  // A Pi run of the person reports its replies' limit headers.
+  'POST /api/plan-limits/observe': 'member',
   // Connecting this machine to an AI (design/73): accounts and keys are the
   // machine's, so only its administrators sign in, add servers or test.
   '/api/ai': 'owner',
@@ -462,6 +468,8 @@ const ACCOUNT_ROUTES = {
   '/api/events': 'index', 'GET /api/settings': 'index', 'GET /api/users': 'index', 'POST /api/users/*': 'index', '/api/users/avatar': 'index',
   '/api/presence': 'index', '/api/push': 'index', '/api/push/*': 'index', '/api/themes': 'index', '/api/themes.css': 'index',
   '/api/models': 'index', '/api/models/last': 'index', 'GET /api/modes': 'index', '/api/jobs': 'index',
+  // Their plans are read by their own process (person-ops.js plan.read); what a run of theirs saw is kept by the hub.
+  'GET /api/plan-limits': 'theirs', 'GET /api/plan-limits/history': 'index', 'POST /api/plan-limits/observe': 'index',
   'GET /api/agent-read': 'index', 'POST /api/agent-read': 'index', 'POST /api/agent-read/group-name': 'index',
   'GET /api/recent-files': 'index', 'GET /api/open-files': 'index', 'POST /api/open-files': 'index', 'POST /api/recent-files': 'index',
   '/api/sessions': 'index', '/api/session': 'index', '/api/session/parts': 'index', '/api/tree': 'index', '/api/search': 'index',
@@ -720,6 +728,10 @@ const EVENTS = {
   'public-links': () => () => true,
   // The AI accounts changed (design/73): a ping, the browser refetches.
   'ai-accounts': () => () => true,
+  // A plan's numbers changed (design/109): a ping; /api/plan-limits filters.
+  'plan-limits': () => () => true,
+  // A plan's limit reached or over: sent to the people of that plan only.
+  'plan-notice': () => can => can.member,
   // Chattering's AI programs as they run (design/74): the household's, like
   // the Programs pages, and of each call only what the person may see of its
   // conversation, project, and file or repository.

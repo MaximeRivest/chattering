@@ -1,0 +1,68 @@
+/* Plan limits (design/109): the picker's strip, row marks, settings → plans.
+   Colors come from the theme's own words (warn, danger, accent), so the
+   e-ink and grayscale themes mark states by weight and pattern too. */
+
+/* ---- a bar: the share of one window ---- */
+.pl-bar { display: inline-block; position: relative; width: 64px; height: 6px; vertical-align: middle; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden; }
+.pl-bar.small { width: 34px; height: 5px; }
+.pl-bar i { position: absolute; inset: 0 auto 0 0; background: var(--text-dim); }
+.pl-bar.is-near i { background: var(--warn); }
+.pl-bar.is-limited i { background: var(--danger); width: 100% !important; }
+.pl-bar.is-reset i, .pl-bar.is-unknown i { background: transparent; }
+.pl-bar.is-reset { border-style: dashed; }
+
+/* ---- the model picker ---- */
+.mpick .mp-plans { display: flex; flex-direction: column; gap: 2px; padding: 0 10px 8px; border-bottom: 1px solid var(--border); }
+.mpick .mp-plans .pl-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; width: 100%; min-height: 22px; height: auto; padding: 2px 4px; border: 0; background: transparent; text-align: left; color: var(--text-dim); font-size: var(--fs-micro); cursor: pointer; }
+.mpick .mp-plans .pl-line:hover { background: var(--surface-2); color: var(--text); }
+.mpick .mp-plans .pl-line b { font-weight: 600; color: var(--text); margin-right: 2px; }
+.mpick .mp-plans .pl-line.is-limited b { color: var(--danger); }
+.pl-win { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pl-age { margin-left: auto; color: var(--text-faint); }
+.mpick .pl-suggest { display: flex; align-items: center; gap: 8px; padding: 4px; font-size: var(--fs-micro); color: var(--text); background: var(--surface-2); border-left: 2px solid var(--warn); }
+.mpick .pl-suggest button { flex: 0 0 auto; height: 22px; min-height: 22px; padding: 0 8px; }
+.mpick .mp-row .mp-plan { flex: 0 0 auto; padding: 0 5px; font-size: 10px; line-height: 15px; border: 1px solid var(--warn); color: var(--text); font-variant-numeric: tabular-nums; }
+.mpick .mp-row .mp-plan.is-limited { border-color: var(--danger); color: var(--danger); font-weight: 700; }
+.mpick .mp-row.planlimited b { text-decoration: line-through; text-decoration-thickness: 1px; opacity: .7; }
+.pl-dot { display: inline-block; width: 6px; height: 6px; margin-left: 4px; border-radius: 50%; vertical-align: middle; background: var(--warn); }
+.pl-dot.is-limited { background: var(--danger); }
+
+/* ---- the composer's usage line ---- */
+.ctxmeter .pl-limited { color: var(--danger); font-weight: 700; }
+
+/* ---- settings → plans ---- */
+.pl-card { margin: 14px 0 18px; padding: 10px 12px 12px; border: 1px solid var(--border); border-left-width: 3px; background: var(--surface-1); }
+.pl-card.is-near { border-left-color: var(--warn); }
+.pl-card.is-limited { border-left-color: var(--danger); }
+.pl-card h3 { display: flex; align-items: baseline; gap: 10px; margin: 0 0 2px; }
+.pl-state { font-size: var(--fs-micro); font-weight: 400; color: var(--text-dim); }
+.pl-card.is-limited .pl-state { color: var(--danger); font-weight: 700; }
+.pl-meta { color: var(--text-faint); font-size: var(--fs-micro); margin-bottom: 8px; }
+.pl-row { display: grid; grid-template-columns: minmax(96px, 1fr) 112px minmax(140px, 1.6fr) 120px; gap: 4px 12px; align-items: center; padding: 6px 0; border-top: 1px solid var(--border); }
+.pl-label b { color: var(--text); }
+.pl-num .pl-bar { width: 56px; }
+.pl-label b { font-weight: 600; }
+.pl-scope { display: block; color: var(--text-faint); font-size: var(--fs-micro); }
+.pl-num { display: flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
+.pl-row.is-limited .pl-num b { color: var(--danger); }
+.pl-when { font-size: var(--fs-micro); color: var(--text-dim); }
+.pl-src { display: block; color: var(--text-faint); }
+.pl-est { grid-column: 1 / -1; font-size: var(--fs-micro); color: var(--text-dim); }
+.pl-tag { display: inline-block; padding: 0 4px; font-size: 10px; line-height: 14px; border: 1px dashed var(--border-strong); color: var(--text-dim); }
+.pl-spark { display: block; overflow: visible; }
+.pl-spark .pl-axis { stroke: var(--border); stroke-width: 1; }
+.pl-spark polyline { fill: none; stroke: var(--text-dim); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.pl-row.is-near .pl-spark polyline { stroke: var(--warn); }
+.pl-row.is-limited .pl-spark polyline { stroke: var(--danger); }
+.pl-credits { margin-top: 6px; font-size: var(--fs-micro); color: var(--text-dim); }
+.pl-error { margin-top: 6px; font-size: var(--fs-micro); color: var(--danger); }
+.pl-status .pl-line { padding: 4px 0; }
+.pl-status .pl-line.is-limited span { color: var(--danger); font-weight: 700; }
+.pl-actions { margin-top: 14px; }
+.set-field-inline input { margin: 0 4px; }
+.toast.plan-limited { border-left-color: var(--danger); }
+
+@media (max-width: 760px) {
+  .pl-row { grid-template-columns: 1fr auto; }
+  .pl-when, .pl-hist { grid-column: 1 / -1; }
+}

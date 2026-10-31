@@ -125,6 +125,21 @@ const OPS = {
     if (decision === true || decision === false) store.set(abs(cwd), decision);
     return { needed: SDK.hasTrustRequiringProjectResources(abs(cwd)), trusted: store.get(abs(cwd)) };
   },
+  // What their subscriptions still allow (design/109): their sign-ins, read
+  // by a process of their own (plan-limits-worker.js), which answers with
+  // pool keys, plans and numbers, never a token. A process apiece: Pi's code
+  // loads there, not into this long-lived one.
+  'plan.read': async (req = {}) => {
+    const r = req && typeof req === 'object' ? req : {};
+    const body = JSON.stringify({ agentDir: typeof r.agentDir === 'string' && path.isAbsolute(r.agentDir) ? r.agentDir : undefined,
+      want: Array.isArray(r.want) ? r.want.map(String).slice(0, 50) : null, known: r.known && typeof r.known === 'object' ? r.known : {},
+      renew: Array.isArray(r.renew) ? r.renew.map(String).slice(0, 20) : [] });
+    const out = await run(process.execPath, [path.join(__dirname, 'plan-limits-worker.js')], { input: body, timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
+    const line = String(out).trim().split('\n').pop();
+    const answer = JSON.parse(line || '{}');
+    if (answer.error) throw new Error(answer.error);
+    return answer;
+  },
   // ---- their processes ----
   // A signal to one of their processes: Linux allows only their own.
   'process.signal': (pid, signal = 'SIGTERM') => {

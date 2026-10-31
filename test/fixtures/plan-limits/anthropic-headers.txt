@@ -1,0 +1,13 @@
+anthropic-ratelimit-unified-5h-reset: 1793453400
+anthropic-ratelimit-unified-5h-status: allowed
+anthropic-ratelimit-unified-5h-utilization: 0.03
+anthropic-ratelimit-unified-7d-reset: 1793980800
+anthropic-ratelimit-unified-7d-status: allowed
+anthropic-ratelimit-unified-7d-utilization: 0.06
+anthropic-ratelimit-unified-fallback-percentage: 0.5
+anthropic-ratelimit-unified-overage-disabled-reason: out_of_credits
+anthropic-ratelimit-unified-overage-status: rejected
+anthropic-ratelimit-unified-representative-claim: five_hour
+anthropic-ratelimit-unified-reset: 1793453400
+anthropic-ratelimit-unified-status: allowed
+request-id: req_000000000000000000000000

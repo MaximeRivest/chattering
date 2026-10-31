@@ -12,7 +12,7 @@ const policy = require('./push-policy.js');
 
 // Which event wins when several arrive for one conversation within the
 // wait: the more important, else the later.
-const RANK = { quiet: 0, reply: 1, failed: 2, question: 3, ask: 4, call: 5 };
+const RANK = { quiet: 0, plan: 0, reply: 1, failed: 2, question: 3, ask: 4, call: 5 };
 
 function createPushNotifier({
   service,                       // push.js
@@ -63,13 +63,15 @@ function createPushNotifier({
     const ev = { ...raw, title: val(raw.title), excerpt: val(raw.excerpt), detail: val(raw.detail) };
     const { key } = ev;
     // listed(key, userId): in that person's own side list (one per person).
-    const who = [...new Set(recipients(key, ev.askedBy || null).filter(Boolean))].filter(userId => listed(key, userId));
+    // A notice for named people (a plan's limit, design/109) is in no list.
+    const who = Array.isArray(ev.to) ? [...new Set(ev.to.filter(Boolean))]
+      : [...new Set(recipients(key, ev.askedBy || null).filter(Boolean))].filter(userId => listed(key, userId));
     if (!who.length) return;
     const h = await home();
     const t = now();
     for (const userId of who) {
       const subs = service.forUser(userId);
-      if (!subs.length || !canSee(userId, key)) continue;
+      if (!subs.length || (!Array.isArray(ev.to) && !canSee(userId, key))) continue;
       const rows = here.forUser(userId, live);
       let u = { count: null, keys: [] };
       try { u = unread(userId) || u; } catch {}

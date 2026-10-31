@@ -14,7 +14,7 @@ const CUSTOM_TYPE = "mode-switch";
 // The frog's tools (extensions/frog.ts, design/102) steer every other
 // conversation: only the frog mode lists them.
 const FROG_TOOLS = ["workspace", "find_conversations", "read_conversation", "send_to_conversation", "start_conversation", "create_project",
-  "stop_conversation", "fork_conversation", "branch_conversation", "rename_conversation", "organize_list", "mark_read", "context_use", "fresh_start", "remember", "recall_memory", "zoom_memory", "asides", "ask_when", "list_asks", "cancel_ask", "notify_person"];
+  "stop_conversation", "fork_conversation", "branch_conversation", "rename_conversation", "organize_list", "mark_read", "context_use", "plan_limits", "fresh_start", "remember", "recall_memory", "zoom_memory", "asides", "ask_when", "list_asks", "cancel_ask", "notify_person"];
 const OPT_IN_TOOLS = new Set(["web_search", "delegate", "delegation_status", "delegation_control", "delegation_resume", "delegation_review", "agent_browser", "agent_browser_session", ...FROG_TOOLS]);
 const SYSTEM_PROMPT_SECTIONS = new Set(["available_tools", "custom_tools_note", "guidelines", "pi_docs", "append_prompt", "project_context", "skills", "date", "cwd"]);
 const SECTION_HEADINGS: Record<string, string[]> = {

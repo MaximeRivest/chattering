@@ -2555,6 +2555,8 @@ if (document.documentElement.dataset.layout === 'side' && matchMedia('(min-width
 <script src="/app-update-ui.js"></script>
 <script src="/harness/compose-commands.js"></script>
 <script src="/harness-composer-ui.js"></script>
+<script src="/plan-limits-ui.js"></script>
+<link rel="stylesheet" href="/plan-limits.css">
 <script src="/codex-ui.js"></script>
 <script src="/live-terminal-ui.js"></script>
 <script src="/claude-accounts-ui.js"></script>
@@ -11532,6 +11534,8 @@ async function openModelPicker(anchor, opts, onPick) {
   pop.innerHTML = `<div class="mp-top"><input type="search" class="mp-filter" placeholder="find a model${replaces ? ' · enter switches · shift+enter adds' : opts && opts.multi ? ' · enter toggles · ctrl+enter uses' : ''}">` +
     `<button type="button" class="mp-all" title="Also show providers that are not signed in">all</button>` +
     `<button type="button" class="mp-refresh">↻</button></div>` +
+    // What the plans behind these models still allow (design/109).
+    `<div class="mp-plans-host"></div>` +
     `<div class="mp-provs"></div>` +
     `<div class="mp-list"></div>` +
     (opts && opts.multi ? `<div class="mp-foot"><button class="primary mp-use">use <span class="mp-count">${sel.size}</span> model${sel.size === 1 ? '' : 's'}</button> <button class="mp-cancel">cancel</button></div>` : '');
@@ -11544,7 +11548,7 @@ async function openModelPicker(anchor, opts, onPick) {
     for (const m of models) if ((showAll || ready.has(m.provider) || sel.has(m.id)) && !s.has(m.provider)) { s.add(m.provider); seen.push(m.provider); }
     if (provFilter && !s.has(provFilter)) provFilter = '';
     provs.innerHTML = `<button type="button" class="mp-prov${provFilter === '' ? ' on' : ''}" data-prov="">all</button>` +
-      seen.map(p => `<button type="button" class="mp-prov${provFilter === p ? ' on' : ''}${ready.has(p) ? '' : ' notready'}" data-prov="${esc(p)}">${esc(p)}</button>`).join('');
+      seen.map(p => `<button type="button" class="mp-prov${provFilter === p ? ' on' : ''}${ready.has(p) ? '' : ' notready'}" data-prov="${esc(p)}">${esc(p)}${window.PlanLimits ? PlanLimits.chipMark(p) : ''}</button>`).join('');
     provs.querySelectorAll('.mp-prov').forEach(b => b.onclick = () => {
       provFilter = provFilter === b.dataset.prov ? '' : b.dataset.prov;
       hi = 0;
@@ -11575,9 +11579,12 @@ async function openModelPicker(anchor, opts, onPick) {
       provider = m.provider;
       const variant = variantOf(m);
       const speed = speedOf(m);
-      return head + `<button class="mp-row${sel.has(m.id) ? ' on' : ''}${ready.has(m.provider) ? '' : ' notready'}" data-mp="${esc(m.id)}" title="${ready.has(m.provider) ? '' : 'provider not authenticated · '}${esc(m.id)} · ${esc(m.contextLabel || '')} context${esc(fitLabel(m))}${speed ? ' · ' + esc(speed.title) : ''}">` +
+      const plan = window.PlanLimits ? PlanLimits.of(m.provider, m.model) : null;
+      const planWords = plan ? PlanLimits.stateWords(plan, { long: true }) : '';
+      return head + `<button class="mp-row${sel.has(m.id) ? ' on' : ''}${ready.has(m.provider) ? '' : ' notready'}${plan && plan.state === 'limited' ? ' planlimited' : ''}" data-mp="${esc(m.id)}" title="${ready.has(m.provider) ? '' : 'provider not authenticated · '}${esc(m.id)} · ${esc(m.contextLabel || '')} context${esc(fitLabel(m))}${speed ? ' · ' + esc(speed.title) : ''}${planWords ? ' · plan: ' + esc(planWords) : ''}">` +
         `<span class="mp-check">${sel.has(m.id) ? '✓' : ''}</span><b>${esc(baseNameOf(m))}</b>` +
         `${variant ? `<span class="mp-tag${variant === 'free' ? ' free' : ''}">${esc(variant)}</span>` : ''}` +
+        `${window.PlanLimits ? PlanLimits.rowBadge(m.provider, m.model) : ''}` +
         `<span class="mp-ctx">${esc(m.contextLabel || '')}</span>` +
         `${speed ? `<span class="mp-speed">${esc(speed.label)}</span>` : ''}` +
         `${replaces ? `<span class="mp-addbtn" role="button" title="${sel.has(m.id) ? 'remove from the parallel set' : 'add to the parallel set (fan-out)'}">${sel.has(m.id) ? '−' : '+'}</span>` : ''}</button>`;
@@ -11671,6 +11678,19 @@ async function openModelPicker(anchor, opts, onPick) {
     pop.querySelector('.mp-cancel').onclick = close;
   }
   filterInput.oninput = () => { hi = 0; apply(); };
+  // The plans: shown at once from what is known, again when fresher numbers come.
+  const plansHost = pop.querySelector('.mp-plans-host');
+  const paintPlans = () => {
+    if (!window.PlanLimits || !pop.isConnected) return;
+    const shownProviders = new Set(models.filter(m => showAll || ready.has(m.provider) || sel.has(m.id)).map(m => m.provider));
+    plansHost.innerHTML = PlanLimits.pickerStrip({ providers: shownProviders, selected: [...sel] });
+    PlanLimits.bindStrip(plansHost, { close, onSwitch: pick => { close(); onPick([pick]); } });
+  };
+  if (window.PlanLimits) {
+    paintPlans();
+    const stop = PlanLimits.onChange(() => { if (!pop.isConnected) return stop(); paintPlans(); paintProvs(); apply(); });
+    PlanLimits.load(true).catch(() => {});
+  }
   paintProvs();
   apply();
   filterInput.focus();
@@ -12032,9 +12052,14 @@ function paintCtxMeter(el, c) {
   } else {
     parts.push(`${fmtTokens(c.ctxTokens)} window`);
   }
+  // A plan is not charged per message: what is left of its window is the
+  // cost that matters (design/109).
+  const planText = window.PlanLimits ? PlanLimits.meterText(c) : '';
+  const planState = window.PlanLimits ? PlanLimits.of(c.provider, c.model) : null;
   if (c.harness === 'codex') {
-    // A ChatGPT plan is not charged per message: its usage window is the cost.
-    parts.push(window.CodexUI ? CodexUI.usageText() : 'on your ChatGPT plan');
+    parts.push(planText || (window.CodexUI ? CodexUI.usageText() : 'on your ChatGPT plan'));
+  } else if (planText) {
+    parts.push(planText);
   } else if (c.traceCost > 0) {
     const extra = c.familyCost - c.traceCost;
     parts.push('est. ' + money(c.traceCost) + (extra > 0.0005 ? ` (+${money(extra)} branches)` : ''));
@@ -12042,7 +12067,7 @@ function paintCtxMeter(el, c) {
     // Zero can mean local, subscription, free, or missing pricing.
     parts.push('cost unknown');
   }
-  const warn = c.usedTokens > 0 && c.pctLeft != null && c.pctLeft < 15;
+  const warn = (c.usedTokens > 0 && c.pctLeft != null && c.pctLeft < 15) || !!(planState && (planState.state === 'limited' || planState.state === 'near'));
   el.className = 'ctxmeter click' + (warn ? ' warn' : '');
   el.textContent = (warn ? '⚠ ' : '') + parts.join(' · ');
   el.title = 'Open the system prompt this conversation last sent to the model';
@@ -12051,9 +12076,16 @@ function paintCtxMeter(el, c) {
     + (c.usedTokens ? `${c.usedTokens.toLocaleString()} of ${c.ctxTokens.toLocaleString()} tokens used · ${left.toLocaleString()} left`
                     : `no reply counted yet · window ${c.ctxTokens.toLocaleString()} tokens`)
     + (c.estimate ? ' (estimate: the counters come from ' + (c.usedModel || 'no reply') + ')' : '')
-    + ` · Pi catalog estimate on this path ${money(c.traceCost)} · all branches ${money(c.familyCost)}`;
+    + ` · Pi catalog estimate on this path ${money(c.traceCost)} · all branches ${money(c.familyCost)}`
+    + (planText ? '\n\n' + PlanLimits.meterTitle(c) : '');
   el.hidden = false;
 }
+// Fresher plan numbers repaint the usage line of the open conversation.
+if (window.PlanLimits) PlanLimits.onChange(() => {
+  const h = current && ctxMeterCache.get(current.key);
+  if (h && h.data && $('ctxMeter') && !current.draft) paintCtxMeter($('ctxMeter'), h.data);
+  if (typeof settingsOpen !== 'undefined' && settingsOpen && settingsPane === 'plans') renderSettings();
+});
 
 function wireHead() {
   $('conversationFiles').onclick = fbConversationFiles;
@@ -17208,6 +17240,7 @@ let voiceMuteTimer = null;
 const SETTINGS_PANES = [
   ['profile', 'your profile', 'Your name, initials and picture.'],
   ['ai', 'AI accounts', 'Sign in with a Claude or ChatGPT plan, add a key, or use a model on your computer.'],
+  ['plans', 'plans', 'What each subscription still allows: its five hours, its week, a model\u2019s own limit, and when each resets.'],
   ['agents', 'agents', 'Continue Claude Code, Pi and Codex conversations in their own programs, shown here.'],
   ['model', 'model', 'Which model writes notes, titles, epics, and memory.'],
   ['sound', 'sound', 'What the speakers do when a run finishes; voice commands.'],
@@ -17330,7 +17363,7 @@ function paneModel() {
     ${plainStepsSectionHtml()}
     <h3>interrupted conversations</h3>
     <label class="set-check"><input id="setAutoResumeNetwork" type="checkbox"${s.autoResumeNetwork ? ' checked' : ''}> resume connection failures automatically</label>
-    <div class="set-help">Off by default. The host checks the provider connection twice before resuming saved work, one conversation at a time. Up to 3 attempts within 24 hours. No automatic recovery for deliberate stops, login or usage limits, changed conversations, delegated work, or parallel answers. Continues the saved conversation rather than repeating your original prompt; uncertain tool actions can still be repeated. Disable this at any time to stop waiting retries. Already-running work is not stopped.</div>
+    <div class="set-help">Off by default. The host checks the provider connection twice before resuming saved work, one conversation at a time. Up to 3 attempts within 24 hours. Work stopped by a plan’s usage limit waits for the limit to reset, as the provider says it (settings → plans), within the same 24 hours. No automatic recovery for deliberate stops, sign-in problems, changed conversations, delegated work, or parallel answers. Continues the saved conversation rather than repeating your original prompt; uncertain tool actions can still be repeated. Disable this at any time to stop waiting retries. Already-running work is not stopped.</div>
     <details class="set-field">
       <summary>Customize the resume message</summary>
       <label for="setResumePrompt">Message sent when a conversation is resumed</label>
@@ -17906,6 +17939,7 @@ const SETTINGS_PANE_RENDER = {
   snippets: [paneSnippets, bindPaneSnippets],
   hotkeys: [() => window.Hotkeys ? Hotkeys.settingsHtml() : '', root => window.Hotkeys && Hotkeys.bindSettings(root)],
   ai: [paneAi, bindPaneAi],
+  plans: [() => window.PlanLimits ? PlanLimits.paneHtml() : '', root => window.PlanLimits && PlanLimits.bindPane(root)],
   agents: [() => window.LiveTerminal ? LiveTerminal.settingsHtml(settingsState && settingsState.canEditSettings !== false) : '', root => window.LiveTerminal && LiveTerminal.bindSettings(root)],
   machines: [paneMachines, bindPaneMachines],
   people: [panePeople, bindPanePeople],
@@ -17927,7 +17961,7 @@ function renderSettings() {
       <button type="button" data-go="usage" title="Tokens, cost estimates, and subscription value">usage and cost →</button>
       <div class="brand">Chattering, by <a href="https://rockfrog.ai" target="_blank" rel="noopener">Rockfrog</a></div>
     </nav>
-    <section class="settings-pane">${settingsState && settingsState.canEditSettings === false && !['profile', 'people', 'appearance', 'jobs', 'hotkeys'].includes(settingsPane) ? `<div class="set-readonly hint">These are ${esc((settingsState.hostname || 'this machine'))}'s settings; only its owner or an admin can change them. Your appearance choices stay yours.</div>` : ''}${settingsState ? paint() : '<div class="empty">loading settings…</div>'}</section>
+    <section class="settings-pane">${settingsState && settingsState.canEditSettings === false && !['profile', 'people', 'appearance', 'jobs', 'hotkeys', 'plans'].includes(settingsPane) ? `<div class="set-readonly hint">These are ${esc((settingsState.hostname || 'this machine'))}'s settings; only its owner or an admin can change them. Your appearance choices stay yours.</div>` : ''}${settingsState ? paint() : '<div class="empty">loading settings…</div>'}</section>
   </div>`;
   const root = $('settingsRoot');
   root.querySelectorAll('.settings-nav [data-pane]').forEach(b => b.onclick = () => showSettingsPane(b.dataset.pane));
@@ -19737,6 +19771,9 @@ live.onmessage = ev => {
   if (d.type === 'hello') setTimeout(() => { if (typeof frogVoiceConnected === 'function') frogVoiceConnected(); }, 0);
   if (peopleLiveEvent(d)) return;
   if (d.type === 'agent-recovery') { applyAgentRecovery(d.recovery); return; }
+  // Plan limits (design/109): numbers changed; a limit reached or over.
+  if (d.type === 'plan-limits') { if (window.PlanLimits) PlanLimits.changed(); return; }
+  if (d.type === 'plan-notice') { if (window.PlanLimits) PlanLimits.notice(d); return; }
   if (d.type === 'delegation-update') { delegationUI.invalidate(); return; }
   if (d.type === 'timeline-titles') {
     for (const update of d.titles || []) {

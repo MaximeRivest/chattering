@@ -18,7 +18,9 @@ async function setup(t) {
   const root = path.join(dir, 'store'), file = path.join(dir, 'parent.jsonl');
   fs.writeFileSync(file, JSON.stringify({ type: 'session', version: 3, id: randomUUID(), cwd: dir }) + '\n');
   const saved = {};
-  for (const key of ['PI_DELEGATION_ROOT', 'PI_DELEGATION_ID', 'PI_DELEGATION_SUPERVISION', 'JITI_FS_CACHE', 'CHATTERING_PI_CLI', 'FIXTURE_STORE']) saved[key] = process.env[key];
+  for (const key of ['PI_DELEGATION_ROOT', 'PI_DELEGATION_ID', 'PI_DELEGATION_SUPERVISION', 'JITI_FS_CACHE', 'CHATTERING_PI_CLI', 'FIXTURE_STORE', 'CHATTERING_PORT']) saved[key] = process.env[key];
+  // The plan check before delegating asks Chattering; no Chattering here (port 9 refuses at once).
+  process.env.CHATTERING_PORT = '9';
   process.env.PI_DELEGATION_ROOT = root;
   process.env.PI_DELEGATION_SUPERVISION = 'detached';
   delete process.env.PI_DELEGATION_ID;

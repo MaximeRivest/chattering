@@ -24,7 +24,8 @@ const FRESH_MS = 150 * 1000;        // a visible screen reports at least once a 
 // turns it off and it goes even while they are at a screen.
 // call: the frog calls the person (design/102, part 4): the Android app
 // rings as for a call; a browser shows it as an urgent notification.
-const KIND_PREF = { reply: 'replies', failed: 'problems', quiet: 'problems', question: 'questions', test: null, ask: null, call: null };
+// plan: a plan's usage limit reached, or over (design/109): off unless the device turns it on.
+const KIND_PREF = { reply: 'replies', failed: 'problems', quiet: 'problems', question: 'questions', test: null, ask: null, call: null, plan: 'plans' };
 
 // ---- where each screen is ---------------------------------------------------
 // One row per live connection of the app (its event stream): whether the
@@ -86,6 +87,8 @@ function decide({ kind, key, prefs, rows = [], now }) {
   if (kind === 'test') return { send: true, why: 'test' };
   if (kind === 'ask' || kind === 'call') return { send: true, why: 'asked for' };
   if (pref && prefs && prefs[pref] === false) return { send: false, why: 'off for ' + pref };
+  // Opt-in kinds: only where the device said yes.
+  if (kind === 'plan' && !(prefs && prefs.plans === true)) return { send: false, why: 'off for plans' };
   if (key && lookingAt(rows, key, now)) return { send: false, why: 'looking at it' };
   if (!(prefs && prefs.whileActive) && atScreen(rows, now)) return { send: false, why: 'at another screen' };
   return { send: true, why: 'away' };
@@ -122,11 +125,13 @@ function messageFor({ kind, key, title, excerpt, detail, count = 1, prefs = {}, 
   else if (kind === 'test') body = clip(detail, 180) || 'Notifications work on this device.';
   else if (kind === 'ask') body = clip(detail, 240) || 'You asked to be told';
   else if (kind === 'call') body = clip(detail, 240) || 'The frog is calling you';
+  else if (kind === 'plan') body = clip(detail, 200) || 'A plan\u2019s usage limit changed';
   const msg = {
-    v: 1, kind, title: kind === 'test' ? 'Chattering' : name, body, at,
+    v: 1, kind, title: kind === 'test' ? 'Chattering' : kind === 'plan' ? clip(title, 80) || 'Plan limits' : name, body, at,
     tag: key ? tagFor(home.id, key) : 'chattering-' + kind,
-    key: key || null,
-    url: key ? '/#' + encodeURIComponent(key) : '/',
+    // A plan's notice is about no conversation: it opens settings → plans.
+    key: kind === 'plan' ? null : key || null,
+    url: kind === 'plan' ? '/#settings=plans' : key ? '/#' + encodeURIComponent(key) : '/',
     home: home.id ? { id: home.id, name: clip(home.name, 40) } : null,
     // A newer reply in the same conversation buzzes again; the open
     // notification is replaced either way.
@@ -164,6 +169,7 @@ function deliveryFor(kind) {
   if (kind === 'test') return { ttl: 120, urgency: 'high' };
   if (kind === 'ask') return { ttl: 6 * 3600, urgency: 'high' };
   if (kind === 'call') return { ttl: 90, urgency: 'high' }; // a ring an hour late is a wrong one
+  if (kind === 'plan') return { ttl: 3 * 3600, urgency: 'high' };
   return { ttl: 24 * 3600, urgency: 'high' };
 }
 

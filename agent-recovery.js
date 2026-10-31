@@ -5,9 +5,13 @@ const path = require('node:path');
 
 const MAX_ATTEMPTS = 3;
 const AUTO_WINDOW_MS = 24 * 60 * 60 * 1000;
+// A plan's usage limit (design/109): waited for until it resets.
+// Not "quota exhausted" alone: an API key's spent quota does not reset by itself.
+const LIMIT_RE = /usage limit|hit your (?:usage )?limit|limit reached|(?:weekly|session|5-hour|five-hour) limit|usage_limit_reached/i;
 function failureKind(text) {
   const s = String(text || '');
   if (/aborted|cancelled|canceled|stopped by|restarted|server restart/i.test(s)) return 'stopped';
+  if (LIMIT_RE.test(s)) return 'limit';
   if (/401|403|429|unauthori[sz]ed|forbidden|invalid.grant|auth|api.key|quota|rate.limit|usage.limit|billing|credit|context|token.limit|overload|\b50[0234]\b/i.test(s)) return 'other';
   return /fetch failed|failed to fetch|network|ECONNRESET|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|UND_ERR_(CONNECT_TIMEOUT|SOCKET)|socket hang up|connection (error|reset|closed|refused|terminated)|internet|DNS/i.test(s) ? 'network' : 'other';
 }
@@ -44,8 +48,10 @@ async function probe(url, fetcher = fetch) {
 }
 
 class AgentRecovery {
-  constructor({ file, enabled = () => false, validate, launch, endpoint, check = probe, changed = () => {}, now = Date.now }) {
-    Object.assign(this, { file, enabled, validate, launch, endpoint, check, changed, now });
+  // limitState(record) → { limited, until } | null: the plan of the run's
+  // model now (plan-limits-service.js), null where it is not known.
+  constructor({ file, enabled = () => false, validate, launch, endpoint, check = probe, changed = () => {}, now = Date.now, limitState = () => null }) {
+    Object.assign(this, { file, enabled, validate, launch, endpoint, check, changed, now, limitState });
     this.records = new Map();
     this.busy = false;
     this.network = { state: 'idle', checkedAt: null };
@@ -82,7 +88,7 @@ class AgentRecovery {
     for (const r of this.records.values()) if (r.key === key && r.state === 'pending') r.state = 'superseded';
     const kind = failureKind(reason);
     this.records.set(id, { id, key, title, model, reason: String(reason || 'Interrupted').slice(0, 500), version, user: typeof user === 'string' ? user : null,
-      kind, eligible, auto: eligible && kind === 'network' && !historical,
+      kind, eligible, auto: eligible && (kind === 'network' || kind === 'limit') && !historical,
       attempts, state: 'pending', createdAt: this.now(), nextCheckAt: this.now() + 30000 * 2 ** Math.min(attempts, 3), goodChecks: 0 });
     this.save();
   }
@@ -132,6 +138,22 @@ class AgentRecovery {
         if (r.state !== 'pending' || !r.auto || r.attempts >= MAX_ATTEMPTS || this.now() - r.createdAt >= AUTO_WINDOW_MS || this.now() < r.nextCheckAt) continue;
         const invalid = await this.validate(r);
         if (invalid) { r.auto = false; r.note = invalid; this.save(); continue; }
+        if (r.kind === 'limit') {
+          // A plan's limit: resumed once the plan answers again, as its
+          // provider says (a read after the reset), not on a guess.
+          let st = null;
+          try { st = this.limitState(r); } catch {}
+          if (!st) { r.auto = false; r.note = 'Chattering cannot read this plan\u2019s limits. Resume when it answers again.'; this.save(); continue; }
+          if (st.limited) {
+            r.nextCheckAt = st.until ? Math.max(this.now() + 60000, st.until + 60000) : this.now() + 5 * 60000;
+            r.note = st.until ? 'Waits for the plan\u2019s limit to reset, ' + new Date(st.until).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) + '.' : 'Waits for the plan\u2019s limit to reset.';
+            this.save();
+            continue;
+          }
+          r.note = '';
+          try { await this.resume(r.id, true); } catch { /* Visible on the interrupted row. */ }
+          break;
+        }
         const url = this.endpoint(r);
         if (!url) { r.auto = false; r.note = 'No safe connection check for this provider. Resume manually.'; this.save(); continue; }
         const result = await this.check(url);

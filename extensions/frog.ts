@@ -155,9 +155,15 @@ export default function frog(pi: ExtensionAPI) {
   });
   register({
     name: "context_use", label: "Context use",
-    description: "How full each conversation's context window is: tokens used by its last reply against its model's window, fullest first (the side list's conversations; one with id). Past half, answers get slower and costlier, and near the end the agent must compact or start fresh: mention it. Plan usage limits are not readable here.",
+    description: "How full each conversation's context window is: tokens used by its last reply against its model's window, fullest first (the side list's conversations; one with id). Past half, answers get slower and costlier, and near the end the agent must compact or start fresh: mention it. For the plans' usage limits, plan_limits.",
     parameters: Type.Object({ id: Type.Optional(id), all: Type.Optional(Type.Boolean({ description: "Every conversation, not only the side list's" })) }),
     async execute(_id, p, signal) { return out(await get("context", p, signal)); },
+  });
+  register({
+    name: "plan_limits", label: "Plan limits",
+    description: "What each of the person's subscriptions still allows (Claude, ChatGPT and Codex, OpenRouter, Antigravity): each window (five hours, the week, one model family's own week, a month's budget) with the share used, when it resets, where the pace of the last hours leads, and which models it holds back; refusals for a limit and when they end; who used the window, when known. Read fresh from the providers (no model call). Use it when the person asks how much is left or when a limit resets, before suggesting big or delegated work, and after a reply was refused for a limit. Say numbers as the providers gave them; call estimates estimates.",
+    parameters: Type.Object({}),
+    async execute(_id, _p, signal) { return out(await get("limits", {}, signal)); },
   });
   register({
     name: "fresh_start", label: "Fresh start",

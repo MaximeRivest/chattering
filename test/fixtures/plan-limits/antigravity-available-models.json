@@ -1,0 +1,59 @@
+{
+  "models": {
+    "claude-opus-5-5-high": {
+      "displayName": "Claude Opus 5.5 (High)",
+      "recommended": true,
+      "maxTokens": 1000000,
+      "quotaInfo": {
+        "remainingFraction": 1,
+        "resetTime": "2026-10-30T06:18:58Z"
+      },
+      "model": "MODEL_PLACEHOLDER_M402",
+      "apiProvider": "API_PROVIDER_ANTHROPIC_VERTEX",
+      "modelProvider": "MODEL_PROVIDER_ANTHROPIC"
+    },
+    "gemini-4-argon-medium": {
+      "displayName": "Gemini 4 Argon (Medium)",
+      "recommended": true,
+      "maxTokens": 1048576,
+      "quotaInfo": {
+        "remainingFraction": 1,
+        "resetTime": "2026-11-06T01:18:58Z"
+      },
+      "model": "MODEL_PLACEHOLDER_M418",
+      "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+      "modelProvider": "MODEL_PROVIDER_GOOGLE"
+    },
+    "gemini-3.8-flash-high": {
+      "displayName": "Gemini 3.8 Flash (High)",
+      "recommended": true,
+      "maxTokens": 1048576,
+      "quotaInfo": {
+        "remainingFraction": 1,
+        "resetTime": "2026-10-30T06:18:58Z"
+      },
+      "model": "MODEL_PLACEHOLDER_M318",
+      "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+      "modelProvider": "MODEL_PROVIDER_GOOGLE"
+    },
+    "tab_flash_lite_preview": {
+      "maxTokens": 16384,
+      "quotaInfo": {
+        "remainingFraction": 1
+      },
+      "model": "MODEL_PLACEHOLDER_M19",
+      "apiProvider": "API_PROVIDER_GOOGLE_GEMINI",
+      "modelProvider": "MODEL_PROVIDER_GOOGLE"
+    },
+    "chat_20706": {
+      "maxTokens": 16384,
+      "quotaInfo": {
+        "remainingFraction": 1
+      },
+      "model": "MODEL_CHAT_20706",
+      "apiProvider": "API_PROVIDER_INTERNAL",
+      "modelProvider": "MODEL_PROVIDER_GOOGLE"
+    }
+  },
+  "defaultAgentModelId": "gemini-4-argon-medium"
+}

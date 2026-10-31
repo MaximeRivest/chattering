@@ -5,6 +5,7 @@ import { readFileSync, statSync } from "node:fs";
 import {
   launchDelegation, resumeDelegation, listDelegations, getDelegation, controlDelegation, reportDelegationReview, normalizeMode, modeSha256,
 } from "../delegation.js";
+import { planState } from "./plan-limits.ts";
 
 // Load with -e /absolute/path/extensions/delegation.ts. Do not also install a global copy.
 // The existing modes extension must be loaded. We do not replace global Pi resources.
@@ -120,11 +121,16 @@ export default function delegation(pi: ExtensionAPI) {
       const available = new Set(pi.getAllTools().map(tool => tool.name));
       const missing = params.tools.filter(tool => !available.has(tool));
       if (missing.length) throw new Error(`Requested tools are unavailable: ${missing.join(", ")}`);
+      // The model's plan (design/109): a worker on a plan at its limit would
+      // fail at its first reply; one on a nearly full plan is said so.
+      const plan = await planState(model.slice(0, slash), model.slice(slash + 1));
+      const back = plan && (plan.until || plan.resetsAt) ? new Date(plan.until || plan.resetsAt).toLocaleString() : "";
+      if (plan && plan.state === "limited") throw new Error(`${model} cannot answer now: its plan's ${plan.label || "usage"} limit is reached${back ? ", back " + back : ""}. Delegate to a model of another plan, or wait.`);
       const task = await launchDelegation({ ...params, model, thinking: params.thinking ?? ctx.thinkingLevel,
         cwd: params.cwd ?? ctx.cwd, parentSessionPath: sessionPath(ctx), parentEntryId: ctx.sessionManager.getLeafId(),
         delivery: ctx.mode === "rpc" ? "web" : "nextTurn" });
       if (ctx.hasUI) ctx.ui.notify(`Delegation ${task.id}: ${task.status}. Completion will request review.`, "info");
-      return result(compact(task));
+      return result({ ...compact(task), ...(plan && plan.state === "near" ? { plan: `${model}'s plan is nearly full: ${plan.usedPercent != null ? Math.round(plan.usedPercent) + "% of " : ""}its ${plan.label || "window"} used${back ? ", resets " + back : ""}. Long work may stop at the limit.` } : {}) });
     },
   });
   pi.registerTool({

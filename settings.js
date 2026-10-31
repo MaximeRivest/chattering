@@ -108,6 +108,10 @@ const DEFAULT_SETTINGS = {
   // looks at is one call. provider/model: the model that writes them, best a
   // small fast one; empty: the model above (notes and titles).
   plainSteps: { on: false, provider: '', model: '' },
+  // Plan limits (design/109): the share of a plan's tightest window kept
+  // for people. Work nobody asked for in that moment (titles, memory, plain
+  // steps) waits once a plan has less than this left. 0: never waits.
+  planReserve: 15,
   autoResumeNetwork: false,
   resumePrompt: DEFAULT_RESUME_PROMPT,
   // Running work whose output has not moved for this many minutes is
@@ -468,6 +472,7 @@ function normalizeSettings(input) {
   const simplifyPrompt = typeof src.simplifyPrompt === 'string' && src.simplifyPrompt.trim() ? src.simplifyPrompt : DEFAULT_SIMPLIFY_PROMPT;
   const plainSteps = normalizePlainSteps(src.plainSteps);
   const autoResumeNetwork = src.autoResumeNetwork === true;
+  const planReserve = Number.isFinite(Number(src.planReserve)) && src.planReserve !== null && src.planReserve !== '' ? Math.max(0, Math.min(50, Math.round(Number(src.planReserve)))) : DEFAULT_SETTINGS.planReserve;
   const resumePrompt = typeof src.resumePrompt === 'string' && src.resumePrompt.trim() ? src.resumePrompt.trim().slice(0, 4000) : DEFAULT_RESUME_PROMPT;
   const quietMinutes = normalizeQuietMinutes(src.quietMinutes);
   const piTheme = typeof src.piTheme === 'string' && src.piTheme.trim() ? src.piTheme.trim() : DEFAULT_SETTINGS.piTheme;
@@ -517,6 +522,7 @@ function normalizeSettings(input) {
     simplifyAnswers,
     simplifyPrompt,
     plainSteps,
+    planReserve,
     autoResumeNetwork,
     resumePrompt,
     quietMinutes,
@@ -610,6 +616,8 @@ function buildPiArgs(settings, options = {}) {
     // Since Pi 0.99 --no-extensions also drops Pi's built-in llama.cpp
     // provider; a person whose model comes from it keeps it here.
     '-e', 'builtin:llama.cpp',
+    // What each reply says about the plan's limits (design/109).
+    ...(options.planLimitsExtension ? ['-e', options.planLimitsExtension] : []),
     '--thinking', s.thinking,
   ];
   if (!s.usePiDefault) {

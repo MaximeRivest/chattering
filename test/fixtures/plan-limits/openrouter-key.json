@@ -1,0 +1,61 @@
+{
+  "data": {
+    "label": "sk-or-v1-000…000",
+    "is_management_key": false,
+    "is_provisioning_key": false,
+    "limit": 400,
+    "limit_reset": "monthly",
+    "limit_remaining": 387.79576985,
+    "include_byok_in_limit": false,
+    "budgets": [
+      {
+        "scope": "key_limit",
+        "guardrail_id": null,
+        "budget_id": null,
+        "limit_usd": 400,
+        "spend_usd": 12.20423015,
+        "remaining_usd": 387.79576985,
+        "reset_interval": "monthly",
+        "resets_at": "2026-11-01T00:00:00.000Z",
+        "include_byok": false
+      }
+    ],
+    "effective_budget": {
+      "scope": "key_limit",
+      "guardrail_id": null,
+      "budget_id": null,
+      "limit_usd": 400,
+      "spend_usd": 12.20423015,
+      "remaining_usd": 387.79576985,
+      "reset_interval": "monthly",
+      "resets_at": "2026-11-01T00:00:00.000Z",
+      "include_byok": false
+    },
+    "usage": 299.166401542,
+    "usage_daily": 0,
+    "usage_weekly": 0,
+    "usage_monthly": 12.20423015,
+    "byok_usage": 0,
+    "byok_usage_daily": 0,
+    "byok_usage_weekly": 0,
+    "byok_usage_monthly": 0,
+    "is_free_tier": false,
+    "expires_at": null,
+    "creator_user_id": "user_00000000000000000000000000",
+    "organization_id": null,
+    "workspace_id": "00000000-0000-4000-8000-00000000d001",
+    "allowed_data_regions": [
+      "global"
+    ],
+    "free_model_daily_requests": {
+      "used": 0,
+      "limit": 1000,
+      "remaining": 1000
+    },
+    "rate_limit": {
+      "requests": -1,
+      "interval": "10s",
+      "note": "This field is deprecated and safe to ignore."
+    }
+  }
+}

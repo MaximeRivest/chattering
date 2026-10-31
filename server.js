@@ -2187,6 +2187,14 @@ async function indexFile(source, relPath, stat) {
     await writeFileAtomic(cachePathFor(key), JSON.stringify({ key, relPath, ...entry, messages, entryParents }));
     index[key] = entry;
     indexRevision++;
+    // A conversation that just grew used its plan (design/109): an agent's
+    // own program in a terminal says so nowhere else.
+    if (prev && stat.mtimeMs > (prev.mtimeMs || 0) && Date.now() - stat.mtimeMs < 10 * 60000) {
+      try {
+        const harness = harnessOfSource(source);
+        planLimits.used(accountOfSource(source) || '', { harness: harness === 'pi' ? '' : harness, provider: entry.ctx && entry.ctx.provider, claudeAccount: harness === 'claude' ? claudeAccountOf(key) : '' });
+      } catch {}
+    }
     scheduleProjectFoldRefresh(meta.cwd);
     // Local transcript tools have explicit paths and completion results.
     // Remote-only paths must never be offered as local files.
@@ -3215,6 +3223,9 @@ async function conversationContextResponse(key, leafId) {
     pctLeft: ctxTokens ? Math.max(0, Math.min(100, Math.round(100 * (1 - usedTokens / ctxTokens)))) : null,
     traceCost: money(chain),
     familyCost: money(all),
+    // The API price of the last replies on this path, newest first: with a
+    // plan's calibration, what one reply takes of its window (design/109).
+    recentReplyCosts: chain.filter(n => n.role === 'assistant' && n.cost > 0).slice(0, 5).map(n => Math.round(n.cost * 1e6) / 1e6),
     usedModel,
     usedTs: lastUsed ? lastUsed.ts : null,
     // An estimate when no usage exists yet, when the model is not in the
@@ -3760,8 +3771,11 @@ function piProviderExtraArgs() {
     // The frog's tools: opt-in, only its mode has them (design/102).
     '-e', path.join(__dirname, 'extensions', 'frog.ts'),
     // Old images stop going out before a request passes the provider's size limit.
-    '-e', path.join(__dirname, 'extensions', 'image-budget.ts')];
+    '-e', path.join(__dirname, 'extensions', 'image-budget.ts'),
+    // What each reply says about its plan's limits (design/109).
+    '-e', PLAN_LIMITS_EXT];
 }
+const PLAN_LIMITS_EXT = path.join(__dirname, 'extensions', 'plan-limits.ts');
 
 // Abort the headless run on a file and wait for it to let go.
 async function releaseHeadless(absPath, reason) {
@@ -4004,11 +4018,18 @@ function runEventForwarder(job) {
         if (event.message.stopReason === 'error' || event.message.stopReason === 'aborted') {
           job.errorMessage = String(event.message.errorMessage || (event.message.stopReason === 'aborted' ? 'aborted' : 'model error')).slice(0, 1000);
           job.statusText = 'model error';
+          // A refusal for a plan's limit (design/109). Pi runs say it through
+          // their own extension (extensions/plan-limits.ts); an agent's own
+          // program (Codex in Chattering's box) through here.
+          if (job.harness && job.harness !== 'pi' && event.message.stopReason === 'error') planJobObserve(job, { error: job.errorMessage, model: event.message.model });
         } else {
           // A successful retry supersedes its earlier transport error.
           job.errorMessage = null;
         }
         push(true);
+      } else if (event.type === 'harness_limits') {
+        // Codex's or Claude Code's own report of the plan (design/109).
+        planJobObserve(job, event.harness === 'codex' ? { codexLimits: event.limits } : { claudeEvent: event.limits });
       } else if (event.type === 'auto_retry_start') {
         job.statusText = 'retrying · ' + (event.reason || '');
         push(true);
@@ -5728,7 +5749,34 @@ async function frogContextList({ id, all }, identity) {
     rows.push({ ...frogRow(key), context: c ? { used: c.used, window: c.size, percent: c.pct, model: c.model, windowKnown: c.sized } : null });
   }
   rows.sort((a, b) => ((b.context && b.context.percent) || 0) - ((a.context && a.context.percent) || 0));
-  return { conversations: rows.slice(0, 60), planLimits: 'not readable here: neither Chattering nor the Claude provider keeps the subscription\u2019s usage limits' };
+  return { conversations: rows.slice(0, 60), planLimits: 'see plan_limits' };
+}
+// The plans, for the frog (design/109): fresh from the providers, in words
+// it can repeat, times as ISO dates.
+async function frogPlanLimits(identity) {
+  const who = planViewerOf(identity);
+  await Promise.race([planLimits.looked(who.account).catch(() => {}), sleep(8000)]);
+  const v = planLimits.view(who);
+  const iso = t => t ? new Date(t).toISOString() : null;
+  const round = n => n == null ? null : Math.round(n * 10) / 10;
+  return {
+    now: iso(Date.now()), reserveForPeople: (Number(appSettings.planReserve) || 0) + '% of a plan\u2019s tightest window: background work waits below it',
+    plans: (v.pools || []).map(p => ({
+      plan: p.label, state: p.state, usedBy: [...new Set(p.routes.flatMap(r => r.providers))],
+      readAt: iso(p.readAt), problem: p.error ? p.error.message : null,
+      windows: p.windows.map(w => ({
+        window: w.label, state: w.state, usedPercent: round(w.usedPercent), resetsAt: iso(w.resetsAt), ...(w.resetAt ? { resetAt: iso(w.resetAt), note: 'reset since it was read; not read again yet' } : {}),
+        forModels: w.scope ? (w.scope.family ? 'models named ' + w.scope.family : w.scope.models.join(', ')) : 'every model of the plan',
+        said: w.source === 'read' ? 'read from the provider' : w.source === 'live' ? 'from the last reply' : 'from a refused reply', at: iso(w.at),
+        ...(w.money ? { dollars: w.money } : {}),
+        ...(w.pace ? { pace: { percentPerHour: round(w.pace.perHour), estimate: true, ...(w.pace.hitsAt ? { limitReachedAround: iso(w.pace.hitsAt) } : { holdsUntilReset: true }) } } : {}),
+        ...(w.use ? { usedBy: w.use.people.map(x => ({ who: x.name, share: Math.round(x.share * 100) + '% of the use Chattering saw', ...(x.percent != null ? { windowPercent: round(x.percent), estimate: true } : {}) })), outsideChatteringPercent: round(w.use.outsidePercent) } : {}),
+      })),
+      ...(p.credits ? { afterTheLimit: p.credits } : {}),
+    })),
+    quiet: (v.quiet || []).map(q => q.provider + ': tells its limits only when a reply is refused'),
+    readers: (v.readers || []).filter(r => !r.ok).map(r => r.label + ' reader stopped working ' + iso(r.at) + ': ' + r.message),
+  };
 }
 
 async function frogWorkspace(identity) {
@@ -6642,6 +6690,7 @@ async function frogApi(op, method, p, identity) {
       return { frog: !!(mine && p.session && path.resolve(String(p.session)) === mine) };
     }
     case 'context': return frogContextList(p, identity);
+    case 'limits': return frogPlanLimits(identity);
     case 'fresh': if (post) return frogFresh(p, identity); break;
     case 'aside': if (post) return frogAside(p); break;
     case 'asides':
@@ -7660,6 +7709,15 @@ const agentRecovery = new recoveryLib.AgentRecovery({
     catch { return 'The saved conversation is no longer available.'; }
     return null;
   },
+  // A run stopped by its plan's limit waits for the plan (design/109).
+  limitState: r => {
+    const slash = String(r.model || '').indexOf('/');
+    if (slash < 1) return null;
+    const e = index[r.key];
+    const s = planLimits.stateOf(e ? accountOfSource(e.source) || '' : '', { provider: r.model.slice(0, slash), model: r.model.slice(slash + 1) });
+    if (!s || s.state === 'unknown') return null;
+    return { limited: s.state === 'limited', until: s.until || s.resetsAt || null };
+  },
   launch: (r, attempts) => {
     const slash = String(r.model || '').indexOf('/');
     return startAgentRun(r.key, {
@@ -8368,7 +8426,11 @@ function killGuestSlice(userId, { revert = false } = {}) {
   const run = args => execText('systemctl', ['--user', ...args], { timeout: 8000 }).catch(() => '');
   run(['kill', '--signal=SIGKILL', slice]).then(() => run(['stop', slice])).then(() => { if (revert) { guestSliceApplied.delete(userId); return run(['revert', slice]); } });
 }
-const keyProxy = createKeyProxy({ log: msg => console.error(msg), onUsage: u => { try { recordGuestUsage(u); } catch {} } });
+const keyProxy = createKeyProxy({ log: msg => console.error(msg), onUsage: u => {
+  try { recordGuestUsage(u); } catch {}
+  // The owner's plans, as the replies to guests and shared models say them (design/109).
+  if (u && u.limits) try { planLimits.observe('', { provider: u.provider, headers: u.limits }); } catch {}
+} });
 const guestProxyTokens = new Map(); // guest id -> placeholder secret held by their sandboxes
 let guestProvidersCache = { at: 0, list: [] };
 async function guestProviderList() {
@@ -8955,6 +9017,7 @@ async function aiBody(req) {
 function piArgs(overrides = null) {
   return settingsLib.buildPiArgs(overrides ? { ...appSettings, ...overrides } : appSettings, {
     claudeCodeExtension: fs.existsSync(CLAUDE_CODE_EXT) ? CLAUDE_CODE_EXT : '',
+    planLimitsExtension: PLAN_LIMITS_EXT,
   });
 }
 function piContextTokens() {
@@ -10055,6 +10118,14 @@ async function piExec({ system, input, signal: ownSignal = null, onDelta = null,
   const runAs = principalAccount(ctx.principal) ? ctx.principal : null;
   const health = ctx.health || (runAs ? personModelHealth(runAs.walls.account.name) : memoryModelHealth);
   const own = ctx.model && ctx.model.provider && ctx.model.model ? ctx.model : runAs ? personModelPick(runAs) : null;
+  // Work nobody asked for waits while its plan is short of room: the rest
+  // is kept for people (design/109). A person's Pi default is theirs to
+  // know, not this server's: their calls without a pick are not held.
+  if (automatic) {
+    const target = own || (runAs ? null : appSettings.usePiDefault ? readPiDefault() : { provider: appSettings.provider, model: appSettings.model });
+    const refusal = target && planReserveRefusal(target, runAs ? planAccountOf(runAs) : '');
+    if (refusal) throw refusal;
+  }
   // The system prompt as a file only the caller reads (a command line is
   // seen by everyone, and sudo logs it): theirs is written by their host.
   const tmp = runAs ? path.join(runAs.walls.account.home, '.cache', 'chattering', 'tmp', 'system-' + crypto.randomBytes(8).toString('hex') + '.md')
@@ -12414,6 +12485,11 @@ async function codexMenusFor(cwd, principal) {
   if (!raw.models.error) codexModelCaches.set(slot, { at: Date.now(), models: modelsOfList(raw.models) });
   const codexModelCache = codexModelCaches.get(slot) || { at: 0, models: null };
   const account = raw.account && raw.account.account;
+  // Codex just said its plan's limits: a free reading (design/109).
+  if (raw.limits && !raw.limits.error) {
+    codexPlanAccounts.add(slot);
+    try { planLimits.observeCodex(slot, raw.limits, { source: 'read' }); } catch (e) { console.error('[plan limits] codex: ' + e.message); }
+  }
   return {
     models: codexModelCache.models || [], modelsError: raw.models.error || null,
     // The plan, never the address: menus reach every screen of the household.
@@ -12421,6 +12497,126 @@ async function codexMenusFor(cwd, principal) {
     limits: raw.limits && !raw.limits.error ? (raw.limits.rateLimits || raw.limits) : null,
     access: Object.entries(require('./harness/codex-runs.js').ACCESS_LABELS).map(([id, label]) => ({ id, label })),
   };
+}
+// ---- plan limits (design/109) ----
+// What every subscription still allows: read from each provider as the
+// person whose sign-in it is (person-ops.js `plan.read`, their own process),
+// updated by what each reply says (extensions/plan-limits.ts, the key
+// proxy, Claude Code's and Codex's own events), kept per pool, estimated,
+// and shown to each person as they may see it (plan-limits-service.js).
+const planLimitsLib = require('./plan-limits-service.js');
+// hub-own: the hub's own record of plan limits (pool hashes and numbers; no token, no account id)
+const planLimitsStore = require('./plan-limits-store.js').openStore(path.join(CACHE_DIR, 'plan-limits.sqlite'));
+const codexPlanAccounts = new Set(); // accounts whose Codex answered here: its limits are worth asking again
+function planPersonOf(account) { return account ? personWithAccount(account) : null; }
+// Whose rights read an account's sign-ins: its own (design/106).
+function planActorOf(account) {
+  if (!account) return localActor;
+  const person = planPersonOf(account);
+  const mine = person ? filesOfPerson(person) : null;
+  if (!mine) throw new Error('the account ' + account + ' is not linked to anyone here');
+  return actorOfMine(mine);
+}
+function planAgentDir(account) {
+  if (!account) return PI_AGENT_DIR;
+  const person = planPersonOf(account);
+  const mine = person ? filesOfPerson(person) : null;
+  return (mine && mine.agentDir) || null;
+}
+// The accounts with sign-ins of their own: this server's, and each person
+// on their own account with their own models (the owner's models are the
+// owner's plans).
+const planAccounts = () => ['', ...new Set(roster.users.filter(u => ownAccountOf(u) && u.models !== 'shared').map(u => ownAccountOf(u)))];
+const planLimits = planLimitsLib.createPlanLimits({
+  store: planLimitsStore,
+  readAs: (account, req) => planActorOf(account).op('plan.read', { ...req, agentDir: planAgentDir(account) || undefined }),
+  // Codex's own report, as the account's Codex, once Codex answered there.
+  codexRead: async account => {
+    if (!codexPlanAccounts.has(account)) return null;
+    const person = planPersonOf(account);
+    const principal = person ? principalFor({ user: person }) : principalFor(null);
+    if (codexRefusedFor(principal)) return null;
+    const home = principalAccount(principal) ? principal.walls.account.home : os.homedir();
+    const raw = await codexDriver.codexMenus({ cwd: home, ...codexTarget(principal, home) });
+    return raw.limits && !raw.limits.error ? raw.limits : null;
+  },
+  accounts: planAccounts,
+  // The usage index's calls, with the route each took: whose account, which
+  // agent, which Claude Code login (the conversation's choice).
+  ledger: usageIdx ? { facts: (from, to) => usageIdx.facts(from, to).map(f => {
+    const harness = harnessOfSource(f.source) || 'pi';
+    return { ...f, account: accountOfSource(f.source) || '', harness: harness === 'pi' ? '' : harness,
+      claudeAccount: harness === 'claude' && f.sessionKey && index[f.sessionKey] ? claudeAccountOf(f.sessionKey) : '' };
+  }) } : null,
+  catalog: () => (modelsCache.models || []).map(m => ({ provider: m.provider, model: m.model })),
+  claudeAccountName: id => { const a = claudeAccounts.list().find(x => x.id === id); return a ? a.name : id; },
+  personName: id => { const u = usersLib.findUser(roster, id); return u ? u.name : 'someone' },
+  onChange: () => broadcast({ type: 'plan-limits' }),
+  onNotice: n => planNotice(n),
+  log: m => console.error('[plan limits] ' + m),
+});
+setTimeout(() => { try { planLimits.tick(); } catch (e) { console.error('[plan limits] ' + e.message); } }, 15000).unref();
+setInterval(() => { try { planLimits.tick(); } catch (e) { console.error('[plan limits] ' + e.message); } }, 60000).unref();
+// What a person sees of the plans (design/109): their own sign-ins in full;
+// the owner's plans, when they draw on them through the key proxy (guests,
+// people on the owner's models), only whether each model answers.
+function planViewerOf(identity) {
+  const principal = principalFor(identity);
+  const userId = identity && identity.user ? usersLib.resolveId(roster, identity.user.id) : null;
+  const owner = policy.isOwnerTier(identity);
+  const own = principalAccount(principal);
+  if (own && principal.walls.models !== 'shared') return { account: own, level: 'full', owner, userId };
+  if (own || principal.guest || (identity && identity.user && usersLib.isWalled(identity.user))) return { account: '', level: 'status', owner: false, userId };
+  // The household on this server's account: its plans, the owner's other
+  // Claude logins excepted (the model picker does not offer them either).
+  return { account: '', level: 'full', owner, userId, hideCreds: owner ? null : cred => cred.startsWith('claude:') && cred !== 'claude:default' };
+}
+// The account whose sign-ins a principal's runs use, '' for this server's.
+const planAccountOf = principal => (principalAccount(principal) && principal.walls.models !== 'shared') ? principalAccount(principal) : '';
+// Work nobody asked for in that moment waits while its plan is short of
+// room: the last planReserve percent of the tightest window is kept for
+// people. Thrown as a pause (modelhealth.js): every background caller
+// already waits and retries on it, and the model's health is untouched.
+function planReserveRefusal({ provider, model } = {}, account = '') {
+  const reserve = Number(appSettings.planReserve);
+  if (!provider || !(reserve > 0)) return null;
+  const s = planLimits.stateOf(account, { provider, model });
+  if (!s) return null;
+  const full = s.state === 'limited' || (s.usedPercent != null && s.usedPercent >= 100 - reserve);
+  if (!full) return null;
+  const back = s.until || s.resetsAt || null;
+  const retryAt = Math.max(Date.now() + 60000, back ? back + 30000 : Date.now() + 15 * 60000);
+  const { ModelCallsPausedError } = require('./modelhealth.js');
+  const e = new ModelCallsPausedError(retryAt, `background work waits: ${provider}/${model} ${s.state === 'limited' ? 'has reached its plan\u2019s limit' : 'has ' + Math.max(0, Math.round(100 - s.usedPercent)) + '% of its ' + (s.label || 'plan') + ' window left'}, and the last ${reserve}% is kept for people (settings \u2192 plans)${back ? '; back ' + new Date(back).toLocaleTimeString() : ''}`);
+  e.planReserve = true;
+  return e;
+}
+// What a run of an agent's own program said about its plan: the account
+// is the conversation's (it runs as the account whose folder holds it).
+function planJobObserve(job, what) {
+  try {
+    const e = job && job.key ? index[job.key] : null;
+    const account = e ? accountOfSource(e.source) || '' : '';
+    const harness = job.harness || (e ? harnessOfSource(e.source) : '');
+    planLimits.observe(account, { harness, claudeAccount: harness === 'claude' ? claudeAccountOf(job.key) : '', ...what });
+  } catch (err) { console.error('[plan limits] ' + err.message); }
+}
+// A plan's limit reached or back (design/109): the people who use the
+// pool are told, in Chattering at once, and on their devices if they asked
+// (the device's "plans" switch, off unless turned on).
+function planNotice(n) {
+  const accounts = new Set(n.accounts || []);
+  const people = roster.users.filter(u => {
+    const own = ownAccountOf(u);
+    return own && u.models !== 'shared' ? accounts.has(own) : accounts.has('') && !usersLib.isWalled(u) && u.scope !== 'guest';
+  }).map(u => u.id);
+  const scopeWords = n.scope && n.scope.family ? ' (' + n.scope.family + ')' : n.scope && n.scope.models ? ' (' + n.scope.models.slice(0, 2).join(', ') + ')' : '';
+  const when = n.resetsAt ? 'back ' + new Date(n.resetsAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : 'its end was not said';
+  const detail = n.kind === 'limited' ? `${n.label}${scopeWords} limit reached · ${when}` : `${n.label}${scopeWords} limit over: it answers again`;
+  for (const id of people) {
+    broadcastToPerson(id, { type: 'plan-notice', kind: n.kind, planLabel: n.planLabel, detail, resetsAt: n.resetsAt || null });
+    try { pushing().notifier.notify('plan', { key: 'plan:' + n.pool + ':' + n.window + ':' + id, title: n.planLabel, detail, to: [id] }); } catch (e) { console.error('[push] ' + e.message); }
+  }
 }
 async function codexModels(principal) {
   const cache = codexModelCaches.get(principalAccount(principal) || '');
@@ -21789,6 +21985,8 @@ const APP_FILES = {
     '/app-update-ui.js': { file: 'app-update-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/harness-composer-ui.js': { file: 'harness-composer-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/codex-ui.js': { file: 'codex-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/plan-limits-ui.js': { file: 'plan-limits-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
+    '/plan-limits.css': { file: 'plan-limits.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
     '/live-terminal-ui.js': { file: 'live-terminal-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/claude-accounts-ui.js': { file: 'claude-accounts-ui.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/hotkeys-keys.js': { file: 'hotkeys-keys.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
@@ -24821,6 +25019,41 @@ async function handleRequest(req, res) {
         defaultContext: piContextTokens(),
         speed: usersLib.canManageUsers(identity) ? speedCatalog() : null,
       });
+    } else if (u.pathname === '/api/plan-limits' && req.method === 'GET') {
+      // What each plan still allows, as this person may see it (design/109).
+      // Fresh numbers are asked for at once; the answer does not wait for
+      // them (a `plan-limits` event follows) unless ?wait=1 (up to 8 s).
+      try {
+        const who = planViewerOf(identity);
+        const read = planLimits.looked(who.account, { fresh: u.searchParams.get('fresh') === '1' && who.level === 'full' }).catch(e => console.error('[plan limits] ' + e.message));
+        if (u.searchParams.get('wait') === '1') await Promise.race([read, sleep(8000)]);
+        json(res, 200, { ...planLimits.view(who), reserve: Number(appSettings.planReserve) || 0 });
+      } catch (e) { json(res, e.status || 500, { error: e.message }); }
+    } else if (u.pathname === '/api/plan-limits/history' && req.method === 'GET') {
+      // One window's history (design/109), for the plans page's lines.
+      try {
+        const days = Math.max(1, Math.min(60, Number(u.searchParams.get('days')) || 7));
+        const rows = planLimits.history(planViewerOf(identity), String(u.searchParams.get('pool') || ''), u.searchParams.get('window') || null, Date.now() - days * 86400000, Date.now());
+        json(res, 200, { rows: rows.slice(-2000) });
+      } catch (e) { json(res, e.status || 500, { error: e.message }); }
+    } else if (u.pathname === '/api/plan-limits/observe' && req.method === 'POST') {
+      // A reply's limit headers or a refusal, from a Pi run of this person
+      // (extensions/plan-limits.ts). Their own sign-ins only: someone on the
+      // owner's models is observed by the key proxy itself.
+      try {
+        let raw = '';
+        for await (const chunk of req) { raw += chunk; if (raw.length > 32 * 1024) throw Object.assign(new Error('too large'), { status: 413 }); }
+        const p = JSON.parse(raw || '{}');
+        const principal = principalFor(identity);
+        if (principalAccount(principal) && principal.walls.models === 'shared') return json(res, 200, { ok: true, ignored: 'shared models' });
+        const at = Number(p.at) && Math.abs(Number(p.at) - Date.now()) < 60000 ? Number(p.at) : Date.now();
+        const out = planLimits.observe(planAccountOf(principal), {
+          provider: String(p.provider || '').slice(0, 80), model: String(p.model || '').slice(0, 200), at,
+          ...(p.headers && typeof p.headers === 'object' ? { headers: p.headers } : {}),
+          ...(typeof p.error === 'string' ? { error: p.error.slice(0, 2000) } : {}),
+        });
+        json(res, 200, { ok: !!out.ok });
+      } catch (e) { json(res, e.status || 400, { error: e.message }); }
     } else if (u.pathname === '/api/delegations' && req.method === 'GET') {
       // Each person's own delegated work (design/108): a person on their
       // own account sees their workers; the owner and the household, this

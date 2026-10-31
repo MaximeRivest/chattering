@@ -114,7 +114,10 @@ function workerArgv({ sessionPath, model, thinking, title, modePath, tools, prom
     '-e', path.join(__dirname, 'extensions/records.ts'),
     '-e', path.join(__dirname, 'extensions/image-budget.ts'),
     // Before/after workspace checkpoints, so a worker's edits can be reviewed.
-    '-e', path.join(__dirname, 'extensions/checkpoints.ts')];
+    '-e', path.join(__dirname, 'extensions/checkpoints.ts'),
+    // What each reply says about its plan's limits (design/109): delegated
+    // work draws on the same plans as the conversation that asked for it.
+    '-e', path.join(__dirname, 'extensions/plan-limits.ts')];
   const modes = modeExtensionFor(options);
   if (modes) argv.push('-e', modes);
   argv.push('--prompt-mode-file', modePath);

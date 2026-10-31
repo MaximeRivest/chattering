@@ -149,6 +149,7 @@ const DEFAULT_PREFS = Object.freeze({
   questions: true,   // an agent waits for an answer
   preview: true,     // the first words of the reply on the lock screen
   whileActive: false, // even while I use Chattering on another screen
+  plans: false,      // a plan's usage limit is reached, or over (design/109): asked for, never assumed
 });
 function cleanPrefs(raw, base = DEFAULT_PREFS) {
   const out = { ...base };

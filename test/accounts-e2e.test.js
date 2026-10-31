@@ -719,6 +719,24 @@ test('a person on their own account: their own Claude Code and Codex, their fold
   const ownerSend = await post(local + '/api/node/send', { id: codexStart.key, prompt: 'as the owner' });
   assert.equal(ownerSend.status, 409, await ownerSend.clone().text());
   assert.equal((await (await get(local + '/api/session?id=' + encodeURIComponent(codexStart.key))).json()).otherAccount.fork, false);
+
+  // Her plans (design/109) are read by a process of hers, from her own
+  // sign-ins: her Claude Code login (expired, so no network) is found and
+  // said not readable; the owner's view has nothing of hers.
+  assert.equal(asTest(`mkdir -p ~/.claude && umask 077 && echo '{"claudeAiOauth":{"accessToken":"sk-ant-oat-her","refreshToken":"r","expiresAt":1}}' > ~/.claude/.credentials.json && echo '{"oauthAccount":{"accountUuid":"acc-her","organizationUuid":"org-her"}}' > ~/.claude.json`).status, 0);
+  const herPlans = await until(async () => {
+    const r = await get(remote + '/api/plan-limits?wait=1', tess);
+    assert.equal(r.status, 200, fail(await r.clone().text()));
+    const v = await r.json();
+    const u = (v.unread || []).find(x => x.cred === 'claude:default');
+    return u && u.error && v;
+  }, 90000, 'her plans read as her');
+  assert.equal(herPlans.level, 'full');
+  assert.match(herPlans.unread.find(x => x.cred === 'claude:default').error.code, /^(expired|renew)$/);
+  assert.ok(!JSON.stringify(herPlans).includes('sk-ant-oat-her'), 'no token in the answer');
+  const ownerPlans = await (await get(local + '/api/plan-limits')).json();
+  assert.ok(!JSON.stringify(ownerPlans).includes('claude:default'), 'the owner sees none of her sign-ins');
+  asTest('rm -f ~/.claude/.credentials.json ~/.claude.json');
 });
 
 // The rest of design/108 as the person: the editor's AI commands on their
@@ -781,6 +799,8 @@ test('a person on their own account: the editor\u2019s AI, reviews, links, deleg
   const tess = (tessIn.headers.get('set-cookie') || '').split(';')[0];
   const linked = await (await post(local + '/api/users/account', { id: added.user.id, account: ACCOUNT, models: 'shared' })).json();
   assert.equal(linked.account && linked.account.status, 'ready', fail(JSON.stringify(linked)));
+  // On the owner's models, the owner's plans are not hers to read in full (design/109).
+  assert.equal((await okJson('plans', get(remote + '/api/plan-limits', tess))).level, 'status');
   // Her conversation in her project (it makes the project known here).
   const started = await okJson('start', post(remote + '/api/conversation/start-loose', { folder: proj, prompt: 'hello ' + tag, models: [{ provider: ai.name, modelId: 'fixture-chat' }] }, tess));
   const key = started.key;

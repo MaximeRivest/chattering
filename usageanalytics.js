@@ -800,7 +800,7 @@ class UsageIndex {
       SELECT e.ts,e.source,e.provider,e.model,e.api,e.category,e.stop_reason AS stopReason,
         e.input_tokens AS input,e.output_tokens AS output,e.cache_read AS cacheRead,e.cache_write AS cacheWrite,
         e.cache_write_1h AS cacheWrite1h,e.reasoning,e.total_tokens AS totalTokens,e.estimated_cost AS estimatedCost,
-        e.price_source AS priceSource,e.price_confidence AS priceConfidence,e.person,f.project
+        e.price_source AS priceSource,e.price_confidence AS priceConfidence,e.person,f.project,c.session_key AS sessionKey
       FROM usage_events e JOIN chosen c ON c.event_key=e.event_key
       JOIN usage_files f ON f.session_key=c.session_key
       WHERE e.ts>=? AND e.ts<=? ORDER BY e.ts`).all(fromMs, toMs);

@@ -296,6 +296,7 @@
     ['replies', 'a reply is ready'],
     ['questions', 'an agent waits for my answer'],
     ['problems', 'a run fails, or work goes quiet'],
+    ['plans', 'a plan\u2019s usage limit is reached, or over (Claude, ChatGPT, …)'],
     ['preview', 'show the first words of replies (on the lock screen too)'],
     ['whileActive', 'even while I use Chattering on another screen'],
   ];
@@ -377,6 +378,7 @@
     'off for replies': 'replies are off there',
     'off for problems': 'problems are off there',
     'off for questions': 'questions are off there',
+    'off for plans': 'plan limits are off there',
   };
 
   function bindPaneBox(root, box) {

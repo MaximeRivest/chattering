@@ -1331,9 +1331,8 @@ sentence lengths; on a phone before app 0.3.12, "Noted." may need a tap.
   tokens against its model's window (the catalog's, else the assumed
   window), fullest first. The workspace note marks those past half
   ("context 62% used"), and the frog's mode asks it to say so once when it
-  matters and to offer a fresh start near the end. Plan usage limits are not
-  readable: neither Chattering nor the Claude provider keeps them (Codex's
-  are, through Codex, not wired).
+  matters and to offer a fresh start near the end. Plan usage limits are
+  `plan_limits`'s (design/109, since 2026-10-31).
 - **\`fresh_start\`**: a new Pi conversation from an old one, its messages
   only (what the person and the agent said; no tool call, no result, no
   step notes), through \`harness/handoff.js\` (turnsOf, piSessionLines), then

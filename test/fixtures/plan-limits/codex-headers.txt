@@ -1,0 +1,17 @@
+x-codex-active-limit: premium
+x-codex-credits-balance: 0
+x-codex-credits-has-credits: False
+x-codex-credits-unlimited: False
+x-codex-plan-type: pro
+x-codex-primary-over-secondary-limit-percent: 0
+x-codex-primary-reset-after-seconds: 554656
+x-codex-primary-reset-at: 1793525922
+x-codex-primary-used-percent: 1
+x-codex-primary-window-minutes: 10080
+x-codex-safety-buffering-enabled: true
+x-codex-safety-buffering-faster-model: gpt-6-luna
+x-codex-secondary-reset-after-seconds: 0
+x-codex-secondary-reset-at: 
+x-codex-secondary-used-percent: 0
+x-codex-secondary-window-minutes: 0
+x-oai-request-id: 00000000-0000-4000-8000-000000000000

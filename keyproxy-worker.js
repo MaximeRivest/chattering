@@ -23,6 +23,7 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 
 const { loadSdk } = require('./pisdk-runtime.js');
+const { limitHeaders } = require('./plan-limits-live.js');
 
 const grants = new Map(); // placeholder secret -> { guest, providers: Set|null, since }
 let registry = null;
@@ -178,7 +179,9 @@ const server = http.createServer(async (req, res) => {
     let bytes = 0;
     upRes.on('data', d => { bytes += d.length; });
     upRes.pipe(res);
-    upRes.on('end', () => { try { process.send({ type: 'usage', guest: grant.guest, provider, status: upRes.statusCode, ms: Date.now() - t0, bytesOut: payload.length, bytesIn: bytes }); } catch {} });
+    // The owner's plan, as this reply says it (design/109): its limit headers only.
+    const limits = limitHeaders(upRes.headers);
+    upRes.on('end', () => { try { process.send({ type: 'usage', guest: grant.guest, provider, status: upRes.statusCode, ms: Date.now() - t0, bytesOut: payload.length, bytesIn: bytes, ...(Object.keys(limits).length ? { limits } : {}) }); } catch {} });
   });
   up.on('error', e => { if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { type: 'api_error', message: 'Chattering key proxy: ' + e.message } })); });
   req.on('close', () => { if (!res.writableEnded) up.destroy(); });
