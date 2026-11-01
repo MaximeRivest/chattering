@@ -432,6 +432,21 @@ test('a person on their own account: artifacts, pictures, changes, documents and
   // The composer: @ files of her folder, her snippets.
   const files = await okJson('complete', get(remote + `/api/files/complete?id=${k}&q=site/`, tess));
   assert.deepEqual(files.items.map(i => i.label), ['index.html']);
+  // The context finder (design/110): her file found by name and weighed as
+  // her (her host reads it), sent as a link with its size, and her own
+  // conversation read for the preview; a summary is a call of hers.
+  const found = await okJson('context find', post(remote + '/api/context/find', { key: started.key, project: tag, q: 'index.html', types: ['file'] }, tess));
+  const fileRow = found.groups.flatMap(g => g.rows).find(r => r.path === proj + '/site/index.html');
+  assert.ok(fileRow, fail('her file in the finder: ' + JSON.stringify(found).slice(0, 600)));
+  assert.ok(fileRow.sizes.full > 0, 'weighed as her');
+  const asLink = await okJson('context link', post(remote + '/api/conversation/context-preview', { id: started.key, context: [{ type: 'file', path: proj + '/site/index.html', depth: 'link' }] }, tess));
+  assert.match(asLink.text, /A file the user pointed you to · 0 KB/, 'its size read as her');
+  const suggested = await okJson('context suggestions', post(remote + '/api/context/find', { key: started.key, project: tag, draft: 'what did the page say about the agent' }, tess));
+  assert.ok(Array.isArray(suggested.groups), JSON.stringify(suggested).slice(0, 300));
+  const src = await okJson('context source', get(remote + `/api/context/source?id=${encodeURIComponent('chat:' + started.key)}`, tess));
+  assert.ok(src.messages.some(m => m.role === 'user' && m.text.includes(tag)), 'her conversation read for the preview');
+  const whole = await okJson('context whole', post(remote + '/api/conversation/context-preview', { id: started.key, context: [{ type: 'chat', key: started.key, depth: 'full' }] }, tess));
+  assert.match(whole.text, /The whole conversation: \d+ messages/);
   await okJson('snippet', post(remote + '/api/snippets', { id: started.key, scope: 'project', name: 'hello', body: 'Say hello', kind: 'snippet' }, tess));
   const snippets = await okJson('snippets', get(remote + `/api/snippets?id=${k}`, tess));
   assert.ok(snippets.items.some(i => i.name === 'hello'), JSON.stringify(snippets));
