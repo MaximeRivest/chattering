@@ -259,7 +259,9 @@ function createRecords(deps) {
     const t0 = now();
     // The index ranks every group anyway; take its whole (capped) list and
     // page here, so "N more" is always true.
-    const lex = idx.search(q, { limit: 100, offset: 0, boostProject: boost });
+    // On the server's search worker when there is one (design/110).
+    const lex = await (deps.search ? deps.search(q, { limit: 100, offset: 0, boostProject: boost }) : idx.search(q, { limit: 100, offset: 0, boostProject: boost }));
+    if (lex.repairing) throw new Error(lex.error);
     if (lex.error) throw new Error(`bad query: ${q0} (check quotes and field: operators)`);
     let groups = lex.groups.filter(g => !(g.key && exclude.has(g.key)));
     let semUsed = false, semError = null;
@@ -287,7 +289,7 @@ function createRecords(deps) {
     const idxAll = index();
     const lines = [];
     const modeTxt = semUsed ? 'lexical + semantic' : (semError ? `lexical only (${semError})` : 'lexical');
-    lines.push(`search ${JSON.stringify(q0)}${project ? ' in ' + project : ''}${since ? ' since ' + day(since) : ''} · ${lex.total} passages in ${groups.length} records · ${modeTxt} · ${now() - t0} ms`);
+    lines.push(`search ${JSON.stringify(q0)}${project ? ' in ' + project : ''}${since ? ' since ' + day(since) : ''} · ${lex.total}${lex.totalCapped ? '+' : ''} passages in ${groups.length} records · ${modeTxt}${lex.ranking === 'recent' ? ' · very common words: the newest matches ranked, add words to narrow' : ''} · ${now() - t0} ms`);
     if (!page.length) {
       lines.push('', offset ? 'No more results.' : `No results. Try fewer words, other words, or a wider --since. Or list what exists: ${cli} conversations${project ? ' ' + sq(project) : ''}.`);
       return { text: lines.join('\n'), q: q0, total: lex.total, groups: [] };

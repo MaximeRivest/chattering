@@ -28,7 +28,8 @@ test('the tools server: initialize, its two tools, artifact checks the file, sho
   child.stdout.on('data', d => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { const m = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1); got.set(m.id, m); } });
   const call = async (id, method, params) => { child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n'); for (let i = 0; i < 100 && !got.has(id); i++) await sleep(30); return got.get(id); };
   assert.equal((await call(1, 'initialize', { protocolVersion: '2025-06-18' })).result.serverInfo.name, 'chattering');
-  assert.deepEqual((await call(2, 'tools/list')).result.tools.map(x => x.name), ['artifact', 'show']);
+  // design/110: the records, for sources the person attached as links.
+  assert.deepEqual((await call(2, 'tools/list')).result.tools.map(x => x.name), ['artifact', 'show', 'records_search', 'records_show']);
   const ok = await call(3, 'tools/call', { name: 'artifact', arguments: { path: 'page.html', title: 'Hi' } });
   assert.match(ok.result.content[0].text, /Opened "Hi" .*page\.html/);
   const none = await call(4, 'tools/call', { name: 'artifact', arguments: { path: 'nope.html' } });

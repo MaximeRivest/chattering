@@ -41,7 +41,8 @@ test('new project: one form, then the first message; undo; missing folder; picke
   assert.equal(await ev(`draftState.d.folder`), cwd);
   assert.equal(await ev(`document.activeElement === $('agentText')`), true, 'the cursor waits in the message box');
   assert.match(await ev(`document.querySelector('.draft-made').textContent`), /Created project My Thesis/);
-  assert.deepEqual(await ev(`attachedContext()`), [{ project: 'My-Thesis', kind: 'intent' }]);
+  // 'auto' (design/110): whole while it is the short purpose written here, a link if it grows past the recommended size.
+  assert.deepEqual(await ev(`attachedContext()`), [{ project: 'My-Thesis', kind: 'intent', depth: 'auto' }]);
   assert.equal(await ev(`(projectFolds.created || []).some(c => c.name === 'My-Thesis')`), true);
   assert.equal(await ev(`workspaceScope()`), 'My-Thesis', 'making a project chooses it');
   await screenshot('project-setup-draft.png');

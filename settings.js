@@ -108,6 +108,10 @@ const DEFAULT_SETTINGS = {
   // looks at is one call. provider/model: the model that writes them, best a
   // small fast one; empty: the model above (notes and titles).
   plainSteps: { on: false, provider: '', model: '' },
+  // Summaries of conversations attached to another one (design/110,
+  // context-finder.js). provider/model: the model that writes them, best a
+  // small fast one; empty: the model above.
+  contextSummary: { provider: '', model: '' },
   // Plan limits (design/109): the share of a plan's tightest window kept
   // for people. Work nobody asked for in that moment (titles, memory, plain
   // steps) waits once a plan has less than this left. 0: never waits.
@@ -441,6 +445,14 @@ function normalizePlainSteps(raw) {
   return { on: src.on === true, provider: own ? provider : '', model: own ? model : '' };
 }
 
+// A model chosen for one job, or none (the settings model).
+function normalizeModelChoice(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const provider = String(src.provider || '').trim(), model = String(src.model || '').trim();
+  const own = MODEL_NAME.test(provider) && MODEL_NAME.test(model);
+  return { provider: own ? provider : '', model: own ? model : '' };
+}
+
 function normalizeSettings(input) {
   const src = input && typeof input === 'object' ? input : {};
   const thinking = THINKING_LEVELS.includes(src.thinking) ? src.thinking : DEFAULT_SETTINGS.thinking;
@@ -471,6 +483,7 @@ function normalizeSettings(input) {
   const simplifyAnswers = src.simplifyAnswers !== false;
   const simplifyPrompt = typeof src.simplifyPrompt === 'string' && src.simplifyPrompt.trim() ? src.simplifyPrompt : DEFAULT_SIMPLIFY_PROMPT;
   const plainSteps = normalizePlainSteps(src.plainSteps);
+  const contextSummary = normalizeModelChoice(src.contextSummary);
   const autoResumeNetwork = src.autoResumeNetwork === true;
   const planReserve = Number.isFinite(Number(src.planReserve)) && src.planReserve !== null && src.planReserve !== '' ? Math.max(0, Math.min(50, Math.round(Number(src.planReserve)))) : DEFAULT_SETTINGS.planReserve;
   const resumePrompt = typeof src.resumePrompt === 'string' && src.resumePrompt.trim() ? src.resumePrompt.trim().slice(0, 4000) : DEFAULT_RESUME_PROMPT;
@@ -522,6 +535,7 @@ function normalizeSettings(input) {
     simplifyAnswers,
     simplifyPrompt,
     plainSteps,
+    contextSummary,
     planReserve,
     autoResumeNetwork,
     resumePrompt,

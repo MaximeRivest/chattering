@@ -415,7 +415,25 @@ try { fs.mkdirSync(SOURCES.mirror, { recursive: true }); } catch {} // so the wa
 // FTS5 work-memory search (searchindex.js). A derived cache: delete the
 // database and the next boot rebuilds it. Null when node:sqlite is missing;
 // /api/search then falls back to the old scan.
-const searchIdx = openSearchIndex(path.join(CACHE_DIR, 'search.db'));
+// This thread keeps the one writer; searches run on a worker's thread
+// (search-service.js, design/110), which also checks the index at start and
+// repairs it when damaged. Unrepairable (its table damaged too): the file is
+// dropped and indexed again from the conversation caches.
+const SEARCH_DB = path.join(CACHE_DIR, 'search.db');
+let searchIdx = openSearchIndex(SEARCH_DB);
+const searchService = searchIdx ? require('./search-service.js').createSearchService({
+  dbPath: SEARCH_DB, writer: searchIdx, log: m => console.log(m),
+  onUnrepairable: () => {
+    try { searchIdx.close(); } catch {}
+    // hub-own: the search index is this server's derived cache.
+    for (const f of [SEARCH_DB, SEARCH_DB + '-wal', SEARCH_DB + '-shm']) { try { fs.rmSync(f, { force: true }); } catch {} }
+    searchIdx = openSearchIndex(SEARCH_DB);
+    if (!searchIdx) return console.error('search index could not be made again');
+    console.log('search index dropped and made again; indexing every conversation anew');
+    searchService.reopen(searchIdx);
+    syncSearchIndex();
+  },
+}) : null;
 const usageIdx = usageLib.openUsageIndex(USAGE_DB_FILE);
 // A person's own conversations are read only when theirs (design/105);
 // null for every other file: usage reads it as before.
@@ -7054,18 +7072,34 @@ function openFilesApply(identity, body) {
   return { refused };
 }
 const MEMORY_DOC_KINDS = ['overview', 'intent', 'environment', 'status'];
+// An attached item's depth (context-finder.js): how much of it the model
+// gets. Absent on items attached before design/110: they render as before.
+const ITEM_DEPTHS = { chat: ['link', 'summary', 'excerpt', 'full'], memory: ['link', 'excerpt', 'full', 'auto'], doc: ['link', 'excerpt', 'full'], file: ['link', 'full'] };
+const depthOf = (kind, d) => (ITEM_DEPTHS[kind].includes(d) ? d : undefined);
+// Section headings chosen for an excerpt of a document.
+const sectionList = v => (Array.isArray(v) ? [...new Set(v.map(x => String(x || '').replace(/\s+/g, ' ').trim().slice(0, 200)).filter(Boolean))].slice(0, 200) : []);
 function normalizeContextItems(raw) {
   const out = [], seen = new Set();
   for (const item of Array.isArray(raw) ? raw : []) {
     if (item && item.type === 'chat') {
       const key = String(item.key || '').trim();
       if (!key) continue;
+      const depth = depthOf('chat', item.depth);
       const idx = Number.isInteger(item.i) ? item.i : null;
-      const id = 'chat\0' + key + '\0' + (idx == null ? '*' : String(idx));
+      // With a depth, a conversation is attached once; before, one item per
+      // exchange (or its recent history).
+      const id = 'chat\0' + key + '\0' + (depth ? 'depth' : idx == null ? '*' : String(idx));
       if (seen.has(id)) continue;
       seen.add(id);
       const row = { type: 'chat', key };
-      if (idx != null) row.i = idx;
+      if (depth) row.depth = depth;
+      if (idx != null && !depth) row.i = idx;
+      if (depth === 'excerpt') {
+        const pick = [...new Set((Array.isArray(item.pick) ? item.pick : []).filter(n => Number.isInteger(n) && n >= 0))].sort((a, b) => a - b).slice(0, 2000);
+        if (!pick.length && idx == null) continue;
+        row.pick = pick.length ? pick : [idx];
+      }
+      if (depth === 'summary' && typeof item.v === 'string' && /^\d+:\d+$/.test(item.v)) row.v = item.v;
       if (item.title) row.title = String(item.title).replace(/\s+/g, ' ').trim().slice(0, 80);
       out.push(row);
       continue;
@@ -7083,6 +7117,19 @@ function normalizeContextItems(raw) {
       out.push({ type: 'note', text });
       continue;
     }
+    if (item && item.type === 'doc') {
+      // A note or an epic of the records (the notes tree), design/110.
+      const file = String(item.file || '').replace(/\\/g, '/').replace(/^\/+/, '');
+      if (!file.endsWith('.md') || file.split('/').includes('..') || !/^(epics\/|[^/]+\.md$)/.test(file)) continue;
+      const id = 'doc\0' + file;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const row = { type: 'doc', file, depth: depthOf('doc', item.depth) || 'full' };
+      if (row.depth === 'excerpt') { row.sections = sectionList(item.sections); if (!row.sections.length) row.depth = 'link'; }
+      if (item.title) row.title = String(item.title).replace(/\s+/g, ' ').trim().slice(0, 80);
+      out.push(row);
+      continue;
+    }
     if (item && item.type === 'file') {
       // A file the user is reading or editing (files mode): path, and the
       // selected lines when there were some. Rendered by
@@ -7098,6 +7145,7 @@ function normalizeContextItems(raw) {
       const row = { type: 'file', path: p };
       if (range) row.range = range;
       if (line) row.line = line;
+      if (depthOf('file', item.depth) === 'link') row.depth = 'link';
       out.push(row);
       continue;
     }
@@ -7111,11 +7159,16 @@ function normalizeContextItems(raw) {
         if (k === 'map' || k === 'all' || MEMORY_DOC_KINDS.includes(k)) kinds.push(k === 'all' ? 'map' : k);
       }
     }
+    // A depth is for one document; the old "all four" stays whole.
+    const depth = kinds.length === 1 && kinds[0] !== 'map' ? depthOf('memory', item.depth) : undefined;
     for (const kind of kinds) {
       const id = project + '\0' + kind;
       if (seen.has(id)) continue;
       seen.add(id);
-      out.push({ project, kind });
+      const row = { project, kind };
+      if (depth) row.depth = depth;
+      if (depth === 'excerpt') { row.sections = sectionList(item.sections); if (!row.sections.length) row.depth = 'link'; }
+      out.push(row);
     }
   }
   // What the asker may not see does not ride into a system prompt either:
@@ -7126,6 +7179,8 @@ function normalizeContextItems(raw) {
     if (item.type === 'chat') return !!index[item.key] && keyVisible(who, item.key);
     if (item.type === 'file') { try { assertPathAccess(who, item.path, 'see'); return true; } catch { return false; } }
     if (item.type === 'note') return true;
+    // The records' notes and epics span projects: for those who see all.
+    if (item.type === 'doc') return false;
     return projectVisible(who, item.project);
   }) : out;
   return gated.slice(0, 24);
@@ -11510,11 +11565,23 @@ async function areaMemoryDocument(project, rel, kind) {
 
 // Cheap catalog for the @ palette: every known project plus which of the
 // four map documents exist on disk. No file bodies, no projectResponse.
-function projectMemoryIndex() {
-  const names = new Set();
+// Every conversation grouped by its project, in one pass over the index.
+function projectEntriesByName() {
+  const out = new Map();
   for (const [key, entry] of Object.entries(index)) {
-    if (!entry) continue;
-    const project = projectNameOf(entry.cwd, key);
+    if (!key || !entry) continue;
+    const project = projectOfEntry(entry, key);
+    if (!out.has(project)) out.set(project, []);
+    out.get(project).push({ key, entry });
+  }
+  return out;
+}
+function projectMemoryIndex() {
+  // One pass, not one per project: with 150 projects and 3,000
+  // conversations the per-project scans took 3 to 6 s (design/110).
+  const byProject = projectEntriesByName();
+  const names = new Set();
+  for (const project of byProject.keys()) {
     if (project && project !== '?' && project !== LOOSE_PROJECT) names.add(project);
   }
   for (const name of Object.keys(createdProjects)) {
@@ -11523,7 +11590,7 @@ function projectMemoryIndex() {
   const out = [];
   for (const name of names) {
     if (!name || name === '?') continue;
-    const meta = projectMetaFor(name);
+    const meta = projectMetaFor(name, byProject);
     const paths = projectMemoryPaths(name);
     const docs = {};
     let any = false;
@@ -13129,7 +13196,7 @@ function liveClaudeTools({ sessionId, sessionPath, cwd }, promptMode = '', princ
     + 'To show a page, app, document or slides you made, write the files and call mcp__chattering__artifact: it opens them in the panel beside this conversation. '
     + 'Small visuals that belong in your answer (a chart, a diagram, a tiny interactive) go inline with mcp__chattering__show. '
     + (mode === 'both' ? 'Publish to claude.ai with the Artifact tool only when the user asks for a link to share.' : '');
-  return ['--mcp-config=' + JSON.stringify(config), '--allowedTools=mcp__chattering__artifact,mcp__chattering__show',
+  return ['--mcp-config=' + JSON.stringify(config), '--allowedTools=mcp__chattering__artifact,mcp__chattering__show,mcp__chattering__records_search,mcp__chattering__records_show',
     ...(mode === 'chattering' ? ['--disallowedTools=Artifact'] : []), '--append-system-prompt=' + [note, promptMode].filter(Boolean).join('\n\n')];
 }
 // The holder starts in a systemd user scope of its own where there is one:
@@ -13659,6 +13726,7 @@ function recordsApi() {
     projectMemoryDocument, areaMemoryDocument, epicMemoryDocument, declaredAreasFor,
     trustLabel, existingEvidenceFor,
     searchIdx: () => searchIdx,
+    search: searchService ? (q, opts) => searchService.search(q, opts) : null,
     semanticEnabled, semFetch, semNs, semanticGroups,
     runningKeys: () => new Set(runningAgentKeys()),
     notesDir: NOTES_DIR, port: PORT,
@@ -18309,8 +18377,10 @@ function projectRootFromEntries(project, entries) {
   return cwd;
 }
 
-function projectMetaFor(project) {
-  const entries = Object.entries(index)
+// byProject: the conversations already grouped by project (projectEntriesByName),
+// for a caller asking about every project at once; else one pass here.
+function projectMetaFor(project, byProject = null) {
+  const entries = byProject ? (byProject.get(project) || []) : Object.entries(index)
     .filter(([key, entry]) => key && entry && projectOfEntry(entry, key) === project)
     .map(([key, entry]) => ({ key, entry }));
   if (!entries.length) {
@@ -19165,6 +19235,424 @@ async function loadAttachedChat(item) {
   block.text = scope + '\n\n' + block.text;
   return block;
 }
+// ---- depths of attached items (design/110, context-finder.js) ----
+const ctxFinder = require('./context-finder.js');
+const { mdSections } = require('./searchindex.js');
+// hub-own: the summaries of conversations, this server's derived cache.
+const contextSummaries = ctxFinder.createSummaryStore(path.join(CACHE_DIR, 'context-summaries'));
+const quoteArg = s => (/^[\w.@-]+$/.test(String(s)) ? String(s) : JSON.stringify(String(s)));
+const dayOf = ts => (ts ? String(ts).slice(0, 10) : '?');
+// A conversation's user and assistant messages, as the finder and the
+// depths see them.
+async function conversationChat(key) {
+  const entry = index[key];
+  if (!entry) throw new Error('conversation not found');
+  const data = JSON.parse(await fsp.readFile(cachePathFor(key), 'utf8')); // hub-own: the parsed-conversation cache
+  return { entry, list: ctxFinder.chatMessages(data.messages, { isBootstrap: isBootstrapMessage, isNoise }) };
+}
+function chatHeader(entry, key, scope) {
+  return ['### conversation · ' + (entry.title || entry.timelineTitle || key), '',
+    '- Id: ' + require('./conversation-ids.js').shortIdOf(index, key) + ' · project ' + (projectNameOf(entry.cwd, key) || '?') + ' · ' + dayOf(entry.firstTs) + ' → ' + dayOf(entry.lastTs),
+    '- ' + scope, ''].join('\n');
+}
+function chatMessagesText(list) {
+  return list.map(m => m.omitted ? `[… ${m.omitted} messages from the middle left out …]`
+    : `#### ${m.role === 'user' ? 'User' : 'Assistant'} · #${m.i}\n\n${m.text}`).join('\n\n');
+}
+async function chatItemBlock(item, { preview = false } = {}) {
+  const { entry, list } = await conversationChat(item.key);
+  const key = item.key;
+  const linkArgs = { title: entry.title || entry.timelineTitle || key, id: require('./conversation-ids.js').shortIdOf(index, key),
+    project: projectNameOf(entry.cwd, key), firstTs: entry.firstTs, lastTs: entry.lastTs, count: list.length, gist: ctxFinder.gistOf(list) };
+  if (item.depth === 'link') return { link: ctxFinder.chatLinkText(linkArgs) };
+  if (item.depth === 'summary') {
+    const sum = (item.v && contextSummaries.get(key, item.v)) || contextSummaries.latest(key);
+    if (!sum) {
+      // Never a send held for minutes: the link goes now, the summary is
+      // written for the next one (the finder writes it when it is chosen).
+      if (!preview) contextSummaryFor(key).catch(() => {});
+      return { link: ctxFinder.chatLinkText({ ...linkArgs, summaryNote: 'A summary was chosen but is not written yet; this link stands in for it.' }) };
+    }
+    const later = sum.v !== ctxFinder.versionOf(entry) ? ' The conversation went on after it.' : '';
+    return { text: chatHeader(entry, key, `AI-written summary of ${sum.messages} messages, as of ${dayOf(sum.lastTs)}.${later} Read the original with \`chattering show ${linkArgs.id}\` if a detail matters.`) + '\n' + sum.text.trim() };
+  }
+  if (item.depth === 'excerpt') {
+    const want = new Set(item.pick || []);
+    const picked = list.filter(m => want.has(m.i));
+    if (!picked.length) throw new Error('the chosen messages are no longer in that conversation');
+    return { text: chatHeader(entry, key, `Excerpt chosen by the user: ${picked.length} of ${list.length} messages (#N is the message's place in the conversation).`) + '\n' + chatMessagesText(picked) };
+  }
+  // full
+  if (!list.length) throw new Error('no user or assistant text in that conversation');
+  const { kept, omitted } = ctxFinder.headAndTail(list, ctxFinder.FULL_CHAT_MAX_TOKENS, estimateInputTokens);
+  const scope = omitted ? `The whole conversation would be too large: its beginning and its end, ${list.length - omitted} of ${list.length} messages.` : `The whole conversation: ${list.length} messages (user and assistant text).`;
+  return { text: chatHeader(entry, key, scope) + '\n' + chatMessagesText(kept) };
+}
+// One project memory document at a depth.
+async function memoryItemBlock(item) {
+  const doc = await projectMemoryDocument(item.project, item.kind);
+  let updatedAt = null;
+  try { updatedAt = fs.statSync(doc.path).mtime.toISOString(); } catch {} // hub-own: project memory is this server's records
+  const tokens = estimateInputTokens(doc.text);
+  const depth = item.depth === 'auto' ? (tokens <= ctxFinder.RECOMMENDED_TOKENS ? 'full' : 'link') : item.depth;
+  const head = '### ' + item.project + ' · ' + item.kind + ' · ' + doc.path + ' ' + trustLabel(doc.path);
+  const link = note => ({ link: ctxFinder.docLinkText({ label: item.project + ' · ' + item.kind + ' (project memory, AI-written)' + (note ? ' · ' + note : ''), file: doc.path, tokens, updatedAt,
+    outline: ctxFinder.outlineOf(doc.text), command: 'chattering memory ' + quoteArg(item.project) + ' ' + item.kind }) });
+  if (depth === 'link') return link();
+  if (depth === 'excerpt') {
+    const all = mdSections(doc.text), want = new Set(item.sections || []);
+    const secs = all.filter(x => want.has(x.heading));
+    if (!secs.length) return link('the sections chosen are no longer in it');
+    return { text: head + `\n\n(Excerpt chosen by the user: ${secs.length} of ${all.length} sections.)\n\n` + secs.map(x => x.text).join('\n\n') };
+  }
+  return { text: head + '\n\n' + doc.text.trim() };
+}
+// A note or an epic of the records (the notes tree).
+function recordDocPath(file) {
+  const abs = path.resolve(NOTES_DIR, file);
+  if (!abs.startsWith(NOTES_DIR + path.sep) || isPersonNoteRel(file)) throw new Error('not a record of this server');
+  return abs;
+}
+async function recordDocBlock(item) {
+  const abs = recordDocPath(item.file);
+  const text = await fsp.readFile(abs, 'utf8'); // hub-own: the records' notes and epics
+  let updatedAt = null;
+  try { updatedAt = fs.statSync(abs).mtime.toISOString(); } catch {} // hub-own: the records' notes and epics
+  const title = (text.match(/^#\s+(.*)$/m) || [])[1] || path.basename(item.file, '.md');
+  const head = '### ' + (item.file.startsWith('epics/') ? 'epic' : 'note') + ' · ' + title + ' · ' + abs + ' ' + trustLabel(abs);
+  const command = item.file.startsWith('epics/') ? 'chattering epic ' + path.basename(item.file, '.md') : 'chattering note ' + quoteArg(item.file);
+  const link = () => ({ link: ctxFinder.docLinkText({ label: (item.file.startsWith('epics/') ? 'epic' : 'note') + ' · ' + title + ' (AI-written)', file: abs, tokens: estimateInputTokens(text), updatedAt, outline: ctxFinder.outlineOf(text), command }) });
+  if (item.depth === 'link') return link();
+  if (item.depth === 'excerpt') {
+    const all = mdSections(text), want = new Set(item.sections || []);
+    const secs = all.filter(x => want.has(x.heading));
+    if (!secs.length) return link();
+    return { text: head + `\n\n(Excerpt chosen by the user: ${secs.length} of ${all.length} sections.)\n\n` + secs.map(x => x.text).join('\n\n') };
+  }
+  return { text: head + '\n\n' + text.trim() };
+}
+// A file as a link: where it is and how big, never its text.
+// io: the reader's (actorOf(…).io): the size is read as the person whose
+// file it is, on their own account too (design/106).
+async function fileLinkBlock(item, { io = null } = {}) {
+  const abs = path.resolve(item.path);
+  let size = null;
+  if (io) { try { size = (await io.stat(abs)).size; } catch {} }
+  const where = item.range ? ` · the user selected lines ${item.range[0]}–${item.range[1]}` : item.line ? ` · the user's cursor is on line ${item.line}` : '';
+  return `### ${abs} (link: read it only if you need it)\n\n- A file the user pointed you to${size != null ? ` · ${Math.round(size / 1024)} KB` : ''}${where}. Read it with your tools.`;
+}
+
+// ---- summaries (design/110) ----
+// Written once per version of a conversation, by the model chosen in
+// settings → context summaries (else the settings model), thinking off; as
+// the person who asked (their plan, their usage).
+const summaryJobs = new Map(); // key\0v → promise
+function contextSummaryModel() {
+  const p = appSettings.contextSummary || {};
+  return p.provider && p.model ? { provider: p.provider, model: p.model } : null;
+}
+async function contextSummaryFor(key, { person = null, force = false } = {}) {
+  const entry = index[key];
+  if (!entry) throw new Error('conversation not found');
+  const v = ctxFinder.versionOf(entry);
+  if (!force) { const have = contextSummaries.get(key, v); if (have) return have; }
+  const job = key + '\0' + v;
+  if (summaryJobs.has(job)) return summaryJobs.get(job);
+  const run = (async () => {
+    const { list } = await conversationChat(key);
+    if (!list.length) throw new Error('no user or assistant text in that conversation');
+    const input = ctxFinder.summaryInput(list, estimateInputTokens);
+    const t0 = Date.now();
+    const { outputs } = await aiProgram('context_summary', {
+      title: entry.title || entry.timelineTitle || '', project: projectNameOf(entry.cwd, key) || '', conversation: input.text,
+    }, { thinking: 'off', timeoutMs: 180000, purpose: 'context summary', person: person || undefined, model: contextSummaryModel() || undefined, caller: { conversation: key } });
+    const text = String(outputs.summary || '').trim();
+    if (!text) throw new Error('the model wrote no summary');
+    const m = contextSummaryModel();
+    return contextSummaries.put(key, v, { text, at: Date.now(), messages: list.length, omitted: input.omitted, lastTs: entry.lastTs || null,
+      model: m ? m.provider + '/' + m.model : currentModelLabel(), ms: Date.now() - t0 });
+  })();
+  summaryJobs.set(job, run);
+  try { return await run; } finally { summaryJobs.delete(job); }
+}
+
+// ---- the context finder (design/110) ----
+// One box for every source: conversations, project memory, the records'
+// notes and epics, files. Without words, it starts with what is probably
+// wanted: what is related to the message being written, the project's
+// recent work, its memory, the files worked on.
+const FIND_TYPES = ['chat', 'memory', 'doc', 'file'];
+let memorySlugs = { rev: -1, map: new Map() };
+// A memory file's folder → its project.
+function memoryProjectOfSlug(slug) {
+  const rev = indexRevision + ':' + Object.keys(createdProjects).length;
+  if (memorySlugs.rev !== rev) {
+    const map = new Map();
+    for (const name of projectEntriesByName().keys()) if (name && name !== '?') map.set(projectMemorySlug(name), name);
+    for (const raw of Object.keys(createdProjects)) { const name = canonicalProjectName(raw); if (name) map.set(projectMemorySlug(name), name); }
+    memorySlugs = { rev, map };
+  }
+  return memorySlugs.map.get(slug) || null;
+}
+// A record file (relative to the notes tree) as a finder source, or null.
+function recordSourceOf(file) {
+  const parts = String(file || '').split('/');
+  if (parts[0] === 'projects' && parts.length === 3 && parts[2].endsWith('.md')) {
+    const kind = parts[2].slice(0, -3), project = memoryProjectOfSlug(parts[1]);
+    return project && MEMORY_DOC_KINDS.includes(kind) ? { type: 'memory', project, kind } : null;
+  }
+  if (parts[0] === 'projects') return null; // area memory and other files: not yet
+  if (isPersonNoteRel(file)) return null;
+  return { type: 'doc', file };
+}
+// A document's size and sections, kept until it changes.
+const docInfoCache = new Map(); // abs → { mtimeMs, size, info }
+async function docInfo(abs) {
+  const st = await fsp.stat(abs); // hub-own: project memory and the records' notes
+  const have = docInfoCache.get(abs);
+  if (have && have.mtimeMs === st.mtimeMs && have.size === st.size) return have.info;
+  const text = await fsp.readFile(abs, 'utf8'); // hub-own: project memory and the records' notes
+  const sections = mdSections(text).map(x => ({ heading: x.heading, tokens: estimateInputTokens(x.text) }));
+  const info = { text, tokens: estimateInputTokens(text), sections, outline: ctxFinder.outlineOf(text), updatedAt: st.mtime.toISOString(), title: (text.match(/^#\s+(.*)$/m) || [])[1] || null };
+  docInfoCache.set(abs, { mtimeMs: st.mtimeMs, size: st.size, info });
+  while (docInfoCache.size > 300) docInfoCache.delete(docInfoCache.keys().next().value);
+  return info;
+}
+// What a search hit's section title names: "Document › Section", or the
+// document alone for its first section.
+const sectionOfTitle = t => { const s = String(t || ''); const at = s.indexOf(' › '); return at >= 0 ? s.slice(at + 3) : s; };
+const linkTokens = 90;
+
+async function memoryRow(project, kind, { matches = [], why = null } = {}) {
+  const abs = projectMemoryPaths(project)[kind];
+  let info;
+  try { info = await docInfo(abs); } catch { return null; }
+  const matched = [...new Set(matches.map(m => sectionOfTitle(m.title)).filter(h => info.sections.some(x => x.heading === h)))];
+  const excerpt = info.sections.filter(x => matched.includes(x.heading)).reduce((n, x) => n + x.tokens, 0);
+  const depth = info.tokens <= ctxFinder.RECOMMENDED_TOKENS ? 'full' : matched.length ? 'excerpt' : 'link';
+  return { id: 'mem:' + project + ':' + kind, type: 'memory', title: project + ' · ' + kind, project, when: info.updatedAt, ai: true,
+    meta: 'project memory · ' + info.sections.length + ' sections', why, snippet: (matches[0] && matches[0].snippet) || '',
+    sections: matched, sizes: { link: linkTokens + info.outline.length * 8, ...(matched.length ? { excerpt } : {}), full: info.tokens }, depth,
+    item: { project, kind } };
+}
+async function docRow(file, { matches = [], why = null } = {}) {
+  let abs, info;
+  try { abs = recordDocPath(file); info = await docInfo(abs); } catch { return null; }
+  const matched = [...new Set(matches.map(m => sectionOfTitle(m.title)).filter(h => info.sections.some(x => x.heading === h)))];
+  const excerpt = info.sections.filter(x => matched.includes(x.heading)).reduce((n, x) => n + x.tokens, 0);
+  const epic = file.startsWith('epics/');
+  const title = (epic && epics[path.basename(file, '.md')] && epics[path.basename(file, '.md')].title) || info.title || path.basename(file, '.md');
+  return { id: 'doc:' + file, type: 'doc', title, when: info.updatedAt, ai: true, meta: (epic ? 'epic' : 'note') + ' · ' + info.sections.length + ' sections', why,
+    snippet: (matches[0] && matches[0].snippet) || '', sections: matched,
+    sizes: { link: linkTokens + info.outline.length * 8, ...(matched.length ? { excerpt } : {}), full: info.tokens },
+    depth: info.tokens <= ctxFinder.RECOMMENDED_TOKENS ? 'full' : matched.length ? 'excerpt' : 'link', item: { type: 'doc', file, title } };
+}
+function chatRow(key, size, { matches = [], why = null } = {}) {
+  const entry = index[key];
+  const full = size ? ctxFinder.tokensOfChars(size.chars) + size.units * 8 : 0;
+  const v = ctxFinder.versionOf(entry);
+  const sum = contextSummaries.get(key, v) || contextSummaries.latest(key);
+  const summaryTokens = sum ? estimateInputTokens(sum.text) + 80 : Math.min(1500, Math.max(300, Math.round(full * 0.3)));
+  const hits = matches.filter(m => m.i != null && (m.role === 'user' || m.role === 'assistant')).map(m => ({ i: m.i, role: m.role, snippet: m.snippet || '' }));
+  return { id: 'chat:' + key, type: 'chat', key, title: entry.title || entry.timelineTitle || key, project: projectNameOf(entry.cwd, key) || null,
+    when: entry.lastTs || null, firstTs: entry.firstTs || null, harness: harnessOfSource(entry.source), messages: size ? size.units : null, why,
+    snippet: (hits[0] && hits[0].snippet) || (matches[0] && matches[0].snippet) || '', hits,
+    summary: sum ? { ready: true, current: sum.v === v } : { ready: false },
+    sizes: { link: linkTokens, summary: summaryTokens, ...(hits.length ? { excerpt: null } : {}), full }, depth: full && full <= ctxFinder.SMALL_CHAT_TOKENS ? 'full' : 'summary',
+    item: { type: 'chat', key, title: String(entry.title || entry.timelineTitle || '').slice(0, 80) } };
+}
+// Rows from the search's groups, the ones this person may see.
+async function rowsFromGroups(identity, groups, { why = null, whyOf = null } = {}) {
+  const seesAll = accessLib.seesAll(identity);
+  const convKeys = groups.filter(g => g.key && index[g.key] && keyVisible(identity, g.key)).map(g => g.key);
+  const sizes = searchService && convKeys.length ? await searchService.sizes(convKeys.map(k => 'conv:' + k)).catch(() => ({})) : {};
+  const rows = [];
+  for (const g of groups) {
+    const reason = whyOf ? whyOf(g) : why;
+    if (g.key) {
+      if (!index[g.key] || !keyVisible(identity, g.key)) continue;
+      rows.push(chatRow(g.key, sizes['conv:' + g.key], { matches: g.matches || [], why: reason }));
+      continue;
+    }
+    const src = g.file ? recordSourceOf(g.file) : null;
+    if (!src) continue;
+    if (src.type === 'memory') {
+      if (!projectVisible(identity, src.project)) continue;
+      const r = await memoryRow(src.project, src.kind, { matches: g.matches || [], why: reason });
+      if (r) rows.push(r);
+    } else if (seesAll) {
+      const r = await docRow(src.file, { matches: g.matches || [], why: reason });
+      if (r) rows.push(r);
+    }
+  }
+  return rows;
+}
+async function recentConversationRows(identity, { project, exclude, after, limit = 8 }) {
+  const list = [];
+  for (const [key, entry] of Object.entries(index)) {
+    if (!entry || key === exclude || entry.hiddenFanout || entry.importCopyOf || blankAgentRun(entry)) continue;
+    if (project && projectOfEntry(entry, key) !== project) continue;
+    if (after && String(entry.lastTs || '') < after) continue;
+    if (!keyVisible(identity, key)) continue;
+    list.push([key, entry]);
+  }
+  list.sort((a, b) => String(b[1].lastTs || '').localeCompare(String(a[1].lastTs || '')));
+  const keys = list.slice(0, limit).map(([k]) => k);
+  const sizes = searchService && keys.length ? await searchService.sizes(keys.map(k => 'conv:' + k)).catch(() => ({})) : {};
+  return keys.map(k => chatRow(k, sizes['conv:' + k]));
+}
+async function fileRow(identity, abs, { why = null } = {}) {
+  try { assertPathAccess(identity, abs, 'see'); } catch { return null; }
+  let size = null;
+  // Read as the person (their own account: their host, design/105).
+  try { const st = await viewerIo(identity).stat(abs); if (!st.isFile()) return null; size = st.size; } catch { return null; }
+  // Small files go whole; a large one is a window around the cursor (fileContextBlock).
+  const full = size == null ? null : Math.ceil(Math.min(size, 64 * 1024) / 2) + 200;
+  const project = projectNameOf(path.dirname(abs)) || null;
+  return { id: 'file:' + abs, type: 'file', path: abs, title: path.basename(abs), project, why,
+    meta: path.dirname(abs).replace(os.homedir(), '~'), sizes: { link: 50, full },
+    depth: full != null && full <= ctxFinder.RECOMMENDED_TOKENS ? 'full' : 'link', item: { type: 'file', path: abs } };
+}
+async function recentFileRows(identity, project, limit = 6) {
+  const picked = recentFilesLib.select(recentFilesFor(identity), { actor: 'both', project, limit: limit * 2 });
+  const rows = [];
+  for (const f of picked) { const r = await fileRow(identity, f.path); if (r) rows.push({ ...r, when: new Date(f.at).toISOString(), why: (f.actor === 'agent' ? 'an agent ' : 'you ') + f.kind + ' it' }); if (rows.length >= limit) break; }
+  return rows;
+}
+// File names matching the words, in the project's folder (Pi's own file
+// finder, as the person: design/105).
+async function completeFilesAs(identity, { root, cwd, query, signal }) {
+  const dir = require('./pisdk-runtime.js').piPackageDir();
+  const mine = ownFilesOf(identity);
+  return mine ? mine.host.call('op', 'files.complete', { piDir: mine.mapPath(dir), root, cwd, query })
+    : require('./file-completion.js').completeFiles({ piDir: dir, root, cwd, query, signal });
+}
+async function fileRowsByName(identity, q, { key, project, signal }) {
+  if (/\s/.test(q) || q.length < 2) return [];
+  const root = (project && (projectMetaFor(project) || {}).cwd) || (index[key] ? sessionPathsFor(key).cwd : null);
+  if (!root) return [];
+  let items = [];
+  try { items = await completeFilesAs(identity, { root, cwd: root, query: q, signal }); } catch { return []; }
+  const rows = [];
+  for (const it of items) {
+    if (it.directory) continue;
+    let rel = String(it.value || '').replace(/^@/, '');
+    if (rel.startsWith('"')) { try { rel = JSON.parse(rel); } catch {} }
+    const r = await fileRow(identity, path.resolve(root, rel));
+    if (r) rows.push(r);
+    if (rows.length >= 8) break;
+  }
+  return rows;
+}
+// The search, as the finder asks it.
+// channel: one finder's (the page names it): its newer search replaces its
+// older one still waiting; signal: the request, dropped when the page gives up.
+function finderSearch(identity, query, { kinds, project, inProject, after, exclude, any = false, limit = 30, channel, signal }) {
+  const filters = (inProject ? ' project:' + JSON.stringify(project) : '') + (after ? ' after:' + after : '');
+  return searchService.search(query + filters, {
+    kinds, roles: ['user', 'assistant'], exclude, any, limit, boostProject: project || '',
+    memoryDir: inProject ? 'projects/' + projectMemorySlug(project) + '/' : undefined,
+  }, { channel: channel ? 'find:' + channel : null, signal });
+}
+async function contextFind(identity, body, signal) {
+  const t0 = Date.now();
+  const key = String(body.key || '');
+  const project = String(body.project || '').trim();
+  const q = String(body.q || '').trim().slice(0, 300);
+  const draft = String(body.draft || '').slice(0, 6000);
+  const types = new Set((Array.isArray(body.types) && body.types.length ? body.types : FIND_TYPES).filter(t => FIND_TYPES.includes(t)));
+  const inProject = !!body.inProject && !!project;
+  const sinceDays = Math.min(3650, Math.max(0, Number(body.sinceDays) || 0));
+  const after = sinceDays ? new Date(Date.now() - sinceDays * 86400000).toISOString() : '';
+  const seesAll = accessLib.seesAll(identity);
+  const kinds = [...(types.has('chat') ? ['title', 'message'] : []), ...(types.has('memory') ? ['memory'] : []), ...(types.has('doc') && seesAll ? ['note', 'epic'] : [])];
+  const exclude = key && index[key] ? [key] : [];
+  const finder = /^[\w-]{6,40}$/.test(String(body.channel || '')) ? String(body.channel) : null;
+  const how = { kinds, project, inProject, after, exclude, signal };
+  const groups = [];
+  let ranking = 'relevance', repairing = null, keywords = [];
+  if (body.stage === 'meaning') {
+    // The meaning stage (the GPU service): asked after the words' answer,
+    // merged in by the page. Soft: down or off, nothing is added.
+    const text = q || draft;
+    if (!semanticEnabled() || !kinds.length || text.trim().length < 3) return { groups: [], semantic: semanticEnabled(), tookMs: Date.now() - t0 };
+    let hits = [];
+    try { hits = (await semFetch('/search', { ns: semNs(), q: text.slice(0, 2000), limit: 30 }, 4000)).hits || []; }
+    catch { return { groups: [], semantic: true, error: 'meaning search unreachable', tookMs: Date.now() - t0 }; }
+    const wanted = semanticGroups(hits).filter(g => {
+      if (g.key) return types.has('chat') && !exclude.includes(g.key) && (!inProject || (index[g.key] && projectOfEntry(index[g.key], g.key) === project)) && (!after || String((index[g.key] || {}).lastTs || '') >= after);
+      const src = g.file ? recordSourceOf(g.file) : null;
+      return !!src && types.has(src.type) && (!inProject || src.project === project);
+    }).slice(0, q ? 12 : 6);
+    const rows = await rowsFromGroups(identity, wanted, { why: q ? 'Close in meaning to your words' : 'Close in meaning to your message' });
+    return { groups: rows.length ? [{ id: q ? 'matches' : 'related', title: q ? 'Matches' : 'Related to your message', rows }] : [], semantic: true, tookMs: Date.now() - t0 };
+  }
+  if (q.length >= 2) {
+    if (kinds.length && searchService) {
+      const r = await finderSearch(identity, q, { ...how, limit: 30, channel: finder && finder + ':q' });
+      if (r.superseded || r.cancelled) return { superseded: true };
+      repairing = r.repairing || null; ranking = r.ranking || ranking;
+      groups.push({ id: 'matches', title: 'Matches', rows: await rowsFromGroups(identity, r.groups || []) });
+    }
+    if (types.has('file')) groups.push({ id: 'files', title: 'Files named like it', rows: await fileRowsByName(identity, q, { key, project, signal }) });
+  } else {
+    keywords = ctxFinder.draftKeywords(draft);
+    if (keywords.length >= 2 && kinds.length && searchService) {
+      const r = await finderSearch(identity, keywords.map(w => JSON.stringify(w)).join(' '), { ...how, any: true, limit: 8, channel: finder && finder + ':related' });
+      if (r.superseded || r.cancelled) return { superseded: true };
+      repairing = r.repairing || null;
+      const whyOf = g => { const w = [...new Set((g.matches || []).flatMap(m => ctxFinder.markedWords(m.snippet)))].slice(0, 4); return w.length ? 'Shares words with your message: ' + w.join(', ') : 'Related to your message'; };
+      groups.push({ id: 'related', title: 'Related to your message', rows: await rowsFromGroups(identity, r.groups || [], { whyOf }) });
+    }
+    if (types.has('chat')) groups.push({ id: 'recent', title: project ? 'Recent in ' + project : 'Recent conversations', rows: await recentConversationRows(identity, { project, exclude: key, after, limit: 8 }) });
+    if (types.has('memory') && project && projectVisible(identity, project)) {
+      const rows = [];
+      for (const kind of MEMORY_DOC_KINDS) { const r = await memoryRow(project, kind); if (r) rows.push(r); }
+      groups.push({ id: 'memory', title: project + ' memory', rows });
+    }
+    if (types.has('file')) groups.push({ id: 'files', title: 'Files worked on' + (project ? ' in ' + project : ''), rows: await recentFileRows(identity, project, 6) });
+  }
+  // A source shows once, in its first group.
+  const shown = new Set();
+  for (const g of groups) g.rows = g.rows.filter(r => r && !shown.has(r.id) && shown.add(r.id));
+  return { groups: groups.filter(g => g.rows.length), ranking, repairing, keywords, semantic: semanticEnabled(),
+    recommended: ctxFinder.RECOMMENDED_TOKENS, tookMs: Date.now() - t0 };
+}
+// What the preview reads: a conversation's messages (and its summary), a
+// document's sections.
+async function contextSource(identity, id) {
+  const at = id.indexOf(':');
+  const kind = id.slice(0, at), rest = id.slice(at + 1);
+  if (kind === 'chat') {
+    if (!index[rest] || !keyVisible(identity, rest)) throw Object.assign(new Error('conversation not found'), { status: 404 });
+    const { entry, list } = await conversationChat(rest);
+    const v = ctxFinder.versionOf(entry);
+    const sum = contextSummaries.get(rest, v) || contextSummaries.latest(rest);
+    const CLIP = 6000;
+    return { id, type: 'chat', key: rest, title: entry.title || entry.timelineTitle || rest, project: projectNameOf(entry.cwd, rest), v,
+      shortId: require('./conversation-ids.js').shortIdOf(index, rest), firstTs: entry.firstTs, lastTs: entry.lastTs,
+      tokens: list.reduce((n, m) => n + estimateInputTokens(m.text), 0),
+      messages: list.map(m => ({ i: m.i, role: m.role, ts: m.ts, tokens: estimateInputTokens(m.text), text: m.text.length > CLIP ? m.text.slice(0, CLIP) : m.text, clipped: m.text.length > CLIP })),
+      summary: sum ? { text: sum.text, v: sum.v, at: sum.at, messages: sum.messages, model: sum.model, current: sum.v === v, tokens: estimateInputTokens(sum.text) } : null };
+  }
+  if (kind === 'mem' || kind === 'doc') {
+    let abs, title, project = null;
+    if (kind === 'mem') {
+      const cut = rest.lastIndexOf(':');
+      project = rest.slice(0, cut); const docKind = rest.slice(cut + 1);
+      if (!MEMORY_DOC_KINDS.includes(docKind) || !projectVisible(identity, project)) throw Object.assign(new Error('not found'), { status: 404 });
+      abs = projectMemoryPaths(project)[docKind]; title = project + ' · ' + docKind;
+    } else {
+      if (!accessLib.seesAll(identity)) throw Object.assign(new Error('not found'), { status: 404 });
+      abs = recordDocPath(rest); title = null;
+    }
+    const info = await docInfo(abs);
+    return { id, type: kind === 'mem' ? 'memory' : 'doc', title: title || info.title || path.basename(abs, '.md'), project, path: abs, updatedAt: info.updatedAt,
+      trust: trustLabel(abs), tokens: info.tokens, sections: mdSections(info.text).map(x => ({ heading: x.heading, tokens: estimateInputTokens(x.text), text: x.text.length > 8000 ? x.text.slice(0, 8000) : x.text, clipped: x.text.length > 8000 })) };
+  }
+  throw Object.assign(new Error('nothing to read for that source'), { status: 400 });
+}
+
 // One attached file, rendered for the model (design/33 §5.4): the text
 // with line numbers (whole when small, a window around the selection when
 // not), the selection, the recent edit sessions from the ledger, and the
@@ -19223,17 +19711,27 @@ async function fileContextBlock(item, { asAccount = null } = {}) {
 
 // brief: text for one run, appended last (closest to the user message);
 // see startAgentRun.
+// Returns the text, its estimate, and each item's own estimate (items: [{
+// item, tokens }], the normalized item), for the composer's chips and the
+// context finder's budget (design/110).
 async function writeAttachedContextFile(items, { preview = false, brief = null, principal = null } = {}) {
   const normalized = normalizeContextItems(items);
   const asAccount = attachedAsAccount(principal);
-  const maps = normalized.filter(i => i.type !== 'chat' && i.type !== 'file' && i.type !== 'note');
+  const maps = normalized.filter(i => !i.type);
+  const docs = normalized.filter(i => i.type === 'doc');
   const chats = normalized.filter(i => i.type === 'chat');
   const files = normalized.filter(i => i.type === 'file');
   const notes = normalized.filter(i => i.type === 'note');
+  const perItem = [];
+  const count = (item, text) => { perItem.push({ item, tokens: estimateInputTokens(text) }); return text; };
+  // A conversation attached at a depth replaces its older items; before
+  // depths, its recent history replaced its single exchanges.
+  const withDepth = new Set(chats.filter(c => c.depth).map(c => c.key));
   const chatByKey = new Map();
   for (const c of chats) {
-    if (chats.some(other => other.key === c.key && other.i == null) && c.i != null) continue;
-    chatByKey.set(c.key + '\0' + (c.i == null ? '*' : c.i), c);
+    if (!c.depth && withDepth.has(c.key)) continue;
+    if (!c.depth && c.i != null && chats.some(other => other.key === c.key && other.i == null && !other.depth)) continue;
+    chatByKey.set(c.key + '\0' + (c.depth ? 'depth' : c.i == null ? '*' : c.i), c);
   }
   const parts = [];
   parts.push('# Chattering attached context');
@@ -19244,48 +19742,81 @@ async function writeAttachedContextFile(items, { preview = false, brief = null, 
   // Instructions first: they shape how everything below is used.
   let noteCount = 0;
   if (notes.length) {
-    parts.push('', '## Instructions for this conversation', '', 'Written by the user for this conversation. Follow them in every reply.', '', notes.map(n => n.text).join('\n\n---\n\n'));
+    parts.push('', '## Instructions for this conversation', '', 'Written by the user for this conversation. Follow them in every reply.', '', notes.map(n => count(n, n.text)).join('\n\n---\n\n'));
     noteCount = notes.length;
   }
+  // Links: a few lines each, read first; the agent opens one if it needs it.
+  const links = [];
   let docCount = 0;
   const seen = new Set();
   const byProject = new Map();
+  const addToProject = (project, text) => { if (!byProject.has(project)) byProject.set(project, []); byProject.get(project).push(text); };
   for (const item of maps) {
+    if (item.depth) {
+      const id = item.project + '\0' + item.kind;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      try {
+        const b = await memoryItemBlock(item);
+        if (b.link) links.push(count(item, b.link)); else addToProject(item.project, count(item, b.text));
+        docCount++;
+      } catch (e) { if (preview) throw new Error('Could not preview ' + item.project + '/' + item.kind + ': ' + e.message); }
+      continue;
+    }
     const kinds = item.kind === 'map' ? MEMORY_DOC_KINDS : [item.kind];
+    let tokens = 0;
     for (const kind of kinds) {
       const id = item.project + '\0' + kind;
       if (seen.has(id)) continue;
       seen.add(id);
       try {
         const doc = await projectMemoryDocument(item.project, kind);
-        if (!byProject.has(item.project)) byProject.set(item.project, []);
-        byProject.get(item.project).push('### ' + item.project + ' · ' + kind + ' · ' + doc.path + ' ' + trustLabel(doc.path) + '\n\n' + doc.text.trim());
+        const text = '### ' + item.project + ' · ' + kind + ' · ' + doc.path + ' ' + trustLabel(doc.path) + '\n\n' + doc.text.trim();
+        addToProject(item.project, text);
+        tokens += estimateInputTokens(text);
         docCount++;
       } catch (e) { if (preview && item.kind !== 'map') throw new Error('Could not preview ' + item.project + '/' + kind + ': ' + e.message); }
     }
+    perItem.push({ item, tokens });
   }
-  for (const [project, docs] of byProject) {
-    parts.push('', '## ' + project, '', docs.join('\n\n---\n\n'));
+  const docBlocks = [];
+  for (const item of docs) {
+    try {
+      const b = await recordDocBlock(item);
+      if (b.link) links.push(count(item, b.link)); else docBlocks.push(count(item, b.text));
+      docCount++;
+    } catch (e) { if (preview) throw new Error('Could not preview ' + item.file + ': ' + e.message); }
   }
   let chatCount = 0;
   const chatBlocks = [];
   for (const item of chatByKey.values()) {
     try {
-      const block = await loadAttachedChat(item);
-      chatBlocks.push(block.text);
+      const block = item.depth ? await chatItemBlock(item, { preview }) : await loadAttachedChat(item);
+      if (block.link) links.push(count(item, block.link)); else chatBlocks.push(count(item, block.text));
       chatCount++;
     } catch (e) { if (preview) throw new Error('Could not preview conversation: ' + e.message); }
   }
+  let fileCount = 0;
+  const fileBlocks = [];
+  for (const item of files) {
+    if (item.depth === 'link') links.push(count(item, await fileLinkBlock(item, { io: (principal ? actorOfPrincipal(principal) : actorOf(currentIdentity())).io })));
+    else fileBlocks.push(count(item, await fileContextBlock(item, { asAccount })));
+    fileCount++;
+  }
+  if (links.length) {
+    parts.push('', '## Linked sources (read one only if you need it)', '', 'The user pointed you to these. Each says what it is and how to read it.', '', links.join('\n\n'));
+  }
+  for (const [project, blocks] of byProject) {
+    parts.push('', '## ' + project, '', blocks.join('\n\n---\n\n'));
+  }
+  if (docBlocks.length) parts.push('', '## Attached notes', '', docBlocks.join('\n\n---\n\n'));
   if (chatBlocks.length) {
     parts.push('', '## Attached conversations (user and assistant only)', '', chatBlocks.join('\n\n---\n\n'));
   }
-  let fileCount = 0;
-  if (files.length) {
-    const blocks = [];
-    for (const item of files) { blocks.push(await fileContextBlock(item, { asAccount })); fileCount++; }
+  if (fileBlocks.length) {
     parts.push('', '## Attached files', '',
       'The user is reading or editing these files in Chattering and watches them live. When asked for a change, edit the file in place with your tools; do not rewrite unrelated parts; keep the author\'s formatting.', '',
-      blocks.join('\n\n---\n\n'));
+      fileBlocks.join('\n\n---\n\n'));
   }
   if (brief) parts.push('', String(brief).trim());
   if (!docCount && !chatCount && !fileCount && !noteCount && !brief) throw new Error('none of those context items exist yet');
@@ -19293,7 +19824,7 @@ async function writeAttachedContextFile(items, { preview = false, brief = null, 
   const file = path.join(BRIEFINGS_DIR,
     new Date().toISOString().replace(/[:.]/g, '-') + '-attached-context.md');
   if (!preview) await fsp.writeFile(file, text);
-  return { file: preview ? null : file, text, tokens: estimateInputTokens(text), docs: docCount, chats: chatCount, files: fileCount, notes: noteCount };
+  return { file: preview ? null : file, text, tokens: estimateInputTokens(text), items: perItem, docs: docCount, chats: chatCount, files: fileCount, notes: noteCount };
 }
 
 // Wait for the session file the just-spawned agent creates. `existing` is a
@@ -22018,6 +22549,7 @@ const APP_FILES = {
     '/pair.css': { file: 'pair.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
     '/beside.js': { file: 'beside.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/beside.css': { file: 'beside.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
+    '/context-finder.css': { file: 'context-finder.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
     '/collab-client.js': { file: 'collab-client.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/people.js': { file: 'people.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' },
     '/people.css': { file: 'people.css', type: 'text/css; charset=utf-8', cache: 'no-cache' },
@@ -22812,13 +23344,24 @@ async function handleRequest(req, res) {
       const q = (u.searchParams.get('q') || '').trim();
       if (q.length < 2) return json(res, 200, { q, total: 0, groups: [] });
       const t0 = Date.now();
-      const out = searchIdx
-        ? searchIdx.search(q, {
-            limit: Number(u.searchParams.get('limit')) || 40,
-            offset: Number(u.searchParams.get('offset')) || 0,
-            boostProject: u.searchParams.get('boost') || '',
-          })
-        : await legacySearch(q);
+      // On the search worker's thread. A request the page gave up on (it
+      // asks again as the person types) is dropped if it is still waiting.
+      const ctl = new AbortController();
+      res.on('close', () => ctl.abort());
+      let out;
+      try {
+        out = searchService
+          ? await searchService.search(q, {
+              limit: Number(u.searchParams.get('limit')) || 40,
+              offset: Number(u.searchParams.get('offset')) || 0,
+              boostProject: u.searchParams.get('boost') || '',
+            }, { signal: ctl.signal })
+          : await legacySearch(q);
+      } catch (e) {
+        if (e.name === 'AbortError') return;
+        return json(res, 500, { q, error: 'Search failed: ' + e.message, groups: [] });
+      }
+      if (out.superseded || out.cancelled) return json(res, 200, { q, superseded: true, total: 0, groups: [] });
       // Conversation groups carry fresh index metadata (titles can change).
       out.groups = out.groups.filter(g => !g.key || keyVisible(identity, g.key));
       for (const g of out.groups) {
@@ -22970,11 +23513,8 @@ async function handleRequest(req, res) {
       res.on('close', abort);
       const timeout = setTimeout(abort, 5000);
       try {
-        const dir = require('./pisdk-runtime.js').piPackageDir();
         // A person on their own account: their folders, listed as them (design/105).
-        const mine = ownFilesOf(identity);
-        const items = mine ? await mine.host.call('op', 'files.complete', { piDir: mine.mapPath(dir), root, cwd, query })
-          : await require('./file-completion.js').completeFiles({ piDir: dir, root, cwd, query, signal: ctl.signal });
+        const items = await completeFilesAs(identity, { root, cwd, query, signal: ctl.signal });
         if (!res.destroyed) json(res, 200, { items });
       } finally { clearTimeout(timeout); res.removeListener('close', abort); }
     } else if (u.pathname === '/api/conversation/changes' && req.method === 'POST') {
@@ -23900,6 +24440,32 @@ async function handleRequest(req, res) {
         const items = normalizeContextItems(p.context);
         json(res, 200, items.length ? await writeAttachedContextFile(items, { preview: true }) : { text: '', tokens: 0 });
       } catch (e) { json(res, 400, { error: e.message }); }
+    } else if (u.pathname === '/api/context/find' && req.method === 'POST') {
+      // The context finder (design/110): its rows for this person.
+      let body = '';
+      for await (const chunk of req) { body += chunk; if (body.length > 64000) return json(res, 413, { error: 'Request too large' }); }
+      const ctl = new AbortController();
+      res.on('close', () => ctl.abort());
+      try {
+        const out = await contextFind(identity, JSON.parse(body || '{}'), ctl.signal);
+        if (!res.destroyed) json(res, 200, out);
+      } catch (e) { if (!res.destroyed) json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/context/source' && req.method === 'GET') {
+      try { json(res, 200, await contextSource(identity, String(u.searchParams.get('id') || ''))); }
+      catch (e) { json(res, e.status || 400, { error: e.message }); }
+    } else if (u.pathname === '/api/context/summary' && req.method === 'POST') {
+      // A conversation's summary for the finder: the one written for this
+      // version, else written now (a model call, as the person who asks).
+      let body = '';
+      for await (const chunk of req) { body += chunk; if (body.length > 4000) return json(res, 413, { error: 'Request too large' }); }
+      try {
+        const p = JSON.parse(body || '{}');
+        const key = String(p.key || '');
+        if (!index[key] || !keyVisible(identity, key)) return json(res, 404, { error: 'conversation not found' });
+        const sum = await contextSummaryFor(key, { person: identity.user ? identity.user.id : null, force: !!p.force });
+        json(res, 200, { summary: { text: sum.text, v: sum.v, at: sum.at, messages: sum.messages, model: sum.model, omitted: sum.omitted || 0,
+          current: sum.v === ctxFinder.versionOf(index[key]), tokens: estimateInputTokens(sum.text) } });
+      } catch (e) { json(res, e.status || 502, { error: 'The summary could not be written: ' + e.message }); }
     } else if (u.pathname === '/api/conversation/attached-context' && req.method === 'PUT') {
       let body = '';
       for await (const chunk of req) body += chunk;
@@ -24962,6 +25528,10 @@ async function handleRequest(req, res) {
       const ps = parsed.plainSteps;
       if (ps && ps.provider && ps.model && listed.length && !settingsLib.findModel(listed, ps.provider, ps.model)) {
         return json(res, 400, { error: 'unknown model for steps in plain words: ' + ps.provider + '/' + ps.model });
+      }
+      const cs = parsed.contextSummary;
+      if (cs && cs.provider && cs.model && listed.length && !settingsLib.findModel(listed, cs.provider, cs.model)) {
+        return json(res, 400, { error: 'unknown model for context summaries: ' + cs.provider + '/' + cs.model });
       }
       const prevSemTarget = (appSettings.semanticUrl || '') + '|' + semNs();
       const prevLan = lanWanted();
@@ -27488,6 +28058,7 @@ applyLanMode(lanWanted(), () => {
     restoreInterruptedRuns();
     recoverLiveTerminals();
     watch(); watchNotes();
+    if (searchService) searchService.check().catch(e => console.error('search index check', e.message));
     startDelegationMonitor();
     sweepOrphanFanouts();
     refreshProjectFolds().catch(() => {})

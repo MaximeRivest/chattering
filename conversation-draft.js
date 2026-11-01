@@ -427,7 +427,10 @@ function draftSyncPurpose(info) {
     d.purposeAuto = null;
   }
   if (want && d.purposeOffered !== want) {
-    if (!items.some(c => draftIsPurpose(c, want))) { items.push({ project: want, kind: 'intent' }); changed = true; }
+    // 'auto': whole when it is the short purpose a person wrote, a link
+    // when it grew into a long AI-written record (design/110: a project's
+    // intent can pass 290,000 tokens).
+    if (!items.some(c => draftIsPurpose(c, want))) { items.push({ project: want, kind: 'intent', depth: 'auto' }); changed = true; }
     d.purposeAuto = want; d.purposeOffered = want;
   }
   if (!changed) { if (draftHasContent(d)) saveDraft(d); return; }
@@ -586,6 +589,8 @@ async function sendDraft(btn) {
   // An agent's own program takes words only: images attached here would be
   // dropped in silence. Said before sending, not after.
   if (draftUsesOwnProgram(d) && (window._agentImages || []).length) return errToast(draftAgentName(d.harness || 'pi') + '\'s own program cannot take images from here. Remove them, or pick Pi or Codex in Chattering\'s box.');
+  // Attached context that would crowd the model is said first (design/110).
+  if (!draftUsesOwnProgram(d) && typeof contextSendGuard === 'function' && !(await contextSendGuard())) return;
   if (d.continues) return sendHandoffDraft(d, ta, prompt, btn);
   if (draftUsesOwnProgram(d)) {
     // The agent's own program, started in the folder; its live part takes

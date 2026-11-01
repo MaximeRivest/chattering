@@ -49,7 +49,43 @@ const TOOLS = [
       title: { type: 'string', description: 'A short title, shown above the widget.' },
     } },
   },
+  // design/110: the records, the same text as the `chattering` command and
+  // Pi's chattering_search / chattering_show. A source the user attached as
+  // a link names its id; these read it.
+  {
+    name: 'records_search',
+    description: 'Search the user\'s past AI conversations, distilled notes, project memory and epics on this computer (ranked passages, each with a conversation id). '
+      + 'Use it before asking the user what was decided, tried or why. Records are AI transcripts and AI-written notes: what was said, not verified truth.',
+    inputSchema: { type: 'object', required: ['q'], properties: {
+      q: { type: 'string', description: 'Words to find; all must match; "quoted phrase" matches exactly. Operators: project: role: type: after: before: path:' },
+      project: { type: 'string', description: 'Only this project' },
+      since: { type: 'string', description: '30d, 2w, 6m, 1y or a date' },
+      limit: { type: 'integer', minimum: 1, maximum: 50 },
+    } },
+  },
+  {
+    name: 'records_show',
+    description: 'Read one past conversation by its id (from records_search or from a source the user linked). '
+      + 'No position: an outline of every user turn. at: the messages around #N. from/to: a range. last: the tail.',
+    inputSchema: { type: 'object', required: ['id'], properties: {
+      id: { type: 'string', description: 'The conversation id (short id, full key, or session file path)' },
+      at: { type: 'integer', minimum: 0 }, context: { type: 'integer', minimum: 0, maximum: 50 },
+      from: { type: 'integer', minimum: 0 }, to: { type: 'integer', minimum: 0 }, last: { type: 'integer', minimum: 1, maximum: 500 },
+      roles: { type: 'string', enum: ['chat', 'all'] },
+    } },
+  },
 ];
+
+async function records(op, args) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(args || {})) if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+  if (op === 'search') { qs.set('dir', process.cwd()); qs.set('excludePath', process.env.CHATTERING_SESSION || ''); }
+  const headers = token() ? { Authorization: 'Bearer ' + token() } : {};
+  const res = await fetch(`http://127.0.0.1:${port()}/api/records/${op}?${qs}`, { headers });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.text || data.error || 'HTTP ' + res.status);
+  return data.text || JSON.stringify(data);
+}
 
 async function artifact(args) {
   const p = String(args.path || '');
@@ -93,7 +129,8 @@ async function handle(m) {
   if (m.method === 'tools/call') {
     const { name, arguments: args = {} } = m.params || {};
     try {
-      const text = name === 'artifact' ? await artifact(args) : name === 'show' ? show(args) : null;
+      const text = name === 'artifact' ? await artifact(args) : name === 'show' ? show(args)
+        : name === 'records_search' ? await records('search', args) : name === 'records_show' ? await records('show', args) : null;
       if (text == null) return reply(m.id, null, { code: -32602, message: 'unknown tool ' + name });
       return reply(m.id, { content: [{ type: 'text', text }] });
     } catch (e) { return reply(m.id, { content: [{ type: 'text', text: e.message }], isError: true }); }

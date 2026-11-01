@@ -34,7 +34,7 @@ function contextHarness() {
     trustLabel: () => '', fileContextBlock: async () => 'file',
   };
   vm.createContext(context);
-  vm.runInContext(slice(serverSource, 'function normalizeContextItems(', 'function conversationContextOf('), context);
+  vm.runInContext(slice(serverSource, 'const ITEM_DEPTHS = ', 'function conversationContextOf('), context);
   vm.runInContext(slice(serverSource, 'function contextSig(', 'function stopAnyWarmSession('), context);
   vm.runInContext(slice(serverSource, 'async function writeAttachedContextFile(', '// Wait for the session file'), context);
   return context;

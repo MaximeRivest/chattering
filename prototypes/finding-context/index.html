@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finding context — design/110 mockup</title>
+<style>
+:root{
+  --bg:#e7eae5; --s1:#f4f5f1; --s2:#ffffff; --s3:#eef0eb; --border:#d3d8d0; --border-strong:#b3bbb0;
+  --text:#1d2620; --dim:#5c675f; --faint:#8b958d; --accent:#2f6b3a; --accent-soft:#dcebdc; --accent-ink:#fff;
+  --warn:#9a6b00; --warn-soft:#f6ebc9; --danger:#a23b32; --danger-soft:#f6dcd8; --mark:#f3e39a;
+  --radius:8px; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);height:100vh;display:flex;overflow:hidden}
+button{font:inherit;color:inherit;cursor:pointer}
+kbd{font:11px ui-monospace,monospace;border:1px solid var(--border-strong);border-bottom-width:2px;border-radius:4px;padding:0 4px;background:var(--s2);color:var(--dim)}
+.note{position:fixed;left:12px;top:10px;font-size:12px;color:var(--faint);z-index:5}
+/* conversation */
+.convo{flex:1;display:flex;flex-direction:column;min-width:0}
+.thread{flex:1;overflow:auto;padding:46px max(24px,6%) 12px}
+.msg{max-width:720px;margin:0 auto 14px}
+.msg.user{background:var(--s3);border-radius:var(--radius);padding:8px 12px;margin-left:auto;margin-right:max(0px,calc(50% - 360px));max-width:520px}
+.msg p{margin:.3em 0}
+.composer{margin:0 auto 16px;width:min(760px,92%);background:var(--s2);border:1px solid var(--border);border-radius:12px;padding:10px 12px;box-shadow:0 2px 10px #0000000d}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.chip{display:inline-flex;align-items:center;gap:6px;background:var(--s3);border:1px solid var(--border);border-radius:999px;padding:2px 4px 2px 10px;font-size:12.5px}
+.chip .d{color:var(--dim)} .chip.over{border-color:var(--danger);background:var(--danger-soft)}
+.chip button{border:0;background:none;color:var(--faint);padding:0 4px}
+.draft{min-height:44px;color:var(--text)} .draft .at{color:var(--accent);font-weight:600}
+.budget{display:flex;align-items:center;gap:10px;margin-top:8px;font-size:12px;color:var(--dim)}
+.bar{flex:1;height:6px;background:var(--s3);border-radius:3px;position:relative;overflow:hidden}
+.bar i{position:absolute;inset:0 auto 0 0;background:var(--accent);border-radius:3px;transition:width .2s}
+.bar b{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--border-strong)}
+.bar.warn i{background:var(--warn)} .bar.over i{background:var(--danger)}
+.send{border:0;background:var(--accent);color:var(--accent-ink);border-radius:6px;padding:4px 12px}
+/* panel */
+.panel{width:min(560px,46vw);background:var(--s1);border-left:1px solid var(--border);display:flex;flex-direction:column;min-height:0}
+.ph{padding:12px 14px 8px;border-bottom:1px solid var(--border)}
+.ph h2{font-size:15px;margin:0 0 8px;display:flex;justify-content:space-between;align-items:center}
+.ph h2 small{font-weight:400;color:var(--faint);font-size:12px}
+.search{display:flex;align-items:center;gap:8px;background:var(--s2);border:1px solid var(--border-strong);border-radius:8px;padding:6px 10px}
+.search input{flex:1;border:0;outline:0;font:inherit;background:none}
+.filters{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.f{border:1px solid var(--border);background:var(--s2);border-radius:999px;padding:1px 10px;font-size:12.5px;color:var(--dim)}
+.f[aria-pressed=true]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.speed{font-size:11.5px;color:var(--faint);margin-top:6px;min-height:16px}
+.list{flex:1;overflow:auto;padding:4px 8px}
+.group{font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);margin:12px 6px 4px}
+.row{border:1px solid transparent;border-radius:var(--radius);padding:8px 10px;margin:2px 0;display:grid;grid-template-columns:20px 1fr;gap:2px 8px;cursor:pointer}
+.row:hover{background:var(--s2)} .row.sel{background:var(--s2);border-color:var(--border-strong);box-shadow:0 1px 4px #00000010}
+.row.added{border-left:3px solid var(--accent)}
+.ic{grid-row:span 3;color:var(--dim);font-size:15px;line-height:20px;text-align:center}
+.t{font-weight:600;display:flex;gap:8px;align-items:baseline;min-width:0}
+.t span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.t em{font-style:normal;font-weight:400;color:var(--faint);font-size:12px;white-space:nowrap;margin-left:auto}
+.m{font-size:12.5px;color:var(--dim)} .why{font-size:12px;color:var(--accent)}
+.snip{font-size:13px;color:var(--text);opacity:.88} mark{background:var(--mark);color:inherit;border-radius:2px;padding:0 1px}
+.ai{display:inline-block;font-size:11px;border:1px dashed var(--border-strong);border-radius:4px;padding:0 4px;color:var(--faint);cursor:help}
+.depths{grid-column:2;display:flex;gap:4px;margin-top:6px;flex-wrap:wrap}
+.dp{border:1px solid var(--border);background:var(--s2);border-radius:6px;padding:1px 8px;font-size:12px;color:var(--dim)}
+.dp b{font-weight:600;color:var(--text)} .dp[aria-pressed=true]{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+.dp.toobig{color:var(--danger);border-color:#e3b3ad} .dp:disabled{opacity:.45;cursor:not-allowed}
+.preview{border-top:1px solid var(--border);background:var(--s2);height:38%;display:flex;flex-direction:column;min-height:0}
+.pvh{display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--border);font-size:12.5px;color:var(--dim)}
+.pvh strong{color:var(--text);font-size:13.5px}
+.pvh .sp{flex:1}
+.tg{border:1px solid var(--border);background:var(--s1);border-radius:6px;padding:1px 8px;font-size:12px}
+.pvb{overflow:auto;padding:10px 14px;font-size:13.5px}
+.pm{display:grid;grid-template-columns:18px 1fr;gap:6px;padding:6px 6px;border-radius:6px}
+.pm.hit{background:#fbf6dc} .pm .who{font-size:11.5px;color:var(--faint);text-transform:uppercase;letter-spacing:.05em}
+.pm input{margin-top:3px}
+.raw{white-space:pre-wrap;font:12px/1.5 ui-monospace,monospace;color:var(--dim)}
+.keys{display:flex;gap:12px;flex-wrap:wrap;padding:7px 14px;border-top:1px solid var(--border);font-size:11.5px;color:var(--faint);background:var(--s1)}
+.warnline{font-size:12px;color:var(--danger)}
+</style>
+</head>
+<body>
+<div class="note">Mockup · design/110 · data from your real records, behaviour simulated</div>
+
+<section class="convo">
+  <div class="thread">
+    <div class="msg user"><p>and now?</p></div>
+    <div class="msg"><p>Yes, it works now. Chattering restarted at 05:15, so it re-read its password file and the two match again.</p></div>
+    <div class="msg user"><p>the search for context here is pretty bad, all about it sucks, ux, ui, speed… do a full study and analysis and suggest what it should do and look like in its ultimate form.</p></div>
+    <div class="msg"><p style="color:var(--faint)">(Your next message is being written below. The context panel sits beside it instead of covering it.)</p></div>
+  </div>
+  <div class="composer">
+    <div class="chips" id="chips"></div>
+    <div class="draft">Now build phase 0 from the study, starting with <span class="at">@</span>the index repair</div>
+    <div class="budget">
+      <span id="btxt"></span>
+      <div class="bar" id="bar"><i id="bfill"></i><b id="bmark"></b></div>
+      <span>Opus · 1M window</span>
+      <button class="send">send</button>
+    </div>
+  </div>
+</section>
+
+<aside class="panel" aria-label="Context">
+  <div class="ph">
+    <h2>Context for this message <small>opened with @ · Esc closes</small></h2>
+    <label class="search"><span aria-hidden="true">⌕</span><input id="q" placeholder="Search conversations, memory, files, notes…" autocomplete="off"></label>
+    <div class="filters" id="filters"></div>
+    <div class="speed" id="speed"></div>
+  </div>
+  <div class="list" id="list" role="listbox" aria-label="Sources"></div>
+  <div class="preview">
+    <div class="pvh"><strong id="pvt"></strong><span id="pvm"></span><span class="sp"></span><button class="tg" id="rawbtn">What the model gets</button></div>
+    <div class="pvb" id="pvb"></div>
+  </div>
+  <div class="keys"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>Enter</kbd> add / remove</span><span><kbd>Tab</kbd> change depth</span><span><kbd>Ctrl</kbd><kbd>Enter</kbd> add &amp; close</span><span>tick messages in the preview for an excerpt</span></div>
+</aside>
+
+<script>
+const WINDOW = 1_000_000, RECOMMEND = 40_000;
+const S = [
+ {id:'d110',type:'note',group:'suggested',icon:'✎',title:'110 · Finding context for a conversation',meta:'chattering · design · written today',
+  why:'Your draft says "phase 0" and "index repair"',snip:'0. Repair (hours): rebuild the full-text <mark>index</mark> (needs a restart: 30 s of rebuild…',
+  depths:{link:60,summary:900,whole:4100},def:'whole',body:[['doc','Phase 0: rebuild the full-text index; detect “malformed” and rebuild in the background; cache the project list; filters-only queries list recent conversations; drop the full count; warn on attachments over 20% of the window.']]},
+ {id:'c-auth',type:'chat',group:'suggested',icon:'💬',title:'Web search tool availability check',meta:'chattering · this morning · 9 messages',
+  why:'Same problem: search failing after the disk move',snip:'The server reads that file once, when it starts… <mark>search</mark> doesn’t work right now',
+  depths:{link:50,summary:1100,excerpt:null,whole:14800},def:'summary',
+  body:[['user','Does chattering search work here?'],['assistant','No, search doesn’t work right now. Both the built-in search tool and the chattering command reply “sign in first”…',1],['user','and now?'],['assistant','Yes, it works now. Chattering restarted at 05:15…']]},
+ {id:'c-at',type:'chat',group:'suggested',icon:'💬',title:'@ mentions → Context button',meta:'chattering · 8 Sep · 181 messages',
+  why:'Where the current Context dialog was designed',snip:'Its job to be done: “Bring relevant knowledge from elsewhere into this conversation… let me verify exactly what I’m giving the model.”',
+  depths:{link:50,summary:1400,excerpt:null,whole:61000},def:'summary',
+  body:[['user','how does @ works in aiconvo in the compose?'],['user','i have found it hard to “see” what i would be adding to this session…'],['assistant','The problem isn’t just its name: it asks you to attach things without enough evidence to judge them.',1],['assistant','Implemented Context · count in place of @. Source search with project/date filters; preview before adding…']]},
+ {id:'m-env',type:'memory',group:'project',icon:'◆',title:'chattering · environment',meta:'project memory · updated 2 days ago',ai:1,
+  snip:'~/.cache/chattering (index.json, sessions/, <mark>search.db</mark>, memory-leaves/, project-memory/, lan-token, tls/)…',
+  depths:{link:40,summary:800,whole:7500},def:'whole',body:[['doc','Important locations: ~/.cache/chattering holds the search database (search.db), the conversation index and the install token…']]},
+ {id:'m-intent',type:'memory',group:'project',icon:'◆',title:'chattering · intent',meta:'project memory · updated 2 days ago',ai:1,
+  snip:'Deep project intent — 1,400 decisions since August. Frog memory gets its own switch…',
+  depths:{link:40,summary:2600,whole:296500},def:'summary',body:[['doc','2026-10-17 — Frog memory · constraint: Frog memory gets its own switch; no machine-wide…'],['doc','… 1,400 more entries (296,500 tokens). Too large to attach whole: past the recommended zone it makes answers worse, not better.']]},
+ {id:'f-si',type:'file',group:'project',icon:'▤',title:'searchindex.js',meta:'chattering · file · changed 3 weeks ago',
+  snip:'// FTS5-backed work-memory <mark>search</mark> (a derived cache)… CREATE VIRTUAL TABLE units_fts',
+  depths:{link:30,excerpt:null,whole:4300},def:'link',body:[['doc','394 lines. SearchIndex: putConversation, putMarkdown, search() — counts every match, then ranks up to 2,000 rows on the main thread.']]},
+ {id:'c-frog',type:'chat',group:'older',icon:'💬',title:'Frog',meta:'chattering · 17 Oct · 349 messages',
+  snip:'OptMem’s design, rebuilt (frog-memory.js): an append-only log…',depths:{link:50,summary:1800,excerpt:null,whole:118000},def:'link',
+  body:[['assistant','frog-memory.js: an append-only log of what the frog learned…',1]]},
+ {id:'c-sem',type:'chat',group:'older',icon:'💬',title:'Semantic search on the GPU server',meta:'chattering · 2 Sep · 96 messages',
+  snip:'Late-interaction (ColBERT) <mark>search</mark> that runs on the GPU server and adds meaning-based matches…',depths:{link:50,summary:1200,excerpt:null,whole:38000},def:'link',
+  body:[['assistant','Two stages inside the service: mean-vector recall on the GPU, then exact MaxSim rerank…',1]]},
+];
+const GROUPS={suggested:'Suggested for this message',project:'In chattering',older:'Older matches'};
+const FILTERS=['this project','last 2 weeks','conversations','memory','files','notes'];
+const DEPTH_LABEL={link:'Link',summary:'Summary',excerpt:'Excerpt',whole:'Whole'};
+const added=new Map([['d110','whole']]); const choice={}; const ticks={};
+let sel=0, raw=false, shown=[], on=new Set(['this project']);
+const $=id=>document.getElementById(id);
+const fmt=n=>n>=1000?(n/1000).toFixed(n>=10000?0:1).replace(/\.0$/,'')+'k':String(n);
+const sizeOf=(s,d)=>d==='excerpt'?Math.max(1,(ticks[s.id]||new Set()).size)*450:s.depths[d];
+const total=()=>[...added].reduce((a,[id,d])=>a+sizeOf(S.find(x=>x.id===id),d),0);
+function depthOf(s){return choice[s.id]||added.get(s.id)||s.def}
+function render(){
+  const q=$('q').value.trim().toLowerCase();
+  const t0=performance.now();
+  shown=S.filter(s=>!q||(s.title+' '+s.snip+' '+s.meta).toLowerCase().includes(q))
+          .filter(s=>!on.has('conversations')||s.type==='chat').filter(s=>!on.has('memory')||s.type==='memory')
+          .filter(s=>!on.has('files')||s.type==='file').filter(s=>!on.has('notes')||s.type==='note');
+  sel=Math.min(sel,Math.max(0,shown.length-1));
+  const L=$('list'); L.innerHTML=''; let g=null;
+  shown.forEach((s,i)=>{
+    if(s.group!==g){g=s.group;const h=document.createElement('div');h.className='group';h.textContent=q&&g==='suggested'?'Best matches':GROUPS[g];L.append(h)}
+    const r=document.createElement('div');r.className='row'+(i===sel?' sel':'')+(added.has(s.id)?' added':'');r.setAttribute('role','option');r.setAttribute('aria-selected',i===sel);
+    const hl=q?s.snip.replace(new RegExp('('+q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','ig'),'<mark>$1</mark>'):s.snip;
+    r.innerHTML=`<div class="ic">${s.icon}</div><div class="t"><span>${s.title}</span>${s.ai?'<span class="ai" title="Written by AI from your conversations; nobody has reviewed it">AI-written</span>':''}<em>${added.has(s.id)?'✓ added':''}</em></div>
+      <div class="m">${s.meta}</div>${s.why?`<div class="why">↳ ${s.why}</div>`:''}<div class="snip" style="grid-column:2">${hl}</div><div class="depths"></div>`;
+    const D=r.querySelector('.depths'), cur=depthOf(s);
+    for(const d of Object.keys(s.depths)){
+      const n=sizeOf(s,d), big=n>RECOMMEND, b=document.createElement('button');
+      b.className='dp'+(big?' toobig':''); b.setAttribute('aria-pressed',d===cur);
+      b.innerHTML=`${DEPTH_LABEL[d]} <b>${d==='excerpt'&&!(ticks[s.id]||new Set()).size?'pick':fmt(n)}</b>`;
+      b.title=d==='link'?'Title, a one-line gist and where to find it; the agent opens it if it needs it':d==='summary'?'Written once by a small model, cached, shown here before it is used':d==='excerpt'?'Only the messages you tick in the preview':big?'Over the recommended size: more text usually makes answers worse':'The whole text';
+      b.onclick=e=>{e.stopPropagation();choice[s.id]=d;sel=i;if(added.has(s.id))added.set(s.id,d);render()};
+      D.append(b);
+    }
+    r.onclick=()=>{sel=i;render()}; r.ondblclick=()=>toggle(s);
+    L.append(r);
+  });
+  if(!shown.length)L.innerHTML='<div class="group">Nothing matches. Meaning search found nothing close either.</div>';
+  const ms=Math.max(4,Math.round(performance.now()-t0+18));
+  $('speed').textContent=q?`word matches ${ms} ms · meaning matches 190 ms · ${shown.length} sources`:'Ready before you typed: related to your draft, then recent work in this project';
+  $('filters').innerHTML=''; for(const f of FILTERS){const b=document.createElement('button');b.className='f';b.textContent=f;b.setAttribute('aria-pressed',on.has(f));b.onclick=()=>{on.has(f)?on.delete(f):on.add(f);render()};$('filters').append(b)}
+  preview(); chips();
+  const r=$('list').querySelector('.row.sel'); if(r) r.scrollIntoView({block:'nearest'});
+}
+function toggle(s){ if(added.has(s.id))added.delete(s.id); else added.set(s.id,depthOf(s)); render() }
+function preview(){
+  const s=shown[sel], B=$('pvb'); if(!s){B.innerHTML='';$('pvt').textContent='';$('pvm').textContent='';return}
+  const d=depthOf(s), n=sizeOf(s,d);
+  $('pvt').textContent=s.title; $('pvm').textContent=`· ${DEPTH_LABEL[d]} · about ${fmt(n)} tokens`;
+  if(raw){B.innerHTML=`<div class="raw">## ${s.title} (${DEPTH_LABEL[d].toLowerCase()})\nsource: ${s.meta}\n${s.ai?'label: AI-written, not reviewed\n':''}\n${d==='link'?'Open with: chattering show '+s.id+'\nGist: '+(s.why||s.snip.replace(/<[^>]+>/g,'')):s.body.map(x=>(x[0]==='doc'?'':x[0]+': ')+x[1]).join('\n\n')}</div>`;return}
+  B.innerHTML=(n>RECOMMEND?`<p class="warnline">About ${fmt(n)} tokens: over the recommended ${fmt(RECOMMEND)}. Past that, research shows answers get worse, not better. Summary or Link is the better choice.</p>`:'')+
+   (d==='summary'?`<p class="m"><span class="ai">AI-written summary</span> made once, cached, refreshed when the source changes.</p>`:'')+
+   s.body.map((x,k)=>x[0]==='doc'?`<p>${x[1]}</p>`:`<label class="pm${x[2]?' hit':''}"><input type="checkbox" data-k="${k}" ${(ticks[s.id]||new Set()).has(k)?'checked':''}><div><div class="who">${x[0]}${x[2]?' · matched':''}</div>${x[1]}</div></label>`).join('');
+  B.querySelectorAll('input[data-k]').forEach(c=>c.onchange=()=>{const t=ticks[s.id]||(ticks[s.id]=new Set());c.checked?t.add(+c.dataset.k):t.delete(+c.dataset.k);if(t.size&&'excerpt' in s.depths){choice[s.id]='excerpt';if(added.has(s.id))added.set(s.id,'excerpt')}render()});
+}
+function chips(){
+  const C=$('chips'); C.innerHTML='';
+  for(const [id,d] of added){const s=S.find(x=>x.id===id),n=sizeOf(s,d);const c=document.createElement('span');c.className='chip'+(n>RECOMMEND?' over':'');
+    c.innerHTML=`${s.icon} ${s.title.length>34?s.title.slice(0,33)+'…':s.title} <span class="d">${DEPTH_LABEL[d].toLowerCase()} · ${fmt(n)}</span><button title="Remove">×</button>`;
+    c.querySelector('button').onclick=()=>{added.delete(id);render()};C.append(c)}
+  const t=total(), bar=$('bar');
+  $('bfill').style.width=Math.min(100,t/(RECOMMEND*1.5)*100)+'%'; $('bmark').style.left=(100/1.5)+'%';
+  bar.className='bar'+(t>WINDOW*0.8?' over':t>RECOMMEND?' warn':'');
+  $('btxt').textContent=added.size?`Context ${fmt(t)} tokens`+(t>RECOMMEND?' · over the recommended '+fmt(RECOMMEND):' · within the recommended '+fmt(RECOMMEND)):'No context attached';
+}
+$('q').oninput=()=>{sel=0;render()};
+$('rawbtn').onclick=()=>{raw=!raw;$('rawbtn').textContent=raw?'What you read':'What the model gets';preview()};
+document.addEventListener('keydown',e=>{
+  if(e.key==='ArrowDown'){sel=Math.min(shown.length-1,sel+1);e.preventDefault();render()}
+  else if(e.key==='ArrowUp'){sel=Math.max(0,sel-1);e.preventDefault();render()}
+  else if(e.key==='Enter'&&shown[sel]){e.preventDefault();toggle(shown[sel])}
+  else if(e.key==='Tab'&&shown[sel]){e.preventDefault();const s=shown[sel],ks=Object.keys(s.depths),d=ks[(ks.indexOf(depthOf(s))+(e.shiftKey?ks.length-1:1))%ks.length];choice[s.id]=d;if(added.has(s.id))added.set(s.id,d);render()}
+});
+render(); $('q').focus();
+</script>
+</body>
+</html>

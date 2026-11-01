@@ -653,7 +653,7 @@
     state = same ? { ...before, ...spec, version: before.version, resolved: before.resolved, readOnly: !!opts.readOnly }
       : { ...spec, version: null, resolved: null, readOnly: !!opts.readOnly };
     // The editor, a change, a folder and the lists live docked, never floating.
-    if (['document', 'change', 'folder', 'lists'].includes(spec.kind)) floating = false;
+    if (['document', 'change', 'folder', 'lists', 'context'].includes(spec.kind)) floating = false;
     else if (opts.float != null) floating = !!opts.float;
     applyMode();
     if (window.Pair && !floating) { if (opts.focus === false) Pair.apply(); else Pair.opened(); }
@@ -667,6 +667,7 @@
     if (was.kind === 'file' && fileReader) { fileReader(); fileReader = null; }
     if (was.kind === 'folder' && typeof fbDisposeBeside === 'function') fbDisposeBeside();
     if (was.kind === 'lists' && typeof parkLists === 'function') parkLists();
+    if (was.kind === 'context' && window.ContextFinder) ContextFinder.dispose();
   }
   let fileReader = null;
   function stepVersion(dir) {
@@ -731,6 +732,16 @@
       pane.querySelector('.art-sub').textContent = (state.project || '') + (state.dir ? ' / ' + state.dir : '');
       if (paneBridge) { paneBridge.dispose(); paneBridge = null; }
       if (typeof fbMountBeside === 'function') fbMountBeside(body, state);
+      return;
+    }
+    if (state.kind === 'context') {
+      // The context finder (context-panel.js, design/110): mounted once per
+      // showing; it keeps its own state while it stays on screen.
+      vs.hidden = true; newtab.hidden = true;
+      pane.querySelector('.art-sub').textContent = 'for the next message';
+      if (paneBridge) { paneBridge.dispose(); paneBridge = null; }
+      if (!reload && body.querySelector('.cf')) return;
+      if (window.ContextFinder) ContextFinder.mount(body, state);
       return;
     }
     if (state.kind === 'lists') {

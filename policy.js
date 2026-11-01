@@ -104,6 +104,12 @@ const ROUTES = {
   '/api/note': see('id'),
   '/api/conversation/draft-defaults': 'guest',
   '/api/conversation/context-preview': 'guest', // items gated where context is shaped
+  // The context finder (design/110): every row gated in the handler (the
+  // conversations, projects and files this person may see; the records'
+  // notes for those who see all). A summary is a model call: not guests.
+  'POST /api/context/find': 'guest',
+  'GET /api/context/source': 'guest',
+  'POST /api/context/summary': 'member',
   '/api/conversation/attached-context': 'guest', // act checked in the handler
   '/api/conversation/title': 'guest', // act checked in the handler
   '/api/conversation/retitle': 'guest',
@@ -589,6 +595,9 @@ const ACCOUNT_ROUTES = {
   '/api/epic/memory/file': 'index', '/api/epic/memory/regenerate': 'index', '/api/evidence': 'index', '/api/evidence/start': 'index',
   '/api/distill-stream': 'index', '/api/distill/save': 'index', '/api/export': 'index', '/api/compare': 'index', '/api/handoff': 'index',
   '/api/conversation/file-history': 'index', '/api/conversation/attached-context': 'index', '/api/conversation/context-preview': 'index', '/api/conversation/project': 'index',
+  // The context finder: the index and the records, except file names,
+  // listed by their own host (design/110); a summary is their model call.
+  'POST /api/context/find': 'theirs', 'GET /api/context/source': 'index', 'POST /api/context/summary': 'index',
   '/api/node/aggregate': 'index', 'GET /api/public-links': 'index', 'PUT /api/codex/prefs': 'index',
   'PUT /api/modes': 'index', 'POST /api/modes': 'index', '/api/modes/delete': 'index',
   '/api/files/deleted': 'theirs', '/api/files/stats': 'index', '/api/files/ridge': 'index',

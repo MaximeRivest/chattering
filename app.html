@@ -1907,6 +1907,18 @@ body:not(.can-read-aloud) .msg .msg-read { display: none; }
 .agent-ctx-chip b { font-weight: 600; }
 .agent-ctx-chip button { height: 18px; min-height: 18px; padding: 0 5px; border: 0; background: transparent; color: var(--text-dim); font-size: 11px; }
 .agent-ctx-chip button:hover { color: var(--text); }
+.agent-ctx-chip[data-ctx-row] { cursor: pointer; }
+.agent-ctx-chip[data-ctx-row]:hover b { text-decoration: underline; }
+.agent-ctx-chip .ctx-tok { color: var(--text-dim); }
+.agent-ctx-chip .ctx-tok:empty { display: none; }
+.agent-ctx-chip.over { border-color: var(--danger); }
+.agent-ctx-chip.over .ctx-tok { color: var(--danger); font-weight: 600; }
+.agent-ctx-budget { display: flex; align-items: center; gap: 10px; margin-top: 4px; font-size: var(--fs-micro); color: var(--text-dim); cursor: pointer; }
+.agent-ctx-budget .ctx-bar { flex: 0 0 120px; height: 5px; background: var(--surface-3); position: relative; overflow: hidden; border-radius: 3px; }
+.agent-ctx-budget .ctx-bar i { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
+.agent-ctx-budget .ctx-bar b { position: absolute; top: 0; bottom: 0; left: 66.6%; width: 2px; background: var(--border-strong); }
+.agent-ctx-budget.warn { color: var(--warn); } .agent-ctx-budget.warn .ctx-bar i { background: var(--warn); }
+.agent-ctx-budget.over { color: var(--danger); font-weight: 600; } .agent-ctx-budget.over .ctx-bar i { background: var(--danger); }
 .agent-thumb { position: relative; width: 56px; height: 56px; border: 1px solid var(--border); background: var(--surface-2); }
 .agent-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .agent-thumb button { position: absolute; top: 0; right: 0; height: 18px; padding: 0 5px; font-size: 11px; }
@@ -2602,6 +2614,7 @@ if (!window.ListGroups) window.ListGroups = (() => {
 <link rel="stylesheet" href="/pair.css">
 <script src="/beside.js"></script>
 <link rel="stylesheet" href="/beside.css">
+<link rel="stylesheet" href="/context-finder.css">
 <script src="/collab-client.js"></script>
 <script src="/people.js"></script>
 <link rel="stylesheet" href="/people.css">
@@ -12528,6 +12541,7 @@ async function headlessSendFromComposer(btn, promptOverride) {
   const prompt = (fromBox ? (ta && ta.value || '') : String(promptOverride)).trim();
   if (!prompt) return errToast('type a prompt first');
   if (compactingKeys.has(activeRel)) return errToast('this conversation is being compacted — send when it is done');
+  if (!prompt.startsWith('/') && !(await contextSendGuard())) return;
   // /compact [what to keep]: Chattering runs it (pi's own command lives in the terminal only).
   const compactCmd = /^\/compact(?:\s+([\s\S]*))?$/.exec(prompt);
   if (compactCmd) {
@@ -13006,7 +13020,8 @@ function attachedContext() {
 }
 
 function contextId(c) {
-  if (c && c.type === 'chat') return 'chat:' + c.key + ':' + (c.i == null ? '*' : c.i);
+  if (c && c.type === 'chat') return 'chat:' + c.key + ':' + (c.depth ? 'depth' : c.i == null ? '*' : c.i);
+  if (c && c.type === 'doc') return 'doc:' + c.file;
   if (c && c.type === 'file') return 'file:' + c.path;
   if (c && c.type === 'note') return 'note:' + c.text;
   return 'map:' + (c && c.project || '') + ':' + (c && c.kind || '');
@@ -13113,18 +13128,23 @@ function toggleContextItem(item) {
   persistConversationContext();
 }
 
+// A chip's words: what it is, and how much of it goes (design/110).
+const CTX_DEPTH_WORD = { link: 'link', summary: 'summary', excerpt: 'excerpt', full: 'whole', auto: 'whole or link' };
 function contextChipParts(c) {
+  const depth = c.depth ? ' · ' + CTX_DEPTH_WORD[c.depth] : '';
   if (c.type === 'chat') {
     const s = sessions.find(x => x.key === c.key);
-    const title = c.title || (s && (s.timelineTitle || s.title)) || 'conversation';
+    const title = c.title || (s && (s.title || s.timelineTitle)) || 'conversation';
     const short = String(title).replace(/\s+/g, ' ').trim().slice(0, 28);
-    return ['chat', c.i == null ? short : short + ' · turn'];
+    if (c.depth === 'excerpt') return ['chat', short + ' · ' + (c.pick || []).length + ' messages'];
+    return ['chat', c.depth ? short + depth : c.i == null ? short + ' · latest' : short + ' · turn'];
   }
+  if (c.type === 'doc') return [String(c.file || '').startsWith('epics/') ? 'epic' : 'note', String(c.title || c.file || '').slice(0, 28) + (c.depth === 'excerpt' ? ' · ' + (c.sections || []).length + ' sections' : depth)];
   if (c.type === 'file') {
     // A file attached from the file workspace (files mode): its name, and
     // the lines when a selection went along.
     const name = String(c.path || '').split(/[\\/]/).pop();
-    return ['file', name + (c.range ? ` · ${c.range[0]}–${c.range[1]}` : c.line ? ` · line ${c.line}` : '')];
+    return ['file', name + (c.range ? ` · ${c.range[0]}–${c.range[1]}` : c.line ? ` · line ${c.line}` : '') + (c.depth === 'link' ? ' · link' : '')];
   }
   if (c.type === 'note') {
     // Instructions written for this conversation (system prompt, every reply).
@@ -13132,7 +13152,81 @@ function contextChipParts(c) {
     return ['instructions', words.slice(0, 28) + (words.length > 28 ? '…' : '')];
   }
   // The intent document is the purpose a person wrote for the project.
-  return [c.project || '?', c.kind === 'intent' ? 'purpose' : c.kind || ''];
+  return [c.project || '?', (c.kind === 'intent' ? 'purpose' : c.kind === 'map' ? 'all memory' : c.kind || '') + (c.depth === 'excerpt' ? ' · ' + (c.sections || []).length + ' sections' : depth)];
+}
+
+// ---- the attached context's weight (design/110) ----
+// What each chip costs and what they cost together, against what is
+// recommended and the model's window: the composer's line, the finder's
+// footer and the send guard read it.
+function contextWindowTokens() {
+  const c = typeof ctxMeterCache !== 'undefined' && activeRel ? ctxMeterCache.get(activeRel) : null;
+  if (c && c.ctxTokens) return c.ctxTokens;
+  try {
+    const m = fanModels()[0];
+    const hit = m && window._modelCatalog && (_modelCatalog.models || []).find(x => x.provider === m.provider && x.model === m.modelId);
+    if (hit && hit.context) return hit.context;
+  } catch {}
+  return 0;
+}
+// Past this, answers tend to get worse (design/110): 40k, or a fifth of a
+// small window.
+function contextRecommendedTokens() {
+  const win = contextWindowTokens();
+  return win ? Math.min(40000, Math.round(win * 0.2)) : 40000;
+}
+let ctxBudgetSeq = 0, ctxBudgetTimer = 0;
+window._ctxBudget = { sig: '', total: 0, items: [] };
+const ctxBudgetSig = items => JSON.stringify(items);
+function scheduleContextBudget() { clearTimeout(ctxBudgetTimer); ctxBudgetTimer = setTimeout(() => contextBudget().catch(() => {}), 250); }
+async function contextBudget() {
+  const items = attachedContext().slice(), key = activeRel, sig = ctxBudgetSig(items);
+  if (!items.length) { window._ctxBudget = { sig, total: 0, items: [] }; paintContextBudget(); return window._ctxBudget; }
+  if (window._ctxBudget.sig === sig && window._ctxBudget.key === key) { paintContextBudget(); return window._ctxBudget; }
+  const seq = ++ctxBudgetSeq;
+  const r = await fetch('/api/conversation/context-preview', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: key, context: items }) });
+  const d = await r.json().catch(() => ({}));
+  if (seq !== ctxBudgetSeq || activeRel !== key) return window._ctxBudget;
+  const per = new Map((d.items || []).map(x => [contextId(x.item), x.tokens]));
+  window._ctxBudget = { sig, key, total: d.tokens || 0, items: items.map(c => per.get(contextId(c)) ?? null), text: d.text || '', error: r.ok ? null : d.error };
+  paintContextBudget();
+  return window._ctxBudget;
+}
+function paintContextBudget() {
+  const box = $('agentCtx');
+  if (!box) return;
+  const b = window._ctxBudget, items = attachedContext();
+  const rec = contextRecommendedTokens(), win = contextWindowTokens();
+  box.querySelectorAll('.agent-ctx-chip').forEach((el, i) => {
+    const n = b.sig === ctxBudgetSig(items) ? b.items[i] : null;
+    const t = el.querySelector('.ctx-tok');
+    if (t) t.textContent = n == null ? '' : '· ' + fmtTokens(n).replace(/K$/, 'k');
+    el.classList.toggle('over', n != null && n > rec);
+  });
+  let line = $('agentCtxBudget');
+  if (!items.length) { if (line) line.remove(); return; }
+  if (!line) { line = document.createElement('div'); line.id = 'agentCtxBudget'; line.className = 'agent-ctx-budget'; box.after(line); }
+  if (b.sig !== ctxBudgetSig(items)) { line.textContent = 'context: weighing…'; return; }
+  const level = win && b.total > win * 0.5 ? 'over' : b.total > rec ? 'warn' : '';
+  line.className = 'agent-ctx-budget' + (level ? ' ' + level : '');
+  line.innerHTML = `<span>context about ${esc(fmtTokens(b.total).replace(/K$/, 'k'))} tokens${b.total > rec ? ` · over the recommended ${esc(fmtTokens(rec).replace(/K$/, 'k'))}: answers usually get worse` : ` · within the recommended ${esc(fmtTokens(rec).replace(/K$/, 'k'))}`}</span><span class="ctx-bar" aria-hidden="true"><i style="width:${Math.min(100, b.total / (rec * 1.5) * 100)}%"></i><b></b></span>`;
+  line.title = `About ${b.total.toLocaleString()} tokens attached to every message of this conversation${win ? ' · the model reads ' + win.toLocaleString() + ' at most' : ''}. Click to choose what goes.`;
+  line.onclick = () => openAtPalette();
+}
+// Before a send: context that would take half the window, or more than the
+// window has left, is said, never sent silently. Returns true to send.
+async function contextSendGuard() {
+  if (!attachedContext().length) return true;
+  let b;
+  try { b = await contextBudget(); } catch { return true; }
+  const win = contextWindowTokens();
+  const meter = typeof ctxMeterCache !== 'undefined' ? ctxMeterCache.get(activeRel) : null;
+  const left = meter && meter.leftTokens != null ? meter.leftTokens : null;
+  if (b.text && /A summary was chosen but is not written yet/.test(b.text)) toast('A summary is still being written: a link goes in its place for this message.');
+  if (!win || !b.total) return true;
+  if (b.total <= win * 0.5 && (left == null || b.total <= left)) return true;
+  const pct = Math.round(100 * b.total / win);
+  return confirm(`The attached context is about ${b.total.toLocaleString()} tokens: ${pct}% of what this model can read at once${left != null && b.total > left ? ', more than this conversation has left' : ''}. With this much, answers usually get worse and the reply may fail.\n\nSend anyway? (Cancel, then click the context line to send summaries or links instead.)`);
 }
 
 function renderAgentContext() {
@@ -13141,9 +13235,14 @@ function renderAgentContext() {
   const items = attachedContext();
   box.innerHTML = items.map((c, i) => {
     const [lead, rest] = contextChipParts(c);
-    return `<span class="agent-ctx-chip${c.type === 'file' ? ' file' : c.type === 'note' ? ' note' : ''}"${c.type === 'file' ? ` data-ctx-file="${esc(c.path)}" title="${esc(c.path)} · click to open the file"` : c.type === 'note' ? ` data-ctx-note="1" title="${esc(String(c.text || '').slice(0, 400))}"` : ''}><b>${esc(lead)}</b> ${esc(rest)}<button type="button" data-rm="${i}" title="Remove this context">x</button></span>`;
+    const finderRow = window.ContextFinder && c.type !== 'note' && !(c.type === 'file' && !c.depth) ? ContextFinder.rowIdOf(c) : '';
+    const attrs = c.type === 'file' && !c.depth ? ` data-ctx-file="${esc(c.path)}" title="${esc(c.path)} · click to open the file"`
+      : c.type === 'note' ? ` data-ctx-note="1" title="${esc(String(c.text || '').slice(0, 400))}"`
+      : finderRow ? ` data-ctx-row="${esc(finderRow)}" title="Click to see it and choose how much of it goes"` : '';
+    return `<span class="agent-ctx-chip${c.type === 'file' ? ' file' : c.type === 'note' ? ' note' : ''}"${attrs}><b>${esc(lead)}</b> ${esc(rest)} <span class="ctx-tok"></span><button type="button" data-rm="${i}" title="Remove this context">x</button></span>`;
   }).join('');
   box.querySelectorAll('[data-ctx-file]').forEach(el => el.onclick = e => { if (!e.target.closest('[data-rm]')) openLiveFile(el.dataset.ctxFile, { project: currentProjectName(), back: activeRel }); });
+  box.querySelectorAll('[data-ctx-row]').forEach(el => el.onclick = e => { if (!e.target.closest('[data-rm]')) window.openContextPanel({ key: activeRel }, { focusId: el.dataset.ctxRow }); });
   // On a draft the instructions chip opens the setup where they are edited.
   box.querySelectorAll('[data-ctx-note]').forEach(el => el.onclick = e => { if (!e.target.closest('[data-rm]') && current && current.draft) { draftToggleSetup(true); const t = $('dsInstr'); if (t) t.focus(); } });
   box.querySelectorAll('[data-rm]').forEach(b => {
@@ -13156,6 +13255,9 @@ function renderAgentContext() {
   });
   const btn = $('agentAt');
   if (btn) { btn.classList.toggle('on', items.length > 0); btn.textContent = 'Context' + (items.length ? ' · ' + items.length : ''); }
+  paintContextBudget();
+  scheduleContextBudget();
+  window.dispatchEvent(new CustomEvent('chattering:context-changed'));
   updateComposeMin();
 }
 
@@ -13172,22 +13274,48 @@ async function persistConversationContext() {
   } catch {}
 }
 
+// The context finder (context-panel.js, design/110), beside the
+// conversation; seed: words to search for at once.
 function openAtPalette(seed) {
   hideAtPop({ silent: true }); hideSlashPop(); hideSnipPop({ silent: true });
-  const key = activeRel;
+  if (!activeRel) return;
+  return window.openContextPanel({ key: activeRel }, { q: typeof seed === 'string' ? seed.replace(/^@/, '') : '' });
+}
+// What the finder may do to its conversation's attached context: only
+// while that conversation is the one on screen (the composer's).
+window.contextFinderApi = function (key) {
+  const live = () => activeRel === key;
   const save = items => {
-    if (activeRel !== key) return;
+    if (!live()) return false;
     window._agentContext = items;
     window._ctxTouched = true;
     renderAgentContext(); persistConversationContext();
+    return true;
   };
-  return window.openContextPanel({
-    key, project: currentProjectName(), projects: ensureAtIndex,
-    items: attachedContext, has: contextHasItem,
-    add: item => save([...attachedContext(), item]),
-    remove: item => save(attachedContext().filter(c => contextId(c) !== contextId(item))),
-  });
-}
+  const ids = list => new Set((Array.isArray(list) ? list : [list]).map(contextId));
+  const project = () => {
+    if (isDraftKey(key)) return (typeof draftState !== 'undefined' && draftState && draftState.folderInfo && draftState.folderInfo.project) || '';
+    return currentProjectName();
+  };
+  return {
+    key, live, project: project(),
+    items: () => (live() ? attachedContext().slice() : []),
+    add: item => save([...attachedContext().filter(c => !ids(item).has(contextId(c))), item]),
+    remove: list => { const gone = ids(list); return save(attachedContext().filter(c => !gone.has(contextId(c)))); },
+    // In place: the chip keeps its position.
+    replace: (list, item) => {
+      const gone = ids(list), items = attachedContext();
+      const at = items.findIndex(c => gone.has(contextId(c)));
+      const rest = items.filter(c => !gone.has(contextId(c)) && contextId(c) !== contextId(item));
+      rest.splice(at < 0 ? rest.length : Math.min(at, rest.length), 0, item);
+      return save(rest);
+    },
+    draftText: () => (live() && $('agentText') ? $('agentText').value : ''),
+    window: contextWindowTokens,
+    recommended: contextRecommendedTokens,
+    focusComposer: () => { const t = $('agentText'); if (t) t.focus(); },
+  };
+};
 function openLegacyAtPalette(seed) {
   const pop = $('slashPop');
   if (!pop) return;
@@ -17361,6 +17489,7 @@ function paneModel() {
       <button type="button" id="setSimplifyPromptReset">Restore default</button>
     </details>
     ${plainStepsSectionHtml()}
+    ${contextSummarySectionHtml()}
     <h3>interrupted conversations</h3>
     <label class="set-check"><input id="setAutoResumeNetwork" type="checkbox"${s.autoResumeNetwork ? ' checked' : ''}> resume connection failures automatically</label>
     <div class="set-help">Off by default. The host checks the provider connection twice before resuming saved work, one conversation at a time. Up to 3 attempts within 24 hours. Work stopped by a plan’s usage limit waits for the limit to reset, as the provider says it (settings → plans), within the same 24 hours. No automatic recovery for deliberate stops, sign-in problems, changed conversations, delegated work, or parallel answers. Continues the saved conversation rather than repeating your original prompt; uncertain tool actions can still be repeated. Disable this at any time to stop waiting retries. Already-running work is not stopped.</div>
@@ -17399,6 +17528,40 @@ function plainStepsSectionHtml() {
         { value: 'own', name: 'a small fast model', desc: 'Recommended. The phrases are short, so a small model writes a group in seconds, for a fraction of the cost.', child: picker },
       ], own ? 'own' : 'same')}
     </div>`;
+}
+
+// design/110: the model that writes the summaries of conversations
+// attached to another one (the context finder's "Summary").
+function contextSummarySectionHtml() {
+  const s = settingsOf(), p = s.contextSummary || {};
+  const own = !!(p.provider && p.model);
+  const resolved = (settingsState && settingsState.resolved) || {};
+  const picker = `<button type="button" class="set-picker" id="setCtxSumPick" title="Choose a model from pi's catalog">
+      <span class="set-picker-main"><b>${esc(modelLabelOf(p.provider, p.model))}</b></span>
+      <span class="set-picker-act">change ▾</span>
+    </button>`;
+  return `<h3>summaries of attached conversations</h3>
+    <div class="set-help">When you attach a conversation to another one as a summary (the Context finder, beside a conversation), a model reads its messages once and writes what a successor needs: what was wanted, decided, done and left open. It is kept for that version of the conversation and shown to you before it is used. The whole conversation's text (up to about 100,000 tokens: its beginning and its end when longer) is sent to the model below.</div>
+    <div class="set-field">
+      <label>model that writes them</label>
+      ${setOptionsHtml('setCtxSumSource', [
+        { value: 'same', name: 'the model above', desc: 'Now: ' + (resolved.label || 'pi’s default') + ', with thinking off. A large model writes a better summary, slower and at a higher cost.' },
+        { value: 'own', name: 'a small fast model', desc: 'Recommended: a summary in seconds, for a fraction of the cost.', child: picker },
+      ], own ? 'own' : 'same')}
+    </div>`;
+}
+function bindContextSummary(root) {
+  const p = () => settingsOf().contextSummary || { provider: '', model: '' };
+  const pickFor = anchor => openModelPicker(anchor, { selected: p().provider ? [p().provider + '/' + p().model] : [] }, ([m]) => {
+    if (m) saveSettings({ contextSummary: { provider: m.provider, model: m.modelId } }, 'context summaries: ' + modelLabelOf(m.provider, m.modelId));
+  });
+  if ($('setCtxSumPick')) $('setCtxSumPick').onclick = () => pickFor($('setCtxSumPick'));
+  bindOptions(root, 'setCtxSumSource', v => {
+    if (v === 'same') return saveSettings({ contextSummary: { provider: '', model: '' } }, 'context summaries: the model above');
+    renderSettings();
+    const option = document.querySelector('input[name=setCtxSumSource][value="own"]');
+    pickFor(option ? option.closest('label') : document.body);
+  });
 }
 
 function bindPlainSteps(root) {
@@ -17478,6 +17641,7 @@ function bindPaneModel(root) {
   if ($('setVoiceGateModel')) $('setVoiceGateModel').onchange = () => saveSettings({ voiceGateModel: $('setVoiceGateModel').checked }, $('setVoiceGateModel').checked ? 'new listeners use the voice-activity model' : 'new listeners use the energy gate');
   if ($('setFrogTurnEndLocal')) $('setFrogTurnEndLocal').onchange = () => saveSettings({ frogTurnEndLocal: $('setFrogTurnEndLocal').checked }, $('setFrogTurnEndLocal').checked ? '“over” decided on this computer' : '“over” decided by Jev');
   bindPlainSteps(root);
+  bindContextSummary(root);
   $('setArtifactLibraries').onchange = () => saveSettings({ artifactNetwork: $('setArtifactLibraries').checked ? 'libraries' : 'open' }, 'artifact pages updated');
   bindOptions(root, 'setModelSource', v => {
     if (v === 'pi') return saveSettings({ usePiDefault: true, provider: '', model: '' }, 'model: pi’s default');
@@ -18714,7 +18878,9 @@ function modalSemSnippet(text) {
 function renderModalSearch() {
   const data = modalSearchData || { groups: [] };
   const cards = modalSearchGroups(data);
-  $('searchModalResults').innerHTML = `<div class="sr-status">${data.total || 0} matches${data.tookMs != null ? ' · ' + data.tookMs + ' ms' : ''}${data.semMerged ? ' · semantic results added' : ''}</div>${cards || '<div class="search-modal-empty">No matches. Try fewer or different words.</div>'}`;
+  // The index being repaired says so, with how far it is (design/110).
+  if (data.error && !(data.groups || []).length) { $('searchModalResults').innerHTML = `<div class="search-modal-empty">${esc(data.error)}</div>`; return; }
+  $('searchModalResults').innerHTML = `<div class="sr-status">${(data.total || 0).toLocaleString()}${data.totalCapped ? '+' : ''} matches${data.tookMs != null ? ' · ' + data.tookMs + ' ms' : ''}${data.ranking === 'recent' ? ' · very common words: the newest ranked, add words to narrow' : ''}${data.semMerged ? ' · semantic results added' : ''}</div>${cards || '<div class="search-modal-empty">No matches. Try fewer or different words.</div>'}`;
 }
 async function runModalSearch() {
   const q = $('searchModalInput').value.trim();
@@ -18729,7 +18895,7 @@ async function runModalSearch() {
   $('searchModalResults').innerHTML = '<div class="search-modal-empty">Searching…</div>';
   try {
     const out = await (await fetch('/api/search?q=' + encodeURIComponent(q), { signal: modalSearchCtl.signal })).json();
-    if (seq !== modalSearchSeq) return;
+    if (seq !== modalSearchSeq || out.superseded) return;
     modalSearchData = out;
     renderModalSearch();
     if (out.sem) {

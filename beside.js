@@ -80,6 +80,7 @@
       case 'change': return 'c|' + spec.key + '|' + (spec.call || spec.ts || '') + '|' + spec.path;
       case 'html': return 'h|' + spec.key + '|' + (spec.site || spec.title || '');
       case 'media': return 'm|' + spec.src;
+      case 'context': return 'ctx|' + spec.key;
       default: return spec.kind + '|' + (spec.path || spec.key || '');
     }
   }
@@ -109,13 +110,15 @@
       case 'change': return ['±', spec.title || baseName(spec.path)];
       case 'html': return ['◫', spec.title || 'Widget'];
       case 'media': return ['▣', spec.title || 'Picture'];
+      case 'context': return ['@', 'Context'];
       default: return ['◧', spec.title || 'Beside'];
     }
   }
   /** What a tab is, in words, for its tooltip. */
   function describe(tab) {
     const s = tab.spec;
-    const what = s.kind === 'folder' ? 'Folder ' + (s.project || '') + (s.dir ? '/' + s.dir : '')
+    const what = s.kind === 'context' ? 'Context for the next message: find it, choose how much'
+      : s.kind === 'folder' ? 'Folder ' + (s.project || '') + (s.dir ? '/' + s.dir : '')
       : s.kind === 'lists' ? LIST_NAMES[s.view] + ' list'
       : isFile(s) || s.kind === 'change' || s.kind === 'files' ? String(s.path || s.title || '')
       : s.title || '';

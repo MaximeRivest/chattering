@@ -258,6 +258,15 @@ function definitions(t) {
     outputs: { spoken_script: t.string() },
     voice: true, maxTokens: 4096,
   });
+  // design/110: a conversation attached to another one at the depth
+  // "summary". Read by an AI agent continuing related work, and first by
+  // the person, in the context finder's preview, before it is used.
+  add('context_summary', {
+    description: 'Summarize one AI work conversation (numbered USER and ASSISTANT messages) for another AI agent that will continue related work without reading it. Say what the person wanted and why; what was decided, done and found, with the exact specifics a successor needs (file paths, commands, names, numbers, settings, error messages); what failed or was ruled out and why; and what is still open or was left for later. Prefer what the conversation ended with over what it started with when they differ, and say when a decision changed. Report only what the conversation supports; never invent. When messages from the middle were left out, say so once. Plain Markdown with short headings and bullet points, at most 450 words.',
+    inputs: { title: t.string(), project: t.string(), conversation: t.string() },
+    outputs: { summary: s('the summary, in Markdown, at most 450 words') },
+    maxTokens: 2000,
+  });
   add('reply_digest', {
     description: 'Speak a short digest of an agent reply, for a person who runs several coding-agent conversations: start with the opening exactly as given, then say in two to four short sentences what there is to read in the reply — what it did, what it found, and what it asks or recommends, if anything. Talk about the reply in the third person ("it says", "it recommends"). Plain spoken words only: no code, no file paths, no markdown, no lists. Keep the whole thing under sixty words.',
     inputs: { opening: t.string(), title: t.string(), reply: t.string() },
