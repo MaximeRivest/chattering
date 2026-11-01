@@ -10,6 +10,10 @@ const path = require('node:path');
 const vm = require('node:vm');
 const crypto = require('node:crypto');
 const plain = x => JSON.parse(JSON.stringify(x)); // values cross a vm context: compare structure, not prototypes
+// The instruction files found inside a test's own folder. The walk goes on to
+// /, and a CLAUDE.md or AGENTS.md above the temporary directory (a home that
+// holds TMPDIR) is this machine's, not the test's.
+const filesIn = (root, files) => plain(files).filter(f => f.startsWith(root + path.sep));
 
 const serverSource = fs.readFileSync(path.join(__dirname, '../server.js'), 'utf8');
 function slice(source, startMarker, endMarker) {
@@ -122,19 +126,140 @@ test('describeStartFolder: existence, implied project, AGENTS.md files; the fold
     assert.equal(atHome.exists, true);
     assert.equal(atHome.loose, true);
     assert.equal(atHome.project, null);
-    assert.deepEqual(plain(atHome.contextFiles), [path.join(home, '.pi', 'agent', 'AGENTS.md')]);
+    assert.deepEqual(filesIn(home, atHome.contextFiles), [path.join(home, '.pi', 'agent', 'AGENTS.md')]);
     assert.equal('defaultModel' in atHome, false, 'models follow the person, not the folder');
     const inProject = h.describeStartFolder('~/Projects/demo/sub');
     assert.equal(inProject.display, ['~', 'Projects', 'demo', 'sub'].join(path.sep), 'the home as ~, the rest as this system writes paths');
     assert.equal(inProject.loose, false);
     assert.equal(inProject.project, 'demo');
     assert.equal(inProject.known, true);
-    assert.deepEqual(plain(inProject.contextFiles), [path.join(home, 'Projects', 'demo', 'AGENTS.md'), path.join(home, '.pi', 'agent', 'AGENTS.md')]);
+    assert.deepEqual(filesIn(home, inProject.contextFiles), [path.join(home, 'Projects', 'demo', 'AGENTS.md'), path.join(home, '.pi', 'agent', 'AGENTS.md')]);
     assert.equal('defaultModel' in inProject, false);
     const missing = h.describeStartFolder('~/nowhere');
     assert.equal(missing.exists, false);
-    assert.equal(missing.contextFiles.length, 1, 'only the global file when the folder does not exist');
+    assert.equal(filesIn(home, missing.contextFiles).length, 1, 'only the global file when the folder does not exist');
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+// pi reads one instruction file per folder, from the session's folder up to
+// /, then from its agent directory: the first of these names that is a file
+// (loadProjectContextFiles in the pi-coding-agent runtime/package.json pins).
+// The draft names the same files, on this server's account and on a person's.
+const PI_CONTEXT_NAMES = ['AGENTS.override.md', 'AGENTS.md', 'AGENTS.MD', 'CLAUDE.md', 'CLAUDE.MD'];
+const caseSensitiveTmp = (() => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'case-'));
+  try { fs.writeFileSync(path.join(dir, 'A'), ''); return !fs.existsSync(path.join(dir, 'a')); }
+  finally { fs.rmSync(dir, { recursive: true, force: true }); }
+})();
+function contextHome(t) {
+  const home = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'draft-context-')));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(home, 'Projects', 'demo', 'sub'), { recursive: true });
+  fs.mkdirSync(path.join(home, '.pi', 'agent'), { recursive: true });
+  return home;
+}
+// describeStartFolderAs with the person's host process answering as
+// account-host.js does: stat rejects a missing path, and an operation
+// (fs.statMany, fs.readableMany) is person-ops.js's own.
+const personOps = require('../person-ops.js');
+function accountFolderHarness(home, agentDir) {
+  const context = {
+    fs, path, os: { homedir: () => home }, String, Boolean, Array, Object,
+    accountFiles: require('../account-files.js'),
+    projectNameOf: () => 'Loose conversations', LOOSE_PROJECT: 'Loose conversations',
+    projectMetaFor: () => null, areaOfCwdIn: () => null,
+  };
+  vm.createContext(context);
+  vm.runInContext(slice(serverSource, 'async function describeStartFolderAs(', '// What a fresh draft starts from'), context);
+  const statOf = p => {
+    try { const s = fs.statSync(p); return { type: s.isDirectory() ? 'dir' : s.isFile() ? 'file' : 'other' }; } catch { return null; }
+  };
+  const host = {
+    call: async (op, ...args) => {
+      if (op === 'stat') { const s = statOf(args[0]); if (!s) throw new Error('ENOENT: ' + args[0]); return s; }
+      if (op === 'realpath') return fs.realpathSync(args[0]);
+      if (op === 'op') return personOps.call(...args);
+      throw new Error('unexpected host call: ' + op + ' ' + (args[0] || ''));
+    },
+  };
+  return raw => context.describeStartFolderAs({ home, agentDir, host }, raw);
+}
+
+for (const [i, name] of PI_CONTEXT_NAMES.entries()) {
+  const same = PI_CONTEXT_NAMES.slice(0, i).find(n => n.toLowerCase() === name.toLowerCase());
+  const skip = !caseSensitiveTmp && same ? `${name} is ${same} on a case-insensitive file system` : false;
+  test(`describeStartFolder(As): a folder's ${name} is the file pi reads there, the agent directory's too`, { skip }, async t => {
+    const home = contextHome(t);
+    const demo = path.join(home, 'Projects', 'demo');
+    const agent = path.join(home, '.pi', 'agent');
+    fs.writeFileSync(path.join(demo, name), '# demo\n');
+    fs.writeFileSync(path.join(agent, name), '# everywhere\n');
+    const expected = [path.join(demo, name), path.join(agent, name)];
+    const served = folderHarness(home, () => 'Loose conversations').describeStartFolder('~/Projects/demo/sub');
+    assert.deepEqual(filesIn(home, served.contextFiles), expected, 'this server’s account');
+    const theirs = await accountFolderHarness(home, null)('~/Projects/demo/sub');
+    assert.deepEqual(filesIn(home, theirs.contextFiles), expected, 'a person on their own account');
+  });
+}
+
+test('describeStartFolder(As): one file per folder, the first of pi’s names that is a file', async t => {
+  const home = contextHome(t);
+  const demo = path.join(home, 'Projects', 'demo');
+  const sub = path.join(demo, 'sub');
+  for (const name of PI_CONTEXT_NAMES) fs.writeFileSync(path.join(demo, name), '# ' + name + '\n');
+  fs.mkdirSync(path.join(sub, 'AGENTS.md')); // a folder of that name is not a file: pi goes on to the next name
+  fs.writeFileSync(path.join(sub, 'CLAUDE.md'), '# sub\n');
+  const expected = [path.join(sub, 'CLAUDE.md'), path.join(demo, 'AGENTS.override.md')];
+  const served = folderHarness(home, () => 'Loose conversations').describeStartFolder('~/Projects/demo/sub');
+  assert.deepEqual(filesIn(home, served.contextFiles), expected);
+  // A person's pi keeps its agent directory where their PI_CODING_AGENT_DIR says.
+  const theirAgent = path.join(home, 'pi-agent');
+  fs.mkdirSync(theirAgent);
+  fs.writeFileSync(path.join(theirAgent, 'CLAUDE.md'), '# theirs\n');
+  const theirs = await accountFolderHarness(home, theirAgent)('~/Projects/demo/sub');
+  assert.deepEqual(filesIn(home, theirs.contextFiles), [...expected, path.join(theirAgent, 'CLAUDE.md')]);
+});
+
+// pi takes a name only when it can read the file: a read that fails is a
+// warning, and it goes on to the next name. An instruction file another
+// account keeps to itself (0600, as Claude Code writes its files) above a
+// shared folder is one pi skips.
+const permissionsApply = process.platform !== 'win32' && !(process.getuid && process.getuid() === 0);
+test('Given a folder whose AGENTS.override.md cannot be read, when the start folder is described, then the AGENTS.md pi falls back to is named', { skip: permissionsApply ? false : 'file modes do not refuse reads here (Windows, or root)' }, async t => {
+  const home = contextHome(t);
+  const demo = path.join(home, 'Projects', 'demo');
+  const locked = path.join(demo, 'AGENTS.override.md');
+  fs.writeFileSync(locked, '# not yours\n');
+  fs.chmodSync(locked, 0o000); // its folder stays writable, so the cleanup removes it
+  fs.writeFileSync(path.join(demo, 'AGENTS.md'), '# demo\n');
+  const expected = [path.join(demo, 'AGENTS.md')];
+  const served = folderHarness(home, () => 'Loose conversations').describeStartFolder('~/Projects/demo');
+  assert.deepEqual(filesIn(home, served.contextFiles), expected, 'this server’s account');
+  const theirs = await accountFolderHarness(home, null)('~/Projects/demo');
+  assert.deepEqual(filesIn(home, theirs.contextFiles), expected, 'a person on their own account');
+});
+
+// Chattering's default engine (settings piEngine 'sdk') hands pi the folder
+// as written: SessionManager.create(folder), whose cwd the resource loader
+// walks up from. A folder reached through a link is walked above the link,
+// not above the real folder. (The 'rpc' engine starts a pi process there,
+// whose process.cwd() is the real folder on Linux and macOS.)
+const piPackage = require('./helpers/pi-package.js').piPackageForTests();
+test('Given a start folder reached through a link, when it is described, then the files named are the ones pi’s SDK engine reads there', { skip: !piPackage && 'Pi is unavailable' }, async t => {
+  const pi = await import(require('node:url').pathToFileURL(path.join(piPackage, 'dist', 'index.js')).href);
+  const home = contextHome(t);
+  fs.mkdirSync(path.join(home, 'disk', 'Projects', 'p'), { recursive: true });
+  fs.symlinkSync(path.join(home, 'disk', 'Projects'), path.join(home, 'Projects', 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+  fs.writeFileSync(path.join(home, 'disk', 'AGENTS.md'), '# above the real folder\n');
+  fs.writeFileSync(path.join(home, 'Projects', 'AGENTS.md'), '# above the link\n');
+  const linked = path.join(home, 'Projects', 'linked', 'p');
+  const cwd = pi.SessionManager.create(linked, path.join(home, 'sessions')).getCwd();
+  const reads = filesIn(home, pi.loadProjectContextFiles({ cwd, agentDir: path.join(home, '.pi', 'agent') }).map(f => f.path));
+  assert.deepEqual(reads, [path.join(home, 'Projects', 'AGENTS.md')], 'pi’s SDK engine walks up from the folder as written');
+  const served = folderHarness(home, () => 'Loose conversations').describeStartFolder('~/Projects/linked/p');
+  assert.deepEqual(filesIn(home, served.contextFiles), reads, 'this server’s account');
+  const theirs = await accountFolderHarness(home, null)('~/Projects/linked/p');
+  assert.deepEqual(filesIn(home, theirs.contextFiles), reads, 'a person on their own account');
 });
 
 // ---- server: which models a new conversation starts with ----

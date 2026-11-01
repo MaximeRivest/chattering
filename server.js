@@ -19323,13 +19323,18 @@ async function describeStartFolderAs(mine, raw) {
   const home = mine.home;
   const abs = text ? path.resolve(accountFiles.expandHome(home, text)) : home;
   const isDir = async p => mine.host.call('stat', p).then(s => s.type === 'dir', () => false);
-  const isFile = async p => mine.host.call('stat', p).then(s => s.type === 'file', () => false);
   const exists = await isDir(abs);
   const project = projectNameOf(abs);
   const loose = project === LOOSE_PROJECT;
   const display = abs === home ? '~' : abs.startsWith(home + path.sep) ? '~' + abs.slice(home.length) : abs;
-  const contextFiles = [];
-  if (exists) for (let dir = abs; ; dir = path.dirname(dir)) { const f = path.join(dir, 'AGENTS.md'); if (await isFile(f)) contextFiles.push(f); if (path.dirname(dir) === dir) break; }
+  // The files their pi reads (piContextFileChoices), asked of their host:
+  // which candidates are files, and which of those they can read.
+  const choices = piContextFileChoices(exists ? abs : null, mine.agentDir || path.join(home, '.pi', 'agent'));
+  const [stats, readable] = await Promise.all([
+    mine.host.call('op', 'fs.statMany', choices.flat()).catch(() => ({})),
+    mine.host.call('op', 'fs.readableMany', choices.flat()).then(list => new Set(list), () => new Set()),
+  ]);
+  const contextFiles = choices.map(names => names.find(f => stats[f] && stats[f].type === 'file' && readable.has(f))).filter(Boolean);
   const meta = loose ? null : projectMetaFor(project);
   const area = !loose && meta && meta.cwd ? areaOfCwdIn(project, abs) : null;
   let purpose = false;
@@ -19353,21 +19358,11 @@ function describeStartFolder(raw) {
   const project = projectNameOf(abs);
   const loose = project === LOOSE_PROJECT;
   const display = abs === home ? '~' : abs.startsWith(home + path.sep) ? '~' + abs.slice(home.length) : abs;
-  const contextFiles = [];
-  if (exists) {
-    // pi's DefaultResourceLoader: AGENTS.md walking up from cwd, then the
-    // global one under the agent directory.
-    let dir = abs;
-    for (;;) {
-      const f = path.join(dir, 'AGENTS.md');
-      if (fs.existsSync(f)) contextFiles.push(f);
-      const up = path.dirname(dir);
-      if (up === dir) break;
-      dir = up;
-    }
-  }
-  const globalAgents = path.join(path.dirname(PI_SETTINGS_FILE), 'AGENTS.md');
-  if (fs.existsSync(globalAgents) && !contextFiles.includes(globalAgents)) contextFiles.push(globalAgents);
+  // pi's DefaultResourceLoader: one file per folder walking up from cwd, then
+  // the agent directory's (piContextFileChoices).
+  const contextFiles = piContextFileChoices(exists ? abs : null, path.dirname(PI_SETTINGS_FILE))
+    .map(names => names.find(f => { try { if (!fs.statSync(f).isFile()) return false; fs.accessSync(f, fs.constants.R_OK); return true; } catch { return false; } }))
+    .filter(Boolean);
   const meta = loose ? null : projectMetaFor(project);
   const area = !loose && meta && meta.cwd ? areaOfCwdIn(project, abs) : null;
   // A purpose a person wrote for this project: the draft attaches it.
@@ -19381,6 +19376,20 @@ function describeStartFolder(raw) {
     project: loose ? null : project, known: !!meta, area: area || null, purpose,
     contextFiles,
   };
+}
+// Where pi looks for a session's instruction files (loadProjectContextFiles
+// in @earendil-works/pi-coding-agent): in the session's folder and each one
+// above it, then in its agent directory, it reads the first of these names
+// that is a file it can read (a failed read is a warning, and pi goes on to
+// the next name). The candidate paths folder by folder, nearest first and the
+// agent directory last (once); each caller asks its own account's disk which
+// exist. No folder (it does not exist yet): the agent directory alone.
+function piContextFileChoices(dir, agentDir) {
+  const names = ['AGENTS.override.md', 'AGENTS.md', 'AGENTS.MD', 'CLAUDE.md', 'CLAUDE.MD'];
+  const folders = [];
+  if (dir) for (let d = dir; ; d = path.dirname(d)) { folders.push(d); if (path.dirname(d) === d) break; }
+  if (!folders.includes(agentDir)) folders.push(agentDir);
+  return folders.map(folder => names.map(name => path.join(folder, name)));
 }
 
 // What a fresh draft starts from: home as the folder, the person's last

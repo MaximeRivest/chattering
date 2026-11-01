@@ -403,7 +403,7 @@ function draftApplyFolderInfo(info) {
       : `joins project <b>${esc(info.project)}</b>${info.area ? ' · area ' + esc(info.area) : ''}${info.known ? '' : ' (by folder name; not a registered project)'}`;
     const files = info.contextFiles && info.contextFiles.length
       ? 'pi reads ' + info.contextFiles.map(f => `<code>${esc(shortDir(f))}</code>`).join(', ')
-      : 'no AGENTS.md on this path';
+      : 'pi reads no AGENTS.md or CLAUDE.md on this path';
     status.innerHTML = `${where} · ${files}`;
     implies.textContent = info.loose ? ' · No project' : ' · ' + info.project;
   }
