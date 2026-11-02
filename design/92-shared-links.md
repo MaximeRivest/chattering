@@ -226,7 +226,12 @@ documents and conversations, or of other publications. Nothing else answers
 at a publication's address (the gate routes by host first). Each address has
 its own certificate (HTTP-01 through the relay, like the computer's own; one
 order at a time, a failed address retried after an hour); the relay's Caddy
-answers checks for two-level names (`http://*.*.rockfrog.site`).
+answers checks for two-level names (`http://*.*.rockfrog.site`). Until its
+certificate is here (about a minute), an address gets **no certificate**
+rather than the computer's own: a browser says it cannot connect, instead of
+"your connection is not private". The Share dialog does not offer its link
+for copying until then (and does not copy it on publishing); it turns into a
+link the moment it can be opened.
 
 **Access**: *anyone with the link* (`https://game.maxime.rockfrog.site/#k=…`:
 a small page of ours proves the secret once for a `__Host-` cookie of that
@@ -331,6 +336,27 @@ home:    TLSSocket over the tunnel, its own certificate; only the shared-links
   the domain's owner (it could get a certificate for any name under it).
   That power is watched: each home reads crt.sh daily and reports a
   certificate it did not ask for (`ctWarning`, shown in the Share dialog).
+- **One certificate job at a time, and none skipped.** Every pass over the
+  addresses (the computer's, each publication's) runs alone; a pass asked
+  for while one runs follows it, so a publication added meanwhile is never
+  missed. (Until 2026-11-02 the "busy" flag was cleared inside the job
+  itself, which runs at once when there is nothing to do, before the flag
+  was even set; it then stayed set. On a computer that started with its
+  certificate in hand, no publication ever got a certificate (visitors saw
+  the computer's own: "not private") and the 12-hour renewal never ran. The
+  tests had only started without a certificate. `test/site.test.js` now
+  starts both ways.)
+- **Replacing the keys** (owner: **Replace its keys** in the Share dialog;
+  `POST /api/public-links {replaceKeys: true}`), when a key may have been
+  seen: a new ACME account and a new certificate with a new key for every
+  address, and only then the swap, so visitors never meet a bad certificate;
+  if any address fails, nothing changes. Then the old certificates are
+  revoked for key compromise (signed with their own keys, as Let's Encrypt
+  requires for that reason) and the old account is closed. Until both are
+  done they wait in `site.json` (`retired`) and are retried on every pass;
+  then they are forgotten, keys included. Each replacement is a new order
+  for every address, so it counts against the domain's 50 certificates a
+  week (above).
 - **Names are by invitation** (`/etc/chattering-site/homes`, one computer
   id a line, read on every claim) until abuse can be handled (reports, a
   kill switch per name). One name per computer; first come; kept in

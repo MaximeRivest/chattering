@@ -68,6 +68,29 @@ async function makeHomeKey() {
   return async () => ({ homeId, spki, sign: b => P.sign(pair.privateKey, b) });
 }
 
+// Pebble (Let's Encrypt's test server) and its fake DNS, checking HTTP-01
+// answers on httpPort (where the relay listens). Its own API needs https: a
+// throwaway certificate for it.
+async function startAcme(dir, httpPort, procs) {
+  const openssl = which('openssl');
+  spawnSync(openssl, ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-days', '2', '-subj', '/CN=localhost',
+    '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1', '-keyout', path.join(dir, 'api.key'), '-out', path.join(dir, 'api.crt')], { stdio: 'ignore' });
+  const [acmePort, mgmtPort, dnsPort, challMgmt] = await Promise.all([freePort(), freePort(), freePort(), freePort()]);
+  fs.writeFileSync(path.join(dir, 'pebble.json'), JSON.stringify({ pebble: { listenAddress: '127.0.0.1:' + acmePort, managementListenAddress: '127.0.0.1:' + mgmtPort,
+    certificate: path.join(dir, 'api.crt'), privateKey: path.join(dir, 'api.key'), httpPort, tlsPort: 5001, ocspResponderURL: '', externalAccountBindingRequired: false } }));
+  let log = '';
+  procs.push(spawn(which('pebble-challtestsrv'), ['-defaultIPv4', '127.0.0.1', '-defaultIPv6', '', '-dns01', '127.0.0.1:' + dnsPort, '-http01', '', '-https01', '', '-tlsalpn01', '', '-doh', '', '-management', '127.0.0.1:' + challMgmt], { stdio: 'ignore' }));
+  const pb = spawn(which('pebble'), ['-config', path.join(dir, 'pebble.json'), '-dnsserver', '127.0.0.1:' + dnsPort], { env: { ...process.env, PEBBLE_VA_NOSLEEP: '1', PEBBLE_WFE_NONCEREJECT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  pb.stdout.on('data', b => log += b); pb.stderr.on('data', b => log += b);
+  procs.push(pb);
+  const apiCa = fs.readFileSync(path.join(dir, 'api.crt'));
+  await until(() => new Promise(r => { const q = https.get({ host: '127.0.0.1', port: acmePort, path: '/dir', ca: apiCa }, s => { s.resume(); r(s.statusCode === 200); }); q.on('error', () => r(false)); }), 'pebble', 20000);
+  // Pebble's management API: its root (to check chains like a browser) and
+  // what it says of a certificate (revoked or not).
+  const mgmt = p => new Promise((res, rej) => https.get({ host: '127.0.0.1', port: mgmtPort, path: p, rejectUnauthorized: false }, s => { let d = ''; s.on('data', x => d += x); s.on('end', () => res({ status: s.statusCode, body: d })); }).on('error', rej));
+  return { acmePort, mgmtPort, apiCa, log: () => log, mgmt, directory: `https://127.0.0.1:${acmePort}/dir` };
+}
+
 test('with Pebble: a name, a certificate through the relay, visitors through the relay, TLS ending at home', { timeout: 120000 }, async t => {
   const pebble = which('pebble'), chall = which('pebble-challtestsrv'), openssl = which('openssl');
   if (!pebble || !chall || !openssl) return t.skip('pebble, pebble-challtestsrv and openssl are needed (nix shell nixpkgs#pebble nixpkgs#openssl)');
@@ -81,19 +104,10 @@ test('with Pebble: a name, a certificate through the relay, visitors through the
     for (const p of procs) { try { p.kill('SIGKILL'); } catch {} }
     fs.rmSync(dir, { recursive: true, force: true });
   });
-  // Pebble's own API needs https: a throwaway certificate for it.
-  spawnSync(openssl, ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256', '-nodes', '-days', '2', '-subj', '/CN=localhost',
-    '-addext', 'subjectAltName=DNS:localhost,IP:127.0.0.1', '-keyout', path.join(dir, 'api.key'), '-out', path.join(dir, 'api.crt')], { stdio: 'ignore' });
-  const [httpPort, sitePort, acmePort, mgmtPort, dnsPort, challMgmt] = await Promise.all([freePort(), freePort(), freePort(), freePort(), freePort(), freePort()]);
-  fs.writeFileSync(path.join(dir, 'pebble.json'), JSON.stringify({ pebble: { listenAddress: '127.0.0.1:' + acmePort, managementListenAddress: '127.0.0.1:' + mgmtPort,
-    certificate: path.join(dir, 'api.crt'), privateKey: path.join(dir, 'api.key'), httpPort, tlsPort: 5001, ocspResponderURL: '', externalAccountBindingRequired: false } }));
-  let pebbleLog = '';
-  procs.push(spawn(chall, ['-defaultIPv4', '127.0.0.1', '-defaultIPv6', '', '-dns01', '127.0.0.1:' + dnsPort, '-http01', '', '-https01', '', '-tlsalpn01', '', '-doh', '', '-management', '127.0.0.1:' + challMgmt], { stdio: 'ignore' }));
-  const pb = spawn(pebble, ['-config', path.join(dir, 'pebble.json'), '-dnsserver', '127.0.0.1:' + dnsPort], { env: { ...process.env, PEBBLE_VA_NOSLEEP: '1', PEBBLE_WFE_NONCEREJECT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
-  pb.stdout.on('data', b => pebbleLog += b); pb.stderr.on('data', b => pebbleLog += b);
-  procs.push(pb);
-  const apiCa = fs.readFileSync(path.join(dir, 'api.crt'));
-  await until(() => new Promise(r => { const q = https.get({ host: '127.0.0.1', port: acmePort, path: '/dir', ca: apiCa }, s => { s.resume(); r(s.statusCode === 200); }); q.on('error', () => r(false)); }), 'pebble', 20000);
+  const [httpPort, sitePort] = await Promise.all([freePort(), freePort()]);
+  const acme = await startAcme(dir, httpPort, procs);
+  const { acmePort, mgmtPort, apiCa } = acme;
+  const pebbleLog = { slice: n => acme.log().slice(n) };
 
   // The relay, with public addresses under rockfrog.test.
   const invitedIds = new Set();
@@ -332,7 +346,146 @@ test('the whole way: Chattering turns on its public address, a browser opens a s
   // The computer's own address does not answer as the publication, and the other way round.
   assert.doesNotMatch(raw, /A GAME/);
 
+  // The owner replaces the keys: new certificates for both addresses, the
+  // old ones revoked; the publication still opens, with its new certificate.
+  const keyed = await api('/api/public-links', { replaceKeys: true });
+  assert.equal(keyed.status, 200, JSON.stringify(keyed.body));
+  assert.deepEqual(keyed.body.replaced.hosts.sort(), ['game.maxime.rockfrog.test', 'maxime.rockfrog.test']);
+  assert.equal(keyed.body.retiring, 0);
+  const serialOf = servername => new Promise((resolve, reject) => {
+    const s = tls.connect({ port: sitePort, host: '127.0.0.1', servername, ca: pubRoot }, () => { const c = s.getPeerCertificate(); s.end(); resolve(c.serialNumber); });
+    s.on('error', reject);
+  });
+  const gameSerial = await serialOf('game.maxime.rockfrog.test');
+  assert.equal(gameSerial.toLowerCase().replace(/^0+/, ''), String(JSON.parse(fs.readFileSync(path.join(appDir(home, 'data'), 'site.json'), 'utf8')).certs['game.maxime.rockfrog.test'].serial).toLowerCase().replace(/^0+/, ''));
+
   // The owner turns the address off: the relay forgets this computer.
   await api('/api/public-links', { on: false });
   await until(() => relay.site.homes.size === 0, 'the relay connection closes');
+});
+
+// As on a real computer: Chattering restarts with its certificate already in
+// hand, so the first pass has nothing to do. Publications added afterwards
+// must still get theirs (they once never did: the job flag stayed set after
+// a pass that finished at once). And keys that may have been seen are
+// replaced without a moment when visitors get a bad certificate.
+test('with Pebble: after a restart with its certificate in hand, publications get theirs; an address without one gets none; keys are replaced without a gap and the old ones revoked', { timeout: 120000 }, async t => {
+  if (!which('pebble') || !which('pebble-challtestsrv') || !which('openssl')) return t.skip('pebble, pebble-challtestsrv and openssl are needed (nix shell nixpkgs#pebble nixpkgs#openssl)');
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'site-restart-')));
+  const procs = [], homes = [];
+  let relay;
+  t.after(async () => {
+    for (const h of homes) h.stop();
+    if (relay) relay.close();
+    for (const p of procs) { try { p.kill('SIGKILL'); } catch {} }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const [httpPort, sitePort] = await Promise.all([freePort(), freePort()]);
+  const acme = await startAcme(dir, httpPort, procs);
+  const homeKey = await makeHomeKey();
+  const site = createSite({ domain: 'rockfrog.test', namesFile: path.join(dir, 'names.json'), invited: () => true });
+  relay = createRelay({ env: {}, site });
+  await new Promise(r => relay.server.listen(httpPort, '127.0.0.1', r));
+  await new Promise(r => site.tcp.listen(sitePort, '127.0.0.1', r));
+
+  let subs = [];
+  const logs = [];
+  const mkHome = () => {
+    const home = createSiteHome({ dataDir: path.join(dir, 'home'), relayUrl: () => 'http://127.0.0.1:' + httpPort, wanted: () => true, desiredName: () => 'maxime', homeKey,
+      subHosts: () => subs, handler: (req, res) => res.end('home: ' + req.headers.host), acmeDirectory: acme.directory, acmeCa: acme.apiCa, ctCheck: false, heartbeatMs: 2000,
+      log: m => logs.push(m) });
+    homes.push(home);
+    return home;
+  };
+  // First start: no certificate yet, so one is fetched.
+  const first = mkHome();
+  first.sync();
+  await until(() => first.status().phase === 'ready', 'first certificate\n' + acme.log().slice(-1500), 60000);
+  first.stop();
+  await until(() => !relay.site.homes.size, 'the relay forgets the first run');
+
+  // The restart: the certificate is in hand; the first pass finds nothing to do.
+  const home = mkHome();
+  home.sync();
+  await until(() => home.status().phase === 'ready', 'ready again', 30000);
+  await home.renew();
+
+  const root = (await acme.mgmt('/roots/0')).body;
+  const visit = servername => new Promise(resolve => {
+    const raw = net.connect(sitePort, '127.0.0.1', () => {
+      raw.write(proxyV2('203.0.113.5'));
+      const s = tls.connect({ socket: raw, servername, ca: root, ALPNProtocols: ['http/1.1'], rejectUnauthorized: false });
+      s.on('error', e => resolve({ failed: e.message }));
+      s.on('secureConnect', () => {
+        const out = { authorized: s.authorized, why: s.authorizationError, san: s.getPeerCertificate().subjectaltname, serial: s.getPeerCertificate().serialNumber };
+        s.end(); resolve(out);
+      });
+    });
+    raw.on('error', e => resolve({ failed: e.message }));
+  });
+
+  // An address under the computer's name with no certificate here: no
+  // certificate at all (the browser cannot connect), never the computer's
+  // own (the browser would warn that someone may be posing as the site).
+  const early = await visit('game.maxime.rockfrog.test');
+  assert.ok(early.failed, 'no certificate is offered for a name without one: ' + JSON.stringify(early));
+  assert.equal((await visit('maxime.rockfrog.test')).authorized, true);
+
+  // Publications, the second one added while the first is being fetched.
+  subs = ['game'];
+  home.hostsChanged();
+  subs = ['game', 'docs'];
+  home.hostsChanged();
+  const hostReady = h => () => (home.status().hosts[h] || {}).ready;
+  await until(hostReady('game.maxime.rockfrog.test'), 'game\u2019s certificate: ' + JSON.stringify(home.status().hosts) + '\n' + logs.join('\n'), 30000);
+  await until(hostReady('docs.maxime.rockfrog.test'), 'docs\u2019s certificate: ' + JSON.stringify(home.status().hosts) + '\n' + logs.join('\n'), 30000);
+  const game = await visit('game.maxime.rockfrog.test');
+  assert.equal(game.authorized, true, game.why);
+  assert.equal(game.san, 'DNS:game.maxime.rockfrog.test');
+
+  // Replacing the keys. Visitors keep coming the whole time, and every one
+  // of them gets a valid certificate.
+  const file = path.join(dir, 'home', 'site.json');
+  const before = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const oldSerials = Object.values(before.certs).map(c => c.serial);
+  assert.equal(oldSerials.length, 3);
+  let replacing = true;
+  const during = [];
+  const visitor = (async () => { while (replacing) { during.push(await visit('maxime.rockfrog.test')); await sleep(20); } })();
+  const out = await home.replaceKeys();
+  replacing = false;
+  await visitor;
+  assert.deepEqual(out.hosts.sort(), ['docs.maxime.rockfrog.test', 'game.maxime.rockfrog.test', 'maxime.rockfrog.test']);
+  assert.equal(out.retiring, 0, 'the old certificates are revoked and the old account closed: ' + logs.join('\n'));
+  assert.ok(during.length > 3, 'visitors came during the replacement');
+  assert.ok(during.every(v => v.authorized), 'no visitor saw a bad certificate: ' + JSON.stringify(during.filter(v => !v.authorized)));
+
+  const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.notEqual(after.accountKey, before.accountKey);
+  assert.equal(after.retired, undefined, 'nothing of the old keys stays on disk');
+  for (const h of Object.keys(before.certs)) {
+    assert.notEqual(after.certs[h].key, before.certs[h].key, h + ' has a new key');
+    assert.ok(!oldSerials.includes(after.certs[h].serial));
+  }
+  assert.ok(oldSerials.every(s => after.serials.includes(s)) && Object.values(after.certs).every(c => after.serials.includes(c.serial)), 'every serial asked for is remembered (certificate logs)');
+  const now = await visit('maxime.rockfrog.test');
+  assert.equal(now.authorized, true);
+  assert.equal(now.serial.toLowerCase().replace(/^0+/, ''), after.certs['maxime.rockfrog.test'].serial.toLowerCase().replace(/^0+/, ''));
+
+  // The authority says the old certificates are revoked, for key compromise.
+  for (const serial of oldSerials) {
+    const st = await acme.mgmt('/cert-status-by-serial/' + serial.toLowerCase());
+    assert.equal(st.status, 200, st.body);
+    const body = JSON.parse(st.body);
+    assert.equal(body.Status, 'Revoked', serial + ': ' + st.body);
+    assert.equal(body.Reason, 1, 'key compromise');
+  }
+  // The old account is closed: its key asks for nothing any more.
+  const acmeLib = require('../acme.js');
+  const oldClient = acmeLib.createClient({ directory: acme.directory, accountKey: before.accountKey, ca: acme.apiCa });
+  await assert.rejects(oldClient.certify(['other.maxime.rockfrog.test'], { publish: async () => {} }), /deactivated|not valid|unauthorized/i);
+  assert.deepEqual(await oldClient.deactivate(), { already: true });
+  // Revoking again is not an error.
+  const again = acmeLib.createClient({ directory: acme.directory, accountKey: after.accountKey, ca: acme.apiCa });
+  assert.deepEqual(await again.revoke(before.certs['maxime.rockfrog.test'].cert, { certKey: before.certs['maxime.rockfrog.test'].key, reason: acmeLib.REVOKE.keyCompromise }), { already: true });
 });

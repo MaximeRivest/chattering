@@ -355,4 +355,54 @@ test('a real server: the gate, pictures, live edits on disk, viewers, names, end
   await owner.evaluate(`window.confirm = () => true; document.querySelector('.sh-ui-row[data-id="${uiShareId}"] [data-act="revoke"]').click(); 1`);
   await waitFor(`/This link has ended/.test(document.getElementById('card').textContent)`, 'the page says the link ended');
   assert.deepEqual((problems.get(visitor.sid) || []).filter(p => !/WebSocket connection to .* failed|Failed to load resource/.test(p)), [], 'no script errors, nothing the page policy refused');
+
+  // Publishing: while a publication's certificate is on its way, its link is
+  // not offered for copying (a browser could not open it yet); it is the
+  // moment the certificate is here. The answers about the certificate are
+  // made up in the page (site.test.js gets real ones through Pebble).
+  const pubDir = path.join(docs, 'game');
+  fs.mkdirSync(pubDir, { recursive: true });
+  fs.writeFileSync(path.join(pubDir, 'index.html'), '<!doctype html><h1>game</h1>');
+  await owner.evaluate(`(() => {
+    window.__cert = 'pending';
+    const real = window.fetch;
+    window.fetch = async (url, opts) => {
+      if (!String(url).startsWith('/api/shares?published=')) return real(url, opts);
+      const ready = window.__cert === 'ready', at = 'https://game.maxime.rockfrog.site/#k=x';
+      const share = { id: 'aaaaaaaaaaaaaaaa', kind: 'publication', type: 'site', slug: 'game', access: 'link', root: '0'.repeat(64), versions: [{ root: '0'.repeat(64), at: Date.now() }],
+        opens: 0, live: 0, active: true, by: { id: 'u', name: 'Owner' }, certificate: ready ? { ready: true } : { ready: false, error: null },
+        links: ready ? [{ where: 'public', url: at, who: 'Anyone with the link, from anywhere' }]
+          : [{ where: 'public-pending', url: at, who: 'Getting its certificate (about a minute); the link works once it is here' }, { where: 'local', url: 'http://game.pub.localhost:1/#k=x', who: 'Only this computer' }] };
+      return new Response(JSON.stringify({ shares: [share] }), { headers: { 'Content-Type': 'application/json' } });
+    };
+    SharesUI.openPublication({ type: 'site', path: ${JSON.stringify(pubDir)}, title: 'game' });
+    return 1;
+  })()`);
+  const copyButton = `document.querySelector('.sh-ui-row[data-id="aaaaaaaaaaaaaaaa"] [data-act="copy"]')`;
+  await owner.waitFor(`${copyButton} && ${copyButton}.disabled && /Getting ready/.test(${copyButton}.textContent)`, 'not offered while its certificate is on its way');
+  await owner.evaluate(`window.__cert = 'ready'; 1`);
+  await owner.waitFor(`${copyButton} && !${copyButton}.disabled && ${copyButton}.textContent === 'Copy link'`, 'offered once its certificate is here');
+  await owner.evaluate(`SharesUI.close(); 1`);
+
+  // The owner replaces the public address's keys from the Share dialog
+  // (the address itself is made up in the page; site.test.js does it for real).
+  await owner.evaluate(`(() => {
+    const real = window.fetch;
+    window.__asked = null;
+    const view = extra => ({ on: true, name: 'maxime', phase: 'ready', url: 'https://maxime.rockfrog.site', domain: 'rockfrog.site', owner: true, retiring: 0, ...extra });
+    window.fetch = async (url, opts) => {
+      if (String(url) !== '/api/public-links') return real(url, opts);
+      if (opts && opts.method === 'POST') window.__asked = JSON.parse(opts.body);
+      return new Response(JSON.stringify(opts && opts.method === 'POST' ? view({ replaced: { hosts: ['maxime.rockfrog.site'], retiring: 0 } }) : view()), { headers: { 'Content-Type': 'application/json' } });
+    };
+    window.confirm = () => true;
+    SharesUI.open(${JSON.stringify(doc)}, 'notes.md');
+    return 1;
+  })()`);
+  await owner.waitFor(`document.querySelector('[data-act="pub-keys"]')`, 'the owner can replace the keys');
+  await owner.evaluate(`document.querySelector('[data-act="pub-keys"]').click(); 1`);
+  await owner.waitFor(`/New keys are in use, and the old certificates are revoked/.test(document.getElementById('shWhere').textContent)`, 'it says the keys were replaced');
+  assert.deepEqual(await owner.evaluate('window.__asked'), { replaceKeys: true });
+  await owner.evaluate(`SharesUI.close(); 1`);
+  assert.deepEqual(problems.get(owner.sid) || [], [], 'the app shows no errors');
 });

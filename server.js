@@ -24514,6 +24514,13 @@ async function handleRequest(req, res) {
       if (!policy.isOwnerTier(identity)) return json(res, 403, { error: 'Only this computer\u2019s owner turns its public address on or off.' });
       try {
         const p = await readJsonBody(req, 4096);
+        // Replacing its keys, when one may have been seen (site-home.js
+        // replaceKeys): new certificates first, then the old ones revoked.
+        if (p.replaceKeys === true) {
+          const out = await siteHome.replaceKeys();
+          console.log('[public links] ' + identity.user.name + ' replaced the keys of the public address (' + out.hosts.join(', ') + ')');
+          return json(res, 200, { ...publicLinksView(identity), replaced: out });
+        }
         const next = { ...(appSettings.publicLinks || {}) };
         if ('on' in p) next.on = p.on === true;
         if ('name' in p) {
@@ -27552,7 +27559,7 @@ function publicationLinks(share) {
   const out = [];
   const pub = siteHome.hostUrl(share.slug);
   if (pub) out.push({ where: 'public', url: pub + '/' + secret, who: share.access === 'public' ? 'Anyone at this address' : 'Anyone with the link, from anywhere' });
-  else if (publicationHost(share.slug)) out.push({ where: 'public-pending', url: 'https://' + publicationHost(share.slug) + '/' + secret, who: 'Its certificate is on its way (a minute)' });
+  else if (publicationHost(share.slug)) out.push({ where: 'public-pending', url: 'https://' + publicationHost(share.slug) + '/' + secret, who: 'Getting its certificate (about a minute); the link works once it is here' });
   out.push({ where: 'local', url: `http://${share.slug}.pub.localhost:${PREVIEW_PORT}/` + secret, who: 'Only this computer' });
   return out;
 }
@@ -27718,7 +27725,7 @@ function publicLinksView(identity) {
   const st = siteHome.status();
   const base = { on: !!(appSettings.publicLinks && appSettings.publicLinks.on), name: (appSettings.publicLinks && appSettings.publicLinks.name) || '', phase: st.phase, url: st.url, domain: st.domain || 'rockfrog.site', owner: policy.isOwnerTier(identity) };
   if (!policy.isOwnerTier(identity)) return base;
-  return { ...base, error: st.error, invited: st.invited, homeId: st.homeId, certificate: st.certificate, visitors: st.visitors, ctWarning: st.ctWarning };
+  return { ...base, error: st.error, invited: st.invited, homeId: st.homeId, certificate: st.certificate, visitors: st.visitors, ctWarning: st.ctWarning, retiring: st.retiring || 0 };
 }
 function shareUpgrade(req, socket, head) {
   shareGate.upgrade(req, socket, head)

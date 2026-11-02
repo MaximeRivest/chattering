@@ -64,11 +64,16 @@ function thumbprint(jwk) {
   return b64u(crypto.createHash('sha256').update(JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y })).digest());
 }
 
+const publicJwk = key => (({ crv, kty, x, y }) => ({ crv, kty, x, y }))(crypto.createPublicKey(key).export({ format: 'jwk' }));
+
+// Why a certificate is revoked (RFC 5280 reason codes).
+const REVOKE = { unspecified: 0, keyCompromise: 1, superseded: 4, cessationOfOperation: 5 };
+
 // accountKey: an EC P-256 private key (PEM); kept by the caller so the
 // account is the same one each time.
 function createClient({ directory = LETS_ENCRYPT, accountKey, ca, log = () => {} }) {
   const key = crypto.createPrivateKey(accountKey);
-  const jwk = (({ crv, kty, x, y }) => ({ crv, kty, x, y }))(crypto.createPublicKey(key).export({ format: 'jwk' }));
+  const jwk = publicJwk(key);
   let dir = null, nonce = null, kid = null;
 
   async function directoryOf() {
@@ -83,16 +88,18 @@ function createClient({ directory = LETS_ENCRYPT, accountKey, ca, log = () => {}
     return r.headers['replay-nonce'];
   }
   // A signed POST; payload null is POST-as-GET. One retry on badNonce.
-  async function post(url, payload, retried = false) {
-    const prot = { alg: 'ES256', nonce: await freshNonce(), url, ...(kid ? { kid } : { jwk }) };
+  // Signed by the account, or by another key (`by`: a certificate's own key
+  // revoking it, which proves possession without the account).
+  async function post(url, payload, retried = false, by = null) {
+    const prot = { alg: 'ES256', nonce: await freshNonce(), url, ...(by ? { jwk: by.jwk } : kid ? { kid } : { jwk }) };
     const p64 = b64u(JSON.stringify(prot)), b64 = payload === null ? '' : b64u(JSON.stringify(payload));
-    const signature = crypto.sign('sha256', Buffer.from(p64 + '.' + b64), { key, dsaEncoding: 'ieee-p1363' });
+    const signature = crypto.sign('sha256', Buffer.from(p64 + '.' + b64), { key: by ? by.key : key, dsaEncoding: 'ieee-p1363' });
     const r = await request(url, { method: 'POST', body: JSON.stringify({ protected: p64, payload: b64, signature: b64u(signature) }), headers: { 'Content-Type': 'application/jose+json' }, ca });
     if (r.headers['replay-nonce']) nonce = r.headers['replay-nonce'];
     const type = String(r.headers['content-type'] || '');
     const data = /json/.test(type) && r.body.length ? JSON.parse(r.body) : r.body;
     if (r.status >= 400) {
-      if (!retried && data && data.type === 'urn:ietf:params:acme:error:badNonce') return post(url, payload, true);
+      if (!retried && data && data.type === 'urn:ietf:params:acme:error:badNonce') return post(url, payload, true, by);
       const e = new Error((data && data.detail) || 'the certificate authority refused (' + r.status + ')');
       e.acme = data; e.status = r.status;
       throw e;
@@ -144,8 +151,40 @@ function createClient({ directory = LETS_ENCRYPT, accountKey, ca, log = () => {}
     log('[acme] certificate for ' + names.join(', ') + ' until ' + leaf.validTo);
     return { key: certKey.export({ type: 'pkcs8', format: 'pem' }), cert: pem, notAfter: Date.parse(leaf.validTo), notBefore: Date.parse(leaf.validFrom) };
   }
-  return { certify, account };
+
+  // Revoke a certificate (RFC 8555 7.6). With its own private key
+  // (`certKey`, PEM) the request is signed by that key: the way Let's
+  // Encrypt accepts "keyCompromise", and it works whatever account issued
+  // it. Without, the account that issued it signs. A certificate already
+  // revoked counts as done.
+  async function revoke(certPem, { certKey = null, reason = REVOKE.unspecified } = {}) {
+    const der = new crypto.X509Certificate(certPem).raw;
+    const url = (await directoryOf()).revokeCert;
+    const payload = { certificate: b64u(der), reason };
+    let by = null;
+    if (certKey) { const k = crypto.createPrivateKey(certKey); by = { key: k, jwk: publicJwk(k) }; } else await account();
+    try { await post(url, payload, false, by); }
+    catch (e) { if (e.acme && e.acme.type === 'urn:ietf:params:acme:error:alreadyRevoked') return { already: true }; throw e; }
+    log('[acme] revoked ' + new crypto.X509Certificate(certPem).serialNumber + ' (reason ' + reason + ')');
+    return { already: false };
+  }
+  // Close this account for good (RFC 8555 7.3.6): its key can no longer ask
+  // for, or revoke, anything. Already closed counts as done.
+  async function deactivate() {
+    try {
+      await account();
+      await post(kid, { status: 'deactivated' });
+    } catch (e) {
+      if (e.status === 401 || e.status === 403) {
+        if (/deactivated/i.test(e.message)) return { already: true };
+      }
+      throw e;
+    }
+    log('[acme] account closed: ' + kid);
+    return { already: false };
+  }
+  return { certify, account, revoke, deactivate };
 }
 function newAccountKey() { return crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ type: 'pkcs8', format: 'pem' }); }
 
-module.exports = { createClient, newAccountKey, csr, LETS_ENCRYPT };
+module.exports = { createClient, newAccountKey, csr, LETS_ENCRYPT, REVOKE };

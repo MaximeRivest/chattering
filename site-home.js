@@ -14,8 +14,13 @@
      certificate this computer did not ask for is reported, so the relay's
      operator could not get one silently.
 
-   File (0600): <dataDir>/site.json — the name, the ACME account key, the
-   certificate and its key, the serials of certificates asked for here. */
+   - Its keys can be replaced (replaceKeys) when one may have been seen:
+     new certificates first, then the old ones revoked and the old account
+     closed.
+
+   File (0600): <dataDir>/site.json — the name, the ACME account key, each
+   address's certificate and its key, the serials of certificates asked for
+   here, and (until they are revoked) the keys being retired. */
 const fs = require('fs');
 const path = require('path');
 const tls = require('tls');
@@ -183,44 +188,91 @@ function createSiteHome(opts) {
     else if (c) set('ready'); // still valid: serve with it while a new one comes
     await renew();
   }
-  // Certificates, one address at a time (Let's Encrypt is asked one order at
-  // a time, and an address that failed is tried again after an hour, never
-  // in a loop): the computer's own first, then each publication's.
-  async function renew() {
+
+  // All certificate work runs one job at a time (Let's Encrypt is asked one
+  // order at a time). renew() asks for a pass over every address; asked
+  // while a pass runs, another pass follows, so an address added meanwhile
+  // (a new publication) is never missed. replaceKeys() queues the same way.
+  //
+  // `certifying` is set before any of the work can finish: the clean-up is
+  // chained with .finally, which always runs later, never inside this call.
+  // (It used to be cleared in a `finally` inside the async function itself,
+  // which runs at once when there is nothing to do, before the assignment
+  // took place; the flag then stayed set and every later pass was skipped:
+  // publications never got a certificate and nothing was renewed.)
+  let passWanted = false;
+  const replaceWaiters = [];
+  function renew() { passWanted = true; return kick(); }
+  function kick() {
     if (certifying) return certifying;
-    certifying = (async () => {
-      try {
-        for (;;) {
-          if (!ws || phase === 'off' || phase === 'refused' || !host()) return;
-          const due = wantedHosts().find(h => {
-            const c = certFor(h), err = state.certErrors[h];
-            if (err && Date.now() - err.at < RETRY_FAILED_MS && !(c && c.notAfter < Date.now() + RENEW_MS / 3)) return false;
-            return !c || c.notAfter - Date.now() < RENEW_MS;
-          });
-          if (!due) break;
-          await certify(due);
+    const run = (async () => {
+      while (passWanted || replaceWaiters.length) {
+        if (replaceWaiters.length) {
+          const waiting = replaceWaiters.splice(0);
+          try { const out = await replacePass(); for (const w of waiting) w.resolve(out); }
+          catch (e) { for (const w of waiting) w.reject(e); }
+          continue;
         }
-        // Addresses no longer published lose their certificate (and stop renewing).
-        const keep = new Set(wantedHosts());
-        let dropped = false;
-        for (const h of Object.keys(state.certs)) if (h.endsWith('.' + host()) && !keep.has(h)) { delete state.certs[h]; delete state.certErrors[h]; dropped = true; }
-        if (dropped) { save(); loadContext(); }
-      } finally { certifying = null; try { onChange(); } catch {} }
+        passWanted = false;
+        await renewPass();
+      }
     })();
+    certifying = run
+      .catch(e => log('[site] certificates: ' + ((e && e.message) || e)))
+      .finally(() => {
+        certifying = null;
+        try { onChange(); } catch {}
+        // Asked for again between the last pass and here.
+        if (passWanted || replaceWaiters.length) return kick();
+      });
     return certifying;
+  }
+
+  // One pass: every address that needs a certificate gets one (the
+  // computer's own first, then each publication's; an address that failed
+  // is tried again after an hour, never in a loop), addresses no longer
+  // published lose theirs, and retired keys are finished off.
+  async function renewPass() {
+    for (;;) {
+      if (!ws || phase === 'off' || phase === 'refused' || !host()) return;
+      const due = wantedHosts().find(h => {
+        const c = certFor(h), err = state.certErrors[h];
+        if (err && Date.now() - err.at < RETRY_FAILED_MS && !(c && c.notAfter < Date.now() + RENEW_MS / 3)) return false;
+        return !c || c.notAfter - Date.now() < RENEW_MS;
+      });
+      if (!due) break;
+      await certify(due);
+    }
+    // Addresses no longer published lose their certificate (and stop renewing).
+    const keep = new Set(wantedHosts());
+    let dropped = false;
+    for (const h of Object.keys(state.certs)) if (h.endsWith('.' + host()) && !keep.has(h)) { delete state.certs[h]; delete state.certErrors[h]; dropped = true; }
+    if (dropped) { save(); loadContext(); }
+    await retirePass();
+  }
+
+  const clientFor = accountKey => acmeLib.createClient({ directory: acmeDirectory, accountKey, ca: acmeCa, log });
+  // A certificate for one address, under the given account; stored nowhere.
+  async function issue(h, accountKey) {
+    const got = await clientFor(accountKey).certify([h], { publish: async (token, keyAuth) => { send({ t: 'acme', token, keyAuth }); await new Promise(r => setTimeout(r, 300)); } });
+    const serial = new crypto.X509Certificate(got.cert).serialNumber;
+    return { host: h, key: got.key, cert: got.cert, notAfter: got.notAfter, notBefore: got.notBefore, serial };
+  }
+  // Every serial asked for here, so the certificate logs can tell ours from
+  // someone else's.
+  function remember(serial) {
+    state.serials = [...new Set([...(state.serials || []), serial])].slice(-200);
+    state.issuedSince = state.issuedSince || Date.now();
   }
   async function certify(h) {
     const main = h === host();
     if (main && !certFor(h)) set('certifying');
     try {
       if (!state.accountKey) { state.accountKey = acmeLib.newAccountKey(); save(); }
-      const client = acmeLib.createClient({ directory: acmeDirectory, accountKey: state.accountKey, ca: acmeCa, log });
-      const got = await client.certify([h], { publish: async (token, keyAuth) => { send({ t: 'acme', token, keyAuth }); await new Promise(r => setTimeout(r, 300)); } });
-      const serial = new crypto.X509Certificate(got.cert).serialNumber;
-      state.certs[h] = { host: h, key: got.key, cert: got.cert, notAfter: got.notAfter, notBefore: got.notBefore, serial };
+      const got = await issue(h, state.accountKey);
+      state.certs[h] = got;
       delete state.certErrors[h];
-      state.serials = [...new Set([...(state.serials || []), serial])].slice(-200);
-      state.issuedSince = state.issuedSince || Date.now();
+      remember(got.serial);
       save();
       loadContext();
       if (main && ws) set('ready');
@@ -230,6 +282,66 @@ function createSiteHome(opts) {
       save();
       if (main && !certFor(h)) set('error', 'Could not get a certificate for ' + h + ': ' + e.message);
     }
+  }
+
+  /* ---- replacing the keys ---- */
+  // When a key may have been seen (copied, printed, leaked): a new ACME
+  // account, a new certificate with a new key for every address, and only
+  // then the swap, so visitors are never without a valid certificate. If
+  // any address fails, nothing changes. Then the old certificates are
+  // revoked ("key compromise", signed with their own keys) and the old
+  // account is closed; until both are done they wait in state.retired and
+  // are tried again on every pass, then forgotten (their keys with them).
+  function replaceKeys() { return new Promise((resolve, reject) => { replaceWaiters.push({ resolve, reject }); kick(); }); }
+  async function replacePass() {
+    if (!ws || phase !== 'ready' || !host()) throw new Error('The public address is not connected; its keys can be replaced once it is.');
+    const accountKey = acmeLib.newAccountKey();
+    const fresh = {};
+    try {
+      for (const h of wantedHosts()) fresh[h] = await issue(h, accountKey);
+    } catch (e) {
+      // The new account holds nothing we keep: closed, best effort.
+      clientFor(accountKey).deactivate().catch(() => {});
+      throw new Error('Could not get new certificates, so nothing was changed: ' + e.message);
+    }
+    const old = { at: Date.now(), accountKey: state.accountKey || null,
+      certs: Object.values(state.certs).map(c => ({ host: c.host, cert: c.cert, key: c.key, serial: c.serial, notAfter: c.notAfter })) };
+    state.retired = [...(state.retired || []), old];
+    state.accountKey = accountKey;
+    state.certs = fresh;
+    state.certErrors = {};
+    for (const c of Object.values(fresh)) remember(c.serial);
+    save();
+    loadContext();
+    log('[site] keys replaced: a new account and ' + Object.keys(fresh).length + ' new certificate(s) (' + Object.keys(fresh).join(', ') + ')');
+    await retirePass();
+    return { hosts: Object.keys(fresh), retiring: (state.retired || []).length };
+  }
+  async function retirePass() {
+    const list = state.retired || [];
+    if (!list.length) return;
+    for (const r of list) {
+      for (const c of r.certs) {
+        if (c.revoked) continue;
+        if (c.notAfter && c.notAfter < Date.now()) { c.revoked = 'expired'; continue; }
+        try {
+          // Signed with the certificate's own key: no account needed, and
+          // the way "key compromise" is accepted.
+          const out = await clientFor(r.accountKey || acmeLib.newAccountKey()).revoke(c.cert, { certKey: c.key, reason: acmeLib.REVOKE.keyCompromise });
+          c.revoked = out.already ? 'already' : 'revoked';
+          if (out.already) log('[site] certificate ' + c.serial + ' was already revoked');
+        } catch (e) { r.error = 'revoking ' + c.serial + ': ' + e.message; log('[site] ' + r.error); }
+      }
+      if (!r.accountKey) r.closed = true;
+      else if (!r.closed && r.certs.every(c => c.revoked)) {
+        try { await clientFor(r.accountKey).deactivate(); r.closed = true; }
+        catch (e) { r.error = 'closing the old account: ' + e.message; log('[site] ' + r.error); }
+      }
+    }
+    // Done: forgotten, old keys included.
+    state.retired = list.filter(r => !(r.closed && r.certs.every(c => c.revoked)));
+    if (!state.retired.length) delete state.retired;
+    save();
   }
   // Publications changed: get the new addresses' certificates, drop the old.
   function hostsChanged() { if (phase === 'ready' || phase === 'certifying') renew(); }
@@ -272,7 +384,11 @@ function createSiteHome(opts) {
     duplex.on('error', () => {});
     sock.onopen = () => {
       const t = new tls.TLSSocket(duplex, { isServer: true, secureContext, ALPNProtocols: ['http/1.1'],
-        SNICallback: (name, cb) => cb(null, contexts.get(String(name).toLowerCase()) || secureContext) });
+        // Only a name this computer holds a certificate for. Any other name
+        // (a publication whose certificate is still on its way) gets no
+        // certificate rather than the wrong one: a browser then says it
+        // cannot connect, not that someone may be posing as the site.
+        SNICallback: (name, cb) => { const c = contexts.get(String(name).toLowerCase()); cb(c ? null : new Error('no certificate for ' + name), c || undefined); } });
       t.visitorIp = ip.slice(0, 64);
       t.on('error', () => { try { duplex.destroy(); } catch {} });
       t.on('close', () => { try { duplex.destroy(); } catch {} });
@@ -283,14 +399,14 @@ function createSiteHome(opts) {
   function status() {
     const c = certFor(host());
     return { phase, error, name: state.name || '', wantedName: desiredName(), domain, url: host() && phase === 'ready' && c ? 'https://' + host() : '',
-      invited, homeId, certificate: c ? { notAfter: c.notAfter, notBefore: c.notBefore } : null, visitors: tunnels.size, ctWarning,
+      invited, homeId, certificate: c ? { notAfter: c.notAfter, notBefore: c.notBefore } : null, visitors: tunnels.size, ctWarning, retiring: (state.retired || []).length,
       hosts: Object.fromEntries(wantedHosts().filter(x => x !== host()).map(x => [x, certFor(x) ? { ready: true, notAfter: certFor(x).notAfter } : { ready: false, error: state.certErrors[x] ? state.certErrors[x].message : null }])) };
   }
   function stop() { clearInterval(renewTimer); clearInterval(ctTimer); disconnect(); }
   loadContext();
   // The address of a publication, when its certificate is here.
   function hostUrl(label) { const h = host() && subHost(label); return h && phase === 'ready' && certFor(h) ? 'https://' + h : ''; }
-  return { sync, status, stop, renew, checkCt, hostsChanged, hostUrl, _server: server };
+  return { sync, status, stop, renew, replaceKeys, checkCt, hostsChanged, hostUrl, _server: server };
 }
 
 module.exports = { createSiteHome, wsDuplex };

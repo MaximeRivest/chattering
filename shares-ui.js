@@ -91,7 +91,9 @@
     const pub = current && current.pub;
     const link = shares.length ? best(shares[0]) : null;
     if (pub && pub.url) {
-      return `<p>Links open from anywhere, at <b>${escHtml(pub.url.replace(/^https:\/\//, ''))}</b>, while this computer is on. The address is yours; the relay passes the connection along without being able to read it.${pub.owner ? ' <button class="linklike" data-act="pub-off">Turn the public address off</button>' : ''}</p>`
+      return `<p>Links open from anywhere, at <b>${escHtml(pub.url.replace(/^https:\/\//, ''))}</b>, while this computer is on. The address is yours; the relay passes the connection along without being able to read it.${pub.owner ? ' <button class="linklike" data-act="pub-off">Turn the public address off</button> · <button class="linklike" data-act="pub-keys" title="If one of its keys may have been seen: new certificates, then the old ones revoked">Replace its keys</button>' : ''}</p>`
+        + (current.keysNote ? `<p class="sh-ui-small">${escHtml(current.keysNote)}</p>` : '')
+        + (pub.owner && pub.retiring ? '<p class="sh-ui-small">Old keys are still being revoked; this computer keeps trying by itself.</p>' : '')
         + (pub.ctWarning ? `<p class="sh-ui-error">A certificate this computer did not ask for exists for this address (issued ${escHtml(pub.ctWarning.notBefore || '')} by ${escHtml(pub.ctWarning.issuer || 'someone')}). Someone may be able to pose as it: tell Rockfrog.</p>` : '');
     }
     const net = isPub() ? 'For now, it opens only on this computer (at .pub.localhost).' : link && link.where === 'tailnet' ? 'For now, links open for people on your Tailscale network.' : 'For now, links open on your home network only.';
@@ -153,7 +155,10 @@
   function pubRowHtml(s) {
     const link = best(s);
     const vers = s.versions || [];
-    const cert = s.certificate ? (s.certificate.ready ? '' : s.certificate.error ? ' · its certificate failed: ' + escHtml(s.certificate.error) : ' · its certificate is on its way') : '';
+    // Its address without its certificate yet: a browser could not open it,
+    // so it is not offered for copying until it can.
+    const waiting = pendingCert(s);
+    const cert = s.certificate && !s.certificate.ready && s.certificate.error ? ' · its certificate failed: ' + escHtml(s.certificate.error) + ' (tried again within the hour)' : '';
     const pay = s.type === 'program' ? `<div class="sh-ui-meta"><span>${s.pay && s.pay.owner ? `Visitors pay with their own key, or you do: up to ${usd(s.pay.owner.monthlyUsd)} a month, ${s.pay.owner.perVisitorPerHour} answers an hour each · this month ${usd((s.spent || {}).usd || 0)}, ${(s.spent || {}).calls || 0} answers${s.ownerPays && !s.ownerPays.available ? ' · <b>not available: ' + escHtml(s.ownerPays.why) + '</b>' : ''}` : 'Visitors pay with their own key'}</span></div>` : '';
     return `<div class="sh-ui-row" data-id="${escHtml(s.id)}">
       <div class="sh-ui-line">
@@ -162,7 +167,7 @@
           <option value="public"${s.access === 'public' ? ' selected' : ''}>Anyone (public)</option>
         </select>
         <input class="sh-ui-url" readonly value="${escHtml(link ? link.url : '')}" aria-label="Its address" data-act="select">
-        <button class="primary" data-act="copy">Copy link</button>
+        <button class="primary" data-act="copy"${waiting ? ' disabled title="The link works once its certificate is here"' : ''}>${waiting ? (cert ? 'Not ready' : 'Getting ready…') : 'Copy link'}</button>
       </div>
       <div class="sh-ui-meta"><span>${escHtml(link ? link.who : '')}${cert} · version <code title="${escHtml(s.root)}: the fingerprint of exactly what is published">${escHtml(s.root.slice(0, 12))}</code>${vers.length > 1 ? ` <select data-act="version" aria-label="Make an earlier version current">${vers.map(v => `<option value="${escHtml(v.root)}"${v.root === s.root ? ' selected' : ''}>${escHtml(v.root.slice(0, 8))} · ${escHtml(new Date(v.at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }))}</option>`).join('')}</select>` : ''} · ${escHtml(usage(s))}</span>
         <span class="sh-ui-actions"><button data-act="republish" title="${s.type === 'program' ? 'Its live version now, frozen and signed' : 'The version on screen now, frozen and signed'}">Publish ${s.type === 'program' ? 'the live version' : 'the version shown'}</button>${s.access === 'link' ? '<button data-act="replace" title="A new link; the old one stops working at once">New link</button>' : ''}<button data-act="revoke" class="danger" title="Its address stops answering at once">Turn off</button></span></div>
@@ -231,6 +236,23 @@
     const q = current.type === 'program' ? 'program=' + encodeURIComponent(current.source.program) : 'published=' + encodeURIComponent(current.source.path);
     current.shares = (await call('/api/shares?' + q)).shares;
     renderPub();
+    watchCerts();
+  }
+  // A publication's address before its certificate came (or after it failed).
+  function pendingCert(s) { const l = best(s); return !!(l && l.where === 'public-pending'); }
+  // While one is on its way, look again every two seconds; the row turns
+  // into a copyable link the moment it can be opened.
+  let certTimer = 0;
+  function watchCerts() {
+    clearTimeout(certTimer);
+    if (!isPub() || !(current.shares || []).some(s => pendingCert(s) && !(s.certificate && s.certificate.error))) return;
+    const mine = current;
+    certTimer = setTimeout(() => {
+      if (current !== mine) return;
+      // Not while a new address is being typed: a refresh would redraw the form.
+      if (mine.adding) return watchCerts();
+      refreshPub().catch(() => watchCerts());
+    }, 2000);
   }
   async function loadPreview() {
     current.preview = await call('/api/publications/preview', { type: current.type, ...current.source });
@@ -276,7 +298,7 @@
         current.adding = false; current.slug = null;
         await refreshPub();
         const fresh = overlay.querySelector(`.sh-ui-row[data-id="${out.share.id}"] [data-act="copy"]`);
-        if (fresh && best(out.share)) copy(best(out.share).url, fresh);
+        if (fresh && best(out.share) && !pendingCert(out.share)) copy(best(out.share).url, fresh);
       } finally { if (b.isConnected) b.disabled = false; }
       return true;
     }
@@ -330,7 +352,7 @@
     if (!b || !overlay.contains(b)) { if (e.target === overlay) close(); return; }
     const row = b.closest('.sh-ui-row'), id = row && row.dataset.id;
     const share = id && current.shares.find(s => s.id === id);
-    if (isPub() && b.id !== 'shClose' && b.dataset.act !== 'copy' && b.dataset.act !== 'select' && b.id !== 'shPubOn' && b.dataset.act !== 'pub-off') {
+    if (isPub() && b.id !== 'shClose' && b.dataset.act !== 'copy' && b.dataset.act !== 'select' && b.id !== 'shPubOn' && b.dataset.act !== 'pub-off' && b.dataset.act !== 'pub-keys') {
       try { if (await onPubClick(b, row, id, share)) return; } catch (err) { return fail(err); }
     }
     try {
@@ -339,6 +361,16 @@
         const name = overlay.querySelector('#shPubName').value.trim().toLowerCase();
         current.pub = await call('/api/public-links', { on: true, name });
         renderWhere(); pollPub();
+        return;
+      }
+      if (b.dataset.act === 'pub-keys') {
+        if (!confirm('Replace the keys of this computer\u2019s public address?\n\nDo this if one of its keys may have been seen (copied, shown in a conversation, leaked). New certificates come first, then the old ones are revoked, so links keep working. It takes about a minute.')) return;
+        b.disabled = true; b.textContent = 'Replacing\u2026';
+        try {
+          const out = await call('/api/public-links', { replaceKeys: true });
+          current.pub = out;
+          current.keysNote = 'New keys are in use' + (out.retiring ? '; the old ones are being revoked.' : ', and the old certificates are revoked.');
+        } finally { renderWhere(); }
         return;
       }
       if (b.dataset.act === 'pub-off') {
@@ -424,7 +456,7 @@
     call('/api/shares/scan?key=' + encodeURIComponent(key)).then(sc => { if (current === mine) { mine.scan = sc; render(); } }).catch(() => {});
     try { await loadPub(); await refresh(); pollPub(); } catch (e) { render(); fail(e); }
   }
-  function close() { clearTimeout(pubTimer); if (overlay) overlay.hidden = true; current = null; }
+  function close() { clearTimeout(pubTimer); clearTimeout(certTimer); if (overlay) overlay.hidden = true; current = null; }
 
   // The document's Share button (live-file.js head) and its ⋯ entry.
   document.addEventListener('click', e => {
